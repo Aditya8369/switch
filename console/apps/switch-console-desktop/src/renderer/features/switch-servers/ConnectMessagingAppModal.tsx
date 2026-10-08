@@ -31,6 +31,7 @@ import {
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
 import { ConnectChatPanel } from './ConnectChatPanel';
+import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import { switchServersStore } from './switch-servers-store';
 import { administersWorkspaceInScope } from './workspace-admin';
@@ -85,8 +86,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const [error, setError] = useState<string | null>(null);
 
   const typesQuery = useQuery({
-    queryKey: ['remote-bridge-types', workspaceId],
-    queryFn: () => rpc.workspaces.listBridgeTypes(workspaceId as string),
+    queryKey: bridgeTypesQueryKey(workspaceId),
+    queryFn: () => fetchBridgeTypes(workspaceId as string),
     enabled: workspaceId !== null,
   });
 
