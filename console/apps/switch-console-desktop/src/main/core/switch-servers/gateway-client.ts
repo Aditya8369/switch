@@ -1197,6 +1197,9 @@ type BridgeJson = {
   attention?: string | null;
   team_placement_supported?: boolean;
   channel_ids_refused?: string | null;
+  // Absent on a server predating per-connection webhooks, where none had one.
+  receives_webhooks?: boolean;
+  webhook_url?: string | null;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1215,6 +1218,8 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
+    receivesWebhooks: b.receives_webhooks ?? false,
+    webhookUrl: b.webhook_url ?? null,
   };
 }
 
