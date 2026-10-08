@@ -67,6 +67,7 @@ from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
+from switch_core.user_changes import LocalUserChanges
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
 
@@ -165,6 +166,7 @@ class Harness:
     session_factory: async_sessionmaker[AsyncSession]
     broker: ServiceBroker
     vendor: FakeVendor
+    user_changes: LocalUserChanges
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -199,6 +201,7 @@ def build_harness(
         ttl_seconds=controller_auth_ttl_seconds, max_entries=64
     )
     protocol = protocol_service(session_factory, cache)
+    user_changes = LocalUserChanges()
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
@@ -208,6 +211,7 @@ def build_harness(
         auth_cache=controller_auth_cache,
         clock=clock,
         process_id=str(uuid.uuid4()),
+        user_changes=user_changes,
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:
@@ -263,6 +267,7 @@ def build_harness(
         session_factory=session_factory,
         broker=broker,
         vendor=vendor,
+        user_changes=user_changes,
     )
 
 
