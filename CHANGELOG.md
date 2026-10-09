@@ -136,6 +136,15 @@ version of their own to them without also giving them a release of their own.
   agents with whether each holds a grant and whether others can address it.
 
 #### Changed
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
 - **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
   default `TELEMETRY_ENDPOINT` (Helm `switchCore.telemetry.endpoint`) was
   `https://telemetry.flintai.dev`, an older name for the same relay that is
