@@ -127,14 +127,14 @@ Commands:
   uninstall-service --separate-users [--user <name>]
       As root: stop the controller and its agents, and remove what the setup
       made. The agents' directories are kept.
-  doctor [--data-dir <dir>] [--shared-host-bundle <path>]
+  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>]
       Check this machine can run agents: Node, enrollment, the credential, the
       server, the provider CLIs and their sign-in, the service, and updates.
   update [--check] [--data-dir <dir>]
       Install the newest release with npm, and restart the service if it runs.
       --check only says whether there is one.
 
-run --env-file and install-service --env-file read NAME=value lines (as for
+run, install-service and doctor --env-file read NAME=value lines (as for
 systemd's EnvironmentFile) into the agents' environment: provider API keys, or
 Vertex AI and Bedrock settings such as CLAUDE_CODE_USE_VERTEX,
 ANTHROPIC_VERTEX_PROJECT_ID and CLOUD_ML_REGION.
@@ -703,9 +703,17 @@ async function uninstallServiceCommand(args: string[]): Promise<number> {
 async function doctorCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+      'env-file': { type: 'string' },
+    },
     strict: true,
   });
+  // The agents' environment, as `run` would have it: a provider signed in by a
+  // key or token there reads as signed in here too.
+  if (values['env-file'])
+    Object.assign(process.env, await readEnvFile(resolve(values['env-file'])));
   const { dataDir, store, secrets } = await openState(values['data-dir']);
   const locator = new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe'));
   try {
