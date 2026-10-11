@@ -148,7 +148,7 @@ export async function superviseSharedHost(input: {
         throw new Error(`Shared SDK host failed with exit code ${code}.`);
       }
       console.warn(
-        `Shared SDK host exited on ${signal ?? `exception 0x${(code ?? 0).toString(16)}`}; recovering its saved state.`
+        `Shared SDK host exited on ${signal ?? `exception 0x${((code ?? 0) >>> 0).toString(16)}`}; recovering its saved state.`
       );
       await delay(1000, undefined, { signal: input.signal });
     }
