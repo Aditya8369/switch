@@ -6,6 +6,7 @@ import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agen
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
+import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -172,6 +173,9 @@ export function useAgentManagementMode(): boolean {
  */
 const RoomStateDisclosure = observer(function RoomStateDisclosure() {
   const { navigate } = useNavigate();
+  // The banner over a frozen workspace is the whole explanation.
+  const active = switchServersStore.activeServer;
+  if (active && isFrozenServer(active)) return null;
   const signedOut = switchRoomsStore.workspacesNotSignedIn;
   const failed = switchRoomsStore.workspacesThatFailedToLoad;
 

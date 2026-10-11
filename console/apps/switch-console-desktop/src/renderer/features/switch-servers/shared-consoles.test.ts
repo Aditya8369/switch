@@ -52,27 +52,25 @@ describe('the sentences', () => {
   });
 
   it('says nothing about sharing when nobody else uses the server', () => {
-    expect(sharedWithSentence([])).toBeNull();
+    expect(sharedWithSentence([], null)).toBeNull();
     expect(affectedSentence([], NOW)).toBeNull();
   });
 
   it('names one, two, or two and a count of the rest', () => {
-    expect(sharedWithSentence([seen('bob@desk', 1)])).toBe(
+    expect(sharedWithSentence([seen('bob@desk', 1)], null)).toBe(
       'Shared with bob@desk. Stopping or restarting it affects them too.'
     );
-    expect(sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2)])).toMatch(
+    expect(sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2)], null)).toMatch(
       /^Shared with bob@desk and carol@lab\./
     );
     expect(
-      sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3)])
+      sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3)], null)
     ).toMatch(/^Shared with bob@desk, carol@lab and 1 other\./);
     expect(
-      sharedWithSentence([
-        seen('bob@desk', 1),
-        seen('carol@lab', 2),
-        seen('dan@home', 3),
-        seen('erin@studio', 4),
-      ])
+      sharedWithSentence(
+        [seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3), seen('erin@studio', 4)],
+        null
+      )
     ).toMatch(/^Shared with bob@desk, carol@lab and 2 others\./);
   });
 
@@ -86,5 +84,11 @@ describe('the sentences', () => {
     const many = ['a', 'b', 'c', 'd', 'e'].map((n, i) => seen(`${n}@host`, i + 1));
 
     expect(affectedSentence(many, NOW)).toMatch(/; and 2 more\.$/);
+  });
+
+  it('calls another profile on this same computer that, rather than by its own name', () => {
+    expect(sharedWithSentence([seen('me@mac', 1), seen('bob@desk', 2)], 'me@mac')).toBe(
+      'Shared with another Console on this computer and bob@desk. Stopping or restarting it affects them too.'
+    );
   });
 });

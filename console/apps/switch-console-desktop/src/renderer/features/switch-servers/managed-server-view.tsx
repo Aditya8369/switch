@@ -46,7 +46,7 @@ import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { activityWhen, agoLabel, sinceLabel } from './server-times';
 import { useSharedActionConfirm } from './shared-action-confirm';
-import { namesOf, sharedWithSentence } from './shared-consoles';
+import { namesOf, selfDesktop, sharedWithSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
 
@@ -154,6 +154,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
 
   const register = sshHost ? remoteServerStore.registerFor(sshHost) : null;
   const others = othersRecentlySeen(register, now);
+  const self = selfDesktop(register);
   const activity: ActivityItem[] = sshHost
     ? (register?.activity ?? []).map((entry) => ({
         key: `${entry.at}-${entry.consoleId}-${entry.action}`,
@@ -227,15 +228,15 @@ const ManagedServerPage = observer(function ManagedServerPage({
           onStop={stop}
         />
 
-        {sharedWithSentence(others) && (
-          <p className="text-[13px] text-[var(--fg-dim)]">{sharedWithSentence(others)}</p>
+        {sharedWithSentence(others, self) && (
+          <p className="text-[13px] text-[var(--fg-dim)]">{sharedWithSentence(others, self)}</p>
         )}
 
         <Messages
           server={server}
           state={state}
           workspaceNames={workspaceNames}
-          othersNames={namesOf(others)}
+          othersNames={namesOf(others, self)}
           lastFailedAt={lastFailedAt ?? null}
           now={now}
         />

@@ -6,6 +6,8 @@ import { cn } from '@renderer/utils/utils';
 import type { SwitchVersionDrift } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
+import { ToneDot } from './managed-server-dot';
+import { managedServerState } from './managed-server-state';
 import { remoteServerStore } from './remote-server-store';
 import { serverAvailability } from './server-availability';
 
@@ -154,6 +156,17 @@ export const ServerStatusPill = observer(function ServerStatusPill({
 }: {
   server: SwitchServer;
 }) {
+  // A server this Console runs says what it is doing — starting, stopping,
+  // updating — rather than only whether it can be reached.
+  const managed = managedServerState(server);
+  if (managed?.known) {
+    return (
+      <span className="flex items-center gap-1.5 rounded-full bg-background-tertiary px-2 py-0.5 text-xs text-foreground-muted">
+        <ToneDot tone={managed.tone} size={6} />
+        {managed.label}
+      </span>
+    );
+  }
   return (
     <span className="flex items-center gap-1.5 rounded-full bg-background-tertiary px-2 py-0.5 text-xs text-foreground-muted">
       <ServerStatusDot server={server} />
