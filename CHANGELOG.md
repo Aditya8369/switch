@@ -1410,6 +1410,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Managed servers turn agent management on.** A server Console runs, on
+  this computer or on an SSH host, now starts with agent management enabled
+  and the controller token secret it needs, generated once and shared by every
+  Console using that server. On a switch-core release that offers agent
+  management, Console then moves your agents onto managed machines by itself.
+  Releases from before agent management ignore both settings.
 - **Switch cloud on the agents controller.** On a server whose cloud machines
   run the agents controller, choosing Switch cloud in the New agent form starts
   your cloud machine and waits for it to come online (its first start takes a
