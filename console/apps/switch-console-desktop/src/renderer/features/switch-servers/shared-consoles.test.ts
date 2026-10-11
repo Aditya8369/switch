@@ -4,12 +4,7 @@ import {
   type StackConsole,
   type StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
-import {
-  activitySentence,
-  affectedSentence,
-  describeConsole,
-  sharedWithSentence,
-} from './shared-consoles';
+import { affectedSentence, describeConsole, sharedWithSentence } from './shared-consoles';
 
 const NOW = new Date('2026-09-23T12:00:00.000Z');
 
@@ -91,18 +86,5 @@ describe('the sentences', () => {
     const many = ['a', 'b', 'c', 'd', 'e'].map((n, i) => seen(`${n}@host`, i + 1));
 
     expect(affectedSentence(many, NOW)).toMatch(/; and 2 more\.$/);
-  });
-
-  it('says what happened, and says it was this Console when it was', () => {
-    const entry = {
-      at: NOW.toISOString(),
-      action: 'stopped' as const,
-      consoleId: 'bob',
-      name: 'bob@desk',
-      hostAccount: 'bob',
-    };
-
-    expect(activitySentence(entry, 'me')).toBe('bob@desk stopped it');
-    expect(activitySentence({ ...entry, consoleId: 'me' }, 'me')).toBe('This Console stopped it');
   });
 });

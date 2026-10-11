@@ -3,11 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
-import type {
-  DeployedTelemetry,
-  ManagedServerUpgrade,
-  SwitchVersionDrift,
-} from '@shared/core/managed-switch-server/managed-switch-server';
+import type { SwitchVersionDrift } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { remoteServerStore } from './remote-server-store';
@@ -92,37 +88,6 @@ export function serverDrift(server: SwitchServer): SwitchVersionDrift | null {
     return remoteServerStore.driftFor(server.sshHost);
   }
   return localServerStore.drift;
-}
-
-/** The upgrade a managed server's stack owes this build, or null. */
-export function serverUpgrade(server: SwitchServer): ManagedServerUpgrade | null {
-  if (!server.managed) return null;
-  if (server.managementKind === 'remote' && server.sshHost) {
-    return remoteServerStore.upgradeFor(server.sshHost);
-  }
-  return localServerStore.upgrade;
-}
-
-/** The current step of a managed server's lifecycle operation, or null. */
-export function serverProgress(server: SwitchServer): string | null {
-  if (!server.managed) return null;
-  if (server.managementKind === 'remote' && server.sshHost) {
-    return remoteServerStore.statusFor(server.sshHost).message;
-  }
-  return localServerStore.message;
-}
-
-/**
- * What a managed server's running stack is doing about usage data. Null for a
- * server this app does not run: its operator decides, and the Console's toggle
- * neither reaches it nor claims to.
- */
-export function serverDeployedTelemetry(server: SwitchServer): DeployedTelemetry | null {
-  if (!server.managed) return null;
-  if (server.managementKind === 'remote' && server.sshHost) {
-    return remoteServerStore.deployedTelemetryFor(server.sshHost);
-  }
-  return localServerStore.deployedTelemetry;
 }
 
 const AVATAR_SIZE = {

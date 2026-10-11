@@ -38,6 +38,7 @@ import {
   remoteServerLogChannel,
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
+import { coreStartedAt } from './compose';
 import { hostAccount, readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
@@ -100,6 +101,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
     phase: 'stopped',
+    checked: false,
     upgrade: null,
     serverId: null,
     version: COMPATIBLE_SWITCH_VERSION,
@@ -220,7 +222,9 @@ export class RemoteServerService {
   }
 
   private setStatus(sshHost: string, patch: Partial<RemoteServerStatus>): void {
-    const next = { ...this.getStatus(sshHost), ...patch, sshHost };
+    // A phase is only ever written once the stack has been looked at.
+    const checked = patch.phase !== undefined || this.getStatus(sshHost).checked;
+    const next = { ...this.getStatus(sshHost), ...patch, sshHost, checked };
     this.statuses.set(sshHost, next);
     events.emit(remoteServerStatusChannel, next);
   }
@@ -330,6 +334,20 @@ export class RemoteServerService {
     } catch (error) {
       log.warn(`remote-switch-server: could not read the server lock on ${host.label}`, { error });
       return null;
+    }
+  }
+
+  /** When the stack on `sshHost` started, or null when it is not running here. */
+  async startedAt(sshHost: string): Promise<string | null> {
+    if (this.getStatus(sshHost).phase !== 'running') return null;
+    hostReachabilityService.requireReachable(sshHost);
+    const live = this.hosts.get(sshHost);
+    if (live) return coreStartedAt(live);
+    const host = await createRemoteServerHost(sshHost);
+    try {
+      return await coreStartedAt(host);
+    } finally {
+      host.dispose();
     }
   }
 
@@ -630,6 +648,7 @@ export class RemoteServerService {
       // A host that became the live one owns its forward; any other is throwaway.
       if (!kept) host?.dispose();
       this.busy.delete(sshHost);
+      this.setStatus(sshHost, { checked: true });
     }
     if (!upgradeNow) return;
     try {

@@ -165,6 +165,9 @@ export function managedServerUpgradeBlockedReason(
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
+  /** Whether the stack's state has been read since launch. Until it has, a
+   * `stopped` phase is only the starting value, not something observed. */
+  checked: boolean;
   /** Set while the stack is behind this build's pin and not yet upgraded. */
   upgrade: ManagedServerUpgrade | null;
   /** The registered server's id once the stack is up, else null. */
@@ -272,6 +275,19 @@ export type ConnectRemoteServerResult =
   /** The user stopped waiting for another Console's hold on the stack. */
   | { kind: 'cancelled' }
   | { kind: 'error'; message: string };
+
+/** Something that happened to the stack on this computer, as Console recorded it. */
+export type LocalActivityAction = 'started' | 'stopped' | 'start-failed' | 'updated' | 'reset';
+
+/** One entry of the local stack's history. Only this Console acts on it, so
+ * there is no "who". */
+export type LocalActivityEntry = {
+  /** ISO timestamp. */
+  at: string;
+  action: LocalActivityAction;
+  /** The version an update moved to, or why a start failed; else null. */
+  detail: string | null;
+};
 
 /** Something a Console did to a shared remote stack, as recorded on its host. */
 export type StackActivityAction = 'started' | 'connected' | 'stopped' | 'reset' | 'disconnected';

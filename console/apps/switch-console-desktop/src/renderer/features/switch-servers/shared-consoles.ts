@@ -1,8 +1,6 @@
 import { formatDistanceStrict } from 'date-fns';
 import {
   othersRecentlySeen,
-  type StackActivityAction,
-  type StackActivityEntry,
   type StackConsole,
   type StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -15,6 +13,12 @@ import {
 /** `bob@desk (as bob)` — the desktop, and the account it reaches the host as. */
 export function describeConsole(console: Pick<StackConsole, 'name' | 'hostAccount'>): string {
   return `${console.name} (as ${console.hostAccount})`;
+}
+
+/** `bob@desk`, `bob@desk and carol@lab`, `bob@desk, carol@lab and 2 others`. */
+export function namesOf(others: StackConsole[]): string {
+  const [first, ...rest] = others;
+  return first ? names(first, rest) : '';
 }
 
 function names(first: StackConsole, rest: StackConsole[]): string {
@@ -64,18 +68,4 @@ export function sharedWithOthers(register: StackRegister | null, now: Date): boo
 export function whoElseSentence(register: StackRegister | null, now: Date): string | null {
   if (register === null) return 'Switch Console could not check who else uses it.';
   return affectedSentence(othersRecentlySeen(register, now), now);
-}
-
-const ACTION_WORDS: Record<StackActivityAction, string> = {
-  started: 'started it',
-  connected: 'connected',
-  stopped: 'stopped it',
-  reset: 'reset it',
-  disconnected: 'disconnected',
-};
-
-/** `bob@desk stopped it` — one line of the server's activity. */
-export function activitySentence(entry: StackActivityEntry, self: string): string {
-  const who = entry.consoleId === self ? 'This Console' : entry.name;
-  return `${who} ${ACTION_WORDS[entry.action]}`;
 }

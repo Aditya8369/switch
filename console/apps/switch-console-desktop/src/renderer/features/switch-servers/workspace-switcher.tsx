@@ -41,6 +41,7 @@ import {
   workspaceUnavailability,
 } from '@shared/core/workspaces/workspaces';
 import { localServerStore } from './local-server-store';
+import { ManagedServerDot } from './managed-server-dot';
 import { remoteServerStore } from './remote-server-store';
 import { serverAvailability } from './server-availability';
 import { serverIcon } from './server-icon';
@@ -67,6 +68,8 @@ import { type SwitchCloudAvailability, useSwitchCloud } from './use-switch-cloud
  * two of them.
  */
 function switcherSubtitle(workspace: Workspace, server: SwitchServer): string {
+  // A server this Console runs says how it is with its dot alone.
+  if (server.managed) return server.name;
   const status = serverSubtitleLabel(server);
   return workspace.name === server.name ? status : `${server.name} · ${status}`;
 }
@@ -184,9 +187,18 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
                   <ActiveIcon className="size-3 shrink-0" />
-                  <span className="truncate">{serverSubtitleLabel(activeServer)}</span>
-                  <ServerStatusDot server={activeServer} />
-                  {drift && <ServerDriftIndicator drift={drift} />}
+                  {activeServer.managed ? (
+                    <>
+                      <span className="truncate">{serverPlacementLabel(activeServer)}</span>
+                      <ManagedServerDot server={activeServer} size={6} />
+                    </>
+                  ) : (
+                    <>
+                      <span className="truncate">{serverSubtitleLabel(activeServer)}</span>
+                      <ServerStatusDot server={activeServer} />
+                      {drift && <ServerDriftIndicator drift={drift} />}
+                    </>
+                  )}
                 </span>
               </span>
               <ChevronsUpDown className="size-3.5 shrink-0 text-foreground-muted" />
@@ -261,9 +273,10 @@ const ServerMenuItem = observer(function ServerMenuItem({
       title={reason}
       onClick={() => {
         if (!workspace) return;
+        const dormant = serverAvailability(server.id) === 'dormant';
         void workspacesStore
           .setActive(workspace.id)
-          .then(() => navigate('server', { serverId: server.id }))
+          .then(() => navigate(dormant ? 'managedServer' : 'server', { serverId: server.id }))
           .catch(() => {
             toast({
               title: 'Could not switch server',
@@ -278,8 +291,14 @@ const ServerMenuItem = observer(function ServerMenuItem({
         <span className="block truncate text-sm font-medium text-foreground">{server.name}</span>
         <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
           <Icon className="size-3 shrink-0" />
-          <span className="truncate">{serverStatusLabel(server)}</span>
-          <ServerStatusDot server={server} />
+          {server.managed ? (
+            <ManagedServerDot server={server} size={6} />
+          ) : (
+            <>
+              <span className="truncate">{serverStatusLabel(server)}</span>
+              <ServerStatusDot server={server} />
+            </>
+          )}
           {(placement || unavailable) && (
             <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
               {unavailable ? UNAVAILABLE_BADGE[unavailable] : placement}
@@ -287,7 +306,7 @@ const ServerMenuItem = observer(function ServerMenuItem({
           )}
         </span>
       </span>
-      {drift && <ServerDriftIndicator drift={drift} />}
+      {drift && !server.managed && <ServerDriftIndicator drift={drift} />}
     </DropdownMenuItem>
   );
 });
@@ -355,8 +374,14 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
                   <span className="truncate">
                     {noWorkspaceYet ? activeServer.name : switcherSubtitle(active, activeServer)}
                   </span>
-                  <ServerStatusDot server={activeServer} />
-                  {drift && <ServerDriftIndicator drift={drift} />}
+                  {activeServer.managed ? (
+                    <ManagedServerDot server={activeServer} size={6} />
+                  ) : (
+                    <>
+                      <ServerStatusDot server={activeServer} />
+                      {drift && <ServerDriftIndicator drift={drift} />}
+                    </>
+                  )}
                 </span>
               </span>
               <PendingInvitationCount server={activeServer} />
@@ -572,8 +597,9 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
     ? joinable
     : joinable.filter((j) => matchesQuery(j.workspaceName, query));
   const extraRows = (signedOut && signInTarget) || noMembership;
+  const dormant = server.managed && availability === 'dormant';
   // Collapsed to one row, a server not usable here is found by its own name.
-  if (searching && !whole && availability !== 'available') return null;
+  if (searching && !whole && availability !== 'available' && !dormant) return null;
   if (
     searching &&
     !(whole && extraRows) &&
@@ -593,13 +619,30 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
       <DropdownMenuLabel className="flex items-center gap-1.5 px-[9px] pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-[var(--fg-passive)] uppercase">
         <Icon className="size-3 shrink-0" />
         <span className="min-w-0 truncate">{server.name}</span>
-        {drift && <ServerDriftIndicator drift={drift} />}
+        {server.managed ? (
+          <ManagedServerDot server={server} size={6} />
+        ) : (
+          drift && <ServerDriftIndicator drift={drift} />
+        )}
       </DropdownMenuLabel>
       {/* A server this window cannot use right now collapses to one row that
           says why and offers the one thing that changes it: its workspaces
           cannot be opened from here until then, so listing them would only
           offer clicks that fail. */}
-      {!available ? (
+      {dormant ? (
+        // Workspaces on a server this Console runs stay listed while it is not
+        // running — dimmed, and opening onto the server's page, where it can be
+        // started.
+        workspaces.map((workspace) => (
+          <WorkspaceMenuItem
+            key={workspace.id}
+            workspace={workspace}
+            server={server}
+            onServerCount={all.length}
+            dormant
+          />
+        ))
+      ) : !available ? (
         whole && (
           <UnavailableServerRow server={server} onSignIn={signInTarget ? openForSignIn : null} />
         )
@@ -626,6 +669,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
                 workspace={workspace}
                 server={server}
                 onServerCount={all.length}
+                dormant={false}
               />
             ))
           )}
@@ -738,10 +782,14 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   workspace,
   server,
   onServerCount,
+  dormant,
 }: {
   workspace: Workspace;
   server: SwitchServer;
   onServerCount: number;
+  /** Its server is managed here and not running: dimmed, and opens the
+   * server's page rather than the workspace's home. */
+  dormant: boolean;
 }) {
   const { navigate } = useNavigate();
   const { toast } = useToast();
@@ -752,7 +800,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   // refuses every call scoped to it — offering it would turn a fact the app
   // already knows into an error after the click.
   const unavailable = workspaceUnavailability(workspace, onServerCount);
-  const canInvite = unavailable === null && administersWorkspace(workspace);
+  const canInvite = !dormant && unavailable === null && administersWorkspace(workspace);
 
   return (
     <DropdownMenuItem
@@ -766,7 +814,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
       onClick={() => {
         void workspacesStore
           .setActive(workspace.id)
-          .then(() => navigate('server', { serverId: server.id }))
+          .then(() => navigate(dormant ? 'managedServer' : 'server', { serverId: server.id }))
           .catch(() => {
             // Said out loud rather than swallowed: the sidebar would otherwise
             // keep showing the workspace you left, under the name of the one
@@ -779,8 +827,16 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           });
       }}
     >
-      <WorkspaceAvatar name={workspace.name} size="tile" active={isActive} />
-      <span data-row-name className="min-w-0 flex-1 truncate text-[var(--fg-name)]">
+      <span className={cn('flex shrink-0', dormant && 'opacity-50')}>
+        <WorkspaceAvatar name={workspace.name} size="tile" active={isActive && !dormant} />
+      </span>
+      <span
+        data-row-name
+        className={cn(
+          'min-w-0 flex-1 truncate',
+          dormant ? 'text-[var(--fg-dim)]' : 'text-[var(--fg-name)]'
+        )}
+      >
         {workspace.name}
       </span>
       {unavailable && (
