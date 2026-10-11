@@ -204,8 +204,17 @@ cd console/packages/agent-providers
 pnpm exec vitest run src/<id>/<id>.integration.test.ts
 ```
 
+The suite gives the CLI a minimal environment (PATH, HOME and a few basics),
+not your shell's. A CLI that signs in with an API key needs the key passed
+through in `env`, or it falls back to its interactive sign-in and times out.
+Cursor's test does this:
+
+```ts
+...(process.env.CURSOR_API_KEY ? { env: { CURSOR_API_KEY: process.env.CURSOR_API_KEY } } : {}),
+```
+
 Skip a scenario only when the CLI really can't do it, and give the reason in
-`skip`. Record the result in the known-limits table in
+`skip`, with the CLI version and date. Record the result in the known-limits table in
 `console/packages/agent-providers/README.md`.
 
 ## 5. Checks before you open the PR
