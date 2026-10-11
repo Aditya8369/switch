@@ -75,23 +75,6 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
     }
 
 
-def test_credential_kinds_and_skills() -> None:
-    assert {
-        provider.id: sorted(provider.credential_kinds) for provider in agent_providers()
-    } == {
-        "claude": ["api-key", "setup-token"],
-        "codex": ["api-key", "auth-json"],
-        "opencode": ["auth-json"],
-        "antigravity": ["auth-json"],
-        "cursor": ["api-key"],
-    }
-    assert [p.id for p in agent_providers() if p.supports_skills] == [
-        "claude",
-        "codex",
-        "opencode",
-    ]
-
-
 def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
@@ -127,8 +110,6 @@ class TestANewProvider:
         assert new_provider.known_agent_type == "newcli"
         assert new_provider.connector_type == "New CLI"
         assert new_provider.advanced_fields == ()
-        assert new_provider.credential_kinds == frozenset()
-        assert new_provider.supports_skills is False
         assert new_provider.tools == ()
         assert new_provider.session_start == ConsoleStart(
             runtime=None, sign_in_command=None

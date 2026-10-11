@@ -92,7 +92,7 @@ Add hooks only for what really differs:
 | `loginCommand` (required) | The command a person runs on the execution machine to sign in. It is shown whenever the CLI is signed out. |
 | `checkSignIn` | Answers "is this CLI signed in?" **without signing it in**. Use the `handshake()` it's given, or the CLI's own status command. Without it, the check runs the handshake and reports the sign-in as unknown. |
 | `inheritEnv` | Environment variables the CLI reads, such as its API key, that the session host should pass through from the machine. The common vendor keys (`OPENAI_API_KEY`, `GEMINI_API_KEY`, proxies…) are already passed through. |
-| `authMethodId` | The `authenticate` method sent on every session start. Omit it for an agent that needs none. |
+| `authMethodId` | The `authenticate` method to send when a session starts, given its environment; return undefined when that environment already signs the CLI in (Cursor with `CURSOR_API_KEY`). Omit it for an agent that needs none. |
 | `sessionMode` | The ACP mode for each Switch runtime mode, when the agent's modes are permission levels. |
 | `promptCapabilities` | Content the agent accepts without advertising it. Prefer fixing the advertisement upstream. |
 | `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…). Without it, tools on registered servers still ask for permission. |

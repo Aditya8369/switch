@@ -1,11 +1,10 @@
 """The agent CLIs Switch runs: one entry per provider, and the only list of them.
 
-Everything else that depends on which providers exist — definition and launch
+Everything else that depends on which providers exist — definition
 validation, the known-agent specs agents register through, advanced
-configuration, provider credentials, the gateway's provider list — reads this
-table through the functions below. Adding a provider is adding an entry; one
-with no advanced settings, credentials or tools needs only an `id` and a
-`label`.
+configuration, the gateway's provider list — reads this table through the
+functions below. Adding a provider is adding an entry; one with no advanced
+settings or tools needs only an `id` and a `label`.
 
 Read the table through `agent_providers()` / `agent_provider()` rather than
 importing `AGENT_PROVIDERS`, so every reader sees the same table.
@@ -69,13 +68,6 @@ class AgentProvider:
     advanced_fields: tuple[AdvancedField, ...] = ()
     """The settings a managed agent of this provider may carry."""
 
-    credential_kinds: frozenset[str] = frozenset()
-    """The kinds of credential a provider connection may hold for it."""
-
-    supports_skills: bool = False
-    """Whether its agent loads skills from a directory the hosted bootstrap can
-    install connection skills into."""
-
     tools: tuple[ToolSpec, ...] = ()
     """The built-in tools its agents register."""
 
@@ -100,8 +92,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         label="Claude Code",
         known_agent_type="claude-code",
         advanced_fields=CLAUDE_FIELDS,
-        credential_kinds=frozenset({"api-key", "setup-token"}),
-        supports_skills=True,
         tools=(
             ToolSpec(name="Bash", description="Executes shell commands"),
             ToolSpec(name="Edit", description="Makes targeted edits to files"),
@@ -124,8 +114,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         label="Codex",
         connector_type="Codex CLI",
         advanced_fields=CODEX_FIELDS,
-        credential_kinds=frozenset({"api-key", "auth-json"}),
-        supports_skills=True,
         tools=(
             ToolSpec(name="Shell", description="Executes shell commands"),
             ToolSpec(name="ApplyPatch", description="Applies patches to files"),
@@ -138,8 +126,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         label="OpenCode",
         connector_type="OpenCode CLI",
         advanced_fields=OPENCODE_FIELDS,
-        credential_kinds=frozenset({"auth-json"}),
-        supports_skills=True,
         tools=(
             ToolSpec(name="Bash", description="Executes shell commands"),
             ToolSpec(name="Edit", description="Edits existing files"),
@@ -159,7 +145,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="antigravity",
         label="Antigravity",
         connector_type="Antigravity CLI",
-        credential_kinds=frozenset({"auth-json"}),
         tools=(
             ToolSpec(name="run_command", description="Executes shell commands"),
             ToolSpec(name="write_to_file", description="Writes files"),
@@ -182,7 +167,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="cursor",
         label="Cursor CLI",
-        credential_kinds=frozenset({"api-key"}),
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),
