@@ -9,6 +9,7 @@ import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/swi
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -61,11 +62,12 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
 
     // Two things make the loaded state wrong without any mutation here:
     // signing in to a server (its rooms were skipped while disconnected, and
-    // nothing re-ran the load), and switching which server is active — only the
-    // server on screen is loaded, so the one you switch to may never have been.
+    // nothing re-ran the load), and switching which workspace is active — only
+    // the workspace on screen is loaded, so the one you switch to may never have
+    // been, even on the same server.
     const stopWatchingServers = reaction(
       () => ({
-        active: switchServersStore.activeServerId,
+        active: workspacesStore.activeId,
         connected: switchServersStore.servers
           .filter((s) => switchServersStore.isConnected(s.id))
           .map((s) => s.id)
