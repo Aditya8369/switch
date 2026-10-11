@@ -82,6 +82,13 @@ the steps in order, and what your pull request has to show (a real-CLI test
 summary and a short video). The technical details are in
 [Add an agent provider](console/docs/add-an-agent-provider.md).
 
+## Adding a messaging platform
+
+Start with [Adding support for a new messaging platform](docs/contributing/new-messaging-platform.md):
+the steps in order, and what your pull request has to show (your adapter's
+test summary and a short video). The technical details are in
+[Add a messaging platform](docs/contributing/add-a-messaging-platform.md).
+
 ## Testing
 
 Tests live in `core/tests/switch_core/` and mirror the module structure. The
@@ -91,13 +98,6 @@ with `just test -k test_name`.
 
 Before opening a pull request, run `just check`, `just typecheck` and
 `just test`.
-
-## Adding a messaging platform
-
-A new messaging platform is one adapter folder, one registration line and a
-docs page. [docs/contributing/add-a-messaging-platform.md](docs/contributing/add-a-messaging-platform.md)
-walks through it: the adapter interface, connection config, capability flags,
-the webhook option and what tests to write.
 
 ## Contributor License Agreement (required)
 

@@ -228,7 +228,7 @@ Once the page is published on the docs site, set `docs_slug` to its slug.
 
 ## Opening the PR
 
-Use the **messaging platform** PR template: append
-`?template=messaging_platform.md` to the compare URL, or pick it from the
-template list. It asks for the QA checklist and a recording of the platform
-working end to end.
+Fill in the **Adding or changing a messaging platform** section of the pull
+request template: your adapter's test summary and a short video of the
+platform working. [Adding support for a new messaging platform](new-messaging-platform.md)
+lists exactly what the video has to show.
