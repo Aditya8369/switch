@@ -1,9 +1,15 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 
-const execute = promisify(execFile);
+/** Bound when called, so a test that mocks `node:child_process` without it can still import this. */
+function execute(file: string, args: string[], options: ExecFileOptions = {}) {
+  return promisify(execFile)(file, args, { ...options, encoding: 'utf8' }) as Promise<{
+    stdout: string;
+    stderr: string;
+  }>;
+}
 
 /** One process as Windows reports it. `createdAt` is epoch milliseconds. */
 export type WindowsProcess = {

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,20 +30,40 @@ describe('defaultDataDir', () => {
 });
 
 describe('ensureDataDir', () => {
-  it('creates the directory owner-only, and tightens an existing one', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'controller-paths-'));
-    try {
-      const fresh = join(base, 'a', 'b');
-      await ensureDataDir(fresh);
-      expect(statSync(fresh).mode & 0o777).toBe(0o700);
-      const loose = join(base, 'loose');
-      mkdirSync(loose, { mode: 0o755 });
-      await ensureDataDir(loose);
-      expect(statSync(loose).mode & 0o777).toBe(0o700);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
+  it.skipIf(process.platform === 'win32')(
+    'creates the directory owner-only, and tightens an existing one',
+    async () => {
+      const base = mkdtempSync(join(tmpdir(), 'controller-paths-'));
+      try {
+        const fresh = join(base, 'a', 'b');
+        await ensureDataDir(fresh);
+        expect(statSync(fresh).mode & 0o777).toBe(0o700);
+        const loose = join(base, 'loose');
+        mkdirSync(loose, { mode: 0o755 });
+        await ensureDataDir(loose);
+        expect(statSync(loose).mode & 0o777).toBe(0o700);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
     }
-  });
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'gives the directory to this user and the system alone on Windows',
+    async () => {
+      const base = mkdtempSync(join(tmpdir(), 'controller-paths-'));
+      try {
+        const dir = join(base, 'data');
+        await ensureDataDir(dir);
+        const acl = execFileSync('icacls', [dir], { encoding: 'utf8' });
+        expect(acl).toContain('NT AUTHORITY\\SYSTEM:(OI)(CI)(F)');
+        expect(acl).not.toMatch(/BUILTIN\\Users|Everyone|Authenticated Users/);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
 });
 
 describe('dataLayout', () => {

@@ -153,10 +153,14 @@ export async function executionEnvironment(
   inheritEnv: string[]
 ): Promise<Record<string, string>> {
   const env: Record<string, string> = {};
+  const inherited =
+    process.platform === 'win32'
+      ? new Set(inheritEnv.map((key) => key.toUpperCase()))
+      : new Set(inheritEnv);
   for (const [key, value] of Object.entries(process.env))
     if (
       value !== undefined &&
-      inheritEnv.includes(key) &&
+      inherited.has(process.platform === 'win32' ? key.toUpperCase() : key) &&
       !key.startsWith('SWITCH_') &&
       !key.startsWith('ELECTRON_')
     )

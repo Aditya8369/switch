@@ -1,9 +1,15 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { descendants, listWindowsProcesses, reused, windowsProcess } from './windows-processes';
 
-const execute = promisify(execFile);
+/** Bound when called, so a test that mocks `node:child_process` without it can still import this. */
+function execute(file: string, args: string[], options: ExecFileOptions = {}) {
+  return promisify(execFile)(file, args, { ...options, encoding: 'utf8' }) as Promise<{
+    stdout: string;
+    stderr: string;
+  }>;
+}
 
 export async function ownProcessGroup(): Promise<number | null> {
   if (process.platform === 'win32') return null;
