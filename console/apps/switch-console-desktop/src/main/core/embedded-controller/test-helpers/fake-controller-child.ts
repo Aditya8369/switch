@@ -3,13 +3,20 @@ import { PassThrough } from 'node:stream';
 import { isStopMessage } from '@switch-console/agent-providers';
 import type { ControllerChild, SpawnController } from '../controller-supervisor';
 
+/**
+ * How a controller is asked to stop, as `signals` records it: SIGTERM, or on
+ * Windows the stop message over its IPC channel.
+ */
+export const STOP_REQUEST = process.platform === 'win32' ? 'stop message' : 'SIGTERM';
+
 /** A spawned controller as the tests drive it: stdin collected, exits on demand. */
 export class FakeControllerChild extends EventEmitter implements ControllerChild {
   readonly pid = 4242;
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
-  readonly signals: NodeJS.Signals[] = [];
+  /** The signals it was sent, and `STOP_REQUEST` for each stop message. */
+  readonly signals: string[] = [];
   readonly sent: unknown[] = [];
   connected = true;
   received = '';
@@ -24,6 +31,7 @@ export class FakeControllerChild extends EventEmitter implements ControllerChild
 
   send(message: unknown): boolean {
     this.sent.push(message);
+    if (isStopMessage(message)) this.signals.push(STOP_REQUEST);
     if (this.exitsOnSigterm && isStopMessage(message)) queueMicrotask(() => this.exit(0));
     return true;
   }

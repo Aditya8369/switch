@@ -407,6 +407,11 @@ describe('ProviderStatuses with logins given to the machine', () => {
   });
 });
 
+/** `path` as a pattern: Windows names a CLI with PATHEXT's casing, `.CMD`. */
+function escape(path: string): string {
+  return path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('PathProviderLocator', () => {
   let dir: string;
   beforeEach(() => {
@@ -422,7 +427,7 @@ describe('PathProviderLocator', () => {
       join(dir, 'probe-home')
     );
     expect(await locator.locate('cursor')).toEqual({
-      path: script,
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
       version: '2026.01.15-abc',
       versionProblem: null,
     });
@@ -446,7 +451,11 @@ describe('PathProviderLocator', () => {
       const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
         'opencode'
       );
-      expect(located).toEqual({ path: script, version: '1.18.35', versionProblem: null });
+      expect(located).toEqual({
+        path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+        version: '1.18.35',
+        versionProblem: null,
+      });
     } finally {
       process.env.HOME = previous;
     }
@@ -468,7 +477,7 @@ describe('a CLI whose version cannot be read', () => {
     );
     const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
     expect(located).toEqual({
-      path: script,
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
       version: null,
       versionProblem: 'exited 1: EROFS: read-only file system',
     });
