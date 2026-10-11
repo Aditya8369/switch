@@ -58,20 +58,6 @@ export function serverStatusLabel(server: SwitchServer): string {
   return STATE_LABEL[serverState(server)];
 }
 
-/**
- * The state as the switcher button reads it. It has no placement badge beside
- * it — the whole button is the one server — so the local stack says where it
- * runs here instead.
- */
-const SUBTITLE_LABEL: Record<ServerState, string> = {
-  ...STATE_LABEL,
-  'running-local': 'Running locally',
-};
-
-export function serverSubtitleLabel(server: SwitchServer): string {
-  return SUBTITLE_LABEL[serverState(server)];
-}
-
 /** Where a server runs. Null for one reached by URL: this app does not know. */
 export function serverPlacementLabel(server: SwitchServer): string | null {
   if (!server.managed) return null;

@@ -53,26 +53,26 @@ import {
   serverPlacementLabel,
   serverState,
   serverStatusLabel,
-  serverSubtitleLabel,
 } from './server-presentation';
 import { switchServersStore } from './switch-servers-store';
 import { type SwitchCloudAvailability, useSwitchCloud } from './use-switch-cloud';
 
 /**
- * How the button names where you are.
- *
- * A server registered before its workspaces are known names its only workspace
- * after itself, and until the account has been asked the two names are the same
- * — saying both would read as a stutter. Where they differ the server is the
- * more important half of the answer, since the same workspace name can exist on
- * two of them.
+ * A server this Console does not run, said only when something is wrong with
+ * it: the switcher carries no status words, and a reachable server needs no
+ * mark at all. Signed out or unreachable still shows, as a dot whose label
+ * says which, since the menu is otherwise the only place it would be found.
  */
-function switcherSubtitle(workspace: Workspace, server: SwitchServer): string {
-  // A server this Console runs says how it is with its dot alone.
-  if (server.managed) return server.name;
-  const status = serverSubtitleLabel(server);
-  return workspace.name === server.name ? status : `${server.name} · ${status}`;
-}
+const ServerProblemDot = observer(function ServerProblemDot({ server }: { server: SwitchServer }) {
+  const state = serverState(server);
+  if (state === 'connected' || state === 'running-local') return null;
+  const label = serverStatusLabel(server);
+  return (
+    <span role="img" aria-label={label} title={label} className="flex shrink-0">
+      <ServerStatusDot server={server} />
+    </span>
+  );
+});
 
 /**
  * Whether the sidebar shows servers rather than workspaces.
@@ -168,7 +168,6 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
   const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const ActiveIcon = serverIcon(activeServer);
-  const drift = serverDrift(activeServer);
 
   return (
     <div className="px-2">
@@ -193,11 +192,7 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
                       <ManagedServerDot server={activeServer} size={6} />
                     </>
                   ) : (
-                    <>
-                      <span className="truncate">{serverSubtitleLabel(activeServer)}</span>
-                      <ServerStatusDot server={activeServer} />
-                      {drift && <ServerDriftIndicator drift={drift} />}
-                    </>
+                    <ServerProblemDot server={activeServer} />
                   )}
                 </span>
               </span>
@@ -294,10 +289,7 @@ const ServerMenuItem = observer(function ServerMenuItem({
           {server.managed ? (
             <ManagedServerDot server={server} size={6} />
           ) : (
-            <>
-              <span className="truncate">{serverStatusLabel(server)}</span>
-              <ServerStatusDot server={server} />
-            </>
+            <ServerProblemDot server={server} />
           )}
           {(placement || unavailable) && (
             <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
@@ -342,7 +334,6 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
   const showAddServerModal = useShowModal('addServerModal');
   const [query, setQuery] = useState('');
 
-  const drift = serverDrift(activeServer);
   const noWorkspaceYet =
     active.tenantId === null &&
     serverAvailability(activeServer.id) === 'available' &&
@@ -371,16 +362,11 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
                   {noWorkspaceYet ? 'No workspace yet' : active.name}
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <span className="truncate">
-                    {noWorkspaceYet ? activeServer.name : switcherSubtitle(active, activeServer)}
-                  </span>
+                  <span className="truncate">{activeServer.name}</span>
                   {activeServer.managed ? (
                     <ManagedServerDot server={activeServer} size={6} />
                   ) : (
-                    <>
-                      <ServerStatusDot server={activeServer} />
-                      {drift && <ServerDriftIndicator drift={drift} />}
-                    </>
+                    <ServerProblemDot server={activeServer} />
                   )}
                 </span>
               </span>
