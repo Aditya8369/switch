@@ -473,7 +473,7 @@ async function statusCommand(args: string[]): Promise<number> {
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
   try {
-    const separateUsers = await findSeparateUsersConfig(currentUid(), dataDir);
+    const separateUsers = await separateUsersConfigHere(dataDir);
     const separateRuntime = separateUsers
       ? new SystemdRuntime({
           config: separateUsers,
@@ -709,7 +709,7 @@ async function doctorCommand(args: string[]): Promise<number> {
   const { dataDir, store, secrets } = await openState(values['data-dir']);
   const locator = new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe'));
   try {
-    const separateUsers = await findSeparateUsersConfig(currentUid(), dataDir);
+    const separateUsers = await separateUsersConfigHere(dataDir);
     const separateRuntime = separateUsers
       ? new SystemdRuntime({
           config: separateUsers,
@@ -857,6 +857,12 @@ async function unitSummary(config: SeparateUsersConfig, slot: number | null): Pr
     (error: { stdout?: string }) => error.stdout ?? 'unknown'
   );
   return `${unit} is ${state.trim()}`;
+}
+
+/** The separate-users setup this data directory has, or none: Windows has no Linux users. */
+async function separateUsersConfigHere(dataDir: string): Promise<SeparateUsersConfig | null> {
+  if (process.platform === 'win32') return null;
+  return findSeparateUsersConfig(currentUid(), dataDir);
 }
 
 function currentUid(): number {
