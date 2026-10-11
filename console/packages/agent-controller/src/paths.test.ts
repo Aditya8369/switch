@@ -15,17 +15,17 @@ import {
 describe('defaultDataDir', () => {
   it('follows each OS’s convention', () => {
     expect(defaultDataDir({ platform: 'darwin', env: {}, home: '/Users/a' })).toBe(
-      '/Users/a/Library/Application Support/Switch/agent-controller'
+      join('/Users/a', 'Library', 'Application Support', 'Switch', 'agent-controller')
     );
     expect(defaultDataDir({ platform: 'linux', env: {}, home: '/home/a' })).toBe(
-      '/home/a/.local/state/switch/agent-controller'
+      join('/home/a', '.local', 'state', 'switch', 'agent-controller')
     );
     expect(
       defaultDataDir({ platform: 'linux', env: { XDG_STATE_HOME: '/state' }, home: '/home/a' })
-    ).toBe('/state/switch/agent-controller');
+    ).toBe(join('/state', 'switch', 'agent-controller'));
     expect(
       defaultDataDir({ platform: 'linux', env: { XDG_STATE_HOME: 'relative' }, home: '/home/a' })
-    ).toBe('/home/a/.local/state/switch/agent-controller');
+    ).toBe(join('/home/a', '.local', 'state', 'switch', 'agent-controller'));
   });
 });
 
@@ -55,7 +55,8 @@ describe('ensureDataDir', () => {
       try {
         const dir = join(base, 'data');
         await ensureDataDir(dir);
-        const acl = execFileSync('icacls', [dir], { encoding: 'utf8' });
+        const icacls = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe');
+        const acl = execFileSync(icacls, [dir], { encoding: 'utf8' });
         expect(acl).toContain('NT AUTHORITY\\SYSTEM:(OI)(CI)(F)');
         expect(acl).not.toMatch(/BUILTIN\\Users|Everyone|Authenticated Users/);
       } finally {
@@ -69,8 +70,10 @@ describe('ensureDataDir', () => {
 describe('dataLayout', () => {
   it('keeps server-supplied names to one path segment', () => {
     const layout = dataLayout('/data');
-    expect(layout.agentCredentials('agent-1')).toBe('/data/agents/agent-1/credentials.json');
-    expect(layout.watcherRoot('agent-1')).toBe('/data/watchers/agent-1');
+    expect(layout.agentCredentials('agent-1')).toBe(
+      join('/data', 'agents', 'agent-1', 'credentials.json')
+    );
+    expect(layout.watcherRoot('agent-1')).toBe(join('/data', 'watchers', 'agent-1'));
     expect(serverWorkspacesDir('http://localhost:8000')).toBe(
       join(homedir(), '.switch', 'agents', 'localhost-8000')
     );
@@ -78,7 +81,7 @@ describe('dataLayout', () => {
       join(homedir(), '.switch', 'agents', 'switch.example.com')
     );
     expect(agentWorkspace('/home/me/.switch/agents/localhost-8000', 'scout')).toBe(
-      '/home/me/.switch/agents/localhost-8000/scout'
+      join('/home/me/.switch/agents/localhost-8000', 'scout')
     );
     expect(() => agentWorkspace('/w', '../escape')).toThrow(/cannot be used/);
     expect(() => layout.watcherRoot('../x')).toThrow(/cannot be used as a directory name/);

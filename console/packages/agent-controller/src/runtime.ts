@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -20,6 +20,7 @@ import {
   readTakenOver,
   readWatchFlags,
   recordWatcherHealth,
+  replaceFile,
   requestStop,
   runAgentHost,
   SessionLinks,
@@ -228,7 +229,7 @@ export async function writeAtomic(path: string, body: string): Promise<void> {
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
 }
 
 export async function readOptional(path: string): Promise<string | null> {

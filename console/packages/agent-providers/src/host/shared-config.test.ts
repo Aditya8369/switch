@@ -41,7 +41,11 @@ it('inherits Path whatever its case on Windows', async () => {
   vi.stubEnv('Path', 'C:\\Windows\\System32');
   try {
     const env = await executionEnvironment(process.cwd(), {}, undefined, ['PATH']);
-    expect(env.Path).toBe('C:\\Windows\\System32');
+    // Windows has one variable whatever its case; the key is the case it was first set in.
+    const key = Object.keys(env).find(
+      (name) => name.toUpperCase() === 'PATH' && env[name] === 'C:\\Windows\\System32'
+    );
+    expect(key).toBeDefined();
   } finally {
     Object.defineProperty(process, 'platform', { value: platform, configurable: true });
   }

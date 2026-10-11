@@ -61,17 +61,25 @@ export async function ensureDataDir(dir: string): Promise<void> {
 /** The well-known SID of the operating system's own account. */
 const LOCAL_SYSTEM_SID = 'S-1-5-18';
 
+/**
+ * A Windows tool by its full path: a PATH with Git for Windows on it has GNU
+ * tools of the same names ahead of the system's.
+ */
+function system32(tool: string): string {
+  return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', tool);
+}
+
 async function restrictToCurrentUser(dir: string): Promise<void> {
   const execute = promisify(execFile);
   try {
-    const { stdout } = await execute('whoami', ['/user', '/fo', 'csv', '/nh'], {
+    const { stdout } = await execute(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
       timeout: 15_000,
       windowsHide: true,
     });
     const sid = stdout.trim().split(',').at(-1)?.replaceAll('"', '');
     if (!sid?.startsWith('S-1-')) throw new Error(`whoami printed no SID: ${stdout.trim()}`);
     await execute(
-      'icacls',
+      system32('icacls.exe'),
       [
         dir,
         '/inheritance:r',

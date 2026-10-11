@@ -1,8 +1,8 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
-import { vertexCredentialFixture } from '@switch-console/agent-providers/testing';
+import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -415,11 +415,12 @@ describe('PathProviderLocator', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it('finds a CLI by the plugin’s binary names, and reads its version', async () => {
-    const script = join(dir, 'cursor-agent');
-    writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
-    chmodSync(script, 0o755);
+    const script = await writeNodeCli(dir, 'cursor-agent', 'console.log("2026.01.15-abc")');
     writeFileSync(join(dir, 'claude'), 'not executable');
-    const locator = new PathProviderLocator(`/nonexistent:${dir}`, join(dir, 'probe-home'));
+    const locator = new PathProviderLocator(
+      ['/nonexistent', dir].join(delimiter),
+      join(dir, 'probe-home')
+    );
     expect(await locator.locate('cursor')).toEqual({
       path: script,
       version: '2026.01.15-abc',
@@ -430,12 +431,15 @@ describe('PathProviderLocator', () => {
   });
 
   it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {
-    const script = join(dir, 'opencode');
-    writeFileSync(
-      script,
-      '#!/bin/sh\nmkdir -p "$XDG_DATA_HOME/opencode" "$HOME/.cache" || exit 1\necho 1.18.35\n'
+    const script = await writeNodeCli(
+      dir,
+      'opencode',
+      `const { mkdirSync } = require('node:fs');
+       const { join } = require('node:path');
+       mkdirSync(join(process.env.XDG_DATA_HOME, 'opencode'), { recursive: true });
+       mkdirSync(join(process.env.HOME, '.cache'), { recursive: true });
+       console.log('1.18.35');`
     );
-    chmodSync(script, 0o755);
     const previous = process.env.HOME;
     process.env.HOME = '/nonexistent';
     try {
@@ -457,9 +461,11 @@ describe('a CLI whose version cannot be read', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it('says why, so the report can carry it', async () => {
-    const script = join(dir, 'opencode');
-    writeFileSync(script, '#!/bin/sh\necho "EROFS: read-only file system" >&2\nexit 1\n');
-    chmodSync(script, 0o755);
+    const script = await writeNodeCli(
+      dir,
+      'opencode',
+      'console.error("EROFS: read-only file system"); process.exit(1);'
+    );
     const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
     expect(located).toEqual({
       path: script,
