@@ -35,7 +35,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
-import { ConfigurationError, ReasonedError } from './errors';
+import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
@@ -279,14 +279,6 @@ export async function recordedPid(path: string): Promise<number | null> {
 /** The owner records an agent host writes under its root: the worker's, then a detached one's supervisor's. */
 export const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
 
-/** The shared host needs POSIX process control: macOS or Linux. */
-export function assertSupportedPlatform(platform: NodeJS.Platform): void {
-  if (platform === 'win32')
-    throw new ConfigurationError(
-      'The agents controller runs agents through the shared host, which needs a macOS or Linux machine.'
-    );
-}
-
 /** What is on disk for one agent's agent host, read by a process that does not run it (`status`). */
 export async function observeOnDisk(
   layout: DataLayout,
@@ -363,9 +355,7 @@ export class InProcessRuntime implements AgentRuntime {
       /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
     }
-  ) {
-    assertSupportedPlatform(process.platform);
-  }
+  ) {}
 
   credentialsPath(agentId: string): string {
     return this.deps.layout.agentCredentials(agentId);
@@ -396,7 +386,9 @@ export class InProcessRuntime implements AgentRuntime {
       return path;
     }
     const expanded =
-      directory === '~' || directory.startsWith('~/')
+      directory === '~' ||
+      directory.startsWith('~/') ||
+      (process.platform === 'win32' && directory.startsWith('~\\'))
         ? join(homedir(), directory.slice(1))
         : directory;
     if (!isAbsolute(expanded))

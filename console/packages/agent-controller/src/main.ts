@@ -39,13 +39,7 @@ import {
 import { createLogger, errorMessage } from './log';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { definitionProblem } from './reconcile';
-import {
-  assertSupportedPlatform,
-  emptyObservation,
-  InProcessRuntime,
-  observeOnDisk,
-  probeProvider,
-} from './runtime';
+import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION } from './schemas';
 import {
@@ -347,7 +341,6 @@ async function runCommand(args: string[]): Promise<number> {
     },
     strict: true,
   });
-  assertSupportedPlatform(process.platform);
   const agentRuntime = values['agent-runtime'] ?? 'default';
   if (agentRuntime !== 'default' && agentRuntime !== 'separate-user')
     throw new UsageError('--agent-runtime must be default or separate-user.');
@@ -603,7 +596,6 @@ async function installServiceCommand(args: string[]): Promise<number> {
     },
     strict: true,
   });
-  assertSupportedPlatform(process.platform);
   if (values['separate-users']) return installSeparateUsersCommand(values);
   for (const flag of ['user', 'agents-dir', 'agent-users', 'no-block'] as const)
     if (values[flag] !== undefined)

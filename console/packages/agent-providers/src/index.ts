@@ -162,6 +162,7 @@ export {
   PROVIDER_RUNTIMES,
   providerRuntime,
   providerRuntimeIds,
+  providerUnsupportedReason,
 } from './providers/registry';
 export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/registry';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';

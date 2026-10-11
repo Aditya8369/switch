@@ -1,7 +1,12 @@
 import { mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
 import { join } from 'node:path';
-import { execProvider, findOnPath, type ProviderReadiness } from '@switch-console/agent-providers';
+import {
+  execProvider,
+  findOnPath,
+  type ProviderReadiness,
+  providerUnsupportedReason,
+} from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
@@ -69,6 +74,7 @@ export class PathProviderLocator implements ProviderLocator {
     const plugin = pluginRegistry.get(provider);
     if (!plugin) throw new Error(`No provider plugin is registered for '${provider}'.`);
     const dependency = plugin.capabilities.hostDependency;
+    if (providerUnsupportedReason(provider, process.platform) !== null) return null;
     for (const name of dependency.binaryNames) {
       const candidate = await findOnPath(name, this.path);
       if (candidate === null) continue;

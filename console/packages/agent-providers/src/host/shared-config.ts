@@ -168,7 +168,9 @@ export async function executionEnvironment(
   Object.assign(env, configured);
   if (!setup) return env;
   if (process.platform === 'win32')
-    throw new Error('SDK shell setup requires a POSIX execution host.');
+    throw new Error(
+      "The agent's shell setup is a POSIX shell snippet, which Windows cannot run; remove it from the agent."
+    );
   const marker = randomUUID();
   const { stdout } = await promisify(execFile)(
     env.SHELL || '/bin/sh',

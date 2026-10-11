@@ -150,13 +150,13 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
 /** Checks this machine can run the agents Switch places on it, and says what to do where it cannot. */
 export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   const checks: Check[] = [nodeCheck(inputs.nodeVersion)];
-  const supported = inputs.platform === 'darwin' || inputs.platform === 'linux';
+  const supported = ['darwin', 'linux', 'win32'].includes(inputs.platform);
   checks.push({
     name: 'Platform',
     status: supported ? 'ok' : 'fail',
     detail: supported
       ? inputs.platform
-      : `${inputs.platform} is not supported; use Linux or macOS.`,
+      : `${inputs.platform} is not supported; use Linux, macOS or Windows.`,
   });
   checks.push(...(await serverChecks(inputs)));
   let bundle: string | null = null;

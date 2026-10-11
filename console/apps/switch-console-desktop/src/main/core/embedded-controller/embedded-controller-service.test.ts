@@ -26,7 +26,7 @@ import {
   type EmbeddedControllerDeps,
   EmbeddedControllerService,
   type ManagementPort,
-  WINDOWS_UNSUPPORTED,
+  unsupportedPlatformReason,
 } from './embedded-controller-service';
 import { fakeSpawn, type SpawnCall, waitFor } from './test-helpers/fake-controller-child';
 
@@ -442,11 +442,20 @@ describe('EmbeddedControllerService', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('refuses on Windows, where the controller cannot run', async () => {
-    const windows = service({ platform: 'win32' });
-    await expect(windows.enable(SERVER, WORKSPACE)).rejects.toThrow(WINDOWS_UNSUPPORTED);
-    expect((await windows.overview(SERVER, WORKSPACE)).unsupportedReason).toBe(WINDOWS_UNSUPPORTED);
+  it('refuses on a platform the controller does not run on', async () => {
+    const reason = unsupportedPlatformReason('freebsd');
+    expect(reason).toContain('freebsd');
+    const other = service({ platform: 'freebsd' });
+    await expect(other.enable(SERVER, WORKSPACE)).rejects.toThrow(reason!);
+    expect((await other.overview(SERVER, WORKSPACE)).unsupportedReason).toBe(reason);
     expect(management.enroll).not.toHaveBeenCalled();
+  });
+
+  it('runs on Windows', async () => {
+    expect(unsupportedPlatformReason('win32')).toBeNull();
+    expect(
+      (await service({ platform: 'win32' }).overview(SERVER, WORKSPACE)).unsupportedReason
+    ).toBeNull();
   });
 
   it('starts the enrolled controllers at launch, and reports a credential it cannot find', async () => {
