@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { generateSealingKeyPair } from '@switch-console/agent-providers';
+import { generateSealingKeyPair, isStopMessage } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -383,11 +383,18 @@ async function runCommand(args: string[]): Promise<number> {
       ? fileSecrets
       : new MemorySecretStore({ [CONTROLLER_CREDENTIAL]: credential }, 'handed over on stdin');
   const stop = new AbortController();
-  const onSignal = (signal: NodeJS.Signals) => {
+  const onSignal = (signal: NodeJS.Signals | 'a stop request') => {
     log.info(`Received ${signal}; stopping this controller's agents and exiting.`);
     stop.abort();
   };
   for (const signal of SIGNALS) process.once(signal, onSignal);
+  // Windows has no signal a parent can send that is caught here, so Console
+  // asks over the IPC channel it starts this controller with.
+  const onMessage = (message: unknown) => {
+    if (isStopMessage(message)) onSignal('a stop request');
+  };
+  process.on('message', onMessage);
+  process.channel?.unref();
   if (Object.keys(fromFile).length)
     log.info("Read the agents' environment from a file", {
       file: values['env-file'],
@@ -460,6 +467,7 @@ async function runCommand(args: string[]): Promise<number> {
     return EXIT_CODE_FOR[exit];
   } finally {
     for (const signal of SIGNALS) process.off(signal, onSignal);
+    process.off('message', onMessage);
     store.close();
   }
 }

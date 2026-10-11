@@ -66,6 +66,14 @@ export {
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
+export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
+export {
+  isStopMessage,
+  onStopRequest,
+  requestChildStop,
+  requestStop,
+  STOP_MESSAGE,
+} from './host/stop-request';
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,

@@ -7,16 +7,20 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
   clearTakenOver,
+  commandLineNames,
   ensureSharedProcess,
   hostedCredentialSchema,
   inProcessSupervision,
+  killProcessTree,
   materializeHostedProvider,
   type OpenAgentStream,
   type ProviderReadiness,
+  processCommandLine,
   providerReadinessSchema,
   readTakenOver,
   readWatchFlags,
   recordWatcherHealth,
+  requestStop,
   runAgentHost,
   SessionLinks,
   sharedConfigSchema,
@@ -166,7 +170,7 @@ export async function probeProvider(
   const { stdout } = await execute(
     process.execPath,
     [bundlePath, '--probe', provider, cwd, binaryPath],
-    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env }
+    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env, windowsHide: true }
   );
   const line = stdout.trim().split('\n').at(-1) ?? '';
   return providerReadinessSchema.parse(JSON.parse(line));
@@ -261,13 +265,8 @@ export function alive(pid: number): boolean {
 /** A saved PID counts only while it still names a process started for this root. */
 export async function ownsRoot(pid: number, root: string): Promise<boolean> {
   if (!alive(pid)) return false;
-  try {
-    const { stdout } = await execute('ps', ['-p', String(pid), '-o', 'command=']);
-    return stdout.includes(root);
-  } catch (error) {
-    if ((error as { code?: number }).code === 1) return false;
-    throw error;
-  }
+  const commandLine = await processCommandLine(pid);
+  return commandLine !== null && commandLineNames(commandLine, root);
 }
 
 export async function recordedPid(path: string): Promise<number | null> {
@@ -586,11 +585,11 @@ export class InProcessRuntime implements AgentRuntime {
         root,
         pid,
       });
-      process.kill(pid, 'SIGTERM');
+      await requestStop(root, pid);
       const deadline = Date.now() + STOP_TIMEOUT_MS;
       while (alive(pid)) {
         if (Date.now() > deadline) {
-          process.kill(pid, 'SIGKILL');
+          await killProcessTree(pid);
           break;
         }
         await delay(200);

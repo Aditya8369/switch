@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { isStopMessage } from '@switch-console/agent-providers';
 import type { ControllerChild, SpawnController } from '../controller-supervisor';
 
 /** A spawned controller as the tests drive it: stdin collected, exits on demand. */
@@ -9,6 +10,8 @@ export class FakeControllerChild extends EventEmitter implements ControllerChild
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   readonly signals: NodeJS.Signals[] = [];
+  readonly sent: unknown[] = [];
+  connected = true;
   received = '';
   exitedWith: number | null | undefined = undefined;
   /** Whether SIGTERM ends it, as it ends the real controller. */
@@ -17,6 +20,12 @@ export class FakeControllerChild extends EventEmitter implements ControllerChild
   constructor() {
     super();
     this.stdin.on('data', (chunk: Buffer) => (this.received += chunk.toString()));
+  }
+
+  send(message: unknown): boolean {
+    this.sent.push(message);
+    if (this.exitsOnSigterm && isStopMessage(message)) queueMicrotask(() => this.exit(0));
+    return true;
   }
 
   kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {

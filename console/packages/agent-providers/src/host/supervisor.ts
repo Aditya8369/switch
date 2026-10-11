@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, killProcessTree } from './process-fence';
 import type { SessionLinks } from './session-channel';
+import { requestChildStop } from './stop-request';
 
 function alive(pid: number): boolean {
   try {
@@ -73,8 +74,10 @@ export async function superviseSharedHost(input: {
         continue;
       }
       const log = await open(join(directory, 'worker.log'), 'a', 0o600);
+      const spawnedAt = Date.now();
       const child = spawn(input.executable, input.args, {
         detached: true,
+        windowsHide: true,
         env: input.env,
         stdio: input.links ? ['ignore', log.fd, log.fd, 'ipc'] : ['ignore', log.fd, log.fd],
       });
@@ -87,7 +90,9 @@ export async function superviseSharedHost(input: {
       // so that stopping this supervisor cannot hang on it.
       let escalation: ReturnType<typeof setTimeout> | null = null;
       const stop = () => {
-        child.kill('SIGTERM');
+        requestChildStop(child, input.root).catch((error: unknown) =>
+          console.error(`Could not ask the shared host at ${input.root} to stop: ${String(error)}`)
+        );
         escalation ??= setTimeout(() => {
           if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
           console.warn(
@@ -110,7 +115,7 @@ export async function superviseSharedHost(input: {
         if (escalation) clearTimeout(escalation);
       }
       if (child.pid) {
-        await fenceDeadOwner(child.pid, child.pid);
+        await fenceDeadOwner(child.pid, child.pid, spawnedAt);
         const workerPath = join(input.root, 'shared-owner.lock');
         try {
           const owner = JSON.parse(await readFile(workerPath, 'utf8'));
