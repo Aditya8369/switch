@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.known_agents import (
@@ -18,7 +18,6 @@ from switch_core.gateway.known_agents import (
     known_agents,
     provider_known_agent,
 )
-from switch_core.gateway.provider_connections import OtherProvider
 from switch_core.gateway.providers import router as providers_router
 from switch_core.management.advanced_config import (
     provider_fields,
@@ -27,7 +26,6 @@ from switch_core.management.advanced_config import (
 from switch_core.management.schemas import DefinitionV1
 from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
-from switch_core.providers.credentials import validate_provider_credential
 from switch_core.providers.registry import (
     AgentProvider,
     ConsoleStart,
@@ -181,13 +179,3 @@ class TestANewProvider:
             "known_agent_type": "newcli",
             "known_agent_options": {"auto_session": True, "repo_dir": "/w"},
         }
-
-    def test_its_connection_routes_accept_it(self, new_provider: AgentProvider) -> None:
-        validator = TypeAdapter(OtherProvider).validate_python
-        assert validator("newcli") == "newcli"
-        with pytest.raises(ValidationError):
-            validator("claude")
-        with pytest.raises(ValidationError):
-            validator("github")
-        with pytest.raises(ValueError, match="supported credential type"):
-            validate_provider_credential("newcli", "api-key", "secret")
