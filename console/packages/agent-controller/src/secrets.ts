@@ -42,7 +42,7 @@ export class FileSecretStore implements SecretStore {
   readonly description: string;
 
   constructor(private readonly dir: string) {
-    this.description = `plaintext files in ${dir} (mode 0600)`;
+    this.description = `plaintext files in ${dir} (${process.platform === 'win32' ? 'readable by this user only' : 'mode 0600'})`;
   }
 
   startupWarning(): string {
