@@ -251,14 +251,21 @@ jobs:
       - name: Build workspace packages
         run: pnpm -r --filter './packages/**' run build
 
-      - name: Test shared, agent-providers and agent-controller
-        run: |
-          pnpm --filter @switch-console/shared run test
-          pnpm --filter @switch-console/agent-providers run test
-          pnpm --filter @switch-console/agent-controller run test
+      # Each suite runs whatever the one before it did, so one run shows every failure.
+      - name: Test shared
+        run: pnpm --filter @switch-console/shared run test
 
-      - name: Test Console's embedded controller
-        run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller
+      - name: Test agent-providers
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @switch-console/agent-providers run test
+
+      - name: Test agent-controller
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @switch-console/agent-controller run test
+
+      - name: Test Console's embedded controller and Windows launching
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller src/main/core/execution-context
 
   artifacts:
     name: Artifact registry

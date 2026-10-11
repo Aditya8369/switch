@@ -33,6 +33,16 @@ async function ownerPid(path: string): Promise<number | null> {
 }
 
 /**
+ * A Windows process that died of an exception — an access violation, a stack
+ * overflow, a fatal error — exits with its NTSTATUS code, 0xC0000000 and up:
+ * what a signal is elsewhere, so it is recovered rather than taken as the
+ * host refusing to run.
+ */
+function crashedOnWindows(code: number): boolean {
+  return process.platform === 'win32' && code >>> 0 >= 0xc0000000;
+}
+
+/**
  * How long a supervised host asked to stop is given before it and what it
  * started are killed. Shorter than the launcher's `STOP_GRACE_MS`, so a chain
  * — a watcher's supervisor, the watcher, its session hosts — comes down inside
@@ -126,7 +136,7 @@ export async function superviseSharedHost(input: {
       }
       if (input.signal.aborted) return;
       if (code === 0) return;
-      if (code !== null) {
+      if (code !== null && !crashedOnWindows(code)) {
         try {
           await readFile(join(directory, 'failure.json'));
         } catch (error) {
@@ -137,7 +147,9 @@ export async function superviseSharedHost(input: {
         }
         throw new Error(`Shared SDK host failed with exit code ${code}.`);
       }
-      console.warn(`Shared SDK host exited on ${signal}; recovering its saved state.`);
+      console.warn(
+        `Shared SDK host exited on ${signal ?? `exception 0x${(code ?? 0).toString(16)}`}; recovering its saved state.`
+      );
       await delay(1000, undefined, { signal: input.signal });
     }
   } catch (error) {

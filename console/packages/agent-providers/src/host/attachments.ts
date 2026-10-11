@@ -100,11 +100,14 @@ export async function stageAttachment(
       await unlink(temporary);
       throw error;
     }
-    const parent = await open(directory, 'r');
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
+    // Windows cannot open a directory to flush it, and records the rename itself.
+    if (process.platform !== 'win32') {
+      const parent = await open(directory, 'r');
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
     }
   }
   return { path, mimeType: attachment.mimeType };

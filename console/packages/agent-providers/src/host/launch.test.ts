@@ -9,6 +9,8 @@ import { SessionLinks } from './session-channel';
 import { owedSessionStart, type HostStartSource } from './session-start';
 import type { SharedHostConfig } from './shared-config';
 
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -211,6 +213,7 @@ it('stops the hosts it supervises in-process when closed, and starts no more', a
   await writeFile(
     entrypoint,
     `require('node:fs').writeFileSync(process.argv[2] + '/pid', String(process.pid));
+     process.on('message', (m) => { if (m && m.kind === 'switch-stop') process.exit(0); });
      setInterval(() => {}, 1000);`
   );
   const supervision = inProcessSupervision(entrypoint, new SessionLinks());

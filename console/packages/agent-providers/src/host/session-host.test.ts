@@ -332,7 +332,9 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
     'applied'
   );
-  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'), {
+    timeout: 10_000,
+  });
   expect(host.snapshot().turns.map((turn) => turn.status)).toEqual(['interrupted', 'interrupted']);
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });

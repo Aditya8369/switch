@@ -7,10 +7,10 @@ export {
   getWindowsPathDirs,
   getWindowsPathExts,
   getWindowsShellExecutable,
-  quoteForCmdExe,
+  escapeCmdExeArgument,
+  escapeCmdExeCommand,
   resolveExecFileSpawn,
   resolveWindowsCommandPath,
-  wrapCmdExeCommandLine,
   type ExecFileSpawn,
   type FileExists,
 } from '@switch-console/shared/windows-spawn';
