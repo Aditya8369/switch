@@ -19,6 +19,7 @@ vi.mock('@main/core/dependencies/remote-dependency-manager', () => ({
 }));
 vi.mock('@main/lib/logger', () => ({ log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('@renderer/lib/components/agent-icon', () => ({ AgentIcon: () => null }));
+vi.mock('@renderer/lib/ipc', () => ({ events: { on: vi.fn() }, rpc: {} }));
 
 /**
  * Registering a provider is a plugin plus a runtime. This registers a made-up
