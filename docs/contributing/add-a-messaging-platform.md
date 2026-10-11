@@ -132,6 +132,9 @@ Google Chat. Instead they call an address for every event. To support that:
    - For a request that is the platform checking the address (a challenge to
      echo back), set `handshake` to the text to answer with, and nothing is
      dispatched.
+   - Set `answers_inline=False`. Events are acknowledged first and handled
+     after; an event that expects its answer in the HTTP response (as a Teams
+     card press does) isn't supported on a connection's own address yet.
    - Raise `WebhookPayloadError` for a body you can't read.
    - No I/O here.
 4. Implement `dispatch_event(envelope_type, payload)`. It runs in the

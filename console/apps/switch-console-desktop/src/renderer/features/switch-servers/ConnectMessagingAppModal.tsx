@@ -30,8 +30,8 @@ import {
 } from '@renderer/lib/ui/select';
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
-import { ConnectChatPanel } from './ConnectChatPanel';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
+import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import { switchServersStore } from './switch-servers-store';
 import { administersWorkspaceInScope } from './workspace-admin';

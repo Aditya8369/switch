@@ -172,6 +172,7 @@ class DummyHookAdapter(DummyChatAdapter):
                 handshake=request.query.get("challenge", ""),
                 external_event_id=None,
                 delivery_attempt=0,
+                answers_inline=False,
             )
         try:
             payload = json.loads(request.body)
@@ -185,6 +186,7 @@ class DummyHookAdapter(DummyChatAdapter):
             handshake=None,
             external_event_id=str(payload["id"]),
             delivery_attempt=0,
+            answers_inline=False,
         )
 
     async def dispatch_event(

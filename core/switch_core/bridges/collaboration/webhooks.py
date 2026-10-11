@@ -232,6 +232,18 @@ def create_bridge_webhook_router(service: BridgeWebhookService) -> APIRouter:
             )
             return PlainTextResponse(event.handshake)
 
+        if event.answers_inline:
+            # A platform waiting on the answer in the response itself is served
+            # only by the distributed apps' route today. Refused loudly rather
+            # than acknowledged, so the adapter author sees it straight away.
+            logger.error(
+                "%s bridge %s parsed a webhook that answers inline, which a "
+                "connection's own webhook address does not support",
+                target.bridge_type,
+                bridge_id,
+            )
+            return Response(status_code=501)
+
         # Answered first, handled after: the platform's deadline is short and a
         # turn can take minutes.
         background.add_task(_deliver, target, event)

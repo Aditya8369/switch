@@ -796,7 +796,9 @@ class PlatformAdapter(ABC):
         challenge to echo back): it is answered with that text and nothing is
         dispatched. Set `external_event_id` to the platform's id for the
         delivery wherever it has one — that is what makes a retried delivery
-        recognisable, so it is handled once.
+        recognisable, so it is handled once. Set `answers_inline` False: a
+        connection's own webhook address acknowledges first and handles after,
+        and refuses an event that expects its answer in the response.
 
         Pure: no I/O. The platform is waiting for this request to be answered,
         and the work belongs in `dispatch_event`, which runs after it has been.
