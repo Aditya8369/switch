@@ -6,6 +6,9 @@ file and a plugin entry, register each of them with one line, and add one line t
 core's provider table. You don't write an adapter. A CLI that doesn't speak ACP
 needs its own adapter; see [Not ACP](#not-acp) at the end.
 
+New to this? Read [Adding support for a new agent CLI](new-agent-cli.md) first:
+it's the short version, step by step.
+
 Paths below are relative to the repository root. `<id>` is the provider id
 Switch stores, in lowercase (`cursor`, `antigravity`). Choose it once: agent
 records and sessions keep it, so it can't be renamed later.
@@ -229,8 +232,10 @@ pnpm -r run test
 ```
 
 If you changed core, also run `just check`, `just typecheck` and `just test`
-from the repository root. Then fill in the PR template's agent CLI checklist,
-including the recording of the CLI working in Console.
+from the repository root. Then open the pull request and fill in the template's
+agent CLI section: the real-CLI test summary and a short video of the CLI
+working in Console. [Adding support for a new agent CLI](new-agent-cli.md) says
+what the video has to show.
 
 ## Not ACP
 

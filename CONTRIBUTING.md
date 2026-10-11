@@ -77,8 +77,9 @@ setup path.
 
 ## Adding an agent CLI
 
-Supporting a new agent CLI in Switch is a plugin entry, a hooks file on the
-generic ACP adapter, and one line in the server's provider table. Follow
+Start with [Adding support for a new agent CLI](console/docs/new-agent-cli.md):
+the steps in order, and what your pull request has to show (a real-CLI test
+summary and a short video). The technical details are in
 [Add an agent provider](console/docs/add-an-agent-provider.md).
 
 ## Testing
