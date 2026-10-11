@@ -59,6 +59,10 @@ export function frozenSentence(server: SwitchServer, state: ManagedServerState):
       return `Docker isn't running, so ${name} can't start.`;
     case 'start-failed':
       return `${name} couldn't start, so agents and rooms are unavailable.`;
+    case 'stop-failed':
+      return `${name} didn't stop cleanly, so agents and rooms are unavailable.`;
+    case 'reset-failed':
+      return `The reset of ${name} didn't finish, so agents and rooms are unavailable.`;
     default:
       return `${name} isn't running, so agents and rooms are unavailable.`;
   }

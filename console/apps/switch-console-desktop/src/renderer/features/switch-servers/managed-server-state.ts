@@ -34,7 +34,9 @@ export type ManagedReason =
   | 'update-failed'
   | 'downgrade'
   | 'docker-unavailable'
-  | 'start-failed';
+  | 'start-failed'
+  | 'stop-failed'
+  | 'reset-failed';
 
 const REASON: Record<ManagedReason, { tone: ManagedTone; label: string; answering: boolean }> = {
   running: { tone: 'running', label: 'Running', answering: true },
@@ -53,6 +55,8 @@ const REASON: Record<ManagedReason, { tone: ManagedTone; label: string; answerin
   downgrade: { tone: 'failed', label: 'Newer than this app', answering: false },
   'docker-unavailable': { tone: 'failed', label: 'Docker not running', answering: false },
   'start-failed': { tone: 'failed', label: 'Failed to start', answering: false },
+  'stop-failed': { tone: 'failed', label: "Couldn't stop", answering: false },
+  'reset-failed': { tone: 'failed', label: 'Reset failed', answering: false },
 };
 
 export type ManagedServerState = {
@@ -84,6 +88,8 @@ export type ManagedStateInput = {
   /** Waiting for another Console to finish with the server. */
   waiting: boolean;
   dockerUnavailable: boolean;
+  /** What broke, when an error is from a stop or a reset rather than a start. */
+  failedTo: 'stop' | 'reset' | null;
 };
 
 function stateFor(reason: ManagedReason, known: boolean): ManagedServerState {
@@ -99,6 +105,8 @@ function reasonFor(input: ManagedStateInput): ManagedReason {
   if (input.waiting) return 'waiting';
   if (input.busy) return 'busy';
   if (phase === 'error') {
+    if (input.failedTo === 'stop') return 'stop-failed';
+    if (input.failedTo === 'reset') return 'reset-failed';
     if (drift?.direction === 'downgrade') return 'downgrade';
     if (upgrade?.state === 'failed') return 'update-failed';
     if (input.dockerUnavailable) return 'docker-unavailable';
@@ -137,6 +145,7 @@ export function managedServerState(server: SwitchServer): ManagedServerState | n
       drift: status.drift,
       waiting: status.waitingFor !== null,
       dockerUnavailable: docker !== null && !docker.available,
+      failedTo: status.failedTo,
     });
   }
   const status = localServerStore.status;
@@ -151,6 +160,7 @@ export function managedServerState(server: SwitchServer): ManagedServerState | n
     drift: status.drift,
     waiting: false,
     dockerUnavailable: docker !== null && !docker.available,
+    failedTo: status.failedTo,
   });
 }
 

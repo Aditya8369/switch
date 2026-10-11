@@ -36,7 +36,12 @@ vi.mock('./checkout-build', () => ({
   isCheckoutBuildEnabled: vi.fn(),
   setCheckoutBuildEnabled: vi.fn(),
 }));
-vi.mock('./compose', () => ({ isStackRunning: m.running, coreStartedAt: vi.fn() }));
+const images = vi.hoisted(() => vi.fn());
+vi.mock('./compose', () => ({
+  isStackRunning: m.running,
+  coreStartedAt: vi.fn(),
+  runningImages: images,
+}));
 vi.mock('./local-activity', () => ({
   readLocalActivity: vi.fn(),
   recordLocalActivity: m.record,
@@ -327,4 +332,36 @@ it('refuses to move a port the server does not use', async () => {
   const service = new LocalServerService();
   await expect(service.useAnotherPort(9999)).rejects.toThrow('port 9999');
   expect(m.remember).not.toHaveBeenCalled();
+});
+
+it('reports a stop that errored but left the stack down as stopped', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+  m.stop.mockRejectedValue(new Error('compose down failed: Container switch Stopping'));
+  images.mockResolvedValue(new Map());
+
+  await expect(service.stop()).resolves.toBeUndefined();
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped', error: null, failedTo: null });
+  expect(m.record).toHaveBeenCalledWith('stopped', null);
+});
+
+it('reports a stop that errored with the stack still up, or unreadable, as a failed stop', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+  m.stop.mockRejectedValue(new Error('compose down failed'));
+  images.mockRejectedValue(new Error('docker is gone'));
+
+  await expect(service.stop()).rejects.toThrow('compose down failed');
+  expect(service.getStatus()).toMatchObject({
+    phase: 'error',
+    failedTo: 'stop',
+    error: 'compose down failed',
+  });
+
+  // The next start says nothing about the stop any more.
+  m.start.mockResolvedValue({ kind: 'error', message: 'bind: address already in use' });
+  await service.start();
+  expect(service.getStatus()).toMatchObject({ phase: 'error', failedTo: null });
 });

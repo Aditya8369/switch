@@ -434,6 +434,16 @@ const Actions = observer(function Actions({
     case 'downgrade':
       // Nothing safe to press: its database has already moved past this app.
       return logButton ? <div className="flex flex-wrap gap-2">{logButton}</div> : null;
+    case 'stop-failed':
+      return (
+        <div className="flex flex-wrap gap-2">
+          <PrimaryButton onClick={onStop}>Stop again</PrimaryButton>
+          {logButton}
+        </div>
+      );
+    case 'reset-failed':
+      // Running it again is the Reset section's job, behind its confirmation.
+      return logButton ? <div className="flex flex-wrap gap-2">{logButton}</div> : null;
     case 'start-failed':
     case 'docker-unavailable':
     case 'update-failed':
@@ -594,6 +604,20 @@ const Messages = observer(function Messages({
             local={sshHost === null}
             now={now}
           />
+        );
+      case 'stop-failed':
+        return (
+          <MessageBox tone="failed" title="Couldn't stop">
+            <Mono>{explainStartFailure(managedServerError(server) ?? '').line}</Mono>
+            <p>It may still be running. Stop it again to finish.</p>
+          </MessageBox>
+        );
+      case 'reset-failed':
+        return (
+          <MessageBox tone="failed" title="The reset didn't finish">
+            <Mono>{explainStartFailure(managedServerError(server) ?? '').line}</Mono>
+            <p>Some of its data may already be gone. Reset it again below to finish.</p>
+          </MessageBox>
         );
       case 'running':
         return null;

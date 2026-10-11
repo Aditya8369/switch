@@ -41,6 +41,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
     notice: null,
     recordWarning: null,
     waitingFor: null,

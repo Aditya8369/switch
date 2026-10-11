@@ -14,6 +14,7 @@ const base = {
   drift: null,
   waiting: false,
   dockerUnavailable: false,
+  failedTo: null,
 };
 
 describe('deriveManagedState', () => {
@@ -79,6 +80,17 @@ describe('deriveManagedState', () => {
     ).toMatchObject({ tone: 'failed', label: 'Update failed', answering: false });
     expect(deriveManagedState({ ...base, phase: 'error', dockerUnavailable: true }).label).toBe(
       'Docker not running'
+    );
+  });
+
+  it('says a stop or a reset that broke partway is that, not a failed start', () => {
+    expect(deriveManagedState({ ...base, phase: 'error', failedTo: 'stop' })).toMatchObject({
+      tone: 'failed',
+      reason: 'stop-failed',
+      label: "Couldn't stop",
+    });
+    expect(deriveManagedState({ ...base, phase: 'error', failedTo: 'reset' }).reason).toBe(
+      'reset-failed'
     );
   });
 });

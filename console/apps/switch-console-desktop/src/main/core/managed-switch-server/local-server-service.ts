@@ -28,8 +28,8 @@ import {
   isCheckoutBuildEnabled,
   setCheckoutBuildEnabled,
 } from './checkout-build';
-import { coreStartedAt, isStackRunning } from './compose';
-import { LOCAL_SERVER_NAME } from './constants';
+import { coreStartedAt, isStackRunning, runningImages } from './compose';
+import { CORE_SERVICE, LOCAL_SERVER_NAME } from './constants';
 import { readVersionStatus } from './deployed-version';
 import { findFreePort, type LocalServerPorts } from './free-port';
 import { LocalServerHost } from './host/local-host';
@@ -72,6 +72,7 @@ export class LocalServerService {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
   };
 
   private busy = false;
@@ -93,7 +94,9 @@ export class LocalServerService {
   }
 
   private setStatus(patch: Partial<LocalServerStatus>): void {
-    this.status = { ...this.status, ...patch };
+    // Any change of phase settles what failed, unless the patch says.
+    const failedTo = patch.phase !== undefined ? (patch.failedTo ?? null) : this.status.failedTo;
+    this.status = { ...this.status, ...patch, failedTo };
     events.emit(localServerStatusChannel, this.status);
   }
 
@@ -353,12 +356,32 @@ export class LocalServerService {
       await recordLocalActivity('stopped', null);
       reportManagedServerOutcome('stop', 'local', 'success');
     } catch (error) {
-      this.setStatus({
-        phase: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      });
       reportManagedServerOutcome('stop', 'local', 'failure');
-      throw error;
+      // A stop that errors may still have stopped the containers. Say what is
+      // true rather than what the command reported.
+      // Asked so that a failure to ask counts as still running.
+      const stillRunning = await runningImages(host).then(
+        (images) => images.has(CORE_SERVICE),
+        () => true
+      );
+      if (stillRunning) {
+        this.setStatus({
+          phase: 'error',
+          failedTo: 'stop',
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      log.warn('local-switch-server: stop reported an error, but the stack is down', { error });
+      const upgrade = this.status.upgrade;
+      this.setStatus({
+        phase: 'stopped',
+        message: null,
+        error: null,
+        deployedTelemetry: null,
+        upgrade: upgrade && upgradeState(upgrade, false),
+      });
+      await recordLocalActivity('stopped', null);
     } finally {
       host.dispose();
       this.busy = false;
@@ -396,6 +419,7 @@ export class LocalServerService {
     } catch (error) {
       this.setStatus({
         phase: 'error',
+        failedTo: 'reset',
         error: error instanceof Error ? error.message : String(error),
       });
       reportManagedServerOutcome('reset', 'local', 'failure');

@@ -192,6 +192,10 @@ export type LocalServerStatus = {
   message: string | null;
   /** Populated only when `phase === 'error'`. */
   error: string | null;
+  /** What failed when `phase === 'error'` and it was not a start: a stop or a
+   * reset that broke partway. Null for a failed start, and whenever the phase
+   * is anything else. */
+  failedTo: 'stop' | 'reset' | null;
 };
 
 /**
@@ -219,7 +223,7 @@ export class ManagedServerStoppedError extends Error {
 /** Human-readable one-liner for a stopped managed stack, used in errors and the UI. */
 export function managedServerStoppedReason(serverName: string, phase: LocalServerPhase): string {
   if (phase === 'error') {
-    return `${serverName}'s Switch stack failed to start, so its gateway is not running. Fix the error on the server's page, then start it again.`;
+    return `${serverName} isn't running: its last start or stop failed. See the server's page.`;
   }
   return `${serverName}'s Switch stack is not running. Start it from the server's page, then retry.`;
 }

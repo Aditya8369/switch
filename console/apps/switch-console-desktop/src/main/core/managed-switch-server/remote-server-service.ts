@@ -113,6 +113,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
     notice: null,
     recordWarning: null,
     waitingFor: null,
@@ -223,8 +224,11 @@ export class RemoteServerService {
 
   private setStatus(sshHost: string, patch: Partial<RemoteServerStatus>): void {
     // A phase is only ever written once the stack has been looked at.
-    const checked = patch.phase !== undefined || this.getStatus(sshHost).checked;
-    const next = { ...this.getStatus(sshHost), ...patch, sshHost, checked };
+    const current = this.getStatus(sshHost);
+    const checked = patch.phase !== undefined || current.checked;
+    // Any change of phase settles what failed, unless the patch says.
+    const failedTo = patch.phase !== undefined ? (patch.failedTo ?? null) : current.failedTo;
+    const next = { ...current, ...patch, sshHost, checked, failedTo };
     this.statuses.set(sshHost, next);
     events.emit(remoteServerStatusChannel, next);
   }
@@ -334,6 +338,24 @@ export class RemoteServerService {
     } catch (error) {
       log.warn(`remote-switch-server: could not read the server lock on ${host.label}`, { error });
       return null;
+    }
+  }
+
+  /** Whether the stack on `sshHost` is down, read over a fresh connection.
+   * False when it is running or could not be read: only a stack seen down
+   * counts as stopped. */
+  private async stoppedAfterAll(sshHost: string): Promise<boolean> {
+    if (hostReachabilityService.isBlocked(sshHost)) return false;
+    let host: RemoteServerHost | null = null;
+    try {
+      host = await createRemoteServerHost(sshHost);
+      const stack = await inspectStack(host);
+      return stack.kind === 'absent' || (stack.kind === 'present' && !stack.running);
+    } catch (error) {
+      log.warn(`remote-switch-server: could not look at ${sshHost} after a failed stop`, { error });
+      return false;
+    } finally {
+      host?.dispose();
     }
   }
 
@@ -1115,11 +1137,33 @@ export class RemoteServerService {
         host = null;
         throw error;
       }
+      reportManagedServerOutcome('stop', 'remote', 'failure');
+      // A stop that errors — most often because the connection dropped under
+      // it — may still have stopped the containers. Look again over a fresh
+      // connection, and say what is true rather than what the command reported.
+      if (await this.stoppedAfterAll(sshHost)) {
+        log.warn(
+          `remote-switch-server: stop on ${sshHost} reported an error, but the stack is down`,
+          {
+            error,
+          }
+        );
+        const upgrade = this.getStatus(sshHost).upgrade;
+        this.setStatus(sshHost, {
+          phase: 'stopped',
+          message: null,
+          error: null,
+          deployedTelemetry: null,
+          upgrade: upgrade && upgradeState(upgrade, false),
+          notice: `The stop on ${sshHost} reported an error, but the server's containers are down.`,
+        });
+        return;
+      }
       this.setStatus(sshHost, {
         phase: 'error',
+        failedTo: 'stop',
         error: error instanceof Error ? error.message : String(error),
       });
-      reportManagedServerOutcome('stop', 'remote', 'failure');
       throw error;
     } finally {
       await lease?.release();
@@ -1174,6 +1218,7 @@ export class RemoteServerService {
       }
       this.setStatus(sshHost, {
         phase: 'error',
+        failedTo: 'reset',
         error: error instanceof Error ? error.message : String(error),
       });
       reportManagedServerOutcome('reset', 'remote', 'failure');

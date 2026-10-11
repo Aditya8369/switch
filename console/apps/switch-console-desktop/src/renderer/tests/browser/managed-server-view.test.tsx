@@ -141,6 +141,7 @@ function status(patch: Record<string, unknown>) {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
     notice: null,
     recordWarning: null,
     waitingFor: null,
@@ -335,6 +336,24 @@ describe('a server that failed to start', () => {
 
     expect(text()).toContain('This server is newer than Switch Console');
     expect(hasButton(/^(Start|Try again)$/)).toBe(false);
+  });
+});
+
+describe('a stop that failed', () => {
+  it('says it could not stop, and offers to stop again rather than to start', async () => {
+    state.server = REMOTE;
+    state.remoteStatus = status({
+      phase: 'error',
+      failedTo: 'stop',
+      error: 'docker compose down failed: Container switch Stopping',
+    });
+    await render();
+
+    expect(text()).toContain("Couldn't stop");
+    expect(text()).not.toContain('Failed to start');
+    expect(hasButton(/^(Start|Try again)$/)).toBe(false);
+    await click(button(/^Stop again$/));
+    expect(state.remoteStop).toHaveBeenCalledWith('vm-1');
   });
 });
 
