@@ -1024,6 +1024,8 @@ class CollaborationBridgeLifecycleService:
             )
             adapter.set_callback_endpoint(callback_endpoint)
             self._callback_endpoints[bridge_id] = callback_endpoint
+            if adapter_cls.receives_webhooks:
+                adapter.set_webhook_url(self.webhook_url(bridge_id, bridge.type))
 
             gateway_warning = gateway_url_warning(
                 self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes

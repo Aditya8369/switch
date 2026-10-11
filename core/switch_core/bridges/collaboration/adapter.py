@@ -571,6 +571,8 @@ class PlatformAdapter(ABC):
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
+        # Set by `set_webhook_url` for an adapter that receives webhooks.
+        self.webhook_url: str | None = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -1625,6 +1627,20 @@ class PlatformAdapter(ABC):
         which is what stops it addressing another bridge's callbacks even by
         mistake."""
         return None
+
+    def set_webhook_url(self, url: str | None) -> None:
+        """Hand a `receives_webhooks` adapter the public address its platform
+        should deliver this connection's events to, before it starts.
+
+        For a platform whose address is registered through its API rather than
+        pasted into a settings page (Telegram's `setWebhook`): the adapter
+        registers it in `start`. None where the deployment has no
+        `MESSAGING_PUBLIC_URL`; an adapter that has to register its address
+        should then fail to start with a `BridgeOperationError` saying so,
+        since no event could ever reach it. Called only for adapters that set
+        `receives_webhooks`; the default stores it on `self.webhook_url`.
+        """
+        self.webhook_url = url
 
     def set_channel_migration_handler(
         self, handler: Callable[[str, str], Awaitable[None]]

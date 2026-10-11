@@ -208,6 +208,13 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         <RoomNotice icon={<MessagesSquare className="size-6" />} title={active.embed.reason} />
       ) : null}
 
+      {visible && active?.phase === 'ready' && active.embed.kind === 'unlinked' ? (
+        <RoomNotice
+          icon={<MessagesSquare className="size-6" />}
+          title={`This room is bridged to ${bridgePlatformLabel(active.embed.platform)}, which cannot be shown inside Switch Console.`}
+        />
+      ) : null}
+
       {visible && active?.phase === 'ready' && active.embed.kind === 'external' ? (
         <RoomNotice
           icon={<MessagesSquare className="size-6" />}

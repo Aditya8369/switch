@@ -344,3 +344,53 @@ class TestAWebhookPlatformReceivesAVerifiedEventEndToEnd:
         assert lifecycle.webhook_url(bridge_id, "dummyhook") == (
             f"https://switch.example/messaging/bridges/{bridge_id}/events"
         )
+
+
+class TestAWebhookAdapterIsToldItsOwnAddress:
+    """A platform that registers its address through an API (Telegram's
+    `setWebhook`) has to know the address before it starts."""
+
+    async def test_starting_the_bridge_hands_the_adapter_its_address(
+        self,
+        lifecycle: CollaborationBridgeLifecycleService,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        bridge_id = await _hook_bridge(session_factory, bridge_type="dummyhook")
+
+        async def _run(*_: object) -> None:
+            return None
+
+        lifecycle._run_bridge = _run  # type: ignore[method-assign]
+        try:
+            await lifecycle.start(bridge_id)
+            adapter = lifecycle.get_adapter(bridge_id)
+            assert adapter is not None
+            assert adapter.webhook_url == (
+                f"https://switch.example/messaging/bridges/{bridge_id}/events"
+            )
+        finally:
+            await lifecycle.stop_all()
+
+    async def test_a_dial_out_adapter_is_given_no_address(
+        self,
+        lifecycle: CollaborationBridgeLifecycleService,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        bridge_id = await _hook_bridge(session_factory, bridge_type="dummychat")
+        async with session_factory() as session:
+            bridge = await session.get(CollaborationBridge, bridge_id)
+            assert bridge is not None
+            bridge.connection_config = {"api_token": "t"}
+            await session.commit()
+
+        async def _run(*_: object) -> None:
+            return None
+
+        lifecycle._run_bridge = _run  # type: ignore[method-assign]
+        try:
+            await lifecycle.start(bridge_id)
+            adapter = lifecycle.get_adapter(bridge_id)
+            assert adapter is not None
+            assert adapter.webhook_url is None
+        finally:
+            await lifecycle.stop_all()

@@ -148,7 +148,14 @@ https://<MESSAGING_PUBLIC_URL>/messaging/bridges/<bridge id>/events
 ```
 
 Switch shows that address on the connection, for the operator to paste into
-the platform's settings. Both GET and POST reach your adapter. Switch answers
+the platform's settings.
+
+Some platforms take the address through their API rather than a settings page
+(Telegram's `setWebhook`, for example). The adapter is given the address
+before `start` as `self.webhook_url` (`set_webhook_url`), so it can register
+the address itself. That value is `None` when the deployment has no
+`MESSAGING_PUBLIC_URL`; raise `BridgeOperationError` from `start` in that case,
+because no event could ever arrive. Both GET and POST reach your adapter. Switch answers
 immediately and hands the event over in the background, so a slow agent turn
 never makes the platform time out and retry.
 
