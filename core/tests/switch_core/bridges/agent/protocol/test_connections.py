@@ -11,6 +11,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
+    POSITIONS_PROTOCOL_REVISION,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
@@ -25,6 +26,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     UnfencedBeatError,
     UnknownConnectionError,
 )
+from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
 
 AGENT = "agent-1"
 OTHER_AGENT = "agent-2"
@@ -50,7 +52,7 @@ def _open(
         scope=scope,  # type: ignore[arg-type]
         delivery_filter=delivery_filter,  # type: ignore[arg-type]
         spawn_capable=spawn_capable,
-        cursor=cursor,
+        position={SLIPS: cursor},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=expected_generation,
     )
@@ -91,7 +93,7 @@ def test_incompatible_protocol_is_refused() -> None:
             scope="single",
             delivery_filter="all",
             spawn_capable=False,
-            cursor=0,
+            position={SLIPS: 0},
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION + 1),
             expected_generation=None,
         )
@@ -109,7 +111,7 @@ def _open_declaring(
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=declaration,
         expected_generation=None,
     )
@@ -222,7 +224,7 @@ def test_a_beat_without_a_stream_is_rejected() -> None:
     # The client is alive but receiving nothing. It must be told, not left
     # believing it is connected.
     with pytest.raises(NoStreamAttachedError):
-        registry.beat(AGENT, "c1", 5, conn.stream_generation)
+        registry.beat(AGENT, "c1", {SLIPS: 5}, conn.stream_generation)
 
 
 def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
@@ -248,13 +250,22 @@ def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
     assert conn.stream_attached
 
 
-def test_beat_advances_the_cursor_but_never_rewinds_it() -> None:
+def test_beat_advances_the_position_but_never_rewinds_it() -> None:
+    """Source by source: a report behind on one source and ahead on another
+    moves only the one it is ahead on."""
     registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     current = conn.stream_generation
+    room = room_source(ROOM_A)
 
-    assert registry.beat(AGENT, "c1", 7, current).cursor == 7
-    assert registry.beat(AGENT, "c1", 3, current).cursor == 7
+    assert registry.beat(AGENT, "c1", {SLIPS: 7, room: 40}, current).position == {
+        SLIPS: 7,
+        room: 40,
+    }
+    assert registry.beat(AGENT, "c1", {SLIPS: 3, room: 41}, current).position == {
+        SLIPS: 7,
+        room: 41,
+    }
 
 
 def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
@@ -265,28 +276,28 @@ def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
     _open(registry, "c1")  # the winner attaches; incarnation bumps
 
     with pytest.raises(SupersededConnectionError) as caught:
-        registry.beat(AGENT, "c1", 0, displaced)
+        registry.beat(AGENT, "c1", {SLIPS: 0}, displaced)
 
     assert caught.value.presented == displaced
     assert caught.value.current == displaced + 1
 
 
-def test_a_refused_beat_leaves_the_winners_cursor_where_it_was() -> None:
+def test_a_refused_beat_leaves_the_winners_position_where_it_was() -> None:
     registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     displaced = conn.stream_generation
     winner = _open(registry, "c1")
-    registry.beat(AGENT, "c1", 7, winner.stream_generation)
+    registry.beat(AGENT, "c1", {SLIPS: 7}, winner.stream_generation)
 
-    before = winner.cursor
-    assert before == 7
+    before = dict(winner.position)
+    assert before[SLIPS] == 7
 
-    # The displaced client is further ahead than the winner — it was sent
-    # events the winner never saw. Adopting that cursor would skip them.
+    # The displaced client is further ahead than the winner: it was sent
+    # events the winner never saw. Adopting that position would skip them.
     with pytest.raises(SupersededConnectionError):
-        registry.beat(AGENT, "c1", 99, displaced)
+        registry.beat(AGENT, "c1", {SLIPS: 99}, displaced)
 
-    assert winner.cursor == before
+    assert winner.position == before
     assert winner.beats == 1
 
 
@@ -299,7 +310,7 @@ def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
     winner.last_beat = aging
 
     with pytest.raises(SupersededConnectionError):
-        registry.beat(AGENT, "c1", 0, displaced)
+        registry.beat(AGENT, "c1", {SLIPS: 0}, displaced)
 
     # The loser cannot hold the winner's connection open on its behalf: the
     # clock keeps running, so a winner that has gone quiet still lapses.
@@ -313,7 +324,7 @@ def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
 
     # A client that declares nothing sends no incarnation. Unknown is not
     # superseded.
-    assert registry.beat(AGENT, "c1", 4, None).cursor == 4
+    assert registry.beat(AGENT, "c1", {SLIPS: 4}, None).position[SLIPS] == 4
 
 
 def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> None:
@@ -323,22 +334,22 @@ def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> No
     # The server still accepts revision 1, and that revision has no incarnation
     # to return, so its tick is taken as it always was. Refusing it would break
     # every client released before the fence rather than fencing it.
-    assert registry.beat(AGENT, "c1", 4, None).cursor == 4
+    assert registry.beat(AGENT, "c1", {SLIPS: 4}, None).position[SLIPS] == 4
 
 
 def test_a_holder_that_carries_an_incarnation_may_not_tick_without_one() -> None:
     registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
-    conn.cursor = 4
+    conn.position[SLIPS] = 4
 
     # Otherwise the fence is a formality: a displaced client that never saw its
     # own incarnation — or one that would rather not be fenced — sends null and
     # is treated as the holder, which is what the incarnation exists to stop.
     with pytest.raises(UnfencedBeatError) as caught:
-        registry.beat(AGENT, "c1", 99, None)
+        registry.beat(AGENT, "c1", {SLIPS: 99}, None)
 
     assert caught.value.speaks == PROTOCOL_VERSION
-    assert conn.cursor == 4
+    assert conn.position[SLIPS] == 4
     assert conn.beats == 0
 
 
@@ -353,7 +364,7 @@ def test_what_a_connection_cannot_be_fenced_by_follows_its_current_holder() -> N
     _open(registry, "c1")
 
     with pytest.raises(UnfencedBeatError):
-        registry.beat(AGENT, "c1", 4, None)
+        registry.beat(AGENT, "c1", {SLIPS: 4}, None)
 
 
 # ── Room slots ──────────────────────────────────────────────────────────────
@@ -547,7 +558,8 @@ class TestAReattachCanBeFenced:
             conn.stream_attached,
             conn.declaration,
         ) == before
-        assert registry.beat(AGENT, "c1", 7, conn.stream_generation).cursor == 7
+        beaten = registry.beat(AGENT, "c1", {SLIPS: 7}, conn.stream_generation)
+        assert beaten.position[SLIPS] == 7
 
     def test_claiming_nothing_still_takes_the_connection_over(self) -> None:
         """A deliberate takeover makes no claim, and keeps working.
@@ -626,3 +638,26 @@ class TestLiveConnectionIds:
         conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
 
         assert registry.live_connection_ids() == {"c2"}
+
+
+def test_the_one_number_a_client_is_told_is_a_ticket_only_where_it_has_to_be() -> None:
+    """A client holding one number over the conversation and its own events is
+    told a ticket standing for its position. A client that holds the position
+    is told its own events' number beside it, as is any client that reads only
+    its own events."""
+    registry = AgentConnectionRegistry()
+    holds_position = _open(registry, "c1", cursor=7)
+    one_number = _open(registry, "c2", cursor=7, speaks=POSITIONS_PROTOCOL_REVISION - 1)
+    own_events_only = _open(
+        registry,
+        "c3",
+        cursor=7,
+        delivery_filter="addressed",
+        speaks=POSITIONS_PROTOCOL_REVISION - 1,
+    )
+    for conn in (holds_position, one_number, own_events_only):
+        conn.ticket = 2**48 + 5
+
+    assert holds_position.cursor == 7
+    assert one_number.cursor == 2**48 + 5
+    assert own_events_only.cursor == 7

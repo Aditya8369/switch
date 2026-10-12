@@ -21,6 +21,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.clients.actor import Actor
 from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
@@ -52,6 +53,18 @@ def _message(room_id: str, body: str) -> AgentEvent:
             body=body,
             timestamp=0,
         ),
+    )
+
+
+async def _keep(buffer: EventBuffer, room_id: str, body: str) -> None:
+    """A message addressed to the agent in `room_id`, kept as one of its own."""
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        AGENT,
+        room_id,
+        _message(room_id, body),
+        room_seq=1,
+        message_key=f"$m-{body}",
     )
 
 
@@ -102,12 +115,8 @@ async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
 
 async def test_the_rooms_retained_events_are_forgotten(db_buffer: EventBuffer) -> None:
     buffer = db_buffer
-    await buffer.enqueue(
-        TENANT_ZERO_ID, AGENT, LEFT, _message(LEFT, "said in the old room")
-    )
-    await buffer.enqueue(
-        TENANT_ZERO_ID, AGENT, KEPT, _message(KEPT, "said in this one")
-    )
+    await _keep(buffer, LEFT, "said in the old room")
+    await _keep(buffer, KEPT, "said in this one")
 
     await _removed(_client(buffer, AgentConnectionRegistry()), "!left:test")
 
@@ -127,7 +136,7 @@ async def test_the_rooms_claim_is_released(db_buffer: EventBuffer) -> None:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -143,7 +152,7 @@ async def test_a_room_that_cannot_be_resolved_drops_nothing(
 ) -> None:
     """Rather than guessing which room was meant and emptying the wrong one."""
     buffer = db_buffer
-    await buffer.enqueue(TENANT_ZERO_ID, AGENT, LEFT, _message(LEFT, "still here"))
+    await _keep(buffer, LEFT, "still here")
 
     await _removed(_client(buffer, AgentConnectionRegistry()), "!unknown:test")
 

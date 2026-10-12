@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, literal, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from switch_core.attachments import parse_attachment_group
@@ -55,6 +55,7 @@ from switch_core.bridges.agent.protocol.positions import (
     SLIPS,
     Position,
     merged,
+    room_of,
     room_source,
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent
@@ -118,6 +119,12 @@ _UNREAD = {"operation": "unread"}
 # Why an unread count is absent. Never a bare zero: a reader that is told
 # nothing went by must be able to trust it.
 NO_BASELINE = "nothing recorded what you had already seen in this room"
+# Why a count is a floor: past the retention window the agent's own events are
+# gone, so what was addressed to it there can no longer be told from chatter.
+COUNTED_FROM_WINDOW = (
+    "counted over the retention window only; you have not caught up on this "
+    "room for longer than that"
+)
 
 
 class CursorExpiredError(Exception):
@@ -254,6 +261,7 @@ _UNREAD_SQL = text(
           AND e.room_id = :room_id
           AND e.type = 'message'
           AND e.message_key = {_MESSAGE_KEY_SQL}
+          AND e.room_seq >= m.seq
       )
     """
 )
@@ -530,6 +538,28 @@ class EventBuffer:
         found = {room_id: head for room_id, head in rows}
         return {room_id: max(found.get(room_id) or 0, 0) for room_id in room_ids}
 
+    async def within_rooms(
+        self, tenant_id: str, position: Position
+    ) -> tuple[Position, list[str]]:
+        """`position` with each room's place no further than the room's newest
+        row, and the rooms whose place was further.
+
+        A place past the end of a room comes from some other history (a
+        restored database). Kept, it would pass over that many of the room's
+        next messages without a word, since a position never moves back.
+        """
+        rooms = {
+            room_id for source in position if (room_id := room_of(source)) is not None
+        }
+        clamped = dict(position)
+        past: list[str] = []
+        for room_id, head in (await self.room_heads(tenant_id, rooms)).items():
+            source = room_source(room_id)
+            if clamped[source] > head:
+                clamped[source] = head
+                past.append(room_id)
+        return clamped, sorted(past)
+
     async def room_window_starts(
         self, tenant_id: str, room_ids: set[str]
     ) -> dict[str, int]:
@@ -540,15 +570,12 @@ class EventBuffer:
             return {}
         cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            rows = (
-                await session.execute(
-                    select(Message.room_id, func.max(Message.seq))
-                    .where(Message.room_id.in_(room_ids), Message.sent_at < cutoff)
-                    .group_by(Message.room_id)
+            return {
+                room_id: max(
+                    await session.scalar(_window_start(room_id, cutoff)) or 0, 0
                 )
-            ).all()
-        found = {room_id: seq for room_id, seq in rows}
-        return {room_id: max(found.get(room_id) or 0, 0) for room_id in room_ids}
+                for room_id in room_ids
+            }
 
     async def read_conversation(
         self,
@@ -561,10 +588,14 @@ class EventBuffer:
         """The conversation in each of the rooms in `after`, past its position.
 
         What is read: messages and arrivals by others, since the agent joined,
-        that are not already among its own events, and old enough that the
-        agent's consumer has decided they are not (`CONVERSATION_SETTLE_SECONDS`).
-        Several files posted as one message are read as one, once all of them
-        are in or the grace for the rest has passed.
+        that are not already among its own events, and that the agent's
+        consumer has decided are not. A room is read in order up to the first
+        row it may not have decided yet. It takes a room's rows one at a time,
+        in order, so every row up to its newest own event in the room is
+        decided; a row past that is decided once it is old enough
+        (`CONVERSATION_SETTLE_SECONDS`). Several files posted as one message
+        are read as one, once all of them are in or the grace for the rest has
+        passed.
         """
         if not after:
             return Conversation()
@@ -608,28 +639,50 @@ class EventBuffer:
             group_deadline = settled_before - timedelta(
                 seconds=CONVERSATION_GROUP_GRACE_SECONDS
             )
+            # The agent's newest own event per room, from its consumer (a
+            # message or an arrival; commands are kept by another).
+            decided: dict[str, int] = {
+                room_id: seq
+                for room_id, seq in (
+                    await session.execute(
+                        select(AgentEventRow.room_id, func.max(AgentEventRow.room_seq))
+                        .where(
+                            AgentEventRow.agent_id == agent_id,
+                            AgentEventRow.room_id.in_(after),
+                            AgentEventRow.type.in_(("message", "room_join")),
+                        )
+                        .group_by(AgentEventRow.room_id)
+                    )
+                ).all()
+            }
             for room_id, after_seq in sorted(after.items()):
                 room = rooms.get(room_id)
                 if room is None or room_id not in joined:
                     continue
-                rows = (
+                rows: list[Message] = []
+                for row in (
                     await session.scalars(
                         select(Message)
                         .where(
                             Message.room_id == room_id,
                             Message.seq > max(after_seq, 0),
-                            Message.sent_at < settled_before,
                         )
                         .order_by(Message.seq)
                         .limit(limit)
                     )
-                ).all()
+                ).all():
+                    if (
+                        row.seq > decided.get(room_id, 0)
+                        and cast(datetime, row.sent_at) >= settled_before
+                    ):
+                        break
+                    rows.append(row)
                 if not rows:
                     continue
                 room_events, room_through = await self._conversation_in(
                     session,
                     room,
-                    list(rows),
+                    rows,
                     my_sender=my_sender,
                     joined_at=joined[room_id],
                     agent_id=agent_id,
@@ -653,17 +706,28 @@ class EventBuffer:
         group_deadline: datetime,
     ) -> tuple[list[BufferedEvent], int]:
         """One room's rows as conversation, and how far they were looked at."""
+        # The rows already among the agent's own events: each event covers its
+        # message up to the room row it was delivered through. A file posted
+        # with others that arrives after its group was delivered is past that
+        # row, and is conversation like any other.
         keys = {message_key(row) for row in rows}
-        already_mine = set(
-            (
-                await session.scalars(
-                    select(AgentEventRow.message_key).where(
+        delivered_through: dict[str, int] = {
+            key: seq
+            for key, seq in (
+                await session.execute(
+                    select(AgentEventRow.message_key, func.max(AgentEventRow.room_seq))
+                    .where(
                         AgentEventRow.agent_id == agent_id,
                         AgentEventRow.message_key.in_(keys),
                     )
+                    .group_by(AgentEventRow.message_key)
                 )
             ).all()
-        )
+        }
+
+        def already_mine(row: Message) -> bool:
+            return row.seq <= delivered_through.get(message_key(row), -1)
+
         attachments: dict[str, list[MessageAttachment]] = {}
         message_ids = [row.id for row in rows if row.event_type == "m.room.message"]
         if message_ids:
@@ -679,6 +743,8 @@ class EventBuffer:
         # Several files posted as one message: the parts present here, by group.
         groups: dict[str, list[tuple[int, int, Message]]] = {}
         for row in rows:
+            if already_mine(row):
+                continue
             group = parse_attachment_group(row.content or {})
             if group is not None:
                 groups.setdefault(group[0], []).append((group[1], group[2], row))
@@ -710,9 +776,9 @@ class EventBuffer:
             through = row.seq
             if row.sender_id == my_sender or row.sent_at < joined_at:
                 continue
-            key = message_key(row)
-            if key in already_mine:
+            if already_mine(row):
                 continue
+            key = message_key(row)
             inbound = to_inbound(
                 row, attachments.get(row.id, []), transport_room_id=room.id
             )
@@ -945,16 +1011,12 @@ class EventBuffer:
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
-                insert(AgentRoomRead)
-                .values(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    room_id=room_id,
-                    caught_up_seq=_room_head(room_id),
-                    occupant_id=reader_id,
-                    occupant_is_session=False,
-                )
-                .on_conflict_do_nothing(
+                _counting(
+                    agent_id,
+                    room_id,
+                    baseline=_room_head(room_id),
+                    occupant=Reader(id=reader_id, is_session=False),
+                ).on_conflict_do_nothing(
                     index_elements=[AgentRoomRead.agent_id, AgentRoomRead.room_id]
                 )
             )
@@ -971,16 +1033,12 @@ class EventBuffer:
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
-                insert(AgentRoomRead)
-                .values(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    room_id=room_id,
-                    caught_up_seq=_room_head(room_id),
-                    occupant_id=reader_id,
-                    occupant_is_session=False,
-                )
-                .on_conflict_do_update(
+                _counting(
+                    agent_id,
+                    room_id,
+                    baseline=_room_head(room_id),
+                    occupant=Reader(id=reader_id, is_session=False),
+                ).on_conflict_do_update(
                     index_elements=[AgentRoomRead.agent_id, AgentRoomRead.room_id],
                     set_={"occupant_id": reader_id, "occupant_is_session": False},
                 )
@@ -1001,16 +1059,9 @@ class EventBuffer:
         start = (await self.room_window_starts(tenant_id, {room_id}))[room_id]
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
-                insert(AgentRoomRead)
-                .values(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    room_id=room_id,
-                    caught_up_seq=start,
-                    occupant_id=reader.id,
-                    occupant_is_session=reader.is_session,
-                )
-                .on_conflict_do_update(
+                _counting(
+                    agent_id, room_id, baseline=literal(start), occupant=reader
+                ).on_conflict_do_update(
                     index_elements=[AgentRoomRead.agent_id, AgentRoomRead.room_id],
                     set_={
                         "occupant_id": reader.id,
@@ -1081,7 +1132,9 @@ class EventBuffer:
         Counted from the room's own log on demand, so it cannot disagree with
         it. Only messages, and not the agent's own: an agent is told how much
         conversation went past it. Several files posted as one message count
-        once.
+        once. Never further back than the retention window, where what was
+        addressed to the agent can still be told apart; a count cut there says
+        so.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             baseline = await session.scalar(
@@ -1092,6 +1145,11 @@ class EventBuffer:
             )
             if baseline is None:
                 return Unread(count=None, reason=NO_BASELINE)
+            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
+            window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
+            reason = None
+            if baseline < window_start:
+                baseline, reason = window_start, COUNTED_FROM_WINDOW
             me = await session.scalar(
                 select(Client.transport_user_id)
                 .join(Agent, Agent.client_id == Client.id)
@@ -1109,7 +1167,7 @@ class EventBuffer:
                 },
             )
         self._record_scan(_UNREAD, count or 0, started)
-        return Unread(count=count or 0, reason=None)
+        return Unread(count=count or 0, reason=reason)
 
     # ------------------------------------------------------------------
     # Leaving
@@ -1413,14 +1471,24 @@ class EventBuffer:
     async def _save_poll_position(
         self, tenant_id: str, agent_id: str, reader_id: str, position: Position
     ) -> None:
+        # Selected through the agent, so a poll still in flight when its agent
+        # is deleted saves nothing rather than failing.
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
                 insert(AgentPollPosition)
-                .values(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    reader_id=reader_id,
-                    position=position,
+                .from_select(
+                    [
+                        AgentPollPosition.tenant_id,
+                        AgentPollPosition.agent_id,
+                        AgentPollPosition.reader_id,
+                        AgentPollPosition.position,
+                    ],
+                    select(
+                        Agent.tenant_id,
+                        Agent.id,
+                        literal(reader_id),
+                        literal(position, AgentPollPosition.position.type),
+                    ).where(Agent.id == agent_id),
                 )
                 .on_conflict_do_update(
                     index_elements=[
@@ -1473,6 +1541,41 @@ class EventBuffer:
             return
         oldest = await self.oldest_retained(tenant_id, agent_id)
         raise CursorExpiredError(agent_id, after_seq, oldest, rooms)
+
+
+def _counting(agent_id: str, room_id: str, *, baseline: Any, occupant: Reader) -> Any:
+    """An `agent_room_reads` row for a room that exists, and none for one that
+    does not: a room deleted while a reader covered it has nothing left to
+    count, and must not fail the reader's stream."""
+    return insert(AgentRoomRead).from_select(
+        [
+            AgentRoomRead.tenant_id,
+            AgentRoomRead.agent_id,
+            AgentRoomRead.room_id,
+            AgentRoomRead.caught_up_seq,
+            AgentRoomRead.occupant_id,
+            AgentRoomRead.occupant_is_session,
+        ],
+        select(
+            Room.tenant_id,
+            literal(agent_id),
+            Room.id,
+            baseline,
+            literal(occupant.id),
+            literal(occupant.is_session),
+        ).where(Room.id == room_id),
+    )
+
+
+def _window_start(room_id: str, cutoff: datetime) -> Any:
+    """The room's newest row from before `cutoff`: one probe of the room's
+    `sent_at` index, rather than a scan of everything said since."""
+    return (
+        select(Message.seq)
+        .where(Message.room_id == room_id, Message.sent_at < cutoff)
+        .order_by(Message.sent_at.desc())
+        .limit(1)
+    )
 
 
 def _room_head(room_id: str) -> Any:

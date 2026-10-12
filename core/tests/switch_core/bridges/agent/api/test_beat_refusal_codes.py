@@ -27,6 +27,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     SupersededConnectionError,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
@@ -45,7 +46,7 @@ def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )

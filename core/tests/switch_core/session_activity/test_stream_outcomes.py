@@ -16,6 +16,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.bridges.agent.protocol.stream import Frame, event_frames
 from switch_core.db.models import ApprovalRequest
 from switch_core.session_activity.listener import AgentSessionActivityListener
@@ -62,7 +63,7 @@ def _open_stream(
         scope=scope,
         delivery_filter="addressed",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )

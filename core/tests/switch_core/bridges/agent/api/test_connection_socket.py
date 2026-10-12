@@ -12,6 +12,7 @@ goes through the client's portal onto that loop.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from collections.abc import AsyncGenerator, Iterator
 from typing import Any
@@ -37,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Agent
@@ -148,28 +150,35 @@ def test_events_arrive_with_their_sequence_number(
     with client.websocket_connect(_url(rooms=ROOM)) as ws:
         ws.receive_json()
         seq = client.portal.call(  # type: ignore[union-attr]
-            protocol.event_buffer.enqueue,
-            TENANT_ZERO_ID,
-            AGENT_ID,
-            ROOM,
-            AgentEvent(
-                type="message",
-                room_id=ROOM,
-                payload=MessagePayload(
-                    addressed=True,
-                    sender="@u:s",
-                    sender_name="u",
-                    message_id="$evt-1",
-                    body="hello",
-                    timestamp=0,
+            functools.partial(
+                protocol.event_buffer.enqueue,
+                TENANT_ZERO_ID,
+                AGENT_ID,
+                ROOM,
+                AgentEvent(
+                    type="message",
+                    room_id=ROOM,
+                    payload=MessagePayload(
+                        addressed=True,
+                        sender="@u:s",
+                        sender_name="u",
+                        message_id="$evt-1",
+                        body="hello",
+                        timestamp=0,
+                    ),
                 ),
-            ),
+                room_seq=0,
+                message_key="$evt-1",
+            )
         )
 
         message = _next(ws, "message")
 
         assert message["id"] == seq
         assert message["data"]["payload"]["body"] == "hello"
+        # The client speaks positions, so it is told the event's place in its
+        # source too.
+        assert message["data"]["position"] == {SLIPS: seq}
 
 
 def test_the_server_pings_and_a_pong_counts_as_a_beat(

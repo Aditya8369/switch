@@ -151,14 +151,15 @@ class TestRoomJoinEnqueue:
     async def test_listening_reflects_store_setting(
         self, db_buffer: EventBuffer
     ) -> None:
-        # The event is delivered regardless, but `listening` mirrors the
-        # per-room, per-agent receives_join_events setting (off here).
+        # The per-room, per-agent receives_join_events setting (off here)
+        # decides whether the arrival is one of the agent's own events. Off, it
+        # is the room's conversation: nothing is queued, and a reader that
+        # wants the conversation reads the arrival from the room's log, with
+        # `listening` False.
         client = _client(db_buffer, receives=False)
         await _run(client, _member_event())
 
-        assert len(await _enqueued(client)) == 1
-        _, event = (await _enqueued(client))[0]
-        assert event.payload.listening is False
+        assert await _enqueued(client) == []
 
     async def test_the_member_is_named_the_way_switch_knows_them(
         self, db_buffer: EventBuffer

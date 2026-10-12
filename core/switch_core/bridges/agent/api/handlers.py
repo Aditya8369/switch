@@ -1104,11 +1104,11 @@ async def _record_beat(
 
     A client that holds a position reports it; one that holds a single number
     reports that, read as the agent's own events, or, on a stream that reads
-    the conversation too, as the ticket it was handed. The agent's own events
-    are clamped to their head first: a client can report a number from some
-    other history (a restored database, another server), and `beat()` never
-    moves a position backwards, so adopting it would skip every event up to
-    it, silently.
+    the conversation too, as the ticket it was handed. Each source is clamped
+    to its head first: a client can report a number from some other history
+    (a restored database, another server), and `beat()` never moves a
+    position backwards, so adopting it would skip every event up to it,
+    silently.
 
     Raises the registry's refusal when the connection is no longer this
     client's to beat for: another socket took it over (`taken_over`), or it
@@ -1128,6 +1128,7 @@ async def _record_beat(
         reported[SLIPS] = min(
             reported[SLIPS], await protocol.event_buffer.head(tenant_id, agent_id)
         )
+    reported, _ = await protocol.event_buffer.within_rooms(tenant_id, reported)
     return protocol.connections.beat(agent_id, connection_id, reported, generation)
 
 
@@ -1149,13 +1150,17 @@ async def connection_beat(
     recovered by reopening.
     """
     try:
+        reported = None if req.position is None else positions.parse(req.position)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
         conn = await _record_beat(
             protocol,
             agent.id,
             req.connection_id,
             req.cursor,
             req.generation,
-            req.position,
+            reported,
         )
     except (
         NoStreamAttachedError,

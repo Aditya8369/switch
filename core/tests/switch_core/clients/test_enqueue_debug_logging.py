@@ -8,6 +8,7 @@ server, thousands of serialisations a second for a line nobody was logging.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent
-from switch_core.clients.agent_consumer import AgentConsumer
+from switch_core.clients.agent_consumer import AgentConsumer, _GateOutcome
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 from tests.db_buffer import seed_agent
@@ -34,21 +35,48 @@ async def _enqueued(buffer: EventBuffer) -> list[AgentEvent]:
     return [item.event for item in await buffer.read_from(TENANT_ZERO_ID, AGENT, 0)]
 
 
+@asynccontextmanager
+async def _session_factory():  # type: ignore[no-untyped-def]
+    yield object()
+
+
 def _consumer(buffer: EventBuffer) -> SimpleNamespace:
-    """An unaddressed delivery: no store is consulted, the event is enqueued."""
+    """A delivery addressed to a live agent, every lookup answered in place.
+
+    Addressed because only an event for the agent is enqueued: the rest of the
+    room stays in the room's log and never reaches the line under test.
+    """
 
     async def _resolve_room_meta(_room_id: str) -> SimpleNamespace:
         return SimpleNamespace(
             room_id="room-1", bridge_id=None, channel_type="channel_public"
         )
 
-    return SimpleNamespace(
+    async def _yes(*_args: object) -> bool:
+        return True
+
+    async def _fresh_agent(_session: object) -> object:
+        return ns.agent
+
+    async def _gate_addressed(*_args: object) -> _GateOutcome:
+        return _GateOutcome(addressed=True, refusal=None)
+
+    ns = SimpleNamespace(
         agent=SimpleNamespace(id=AGENT, name="helper"),
         tenant_id=TENANT_ZERO_ID,
+        session_factory=_session_factory,
         _resolve_room_meta=_resolve_room_meta,
-        _addressed_without_lookup=lambda _event, _meta: False,
+        _addressed_without_lookup=lambda _event, _meta: True,
+        _compute_addressed=_yes,
+        _fresh_agent=_fresh_agent,
+        _gate_addressed=_gate_addressed,
+        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
+        _is_available=_yes,
+        _message_telemetry=SimpleNamespace(enabled=False),
+        _report_addressed=lambda *_a, **_k: None,
         _event_buffer=buffer,
     )
+    return ns
 
 
 def _message() -> InboundMessage:
@@ -57,8 +85,8 @@ def _message() -> InboundMessage:
         event_id="$evt",
         sender="@someone:switch.local",
         timestamp=1,
-        content={"body": "hello"},
-        body="hello",
+        content={"body": "@helper hello"},
+        body="@helper hello",
         sender_name="someone",
     )
 
@@ -109,7 +137,7 @@ async def test_the_debug_line_is_still_logged_when_debug_is_on(
     assert dumps == [1]
     lines = [r for r in caplog.records if "Enqueuing event" in r.getMessage()]
     assert len(lines) == 1
-    assert '"body": "hello"' in lines[0].getMessage()
+    assert '"body": "@helper hello"' in lines[0].getMessage()
 
 
 @pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
@@ -135,11 +163,13 @@ async def test_a_media_event_is_serialised_only_when_debug_is_on(
         SimpleNamespace(  # type: ignore[arg-type]
             room_id="room-1", bridge_id=None, channel_type="channel_public"
         ),
-        False,
+        True,
         "someone",
         None,
         [],
         "a file",
+        room_seq=1,
+        message_key="$media",
     )
 
     assert len(await _enqueued(db_buffer)) == 1

@@ -20,6 +20,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
@@ -59,6 +60,18 @@ def _event(index: int) -> AgentEvent:
     )
 
 
+async def _keep(buffer: EventBuffer, index: int) -> None:
+    """Message `index`, addressed to the agent and kept as one of its own."""
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        "agent-1",
+        "room-1",
+        _event(index),
+        room_seq=index + 1,
+        message_key=f"m{index}",
+    )
+
+
 async def test_events_dropped_for_retention_are_counted(
     registry, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
 ):
@@ -70,7 +83,7 @@ async def test_events_dropped_for_retention_are_counted(
     """
     await seed_agent(session_factory, "agent-1")
     for index in range(3):
-        await db_buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
+        await _keep(db_buffer, index)
     await age_events(session_factory, "agent-1", seconds=7200)
 
     assert await db_buffer.expire(TENANT_ZERO_ID) == 3
@@ -83,7 +96,7 @@ async def test_nothing_is_counted_when_nothing_is_dropped(
     registry, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
 ):
     await seed_agent(session_factory, "agent-1")
-    await db_buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(0))
+    await _keep(db_buffer, 0)
 
     assert await db_buffer.expire(TENANT_ZERO_ID) == 0
     assert _counts(registry, "switch.agent.events_dropped") == {}
@@ -98,7 +111,7 @@ def test_expired_connections_are_counted(registry, monkeypatch):
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -123,7 +136,7 @@ def test_a_quiet_sweep_counts_nothing(registry):
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -139,7 +152,7 @@ def _open(connections: AgentConnectionRegistry, connection_id: str = "c1") -> No
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

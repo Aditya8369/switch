@@ -31,6 +31,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -72,7 +73,7 @@ def _open(
         scope="all",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(
             speaks=PROTOCOL_VERSION, artifact=artifact, version=version
         ),
@@ -226,7 +227,7 @@ def test_a_stream_attached_over_sse_is_counted_as_sse() -> None:
         scope="all",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=6, accepts=1, artifact="agent-runtime"),
         expected_generation=None,
         transport="sse",

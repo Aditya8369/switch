@@ -8,6 +8,10 @@ window (the expand half of expand/contract), so these drive the server the way
 such a client does: open the stream, read events, beat, and lapse when it stops
 beating. The stream encodes the same frames the socket sends, from the same
 loop, so the rules themselves are tested once, on the frames.
+
+Such a client keeps one number. Its stream reads the room's conversation as
+well as the agent's own events, so the number it is handed with each event is
+a ticket standing for the whole position after it.
 """
 
 from __future__ import annotations
@@ -33,11 +37,12 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import TICKET_FLOOR, EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
-from tests.db_buffer import seed_agent
+from tests.db_buffer import say, seed_member
 
 AGENT_ID = "agent-1"
 ROOM = "room-a"
@@ -52,8 +57,9 @@ OLD_RUNTIME = {
 
 @pytest.fixture(autouse=True)
 async def _agent_row(session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """The agent these streams are for, so its events have a row to belong to."""
-    await seed_agent(session_factory, AGENT_ID)
+    """The agent these streams are for, in the room they declare, so its
+    events have a row to belong to and the room a conversation to read."""
+    await seed_member(session_factory, AGENT_ID, ROOM)
 
 
 class _Protocol:
@@ -92,6 +98,18 @@ def _message(body: str) -> AgentEvent:
             body=body,
             timestamp=0,
         ),
+    )
+
+
+async def _keep(protocol: _Protocol, body: str) -> int:
+    """A message addressed to the agent, kept as one of its own events."""
+    return await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID,
+        AGENT_ID,
+        ROOM,
+        _message(body),
+        room_seq=0,
+        message_key=f"${body}",
     )
 
 
@@ -164,23 +182,30 @@ async def test_an_old_client_connects_receives_beats_and_lapses(
     assert state["rooms"] == [ROOM]
     generation = state["generation"]
 
-    seq = await protocol.event_buffer.enqueue(
-        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("hello")
-    )
-    event, sent_seq, data = await stream.frame()
+    seq = await _keep(protocol, "hello")
+    event, sent_id, data = await stream.frame()
     assert event == "message"
-    assert sent_seq == str(seq)
     assert data["payload"]["body"] == "hello"
+    # A ticket, not the event's own number, and no position it would not read.
+    assert sent_id is not None
+    ticket = int(sent_id)
+    assert ticket >= TICKET_FLOOR
+    assert data["sequence"] == ticket
+    assert "position" not in data
 
-    beaten = await _beat(protocol, seq, generation)
-    assert beaten == {"ok": True, "rooms": [ROOM], "cursor": seq}
+    # The ticket it beats with is read back as the position it stands for.
+    beaten = await _beat(protocol, ticket, generation)
+    assert beaten == {
+        "ok": True,
+        "rooms": [ROOM],
+        "cursor": ticket,
+        "position": {SLIPS: seq, room_source(ROOM): 0},
+    }
 
     conn = protocol.connections.get("c1")
     assert conn is not None
     conn.last_beat = time.monotonic() - (HEARTBEAT_TTL_SECONDS + 1)
-    await protocol.event_buffer.enqueue(
-        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("not after a lapse")
-    )
+    await _keep(protocol, "not after a lapse")
 
     event, _, data = await stream.frame()
     assert event == "evicted"
@@ -188,18 +213,16 @@ async def test_an_old_client_connects_receives_beats_and_lapses(
     await stream.close()
 
     with pytest.raises(HTTPException) as caught:
-        await _beat(protocol, seq, generation)
+        await _beat(protocol, ticket, generation)
     assert caught.value.status_code == 404
 
 
 async def test_an_old_client_resumes_from_last_event_id(db_buffer: EventBuffer) -> None:
+    """A number below the ticket floor is one of the agent's own events: what
+    a client was handed before its stream read the conversation."""
     protocol = _Protocol(db_buffer)
-    first = await protocol.event_buffer.enqueue(
-        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("seen")
-    )
-    await protocol.event_buffer.enqueue(
-        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("missed")
-    )
+    first = await _keep(protocol, "seen")
+    await _keep(protocol, "missed")
 
     # The old runtime sent the cursor both ways; the header wins.
     stream = _Reader(
@@ -213,6 +236,84 @@ async def test_an_old_client_resumes_from_last_event_id(db_buffer: EventBuffer) 
 
     assert event == "message"
     assert data["payload"]["body"] == "missed"
+
+
+async def test_an_old_client_resumes_from_the_ticket_it_was_handed(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The ticket holds its place in the room as well as in the agent's own
+    events, so a reconnect with it is sent both what was said while it was
+    away and what was kept for it."""
+    protocol = _Protocol(db_buffer)
+    stream = _Reader((await _open(protocol)).body_iterator)
+    await stream.frame()
+    await _keep(protocol, "seen")
+    _, ticket, _ = await stream.frame()
+    await stream.close()
+
+    await say(session_factory, ROOM, "said while away")
+    await _keep(protocol, "kept while away")
+
+    stream = _Reader(
+        (await _open(protocol, start_from="head", last_event_id=ticket)).body_iterator
+    )
+    await stream.frame()
+    said = await stream.frame()
+    kept = await stream.frame()
+    await stream.close()
+
+    assert said[2]["payload"]["body"] == "said while away"
+    assert kept[2]["payload"]["body"] == "kept while away"
+
+
+async def test_an_unknown_ticket_opens_with_a_gap(db_buffer: EventBuffer) -> None:
+    """A ticket the server no longer holds (expired, or another server's)
+    cannot be honoured. The stream opens where things are now and says so
+    first, so the client re-reads its rooms rather than believing it is caught
+    up."""
+    protocol = _Protocol(db_buffer)
+    lost = TICKET_FLOOR + 12345
+
+    stream = _Reader((await _open(protocol, last_event_id=str(lost))).body_iterator)
+    first, _, _ = await stream.frame()
+    event, _, gap = await stream.frame()
+    await stream.close()
+
+    assert first == "connection_state"
+    assert event == "gap"
+    assert gap["from_sequence"] == lost
+    assert gap["rooms"] == [ROOM]
+    assert gap["all_rooms"] is True
+    assert "no longer known" in gap["reason"]
+
+
+async def test_the_number_a_gap_hands_an_old_client_resumes_where_it_left_it(
+    db_buffer: EventBuffer,
+) -> None:
+    """The old runtime adopts a gap's `resumed_at` as its number. For a client
+    reading the conversation too, that number is a ticket for where the stream
+    resumed: sent back, it resumes there, rather than being read as the
+    agent's own events from the start and replaying all of them."""
+    protocol = _Protocol(db_buffer)
+    await _keep(protocol, "before the gap")
+    lost = TICKET_FLOOR + 12345
+
+    stream = _Reader((await _open(protocol, last_event_id=str(lost))).body_iterator)
+    await stream.frame()
+    _, _, gap = await stream.frame()
+    await stream.close()
+    await _keep(protocol, "after the gap")
+
+    stream = _Reader(
+        (await _open(protocol, last_event_id=str(gap["resumed_at"]))).body_iterator
+    )
+    await stream.frame()
+    event, _, data = await stream.frame()
+    await stream.close()
+
+    assert gap["resumed_at"] >= TICKET_FLOOR
+    assert event == "message"
+    assert data["payload"]["body"] == "after the gap"
 
 
 async def test_closing_the_stream_detaches_it_and_keeps_the_connection(
@@ -260,7 +361,7 @@ async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket(
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=8, accepts=1, artifact="agent-runtime"),
         expected_generation=None,
         transport="websocket",
@@ -336,7 +437,7 @@ def test_this_server_admits_an_old_runtime(speaks: int) -> None:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=speaks, accepts=1),
         expected_generation=None,
         transport="sse",

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.clients.agent_consumer as ac
@@ -13,7 +14,8 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.clients.agent_consumer import AgentConsumer, _GateOutcome
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.db.models import TENANT_ZERO_ID, AgentEventRow
+from switch_core.db.session_scope import tenant_session
 from switch_core.transport import InboundMedia, RoomRef
 from tests.db_buffer import seed_agent
 
@@ -34,6 +36,7 @@ def _media_event(
     msgtype: str = "m.image",
     group: dict[str, Any] | None = None,
     event_id: str = "$evt",
+    seq: int = 0,
 ) -> InboundMedia:
     content: dict[str, Any] = {
         "msgtype": msgtype,
@@ -60,6 +63,7 @@ def _media_event(
         mimetype=mimetype,
         size=5,
         group=group,
+        seq=seq,
     )
 
 
@@ -78,7 +82,12 @@ class _FakeMessageTelemetry:
 
 
 async def _events(client: SimpleNamespace) -> list[AgentEvent]:
-    """What the consumer queued for its agent, read back from the db-buffer."""
+    """What the consumer queued for its agent, read back from the db-buffer.
+
+    Only what is for the agent is queued; the rest of the room is read from
+    the room's log by whoever wants it. So a test about what a post becomes
+    addresses the post to the agent, in its caption (part 0's body).
+    """
     buffer: EventBuffer = client._event_buffer
     return [item.event for item in await buffer.read_from(TENANT_ZERO_ID, AGENT, 0)]
 
@@ -155,7 +164,7 @@ async def test_grouped_media_coalesces_into_one_event(db_buffer: EventBuffer) ->
             client,
             _room(),
             _media_event(
-                body="three files" if index == 0 else name,
+                body="@agent-a three files" if index == 0 else name,
                 filename=name if index == 0 else None,
                 mimetype=mimetype,
                 msgtype=msgtype,
@@ -173,7 +182,7 @@ async def test_grouped_media_coalesces_into_one_event(db_buffer: EventBuffer) ->
         "notes.md",
         "data.csv",
     ]
-    assert payload.body == "three files"
+    assert payload.body == "@agent-a three files"
     assert client._attachment_groups == {}
     assert client._attachment_group_timers == {}
 
@@ -188,7 +197,7 @@ async def test_grouped_media_coalesces_out_of_order(db_buffer: EventBuffer) -> N
             client,
             _room(),
             _media_event(
-                body="captioned" if index == 0 else names[index],
+                body="@agent-a captioned" if index == 0 else names[index],
                 filename=names[index] if index == 0 else None,
                 event_id=f"$part-{index}",
                 group={"id": "grp-2", "index": index, "total": 3},
@@ -199,22 +208,59 @@ async def test_grouped_media_coalesces_out_of_order(db_buffer: EventBuffer) -> N
     payload = (await _events(client))[0].payload
     # Sorted by group index, not arrival order.
     assert [a.filename for a in payload.attachments] == ["a.png", "b.png", "c.png"]
-    assert payload.body == "captioned"
+    assert payload.body == "@agent-a captioned"
     assert client._attachment_groups == {}
     assert client._attachment_group_timers == {}
+
+
+async def test_a_group_is_kept_as_the_one_message_it_was_posted_as(
+    session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
+) -> None:
+    """Each part is a row of its own in the room's log, and the conversation
+    read from there leaves out a row whose message the agent already has, by
+    the id the message is known by: for a part, its group's. So the group is
+    kept under the group's id, at the part furthest on in the room. Kept under
+    one part's id, the other parts would reach the agent again as
+    conversation."""
+    client = _fake_client(db_buffer)
+    # The part that completes the group is not the furthest on.
+    for index, seq in [(0, 11), (2, 13), (1, 12)]:
+        await AgentConsumer.on_media(
+            client,
+            _room(),
+            _media_event(
+                body="@agent-a three" if index == 0 else f"f{index}.png",
+                filename="f0.png" if index == 0 else None,
+                event_id=f"$part-{index}",
+                group={"id": "grp-key", "index": index, "total": 3},
+                seq=seq,
+            ),
+        )
+
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        kept = (
+            await session.execute(
+                select(AgentEventRow.room_seq, AgentEventRow.message_key).where(
+                    AgentEventRow.agent_id == AGENT
+                )
+            )
+        ).all()
+    assert [tuple(row) for row in kept] == [(13, "grp-key")]
 
 
 async def test_ungrouped_media_emits_immediately(db_buffer: EventBuffer) -> None:
     client = _fake_client(db_buffer)
 
     await AgentConsumer.on_media(
-        client, _room(), _media_event(body="cat.png", mimetype="image/png")
+        client,
+        _room(),
+        _media_event(body="@agent-a a cat", filename="cat.png", mimetype="image/png"),
     )
 
     assert len(await _events(client)) == 1
     payload = (await _events(client))[0].payload
     assert [a.filename for a in payload.attachments] == ["cat.png"]
-    assert payload.body == "cat.png"
+    assert payload.body == "@agent-a a cat"
     assert client._attachment_groups == {}
     assert client._attachment_group_timers == {}
 
@@ -231,7 +277,7 @@ async def test_incomplete_group_flushes_with_disclosed_notice(
                 client,
                 _room(),
                 _media_event(
-                    body="two of three" if index == 0 else name,
+                    body="@agent-a two of three" if index == 0 else name,
                     filename=name if index == 0 else None,
                     event_id=f"$part-{index}",
                     group={"id": "grp-3", "index": index, "total": 3},
@@ -266,7 +312,7 @@ async def test_group_is_anchored_on_part_zero_not_the_completing_part(
             client,
             _room(),
             _media_event(
-                body="three" if index == 0 else name,
+                body="@agent-a three" if index == 0 else name,
                 filename=name if index == 0 else None,
                 event_id=f"$part-{index}",
                 group={"id": "grp-anchor", "index": index, "total": 3},
@@ -290,7 +336,7 @@ async def test_incomplete_group_is_anchored_on_part_zero(
                 client,
                 _room(),
                 _media_event(
-                    body="anchored" if index == 0 else name,
+                    body="@agent-a anchored" if index == 0 else name,
                     filename=name if index == 0 else None,
                     event_id=f"$part-{index}",
                     group={"id": "grp-anchor-2", "index": index, "total": 3},
@@ -330,7 +376,7 @@ async def test_group_timeout_bounds_the_group_not_the_gap_between_parts(
         client,
         _room(),
         _media_event(
-            body="slow batch",
+            body="@agent-a slow batch",
             filename="a.png",
             event_id="$part-0",
             group={"id": "grp-slow", "index": 0, "total": 4},
@@ -421,7 +467,9 @@ class TestAddressingSurvivesCoalescing:
     async def test_a_group_that_mentions_nobody_stays_unaddressed(
         self, db_buffer: EventBuffer
     ) -> None:
-        # The fix must carry addressing across the group, not assert it.
+        # The fix must carry addressing across the group, not assert it. A
+        # group for nobody is the room's conversation, so nothing is queued for
+        # the agent: it is read from the room's log by a reader that wants it.
         client = _fake_client(db_buffer)
         for index, name in [(0, "one.png"), (1, "two.png")]:
             await AgentConsumer.on_media(
@@ -435,7 +483,8 @@ class TestAddressingSurvivesCoalescing:
                 ),
             )
 
-        assert (await _events(client))[0].payload.addressed is False
+        assert await _events(client) == []
+        assert client._attachment_groups == {}
 
     async def test_an_incomplete_group_is_still_addressed(
         self, db_buffer: EventBuffer

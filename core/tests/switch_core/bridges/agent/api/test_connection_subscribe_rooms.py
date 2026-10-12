@@ -27,9 +27,9 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
-from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.db.models import TENANT_ZERO_ID
-from tests.db_buffer import seed_agent
+from tests.db_buffer import say, seed_member
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
@@ -38,9 +38,11 @@ ROOM_B = "!room-b"
 
 
 @pytest.fixture(autouse=True)
-async def _agent_row(session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """The agent the chatter is queued for, so its events have a row to belong to."""
-    await seed_agent(session_factory, AGENT_ID)
+async def _agent_rows(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent in both rooms, as rows: a room's unread count is kept against
+    the agent and the room, and a room with no row is not counted at all."""
+    for room_id in (ROOM_A, ROOM_B):
+        await seed_member(session_factory, AGENT_ID, room_id)
 
 
 class _Protocol:
@@ -63,6 +65,7 @@ class _Protocol:
 
 class _Agent:
     id = AGENT_ID
+    tenant_id = TENANT_ZERO_ID
     metadata_ = None
 
 
@@ -73,7 +76,7 @@ def _open(protocol: _Protocol, scope: str, connection_id: str) -> Any:
         scope=scope,
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -142,29 +145,21 @@ async def test_an_all_scope_subscribe_accumulates(db_buffer: EventBuffer) -> Non
     assert conn.rooms == {ROOM_A, ROOM_B}
 
 
-async def _chatter(protocol: _Protocol, room_id: str, index: int) -> None:
-    await protocol.event_buffer.enqueue(
-        TENANT_ZERO_ID,
-        AGENT_ID,
-        room_id,
-        AgentEvent(
-            type="message",
-            room_id=room_id,
-            payload=MessagePayload(
-                addressed=False,
-                sender="@u:s",
-                sender_name="u",
-                message_id=f"$m-{index}",
-                body="chatter",
-                timestamp=0,
-            ),
-        ),
-    )
+async def _chatter(
+    session_factory: async_sessionmaker[AsyncSession], room_id: str, count: int
+) -> int:
+    """Messages addressed to nobody, from someone else, in the room's log.
+    Returns the room position of the last one."""
+    last = 0
+    for index in range(count):
+        last = (await say(session_factory, room_id, f"chatter {index}")).seq
+    return last
 
 
 @pytest.mark.asyncio
 async def test_subscribing_takes_over_the_rooms_unread_count(
     db_buffer: EventBuffer,
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Whoever holds the room slot is the one whose reading clears it.
 
@@ -176,17 +171,20 @@ async def test_subscribing_takes_over_the_rooms_unread_count(
     protocol = _Protocol(db_buffer)
     first = _open(protocol, "single", "conn-a")
     await _subscribe(protocol, ROOM_A, first.stream_generation, "conn-a", False)
-    for index in range(3):
-        await _chatter(protocol, ROOM_A, index)
+    head = await _chatter(session_factory, ROOM_A, 3)
 
     second = _open(protocol, "single", "conn-b")
     await _subscribe(protocol, ROOM_A, second.stream_generation, "conn-b", True)
 
     buffer = protocol.event_buffer
-    head = await buffer.head(TENANT_ZERO_ID, AGENT_ID)
     assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 3
-    buffer.caught_up(
-        AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head, "conn-b"
+    await buffer.caught_up(
+        TENANT_ZERO_ID,
+        AGENT_ID,
+        Reader(id="conn-b", is_session=False),
+        ROOM_A,
+        head,
+        "conn-b",
     )
     assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 0
 
@@ -194,6 +192,7 @@ async def test_subscribing_takes_over_the_rooms_unread_count(
 @pytest.mark.asyncio
 async def test_a_legacy_subscribe_takes_the_room_from_a_managed_session(
     db_buffer: EventBuffer,
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The mixed takeover: a session holds the count, a bare connection takes the room.
 
@@ -208,25 +207,26 @@ async def test_a_legacy_subscribe_takes_the_room_from_a_managed_session(
     await _subscribe(protocol, ROOM_A, managed.stream_generation, "conn-a", False)
     session = Reader(id="managed-a", is_session=True)
     buffer = protocol.event_buffer
-    buffer.hand_counting_to(AGENT_ID, session, ROOM_A)
-    for index in range(3):
-        await _chatter(protocol, ROOM_A, index)
+    await buffer.hand_counting_to(TENANT_ZERO_ID, AGENT_ID, session, ROOM_A)
+    head = await _chatter(session_factory, ROOM_A, 3)
 
     legacy = _open(protocol, "single", "conn-b")
     await _subscribe(protocol, ROOM_A, legacy.stream_generation, "conn-b", True)
 
     assert protocol.connections.claimant_of(AGENT_ID, ROOM_A) is legacy
-    head = await buffer.head(TENANT_ZERO_ID, AGENT_ID)
     assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 3
-    buffer.caught_up(
-        AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head, "conn-b"
+    await buffer.caught_up(
+        TENANT_ZERO_ID,
+        AGENT_ID,
+        Reader(id="conn-b", is_session=False),
+        ROOM_A,
+        head,
+        "conn-b",
     )
     assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 0
 
-    for index in range(2):
-        await _chatter(protocol, ROOM_A, 10 + index)
-    later = await buffer.head(TENANT_ZERO_ID, AGENT_ID)
-    buffer.caught_up(AGENT_ID, session, ROOM_A, later, "conn-a")
+    later = await _chatter(session_factory, ROOM_A, 2)
+    await buffer.caught_up(TENANT_ZERO_ID, AGENT_ID, session, ROOM_A, later, "conn-a")
 
     assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, later)).count == 2
 

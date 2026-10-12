@@ -20,7 +20,7 @@ from starlette.responses import StreamingResponse
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.handlers import (
     _open_connection,
-    _resolve_start_cursor,
+    _resolve_start_position,
     poll_events,
 )
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
@@ -31,7 +31,8 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import TICKET_FLOOR, EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS, Position, room_source
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
@@ -346,26 +347,52 @@ async def test_an_older_client_inside_the_server_range_is_accepted(
     assert protocol.connections.get("c1") is not None
 
 
-# ── Start cursor ────────────────────────────────────────────────────────────
+# ── Start position ──────────────────────────────────────────────────────────
+
+
+async def _start(
+    protocol: _Protocol,
+    *,
+    start_from: str = "head",
+    start_at: str | None = None,
+    last_event_id: str | None = None,
+    reads_conversation: bool = False,
+) -> tuple[Position, int | None]:
+    return await _resolve_start_position(
+        protocol,  # type: ignore[arg-type]
+        _agent(),
+        start_at=start_at,
+        start_from=start_from,
+        last_event_id=last_event_id,
+        reads_conversation=reads_conversation,
+    )
+
+
+async def _keep(protocol: _Protocol) -> int:
+    """One of the agent's own events, so its head is somewhere."""
+    return await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, "room", _event(), room_seq=0, message_key="$e"
+    )
 
 
 async def test_head_means_only_what_happens_next(db_buffer: EventBuffer) -> None:
     protocol = _Protocol(db_buffer)
-    await protocol.event_buffer.enqueue(TENANT_ZERO_ID, AGENT_ID, "room", _event())
-    assert await _resolve_start_cursor(protocol, TENANT_ZERO_ID, AGENT_ID, "head") == 1
+    seq = await _keep(protocol)
+    assert await _start(protocol) == ({SLIPS: seq}, None)
+    assert await _start(protocol, start_at="head") == ({SLIPS: seq}, None)
 
 
 async def test_last_event_id_wins_over_start_from(db_buffer: EventBuffer) -> None:
     protocol = _Protocol(db_buffer)
-    assert (
-        await _resolve_start_cursor(protocol, TENANT_ZERO_ID, AGENT_ID, "head", "42")
-        == 42
+    assert await _start(protocol, start_from="head", last_event_id="42") == (
+        {SLIPS: 42},
+        None,
     )
 
 
 async def test_explicit_start_from_is_honoured(db_buffer: EventBuffer) -> None:
     protocol = _Protocol(db_buffer)
-    assert await _resolve_start_cursor(protocol, TENANT_ZERO_ID, AGENT_ID, "17") == 17
+    assert await _start(protocol, start_from="17") == ({SLIPS: 17}, None)
 
 
 async def test_a_nonsense_cursor_is_refused_rather_than_guessed(
@@ -373,8 +400,64 @@ async def test_a_nonsense_cursor_is_refused_rather_than_guessed(
 ) -> None:
     protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
-        await _resolve_start_cursor(protocol, TENANT_ZERO_ID, AGENT_ID, "banana")
+        await _start(protocol, start_from="banana")
     assert excinfo.value.status_code == 400
+
+
+async def test_a_client_that_keeps_a_position_starts_from_it(
+    db_buffer: EventBuffer,
+) -> None:
+    """One number per source it has read. The agent's own events, when it
+    names none of them, start at head like any fresh stream."""
+    protocol = _Protocol(db_buffer)
+    seq = await _keep(protocol)
+    assert await _start(protocol, start_at='{"s": 3, "r:room": 7}') == (
+        {SLIPS: 3, room_source("room"): 7},
+        None,
+    )
+    assert await _start(protocol, start_at='{"r:room": 7}') == (
+        {SLIPS: seq, room_source("room"): 7},
+        None,
+    )
+
+
+async def test_a_position_that_cannot_be_read_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    """A typo is an error the client sees, not a position that never moves."""
+    protocol = _Protocol(db_buffer)
+    with pytest.raises(HTTPException) as excinfo:
+        await _start(protocol, start_at='{"room": 7}')
+    assert excinfo.value.status_code == 400
+
+
+async def test_a_ticket_resumes_the_position_it_stands_for(
+    db_buffer: EventBuffer,
+) -> None:
+    """A client that keeps one number, on a stream that reads the conversation
+    too, was handed tickets, and sends back the last one it saw."""
+    protocol = _Protocol(db_buffer)
+    position = {SLIPS: 4, room_source("room"): 9}
+    (ticket,) = await db_buffer.mint_tickets(TENANT_ZERO_ID, AGENT_ID, [position])
+    assert await _start(protocol, start_from=str(ticket), reads_conversation=True) == (
+        position,
+        None,
+    )
+
+
+async def test_an_unknown_ticket_starts_at_head_and_is_kept_to_say_so(
+    db_buffer: EventBuffer,
+) -> None:
+    """Expired, or never this server's: where it stood is not known, so the
+    stream opens at head, and the number is returned for the gap it opens
+    with."""
+    protocol = _Protocol(db_buffer)
+    seq = await _keep(protocol)
+    lost = TICKET_FLOOR + 12345
+    assert await _start(protocol, start_from=str(lost), reads_conversation=True) == (
+        {SLIPS: seq},
+        lost,
+    )
 
 
 def _event() -> Any:
@@ -416,7 +499,7 @@ class TestDeclaringARoomAtOpenTakesOver:
             scope="single",
             delivery_filter="all",
             spawn_capable=False,
-            cursor=0,
+            position={SLIPS: 0},
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
             expected_generation=None,
         )
@@ -470,7 +553,7 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert protocol.connections.beat(
-        AGENT_ID, "c1", 0, conn.stream_generation
+        AGENT_ID, "c1", {SLIPS: 0}, conn.stream_generation
     ).stream_attached
     await newer.body_iterator.aclose()
 

@@ -12,6 +12,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
 from switch_core.bridges.agent.protocol.stream import event_frames
 from switch_core.db.models import User
 from switch_core.gateway.agent_sessions import router
@@ -44,7 +45,7 @@ def _watcher(
         scope=scope,
         delivery_filter="addressed",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )

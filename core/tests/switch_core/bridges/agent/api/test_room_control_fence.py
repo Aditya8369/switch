@@ -30,6 +30,8 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
@@ -65,7 +67,7 @@ def _attach_declaring(protocol: _Protocol, declaration: ClientDeclaration) -> An
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=declaration,
         expected_generation=None,
     )
@@ -84,6 +86,7 @@ def _request(room_id: str, generation: int | None) -> ConnectionSubscribeRequest
 
 class _Agent:
     id = AGENT_ID
+    tenant_id = TENANT_ZERO_ID
     metadata_ = None
 
 
@@ -189,7 +192,7 @@ async def test_no_room_holder_is_evicted_by_a_refused_claim(
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={SLIPS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

@@ -615,7 +615,13 @@ def _addressing_client(
     ns.actor = SimpleNamespace(send_message=sent)
 
     async def _enqueue(
-        _tenant_id: str, _agent_id: str, _room_id: str, event: Any
+        _tenant_id: str,
+        _agent_id: str,
+        _room_id: str,
+        event: Any,
+        *,
+        room_seq: int,
+        message_key: str | None,
     ) -> int:
         enqueued.append(event.payload.message_id)
         return len(enqueued)

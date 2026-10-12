@@ -459,10 +459,10 @@ class AgentConnection:
 
     @property
     def cursor(self) -> int:
-        """The one number a client that cannot hold a position is told: the
-        agent's own events, when that is all the connection reads; otherwise
-        the ticket for the position."""
-        if self.reads_conversation:
+        """The one number a client is told beside its position: the ticket for
+        the position, for a client that holds only one number and reads the
+        conversation too; otherwise how far it is in the agent's own events."""
+        if self.reads_conversation and not self.speaks_positions:
             return self.ticket
         return self.position.get(SLIPS, 0)
 

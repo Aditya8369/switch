@@ -22,7 +22,6 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import room_control_frame
-from switch_core.bridges.agent.protocol.event_buffer import Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.agent_store import AgentStore
@@ -35,6 +34,7 @@ from switch_core.management.schemas import (
     StatusReport,
     TokenRequest,
 )
+from tests.db_buffer import say
 from tests.switch_core.management.harness import (
     FIXTURES,
     Harness,
@@ -353,17 +353,16 @@ class TestStreamFrames:
             # before a restart), agent.approval_outcome
             provoked += await take(stream, 4)
 
-            # The restart left the room's count unknown; a read through the
-            # head gives it a baseline again, as `read_context` would.
-            binding = presence.binding(agent_id)
-            assert binding is not None
-            buffer = harness.protocol.event_buffer
-            buffer.caught_up(
-                agent_id,
-                Reader(id=presence.holder_id(binding), is_session=False),
+            # Addressed to the agent: the row in the room's log, and the
+            # agent's own event for it. Its missed count runs from where
+            # attaching the agent began counting the room.
+            asked = await say(
+                harness.session_factory,
                 room_id,
-                await buffer.head(TENANT_ZERO_ID, agent_id),
-                None,
+                "@reviewer can you look at this?",
+                sender="@ada:test",
+                sender_name="Ada",
+                event_id="$event-1",
             )
             await harness.protocol.event_buffer.enqueue(
                 TENANT_ZERO_ID,
@@ -381,6 +380,8 @@ class TestStreamFrames:
                         timestamp=0,
                     ),
                 ),
+                room_seq=asked.seq,
+                message_key=asked.transport_event_id,
             )
             provoked += await take(stream, 1)
 

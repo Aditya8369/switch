@@ -4,24 +4,30 @@ The auto_session watcher consumes a separate, agent-scoped notification stream.
 The critical invariant: fanning an event out to that stream must NOT remove it
 from the per-room queue a live session poller drains — otherwise the watcher
 would steal events from connected rooms.
+
+The agent's own events (addressed messages, arrivals it listens for, tasks,
+commands) are what the buffer keeps. The rest of a room's conversation stays in
+the room's log, and the per-room and all-rooms polls read it from there.
 """
 
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import SLIPS, Position
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
+    CommandPayload,
     MessagePayload,
     RoomJoinPayload,
     TaskDelegatePayload,
 )
-from switch_core.db.models import TENANT_ZERO_ID, Agent
+from switch_core.db.models import TENANT_ZERO_ID, Agent, AgentPollPosition
 from switch_core.db.session_scope import tenant_session
-from tests.db_buffer import db_buffer_on, seed_agent
+from tests.db_buffer import db_buffer_on, say, seed_agent, seed_member
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -29,11 +35,17 @@ ROOM = "room-1"
 
 @pytest.fixture(autouse=True)
 async def _agent_rows(session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """The agent every event here is queued for, so its rows have one to belong to."""
+    """The agent every event here is queued for, a member of the rooms they are
+    queued in, so its rows have one to belong to and the rooms' conversation is
+    its to read."""
     await seed_agent(session_factory, AGENT)
+    await seed_member(session_factory, AGENT, ROOM)
+    await seed_member(session_factory, AGENT, "room-2")
 
 
-def _message(addressed: bool, room_id: str = ROOM) -> AgentEvent:
+def _message(
+    addressed: bool, room_id: str = ROOM, *, message_id: str = "$m"
+) -> AgentEvent:
     return AgentEvent(
         type="message",
         room_id=room_id,
@@ -41,7 +53,7 @@ def _message(addressed: bool, room_id: str = ROOM) -> AgentEvent:
             addressed=addressed,
             sender="@u:s",
             sender_name="u",
-            message_id="$m",
+            message_id=message_id,
             body="hi",
             timestamp=0,
         ),
@@ -72,69 +84,139 @@ def _task_delegate() -> AgentEvent:
     )
 
 
+def _command() -> AgentEvent:
+    return AgentEvent(
+        type="command",
+        room_id=ROOM,
+        payload=CommandPayload(command="reset", user_id="@u:s", user_name="u"),
+    )
+
+
+async def _keep(buffer: EventBuffer, event: AgentEvent) -> int:
+    """Keep one of the agent's own events that stands for no room row here."""
+    return await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, event.room_id, event, room_seq=0, message_key=None
+    )
+
+
+async def _asked(
+    buffer: EventBuffer,
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str = ROOM,
+) -> int:
+    """A message addressed to the agent, as its consumer keeps it: the row in
+    the room's log, and the agent's own event for that row."""
+    row = await say(session_factory, room_id, "hi", sender="@u:s", sender_name="u")
+    return await buffer.enqueue(
+        TENANT_ZERO_ID,
+        AGENT,
+        room_id,
+        _message(True, room_id, message_id=row.transport_event_id),
+        room_seq=row.seq,
+        message_key=row.transport_event_id,
+    )
+
+
+async def _poll_position(
+    session_factory: async_sessionmaker[AsyncSession], reader_id: str
+) -> Position:
+    """Where a legacy poller has got to. It sends no position of its own, so
+    the server keeps one for it."""
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        position = await session.scalar(
+            select(AgentPollPosition.position).where(
+                AgentPollPosition.agent_id == AGENT,
+                AgentPollPosition.reader_id == reader_id,
+            )
+        )
+    assert position is not None, f"{reader_id} has not polled"
+    return dict(position)
+
+
 async def test_addressed_message_fans_out_without_draining_room_queue(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=True))
+    await _asked(q, session_factory)
 
     # The notification stream sees it...
     notifs = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
     assert len(notifs) == 1
     assert notifs[0].type == "message"
 
-    # ...and it is STILL waiting in the per-room queue for the session poller.
+    # ...and it is STILL waiting for the session poller in the room, once: the
+    # room's row is the agent's own event, so it is not read again as chatter.
     room_events = await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)
     assert len(room_events) == 1
+    assert room_events[0].payload.addressed is True
 
 
-async def test_unaddressed_message_does_not_fan_out(db_buffer: EventBuffer) -> None:
+async def test_unaddressed_message_does_not_fan_out(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=False))
+    await say(session_factory, ROOM, "hi")
 
     assert (
         await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
     )
-    # Still queued per-room (unaddressed chatter is delivered there, just not
-    # surfaced as a notification).
-    assert len(await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)) == 1
+    # Still delivered per room (unaddressed chatter is the room's conversation,
+    # read from its log by the session poller, just not surfaced as a
+    # notification).
+    [chatter] = await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)
+    assert chatter.payload.addressed is False
 
 
 async def test_task_event_fans_out(db_buffer: EventBuffer) -> None:
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _task_delegate())
+    await _keep(q, _task_delegate())
     notifs = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
     assert len(notifs) == 1
     assert notifs[0].type == "task_delegate"
 
 
-async def test_room_join_fans_out_only_when_listening(db_buffer: EventBuffer) -> None:
+async def test_room_join_fans_out_only_when_listening(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """An arrival the agent does not listen for is left in the room's log, the
+    conversation a session reads; one it listens for is its own event."""
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _room_join(listening=False))
+    await say(
+        session_factory,
+        ROOM,
+        "",
+        sender="@u:s",
+        sender_name="u",
+        event_type="m.room.member",
+        content={"membership": "join"},
+    )
     assert (
         await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
     )
+    [arrival] = await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)
+    assert arrival.type == "room_join"
+    assert arrival.payload.listening is False
 
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _room_join(listening=True))
+    await _keep(q, _room_join(listening=True))
     notifs = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
     assert len(notifs) == 1
     assert notifs[0].type == "room_join"
 
 
 async def test_polling_everything_can_be_limited_to_the_rooms_given(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """The buffer is keyed by agent and knows nothing about who is in what.
 
     An event queued while the agent was a member stays queued after it is
     removed, so the caller passes the rooms it is in now and that is what
-    keeps the event from being handed over.
+    keeps the event from being handed over. The same rooms are the only ones
+    whose conversation is read.
     """
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=False))
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=False, room_id="room-2")
-    )
+    await _asked(q, session_factory, ROOM)
+    await _asked(q, session_factory, "room-2")
+    await say(session_factory, ROOM, "chatter")
 
     polled = await q.poll(TENANT_ZERO_ID, AGENT, timeout=0, rooms={"room-2"})
 
@@ -142,17 +224,18 @@ async def test_polling_everything_can_be_limited_to_the_rooms_given(
 
 
 async def test_polling_with_no_rooms_at_all_returns_nothing(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """An agent in no rooms is not a caller asking for every room."""
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=False))
+    await _asked(q, session_factory)
+    await say(session_factory, ROOM, "chatter")
 
     assert await q.poll(TENANT_ZERO_ID, AGENT, timeout=0, rooms=set()) == []
 
 
 async def test_notifications_are_limited_to_the_rooms_given_too(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """The notification stream is the one carrying addressed messages.
 
@@ -161,10 +244,8 @@ async def test_notifications_are_limited_to_the_rooms_given_too(
     seeing its chatter and go on being handed everything said *to* it there.
     """
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=True))
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=True, room_id="room-2")
-    )
+    await _asked(q, session_factory, ROOM)
+    await _asked(q, session_factory, "room-2")
 
     polled = await q.poll_notifications(
         TENANT_ZERO_ID, AGENT, timeout=0, rooms={"room-2"}
@@ -174,7 +255,7 @@ async def test_notifications_are_limited_to_the_rooms_given_too(
 
 
 async def test_dropping_a_room_forgets_what_it_still_held(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """What the transport stops reading, the buffer has to stop holding.
 
@@ -184,10 +265,8 @@ async def test_dropping_a_room_forgets_what_it_still_held(
     window.
     """
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=True))
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=True, room_id="room-2")
-    )
+    await _asked(q, session_factory, ROOM)
+    await _asked(q, session_factory, "room-2")
 
     await q.drop_room(TENANT_ZERO_ID, AGENT, ROOM)
 
@@ -199,17 +278,17 @@ async def test_dropping_a_room_forgets_what_it_still_held(
     ]
 
 
-async def test_dropping_a_room_does_not_report_a_gap(db_buffer: EventBuffer) -> None:
+async def test_dropping_a_room_does_not_report_a_gap(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
     """A reader that skips the dropped events has missed nothing it was owed.
 
     Saying otherwise would send an agent off to re-read the context of a room
     it is no longer in.
     """
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=True))
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=True, room_id="room-2")
-    )
+    await _asked(q, session_factory, ROOM)
+    await _asked(q, session_factory, "room-2")
 
     await q.drop_room(TENANT_ZERO_ID, AGENT, ROOM)
 
@@ -218,54 +297,50 @@ async def test_dropping_a_room_does_not_report_a_gap(db_buffer: EventBuffer) -> 
 
 
 async def test_the_cursor_advances_past_what_the_reader_can_never_want(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """Unaddressed chatter is excluded on a property of the event, not on who
-    the agent is, so the notification reader will never want it and the cursor
-    is free to move past it. Left behind it, the cursor parks below the head
-    until retention trims it and the next read reports a gap that never was.
+    """A command is excluded on a property of the event, not on who the agent
+    is, so the notification reader will never want it and its position is free
+    to move past it. Left behind it, the position parks below the head until
+    retention trims it and the next read reports a gap that never was.
     """
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=False))
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=False))
+    await _keep(q, _command())
+    await _keep(q, _command())
 
     assert (
         await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
     )
-    assert q._cursors[AGENT]["legacy:notifications"] == 2
+    assert (await _poll_position(session_factory, "legacy:notifications"))[SLIPS] == 2
 
 
 async def test_the_cursor_does_not_advance_past_a_room_joined_later(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """Membership is not a property of the event, so it can change.
 
     A poll reads the agent's rooms once; anything arriving for a room it joins
     while that poll is parked is filtered against the older set. Confirming
-    past it would put the cursor beyond an event the agent is entitled to, and
-    no later poll would ever reach it again — it would sit in the buffer,
+    past it would put the position beyond an event the agent is entitled to,
+    and no later poll would ever reach it again: it would sit in the buffer,
     retained and unreachable, until it aged out.
     """
     q = db_buffer
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=True, room_id="room-2")
-    )
+    await _asked(q, session_factory, "room-2")
 
     assert await q.poll(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
-    assert q._cursors[AGENT]["legacy:all"] == 0
+    assert (await _poll_position(session_factory, "legacy:all"))[SLIPS] == 0
 
     polled = await q.poll(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM, "room-2"})
     assert [event.room_id for event in polled] == ["room-2"]
 
 
 async def test_the_notification_stream_also_survives_a_room_joined_later(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """The same rule on the stream carrying what was said *to* the agent."""
     q = db_buffer
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=True, room_id="room-2")
-    )
+    await _asked(q, session_factory, "room-2")
 
     assert (
         await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
@@ -277,23 +352,21 @@ async def test_the_notification_stream_also_survives_a_room_joined_later(
 
 
 async def test_a_room_reader_still_advances_past_other_rooms(
-    db_buffer: EventBuffer,
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """`poll_room`'s filter is the reader's own scope, not a membership snapshot.
 
     `legacy:room:X` will never want room Y whatever the agent joins later, so
-    parking its cursor behind Y's events would strand it for no gain.
+    parking its position behind Y's events would strand it for no gain.
     """
     q = db_buffer
-    await q.enqueue(
-        TENANT_ZERO_ID, AGENT, "room-2", _message(addressed=True, room_id="room-2")
-    )
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=True))
+    await _asked(q, session_factory, "room-2")
+    await _asked(q, session_factory, ROOM)
 
     polled = await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)
 
     assert [event.room_id for event in polled] == [ROOM]
-    assert q._cursors[AGENT][f"legacy:room:{ROOM}"] == 2
+    assert (await _poll_position(session_factory, f"legacy:room:{ROOM}"))[SLIPS] == 2
 
 
 async def test_deleting_the_agent_clears_its_notifications(
@@ -301,27 +374,25 @@ async def test_deleting_the_agent_clears_its_notifications(
 ) -> None:
     """The rows belong to the agent's own row, so they go when it does.
 
-    `remove` only forgets what this process holds; the queue itself is the
-    agent's rows, and the foreign key is what takes them away.
+    `remove` only forgets what this process holds; the agent's events are its
+    rows, and the foreign key is what takes them away.
     """
     q = db_buffer
-    await q.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(addressed=True))
+    await _asked(q, session_factory)
     q.remove(AGENT)
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         await session.execute(delete(Agent).where(Agent.id == AGENT))
         await session.commit()
 
-    assert (
-        await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
-    )
+    assert await q.read_from(TENANT_ZERO_ID, AGENT, 0) == []
 
 
 async def test_removing_agent_does_not_reuse_event_sequences(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     buffer = db_buffer_on(session_factory, sequence_base=1 << 32)
-    first = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(True))
+    first = await _keep(buffer, _message(True))
     buffer.remove(AGENT)
-    second = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(True))
+    second = await _keep(buffer, _message(True))
     assert second > first
     assert second < 2**53

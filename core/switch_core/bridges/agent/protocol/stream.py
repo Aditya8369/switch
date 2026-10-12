@@ -349,14 +349,14 @@ async def _event_stream(
                     limit=CATCH_UP_BATCH,
                 )
             except CursorExpiredError as exc:
-                resumed_at = max(exc.oldest - 1, 0)
-                conn.position[SLIPS] = resumed_at
+                conn.position[SLIPS] = max(exc.oldest - 1, 0)
                 yield _frame(
                     "gap",
-                    _gap(
+                    await _gap(
                         conn,
+                        buffer,
+                        tenant,
                         from_sequence=exc.requested,
-                        resumed_at=resumed_at,
                         rooms=list(exc.rooms),
                         all_rooms=False,
                         reason=str(exc),
@@ -380,7 +380,8 @@ async def _event_stream(
             for index, item in enumerate(deliver):
                 payload = item.event.model_dump(mode="json")
                 frame_seq = _number_for(conn, item, tickets, index)
-                payload["sequence"] = frame_seq if frame_seq is not None else item.seq
+                if frame_seq is not None:
+                    payload["sequence"] = frame_seq
                 if conn.speaks_positions:
                     payload["position"] = {item.source: item.seq}
                 if item.notifiable:
@@ -454,16 +455,31 @@ async def _event_stream(
         registry.detach_stream(conn, generation)
 
 
-def _gap(
+async def _gap(
     conn: AgentConnection,
+    buffer: EventBuffer,
+    tenant: str,
     *,
     from_sequence: int,
-    resumed_at: int,
     rooms: list[str],
     all_rooms: bool,
     reason: str,
 ) -> dict[str, Any]:
-    """A gap frame: the integers an older client acts on, and the position."""
+    """A gap frame: the position the stream resumes at, and the one number an
+    older client adopts in its place.
+
+    That number is how far the stream is in the agent's own events, except
+    for a client that holds one number over the conversation too. That client
+    is handed a ticket for the position: a plain number, sent back, would be
+    read as the agent's own events alone, and the conversation would start
+    over from wherever the rooms are then.
+    """
+    resumed_at = conn.position.get(SLIPS, 0)
+    if conn.reads_conversation and not conn.speaks_positions:
+        (resumed_at,) = await buffer.mint_tickets(
+            tenant, conn.agent_id, [dict(conn.position)]
+        )
+        conn.ticket = resumed_at
     return {
         "from_sequence": from_sequence,
         "resumed_at": resumed_at,
@@ -490,10 +506,11 @@ async def _opening_gaps(
     if conn.resume_lost:
         conn.resume_lost = False
         gaps.append(
-            _gap(
+            await _gap(
                 conn,
+                buffer,
+                tenant,
                 from_sequence=conn.resume_requested,
-                resumed_at=conn.cursor,
                 rooms=sorted(conn.rooms),
                 all_rooms=True,
                 reason="where you left off is no longer known to the server; "
@@ -519,10 +536,11 @@ async def _opening_gaps(
         )
         conn.position[SLIPS] = floor - 1
         gaps.append(
-            _gap(
+            await _gap(
                 conn,
+                buffer,
+                tenant,
                 from_sequence=at,
-                resumed_at=floor - 1,
                 rooms=sorted(conn.rooms),
                 all_rooms=True,
                 reason="the server restarted since your last connection; "
@@ -543,10 +561,11 @@ async def _opening_gaps(
         )
         conn.position[SLIPS] = head
         gaps.append(
-            _gap(
+            await _gap(
                 conn,
+                buffer,
+                tenant,
                 from_sequence=head,
-                resumed_at=head,
                 rooms=sorted(conn.rooms),
                 all_rooms=True,
                 reason="the server restarted since your last connection; "
@@ -556,6 +575,30 @@ async def _opening_gaps(
             )
         )
         at = head
+
+    # A place past the end of a room is from a history the room no longer has
+    # (a restored database): what is said there next would be passed over.
+    within, past = await buffer.within_rooms(tenant, conn.position)
+    if past:
+        logger.warning(
+            "[STREAM] agent=%s connection=%s resumed past the end of rooms %s",
+            agent_id,
+            conn.id,
+            ", ".join(past),
+        )
+        conn.position.update(within)
+        gaps.append(
+            await _gap(
+                conn,
+                buffer,
+                tenant,
+                from_sequence=at,
+                rooms=past,
+                all_rooms=False,
+                reason="these rooms no longer reach where you left off; "
+                "re-read room context",
+            )
+        )
 
     # A point the agent's events can no longer serve is reported, not silently
     # moved to head. The client re-reads room context to recover.
@@ -571,13 +614,13 @@ async def _opening_gaps(
             oldest,
             ", ".join(lost),
         )
-        resumed_at = max(oldest - 1, 0)
-        conn.position[SLIPS] = resumed_at
+        conn.position[SLIPS] = max(oldest - 1, 0)
         gaps.append(
-            _gap(
+            await _gap(
                 conn,
+                buffer,
+                tenant,
                 from_sequence=at,
-                resumed_at=resumed_at,
                 rooms=list(lost),
                 all_rooms=False,
                 reason="events older than the retention window were "

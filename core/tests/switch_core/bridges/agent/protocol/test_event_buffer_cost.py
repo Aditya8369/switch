@@ -21,11 +21,12 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     EventBuffer,
     Reader,
 )
+from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.observability.otlp import HistogramPoint
-from tests.db_buffer import age_events, seed_agent
+from tests.db_buffer import age_events, say, seed_agent, seed_member
 
 
 @pytest.fixture(autouse=True)
@@ -43,18 +44,26 @@ def registry() -> Iterator[MetricsRegistry]:
     uninstall()
 
 
-def _event(index: int, *, addressed: bool = True) -> AgentEvent:
+def _event(index: int, *, message_id: str | None = None) -> AgentEvent:
     return AgentEvent(
         type="message",
         room_id="room-1",
         payload=MessagePayload(
-            message_id=f"m{index}",
+            message_id=message_id or f"m{index}",
             sender="@someone:test",
             sender_name="someone",
             body=f"hello {index}",
-            addressed=addressed,
+            addressed=True,
             timestamp=index,
         ),
+    )
+
+
+async def _keep(buffer: EventBuffer, agent_id: str, event: AgentEvent) -> int:
+    """Keep one of an agent's own events. What is measured is the agent's own
+    sequence, so the room row it stands for is left out."""
+    return await buffer.enqueue(
+        TENANT_ZERO_ID, agent_id, "room-1", event, room_seq=0, message_key=None
     )
 
 
@@ -82,14 +91,14 @@ async def test_expiry_counts_every_drop_and_leaves_the_gap_for_readers(
 ):
     buffer = db_buffer
     for index in range(17):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
-    await buffer.enqueue(TENANT_ZERO_ID, "agent-2", "room-1", _event(0))
+        await _keep(buffer, "agent-1", _event(index))
+    await _keep(buffer, "agent-2", _event(0))
     await age_events(session_factory, "agent-1", seconds=2 * 3600)
     await age_events(session_factory, "agent-2", seconds=2 * 3600)
 
     assert await buffer.expire(TENANT_ZERO_ID) == 18
     for index in range(17, 20):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
+        await _keep(buffer, "agent-1", _event(index))
 
     # Every deleted row is counted, across agents, under the retention reason.
     assert _dropped(registry) == {(("reason", "retention"),): 18.0}
@@ -107,7 +116,7 @@ async def test_an_expiry_with_nothing_old_enough_drops_and_counts_nothing(
     registry, db_buffer: EventBuffer
 ):
     buffer = db_buffer
-    await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(0))
+    await _keep(buffer, "agent-1", _event(0))
 
     assert await buffer.expire(TENANT_ZERO_ID) == 0
 
@@ -120,7 +129,7 @@ async def test_a_read_records_how_many_events_it_returned(
 ):
     buffer = db_buffer
     for index in range(10):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
+        await _keep(buffer, "agent-1", _event(index))
 
     await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
     # A limited read is bounded by its limit, not by what is retained.
@@ -132,31 +141,51 @@ async def test_a_read_records_how_many_events_it_returned(
 
 
 async def test_a_read_and_an_unread_count_record_their_duration(
-    registry, db_buffer: EventBuffer
+    registry, db_buffer: EventBuffer, session_factory
 ):
     buffer = db_buffer
+    await seed_member(session_factory, "agent-1", "room-1")
     reader = Reader(id="session-1", is_session=True)
-    buffer.caught_up("agent-1", reader, "room-1", 0, arrived_on=None)
-    for index in range(4):
-        await buffer.enqueue(
-            TENANT_ZERO_ID, "agent-1", "room-1", _event(index, addressed=index == 3)
-        )
+    await buffer.caught_up(TENANT_ZERO_ID, "agent-1", reader, "room-1", 0, None)
+    # Three messages of conversation, then one addressed to the agent: a row in
+    # the room like the others, and the agent's own event besides.
+    for index in range(3):
+        await say(session_factory, "room-1", f"hello {index}")
+    asked = await say(session_factory, "room-1", "hello 3")
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        "agent-1",
+        "room-1",
+        _event(3, message_id=asked.transport_event_id),
+        room_seq=asked.seq,
+        message_key=asked.transport_event_id,
+    )
 
-    await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
-    assert (await buffer.unread(TENANT_ZERO_ID, "agent-1", "room-1", 4)).count == 3
+    await buffer.read(
+        TENANT_ZERO_ID,
+        "agent-1",
+        {SLIPS: 0, room_source("room-1"): 0},
+        conversation_rooms={"room-1"},
+        limit=200,
+    )
+    assert (
+        await buffer.unread(TENANT_ZERO_ID, "agent-1", "room-1", asked.seq)
+    ).count == 3
 
     collected = registry.collect()
     durations = next(
         p for p in collected if p.name == "switch.agent.buffer.scan.duration"
     )
     scanned = next(p for p in collected if p.name == "switch.agent.buffer.scanned")
+    # A read is two scans: the agent's own events, and the rooms' conversation.
     assert {p.attributes["operation"]: p.count for p in durations.histograms} == {
-        "read": 1,
+        "read": 2,
         "unread": 1,
     }
     assert all(p.total >= 0 for p in durations.histograms)
-    # A read records the rows it returned; an unread count is one query, and
-    # records what it counted (the addressed fourth event is not unread).
+    # Each scan of a read records the rows it returned (one event of the
+    # agent's own, three of conversation); an unread count is one query, and
+    # records what it counted (the addressed fourth message is not unread).
     assert {p.attributes["operation"]: p.total for p in scanned.histograms} == {
         "read": 4.0,
         "unread": 3.0,
@@ -167,9 +196,9 @@ async def test_an_unread_count_with_nothing_to_count_records_no_scan(
     registry, db_buffer: EventBuffer
 ):
     buffer = db_buffer
-    await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(0))
+    await _keep(buffer, "agent-1", _event(0))
 
-    # No baseline: answered without querying the events.
+    # No baseline: answered without counting the room's log.
     assert (await buffer.unread(TENANT_ZERO_ID, "agent-1", "room-1", 1)).count is None
 
     names = {p.name for p in registry.collect()}

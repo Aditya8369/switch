@@ -21,7 +21,7 @@ async def _session_factory():  # type: ignore[no-untyped-def]
     yield object()
 
 
-async def _ignore_enqueue(*_args: object) -> int:
+async def _ignore_enqueue(*_args: object, **_kwargs: object) -> int:
     # What the agent is sent is not under test here, only where the reply goes.
     return 0
 
