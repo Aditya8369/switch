@@ -10,6 +10,8 @@ record underneath it, including records from libraries.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 import logging
 from typing import Any
@@ -144,7 +146,8 @@ class TestTheProtocolBindsItsAgent:
             max_events_per_agent=2, retention_seconds=3600, sequence_base=0
         )
         for index in range(5):
-            buffer.enqueue(
+            await buffer.enqueue(
+                TENANT_ZERO_ID,
                 "agent-99",
                 "room-1",
                 AgentEvent(

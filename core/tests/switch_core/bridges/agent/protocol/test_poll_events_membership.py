@@ -8,6 +8,8 @@ that have no room in them — the all-rooms poll and the notification stream.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -62,8 +64,12 @@ async def test_events_from_a_room_the_agent_was_removed_from_are_not_returned(
     kept = await _room(session_factory, "kept", agent_id)
     left = await _room(session_factory, "left", agent_id)
 
-    svc.event_buffer.enqueue(agent_id, left, _message(left, "said in the old room"))
-    svc.event_buffer.enqueue(agent_id, kept, _message(kept, "said in this one"))
+    await svc.event_buffer.enqueue(
+        TENANT_ZERO_ID, agent_id, left, _message(left, "said in the old room")
+    )
+    await svc.event_buffer.enqueue(
+        TENANT_ZERO_ID, agent_id, kept, _message(kept, "said in this one")
+    )
 
     async with session_factory() as session:
         await RoomStore().remove_agents(session, left, [agent_id])
@@ -93,11 +99,17 @@ async def test_notifications_from_a_room_the_agent_was_removed_from_are_not_retu
     kept = await _room(session_factory, "kept-notif", agent_id)
     left = await _room(session_factory, "left-notif", agent_id)
 
-    svc.event_buffer.enqueue(
-        agent_id, left, _message(left, "asked in the old room", addressed=True)
+    await svc.event_buffer.enqueue(
+        TENANT_ZERO_ID,
+        agent_id,
+        left,
+        _message(left, "asked in the old room", addressed=True),
     )
-    svc.event_buffer.enqueue(
-        agent_id, kept, _message(kept, "asked in this one", addressed=True)
+    await svc.event_buffer.enqueue(
+        TENANT_ZERO_ID,
+        agent_id,
+        kept,
+        _message(kept, "asked in this one", addressed=True),
     )
 
     async with session_factory() as session:

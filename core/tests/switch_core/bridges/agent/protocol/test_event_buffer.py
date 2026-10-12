@@ -8,6 +8,8 @@ would steal events from connected rooms.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -246,8 +248,8 @@ async def test_remove_clears_notification_queue() -> None:
 
 def test_removing_agent_does_not_reuse_event_sequences():
     buffer = EventBuffer(sequence_base=1 << 32)
-    first = buffer.enqueue(AGENT, ROOM, _message(True))
+    first = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(True))
     buffer.remove(AGENT)
-    second = buffer.enqueue(AGENT, ROOM, _message(True))
+    second = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM, _message(True))
     assert second > first
     assert second < 2**53

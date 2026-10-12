@@ -8,6 +8,8 @@ buffer. No mocks, no HTTP layer.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 
 import pytest
@@ -41,7 +43,7 @@ async def _drain_room_join(
     while asyncio.get_event_loop().time() < deadline:
         remaining = deadline - asyncio.get_event_loop().time()
         events = await harness.event_buffer.poll_room(
-            agent_id, room_id, timeout=min(5, max(0.1, remaining))
+            TENANT_ZERO_ID, agent_id, room_id, timeout=min(5, max(0.1, remaining))
         )
         for ev in events:
             if ev.type == "room_join":

@@ -7,6 +7,8 @@ there; these cover what is particular to the socket.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 from collections.abc import AsyncGenerator, Iterator
 from typing import Any
@@ -118,7 +120,8 @@ def test_events_arrive_with_their_sequence_number(
 ) -> None:
     with client.websocket_connect(_url(rooms=ROOM)) as ws:
         ws.receive_json()
-        seq = protocol.event_buffer.enqueue(
+        seq = await protocol.event_buffer.enqueue(
+            TENANT_ZERO_ID,
             AGENT_ID,
             ROOM,
             AgentEvent(

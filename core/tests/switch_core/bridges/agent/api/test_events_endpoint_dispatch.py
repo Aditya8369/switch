@@ -8,6 +8,8 @@ the event stream an old client still asks for; anything else long polls.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 from types import SimpleNamespace
 from typing import Any
@@ -324,7 +326,7 @@ async def test_an_older_client_inside_the_server_range_is_accepted() -> None:
 
 def test_head_means_only_what_happens_next() -> None:
     protocol = _Protocol()
-    protocol.event_buffer.enqueue(AGENT_ID, "room", _event())
+    await protocol.event_buffer.enqueue(TENANT_ZERO_ID, AGENT_ID, "room", _event())
     assert _resolve_start_cursor(protocol, AGENT_ID, "head") == 1
 
 

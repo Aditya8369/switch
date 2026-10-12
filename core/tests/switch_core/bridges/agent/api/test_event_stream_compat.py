@@ -12,6 +12,8 @@ loop, so the rules themselves are tested once, on the frames.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 import json
 import time
@@ -149,7 +151,9 @@ async def test_an_old_client_connects_receives_beats_and_lapses() -> None:
     assert state["rooms"] == [ROOM]
     generation = state["generation"]
 
-    seq = protocol.event_buffer.enqueue(AGENT_ID, ROOM, _message("hello"))
+    seq = await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("hello")
+    )
     event, sent_seq, data = await stream.frame()
     assert event == "message"
     assert sent_seq == str(seq)
@@ -161,7 +165,9 @@ async def test_an_old_client_connects_receives_beats_and_lapses() -> None:
     conn = protocol.connections.get("c1")
     assert conn is not None
     conn.last_beat = time.monotonic() - (HEARTBEAT_TTL_SECONDS + 1)
-    protocol.event_buffer.enqueue(AGENT_ID, ROOM, _message("not after a lapse"))
+    await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("not after a lapse")
+    )
 
     event, _, data = await stream.frame()
     assert event == "evicted"
@@ -175,8 +181,12 @@ async def test_an_old_client_connects_receives_beats_and_lapses() -> None:
 
 async def test_an_old_client_resumes_from_last_event_id() -> None:
     protocol = _Protocol()
-    first = protocol.event_buffer.enqueue(AGENT_ID, ROOM, _message("seen"))
-    protocol.event_buffer.enqueue(AGENT_ID, ROOM, _message("missed"))
+    first = await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("seen")
+    )
+    await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, ROOM, _message("missed")
+    )
 
     # The old runtime sent the cursor both ways; the header wins.
     stream = _Reader(

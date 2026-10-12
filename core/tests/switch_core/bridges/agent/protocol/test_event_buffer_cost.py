@@ -11,6 +11,8 @@ measured: how many events, and how long, per call.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import logging
 from collections.abc import Iterator
 
@@ -102,7 +104,7 @@ def test_overflow_warns_once_per_interval_per_agent(clock, registry, caplog):
     )
 
     for index in range(50):
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
         clock.now += 0.1
 
     # 47 drops inside five seconds: one line, not 47.
@@ -119,12 +121,12 @@ def test_overflow_warning_resumes_after_the_interval_with_a_count(
     )
 
     for index in range(4):
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
     for index in range(4, 14):
         clock.now += 1
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
     clock.now += OVERFLOW_WARNING_INTERVAL_SECONDS
-    buffer.enqueue("agent-1", "room-1", _event(14))
+    await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(14))
 
     warnings = _overflow_warnings(caplog)
     assert len(warnings) == 2
@@ -140,8 +142,8 @@ def test_overflow_warning_is_per_agent(clock, caplog):
     )
 
     for index in range(5):
-        buffer.enqueue("agent-1", "room-1", _event(index))
-        buffer.enqueue("agent-2", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-2", "room-1", _event(index))
 
     warned = sorted(
         record.getMessage().split()[1] for record in _overflow_warnings(caplog)
@@ -156,15 +158,17 @@ def test_a_quiet_warning_still_leaves_the_gap_for_readers(clock, caplog):
     )
 
     for index in range(20):
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
 
     assert len(_overflow_warnings(caplog)) == 1
     # A reader from the start is told about every drop, logged or not.
     with pytest.raises(CursorExpiredError) as exc:
-        buffer.read_from("agent-1", 0)
+        await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
     assert exc.value.oldest == 18
     assert exc.value.rooms == ("room-1",)
-    assert [item.seq for item in buffer.read_from("agent-1", 17)] == [18, 19, 20]
+    assert [
+        item.seq for item in await buffer.read_from(TENANT_ZERO_ID, "agent-1", 17)
+    ] == [18, 19, 20]
 
 
 def test_removing_an_agent_forgets_its_warning_state(clock, caplog):
@@ -174,10 +178,10 @@ def test_removing_an_agent_forgets_its_warning_state(clock, caplog):
     )
 
     for index in range(3):
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
     buffer.remove("agent-1")
     for index in range(3):
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
 
     assert len(_overflow_warnings(caplog)) == 2
 
@@ -187,11 +191,11 @@ def test_a_read_records_how_many_events_it_walked(registry):
         max_events_per_agent=100, retention_seconds=3600, sequence_base=0
     )
     for index in range(10):
-        buffer.enqueue("agent-1", "room-1", _event(index))
+        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
 
-    buffer.read_from("agent-1", 0)
+    await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
     # Stopping at the limit walks only as far as the limit was reached.
-    buffer.read_from("agent-1", 0, limit=3)
+    await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0, limit=3)
 
     scanned = _histograms(registry, "switch.agent.buffer.scanned")["read"]
     assert scanned.count == 2
@@ -205,10 +209,12 @@ def test_a_read_and_an_unread_count_record_their_duration(registry):
     reader = Reader(id="session-1", is_session=True)
     buffer.caught_up("agent-1", reader, "room-1", 0, arrived_on=None)
     for index in range(4):
-        buffer.enqueue("agent-1", "room-1", _event(index, addressed=index == 3))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, "agent-1", "room-1", _event(index, addressed=index == 3)
+        )
 
-    buffer.read_from("agent-1", 0)
-    assert buffer.unread("agent-1", "room-1", 4).count == 3
+    await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
+    assert (await buffer.unread(TENANT_ZERO_ID, "agent-1", "room-1", 4)).count == 3
 
     collected = registry.collect()
     durations = next(
@@ -228,10 +234,10 @@ def test_a_read_and_an_unread_count_record_their_duration(registry):
 
 def test_an_unread_count_with_nothing_to_count_records_no_scan(registry):
     buffer = EventBuffer(sequence_base=0)
-    buffer.enqueue("agent-1", "room-1", _event(0))
+    await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(0))
 
     # No baseline: answered without walking the buffer.
-    assert buffer.unread("agent-1", "room-1", 1).count is None
+    assert (await buffer.unread(TENANT_ZERO_ID, "agent-1", "room-1", 1)).count is None
 
     names = {p.name for p in registry.collect()}
     assert "switch.agent.buffer.scanned" not in names

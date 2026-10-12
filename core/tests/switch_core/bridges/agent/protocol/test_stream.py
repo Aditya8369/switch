@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import version as version_module
 from switch_core.bridges.agent.protocol import stream as stream_module
@@ -28,11 +29,20 @@ from switch_core.bridges.agent.protocol.stream import (
     sse_stream,
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from tests.db_buffer import age_events, db_buffer_on, seed_agent
 
 AGENT = "agent-1"
 ROOM_A = "room-a"
 ROOM_B = "room-b"
+
+
+@pytest.fixture(autouse=True)
+async def _agent_rows(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent every stream here is for, so its events have a row to belong to."""
+    await seed_agent(session_factory, AGENT)
+    await seed_agent(session_factory, "agent-2")
 
 
 def _message(body: str, *, addressed: bool = False, room: str = ROOM_A) -> AgentEvent:
@@ -86,9 +96,9 @@ def _open(registry: AgentConnectionRegistry, **kw: Any):
     return registry.open(**params)
 
 
-async def test_first_frame_is_the_connection_state() -> None:
+async def test_first_frame_is_the_connection_state(db_buffer: EventBuffer) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
@@ -105,7 +115,9 @@ async def test_first_frame_is_the_connection_state() -> None:
     assert data["generation"] == conn.stream_generation
 
 
-async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
+async def test_the_first_frame_declares_the_server(
+    monkeypatch, db_buffer: EventBuffer
+) -> None:
     """Version disclosure rides this frame, not an endpoint of its own.
 
     The stream is already authenticated, and nothing about the server's
@@ -113,7 +125,7 @@ async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
     """
     monkeypatch.setattr(version_module, "switch_core_version", lambda: "9.9.9")
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
@@ -132,11 +144,12 @@ async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
 
 async def test_an_unreadable_server_version_is_null_not_a_placeholder(
     monkeypatch,
+    db_buffer: EventBuffer,
 ) -> None:
     """Null means unknown. A placeholder would read as a version we chose."""
     monkeypatch.setattr(version_module, "switch_core_version", lambda: None)
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
@@ -145,14 +158,16 @@ async def test_an_unreadable_server_version_is_null_not_a_placeholder(
     assert data["server"]["version"] is None
 
 
-async def test_the_first_frame_echoes_what_the_client_declared() -> None:
+async def test_the_first_frame_echoes_what_the_client_declared(
+    db_buffer: EventBuffer,
+) -> None:
     """So a declaration that failed to parse cannot pass unnoticed.
 
     Both sides otherwise believe it landed, which is worse than never having
     sent it.
     """
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(
         registry,
         declaration=ClientDeclaration(
@@ -174,9 +189,11 @@ async def test_the_first_frame_echoes_what_the_client_declared() -> None:
     }
 
 
-async def test_an_undeclared_client_is_echoed_as_all_null() -> None:
+async def test_an_undeclared_client_is_echoed_as_all_null(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry, declaration=ClientDeclaration())
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
@@ -190,14 +207,14 @@ async def test_an_undeclared_client_is_echoed_as_all_null() -> None:
     }
 
 
-async def test_catch_up_then_live_delivery() -> None:
+async def test_catch_up_then_live_delivery(db_buffer: EventBuffer) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
     # Queued before the stream opened: must be caught up, not skipped.
-    buffer.enqueue(AGENT, ROOM_A, _message("before"))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("before"))
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     frames = await _take(stream, 2)
@@ -207,7 +224,7 @@ async def test_catch_up_then_live_delivery() -> None:
     # Appended while the stream is open: pushed without being asked for.
     async def append_soon() -> None:
         await asyncio.sleep(0.01)
-        buffer.enqueue(AGENT, ROOM_A, _message("after"))
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("after"))
 
     task = asyncio.create_task(append_soon())
     live = await _take(stream, 1)
@@ -216,12 +233,12 @@ async def test_catch_up_then_live_delivery() -> None:
     assert live[0][1]["payload"]["body"] == "after"
 
 
-async def test_sequence_number_is_carried_for_resume() -> None:
+async def test_sequence_number_is_carried_for_resume(db_buffer: EventBuffer) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
-    seq = buffer.enqueue(AGENT, ROOM_A, _message("one"))
+    seq = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     frames = await _take(stream, 2)
@@ -230,11 +247,13 @@ async def test_sequence_number_is_carried_for_resume() -> None:
     assert conn.cursor == seq
 
 
-async def test_resuming_from_a_cursor_skips_what_was_already_seen() -> None:
+async def test_resuming_from_a_cursor_skips_what_was_already_seen(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
-    first = buffer.enqueue(AGENT, ROOM_A, _message("seen"))
-    buffer.enqueue(AGENT, ROOM_A, _message("missed"))
+    buffer = db_buffer
+    first = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("seen"))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("missed"))
 
     conn = _open(registry, cursor=first)
     registry.claim_room(conn, ROOM_A)
@@ -245,11 +264,15 @@ async def test_resuming_from_a_cursor_skips_what_was_already_seen() -> None:
     assert frames[1][1]["payload"]["body"] == "missed"
 
 
-async def test_expired_cursor_produces_a_gap_event_rather_than_silence() -> None:
+async def test_expired_cursor_produces_a_gap_event_rather_than_silence(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(max_events_per_agent=1, sequence_base=0)
-    buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
-    buffer.enqueue(AGENT, ROOM_A, _message("kept"))
+    buffer = db_buffer
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("dropped"))
+    await age_events(session_factory, AGENT, seconds=2 * 3600)
+    await buffer.expire(TENANT_ZERO_ID)
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("kept"))
 
     conn = _open(registry, cursor=0)
     registry.claim_room(conn, ROOM_A)
@@ -261,14 +284,18 @@ async def test_expired_cursor_produces_a_gap_event_rather_than_silence() -> None
     assert "re-read" in frames[1][1]["reason"]
 
 
-async def test_events_for_rooms_the_connection_does_not_cover_are_skipped() -> None:
+async def test_events_for_rooms_the_connection_does_not_cover_are_skipped(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
-    buffer.enqueue(AGENT, ROOM_B, _message("elsewhere", room=ROOM_B))
-    buffer.enqueue(AGENT, ROOM_A, _message("mine"))
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_B, _message("elsewhere", room=ROOM_B)
+    )
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("mine"))
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     frames = await _take(stream, 2)
@@ -276,13 +303,15 @@ async def test_events_for_rooms_the_connection_does_not_cover_are_skipped() -> N
     assert frames[1][1]["payload"]["body"] == "mine"
 
 
-async def test_addressed_filter_drops_ambient_chatter() -> None:
+async def test_addressed_filter_drops_ambient_chatter(db_buffer: EventBuffer) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry, scope="all", delivery_filter="addressed")
 
-    buffer.enqueue(AGENT, ROOM_A, _message("chatter"))
-    buffer.enqueue(AGENT, ROOM_B, _message("wanted", addressed=True, room=ROOM_B))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("chatter"))
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_B, _message("wanted", addressed=True, room=ROOM_B)
+    )
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     frames = await _take(stream, 2)
@@ -290,9 +319,11 @@ async def test_addressed_filter_drops_ambient_chatter() -> None:
     assert frames[1][1]["payload"]["body"] == "wanted"
 
 
-async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
+async def test_a_superseded_stream_is_told_it_was_evicted(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
@@ -301,7 +332,7 @@ async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
 
     # A second stream attaches to the same connection id.
     _open(registry)
-    buffer.enqueue(AGENT, ROOM_A, _message("wake up"))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("wake up"))
 
     frames = await _take(stream, 1)
     assert frames[0][0] == "evicted"
@@ -310,9 +341,11 @@ async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
     assert frames[0][1]["code"] == "taken_over"
 
 
-async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
+async def test_closing_the_connection_ends_the_stream_with_a_reason(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
@@ -328,10 +361,12 @@ async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
     assert frames[0][1]["room_id"] is None
 
 
-async def test_a_close_about_a_room_names_the_room_it_was_about() -> None:
+async def test_a_close_about_a_room_names_the_room_it_was_about(
+    db_buffer: EventBuffer,
+) -> None:
     """A client that loses a connection over a room it declared must be told which."""
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
@@ -349,9 +384,9 @@ async def test_a_close_about_a_room_names_the_room_it_was_about() -> None:
     assert data["room_id"] == ROOM_A
 
 
-async def test_subscription_change_is_announced() -> None:
+async def test_subscription_change_is_announced(db_buffer: EventBuffer) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
@@ -371,9 +406,11 @@ async def test_subscription_change_is_announced() -> None:
     assert frames[0][1]["rooms"] == [ROOM_B]
 
 
-async def test_stream_detaches_on_exit_without_killing_the_connection() -> None:
+async def test_stream_detaches_on_exit_without_killing_the_connection(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
@@ -385,10 +422,12 @@ async def test_stream_detaches_on_exit_without_killing_the_connection() -> None:
 
 
 @pytest.mark.parametrize("scope", ["single", "all"])
-async def test_two_connections_receive_the_same_event(scope: str) -> None:
+async def test_two_connections_receive_the_same_event(
+    scope: str, db_buffer: EventBuffer
+) -> None:
     """Non-destructive reads: one reader must not steal from another."""
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
 
     session = registry.open(
         agent_id=AGENT,
@@ -414,8 +453,8 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
     )
     registry.claim_room(other_agent, ROOM_A)
 
-    buffer.enqueue(AGENT, ROOM_A, _message("shared"))
-    buffer.enqueue("agent-2", ROOM_A, _message("shared"))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("shared"))
+    await buffer.enqueue(TENANT_ZERO_ID, "agent-2", ROOM_A, _message("shared"))
 
     a = event_frames(conn=session, registry=registry, buffer=buffer, approvals=None)
     b = event_frames(conn=other_agent, registry=registry, buffer=buffer, approvals=None)
@@ -424,7 +463,9 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
     assert (await _take(b, 2))[1][1]["payload"]["body"] == "shared"
 
 
-async def test_resume_replays_buffered_events_for_a_room_claimed_at_open() -> None:
+async def test_resume_replays_buffered_events_for_a_room_claimed_at_open(
+    db_buffer: EventBuffer,
+) -> None:
     """The reconnect case the whole design exists for.
 
     A client that drops and comes back declares its room when it reopens. If
@@ -433,10 +474,12 @@ async def test_resume_replays_buffered_events_for_a_room_claimed_at_open() -> No
     them — losing exactly what resume is meant to recover.
     """
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
 
-    seen = buffer.enqueue(AGENT, ROOM_A, _message("before the drop"))
-    buffer.enqueue(AGENT, ROOM_A, _message("while disconnected"))
+    seen = await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message("before the drop")
+    )
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("while disconnected"))
 
     conn = _open(registry, connection_id="c-resumed", cursor=seen)
     # Claimed before the stream is created, as the endpoint does.
@@ -449,15 +492,19 @@ async def test_resume_replays_buffered_events_for_a_room_claimed_at_open() -> No
     assert frames[1][1]["payload"]["body"] == "while disconnected"
 
 
-async def test_events_for_uncovered_rooms_do_not_block_the_cursor() -> None:
+async def test_events_for_uncovered_rooms_do_not_block_the_cursor(
+    db_buffer: EventBuffer,
+) -> None:
     """Skipping is deliberate for rooms this connection does not cover."""
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
 
-    buffer.enqueue(AGENT, ROOM_B, _message("someone else's room", room=ROOM_B))
-    last = buffer.enqueue(AGENT, ROOM_A, _message("mine"))
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_B, _message("someone else's room", room=ROOM_B)
+    )
+    last = await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("mine"))
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     frames = await _take(stream, 2)
@@ -466,7 +513,9 @@ async def test_events_for_uncovered_rooms_do_not_block_the_cursor() -> None:
     assert conn.cursor == last
 
 
-async def test_a_cursor_from_before_a_restart_is_reported_not_ignored() -> None:
+async def test_a_cursor_from_before_a_restart_is_reported_not_ignored(
+    db_buffer: EventBuffer,
+) -> None:
     """The buffer is in memory, so a restart resets the numbering.
 
     A client that comes back with a cursor from the previous process would
@@ -474,8 +523,8 @@ async def test_a_cursor_from_before_a_restart_is_reported_not_ignored() -> None:
     caught up while its history has a hole in it.
     """
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
-    buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+    buffer = db_buffer
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("after the restart"))
 
     conn = _open(registry, cursor=4812)  # from a previous life
     registry.claim_room(conn, ROOM_A)
@@ -487,13 +536,18 @@ async def test_a_cursor_from_before_a_restart_is_reported_not_ignored() -> None:
     assert "restarted" in frames[1][1]["reason"]
 
 
-async def test_stream_reports_restart_below_floor() -> None:
-    """Each boot numbers above the last, so a previous boot's cursor is below
-    this one's floor rather than above its head. The restart is still told, and
-    `resumed_at` sits above the old cursor so the client keeps its dedupe."""
+async def test_stream_reports_restart_below_floor(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An agent's numbering starts above every earlier boot's, so a cursor
+    from before its events were kept here is below its floor rather than above
+    its head. That is still told, and `resumed_at` sits above the old cursor so
+    the client keeps its dedupe."""
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=7 << 32)
-    first = buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+    buffer = db_buffer_on(session_factory, sequence_base=7 << 32)
+    first = await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message("after the restart")
+    )
     old_cursor = (6 << 32) + 4812
 
     conn = _open(registry, cursor=old_cursor)
@@ -510,7 +564,7 @@ async def test_stream_reports_restart_below_floor() -> None:
     assert gap["all_rooms"] is True
     assert "restarted" in gap["reason"]
     assert frames[2][1]["sequence"] == first == buffer.sequence_floor
-    assert buffer.unread(AGENT, ROOM_A, first).count is None
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_A, first)).count is None
 
 
 class TestALapsedHeartbeatStopsDelivery:
@@ -525,11 +579,13 @@ class TestALapsedHeartbeatStopsDelivery:
     session from it.
     """
 
-    async def test_the_stream_evicts_when_the_heartbeat_lapses(self) -> None:
+    async def test_the_stream_evicts_when_the_heartbeat_lapses(
+        self, db_buffer: EventBuffer
+    ) -> None:
         import time as _time
 
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry)
         registry.claim_room(conn, ROOM_A)
 
@@ -540,7 +596,9 @@ class TestALapsedHeartbeatStopsDelivery:
         await _take(stream, 1)
 
         conn.last_beat = _time.monotonic() - (HEARTBEAT_TTL_SECONDS + 1)
-        buffer.enqueue(AGENT, ROOM_A, _message("should not arrive"))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("should not arrive")
+        )
 
         ((name, data),) = await _take(stream, 1)
 
@@ -548,12 +606,14 @@ class TestALapsedHeartbeatStopsDelivery:
         assert data["code"] == "heartbeat_lapsed"
         assert "heartbeat" in data["reason"]
 
-    async def test_the_connection_is_closed_not_merely_ignored(self) -> None:
+    async def test_the_connection_is_closed_not_merely_ignored(
+        self, db_buffer: EventBuffer
+    ) -> None:
         """Otherwise the room slot stays claimed by a connection that is gone."""
         import time as _time
 
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry)
         registry.claim_room(conn, ROOM_A)
 
@@ -583,16 +643,18 @@ class TestFilteredEventsDoNotSpinTheLoop:
     """
 
     async def test_the_cursor_advances_past_events_the_filter_excludes(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, db_buffer: EventBuffer
     ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
 
         # Unaddressed chatter: real events, none of them notifiable.
         for i in range(3):
-            buffer.enqueue(AGENT, ROOM_A, _message(f"chatter-{i}", addressed=False))
+            await buffer.enqueue(
+                TENANT_ZERO_ID, AGENT, ROOM_A, _message(f"chatter-{i}", addressed=False)
+            )
 
         # Shorten the keepalive so "did it reach its wait?" is answered in
         # milliseconds. A spinning generator never yields one at any interval.
@@ -604,20 +666,25 @@ class TestFilteredEventsDoNotSpinTheLoop:
         await _take(stream, 1)  # connection_state
         await asyncio.wait_for(anext(stream), timeout=2.0)
 
-        assert conn.cursor == buffer.head(AGENT)
+        assert conn.cursor == await buffer.head(TENANT_ZERO_ID, AGENT)
         await stream.aclose()
 
     async def test_an_addressed_event_after_the_excluded_ones_still_arrives(
         self,
+        db_buffer: EventBuffer,
     ) -> None:
         """Advancing past the excluded events must not skip what follows."""
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
 
-        buffer.enqueue(AGENT, ROOM_A, _message("chatter", addressed=False))
-        buffer.enqueue(AGENT, ROOM_A, _message("for-you", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("chatter", addressed=False)
+        )
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("for-you", addressed=True)
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -644,15 +711,17 @@ class TestAConnectionWithNoRoomDoesNotConsume:
     """
 
     async def test_the_cursor_survives_the_wait_for_a_room(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, db_buffer: EventBuffer
     ) -> None:
         monkeypatch.setattr(stream_module, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         # Opened at 0, like a session handed its trigger's position.
         conn = _open(registry, cursor=0)
 
-        buffer.enqueue(AGENT, ROOM_A, _message("the trigger", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("the trigger", addressed=True)
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -665,14 +734,16 @@ class TestAConnectionWithNoRoomDoesNotConsume:
         await stream.aclose()
 
     async def test_the_trigger_arrives_once_the_room_is_claimed(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, db_buffer: EventBuffer
     ) -> None:
         monkeypatch.setattr(stream_module, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, cursor=0)
 
-        buffer.enqueue(AGENT, ROOM_A, _message("the trigger", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("the trigger", addressed=True)
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -689,13 +760,17 @@ class TestAConnectionWithNoRoomDoesNotConsume:
         assert frames[1][1]["payload"]["body"] == "the trigger"
         await stream.aclose()
 
-    async def test_an_all_scope_connection_is_not_parked(self) -> None:
+    async def test_an_all_scope_connection_is_not_parked(
+        self, db_buffer: EventBuffer
+    ) -> None:
         """A watcher holds no room by design and must keep receiving."""
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, scope="all", connection_id="watcher")
 
-        buffer.enqueue(AGENT, ROOM_A, _message("hello", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("hello", addressed=True)
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -706,9 +781,11 @@ class TestAConnectionWithNoRoomDoesNotConsume:
         await stream.aclose()
 
 
-async def test_replaced_stream_cannot_capture_its_successors_generation() -> None:
+async def test_replaced_stream_cannot_capture_its_successors_generation(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     old = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     _open(registry)
@@ -716,9 +793,11 @@ async def test_replaced_stream_cannot_capture_its_successors_generation() -> Non
     assert registry.beat(AGENT, conn.id, 0, conn.stream_generation).stream_attached
 
 
-async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
+async def test_closed_stream_cannot_detach_a_recreated_connection(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry)
     old = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     await anext(old)
@@ -731,9 +810,9 @@ async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
     ).stream_attached
 
 
-async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_from() -> (
-    None
-):
+async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_from(
+    db_buffer: EventBuffer,
+) -> None:
     """The leak this stream had no way of its own to close.
 
     Membership is checked when a room is claimed and never again, and an
@@ -748,13 +827,17 @@ async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_fro
     reader that has no other defence.
     """
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
 
-    buffer.enqueue(AGENT, ROOM_A, _message("said before the removal"))
-    buffer.enqueue(AGENT, ROOM_B, _message("still a member here", room=ROOM_B))
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message("said before the removal")
+    )
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_B, _message("still a member here", room=ROOM_B)
+    )
 
     # What a kick does, through the two calls `AgentConsumer.on_removed` makes.
-    buffer.drop_room(AGENT, ROOM_A)
+    await buffer.drop_room(TENANT_ZERO_ID, AGENT, ROOM_A)
     registry.release_room_everywhere(AGENT, ROOM_A)
 
     # The supervisor comes back and resumes from before both events.
@@ -766,7 +849,9 @@ async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_fro
     assert frames[1][1]["payload"]["body"] == "still a member here"
 
 
-async def test_a_last_event_id_reconnect_does_not_replay_a_removed_room() -> None:
+async def test_a_last_event_id_reconnect_does_not_replay_a_removed_room(
+    db_buffer: EventBuffer,
+) -> None:
     """The resume a real client actually performs.
 
     An SSE client reconnects by sending back the `Last-Event-ID` it last saw;
@@ -777,13 +862,19 @@ async def test_a_last_event_id_reconnect_does_not_replay_a_removed_room() -> Non
     requested `start_from`.
     """
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
 
-    seen = buffer.enqueue(AGENT, ROOM_A, _message("before the drop"))
-    buffer.enqueue(AGENT, ROOM_A, _message("while it was still a member"))
-    buffer.enqueue(AGENT, ROOM_B, _message("in the room it kept", room=ROOM_B))
+    seen = await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message("before the drop")
+    )
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message("while it was still a member")
+    )
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_B, _message("in the room it kept", room=ROOM_B)
+    )
 
-    buffer.drop_room(AGENT, ROOM_A)
+    await buffer.drop_room(TENANT_ZERO_ID, AGENT, ROOM_A)
     registry.release_room_everywhere(AGENT, ROOM_A)
 
     # `seen` is what the client would send back as Last-Event-ID: a cursor from
@@ -806,18 +897,28 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
 
     async def test_a_delivered_event_carries_the_chatter_of_its_own_room(
         self,
+        db_buffer: EventBuffer,
     ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
         registry.claim_room(conn, ROOM_B)
 
-        buffer.enqueue(AGENT, ROOM_A, _message("chatter-1"))
-        buffer.enqueue(AGENT, ROOM_A, _message("chatter-2"))
-        buffer.enqueue(AGENT, ROOM_B, _message("elsewhere", room=ROOM_B))
-        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
-        buffer.enqueue(AGENT, ROOM_B, _message("also you", addressed=True, room=ROOM_B))
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("chatter-1"))
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("chatter-2"))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("elsewhere", room=ROOM_B)
+        )
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("for you", addressed=True)
+        )
+        await buffer.enqueue(
+            TENANT_ZERO_ID,
+            AGENT,
+            ROOM_B,
+            _message("also you", addressed=True, room=ROOM_B),
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -828,17 +929,21 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         assert frames[1][1]["missed"] == {"count": 2, "reason": None}
         assert frames[2][1]["missed"] == {"count": 1, "reason": None}
 
-    async def test_chatter_the_stream_walked_past_is_still_counted(self) -> None:
+    async def test_chatter_the_stream_walked_past_is_still_counted(
+        self, db_buffer: EventBuffer
+    ) -> None:
         """The fast-forward moves the cursor, not the reader's watermark.
 
         Skipping unnotifiable events is what keeps the generator from spinning;
         it must not double as a claim that the agent has seen them.
         """
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
-        chatter = buffer.enqueue(AGENT, ROOM_A, _message("chatter"))
+        chatter = await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("chatter")
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -849,7 +954,9 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         await asyncio.sleep(0.05)
         assert conn.cursor == chatter  # walked past rather than delivered
 
-        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("for you", addressed=True)
+        )
         ((_, data),) = await waiting
         await stream.aclose()
 
@@ -857,14 +964,19 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
 
     async def test_a_room_claimed_after_the_connection_opened_counts_from_there(
         self,
+        db_buffer: EventBuffer,
     ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
 
-        buffer.enqueue(AGENT, ROOM_B, _message("before the claim", room=ROOM_B))
-        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("before the claim", room=ROOM_B)
+        )
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("for you", addressed=True)
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -872,16 +984,25 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         await _take(stream, 2)  # connection_state, then the message in room A
 
         registry.claim_room(conn, ROOM_B)
-        buffer.enqueue(AGENT, ROOM_B, _message("chatter", room=ROOM_B))
-        buffer.enqueue(AGENT, ROOM_B, _message("for you", addressed=True, room=ROOM_B))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("chatter", room=ROOM_B)
+        )
+        await buffer.enqueue(
+            TENANT_ZERO_ID,
+            AGENT,
+            ROOM_B,
+            _message("for you", addressed=True, room=ROOM_B),
+        )
         frames = await _take(stream, 2)  # subscription_changed, then the message
         await stream.aclose()
 
         assert frames[1][1]["missed"] == {"count": 1, "reason": None}
 
-    async def test_a_count_is_absent_rather_than_zero_after_a_restart(self) -> None:
+    async def test_a_count_is_absent_rather_than_zero_after_a_restart(
+        self, db_buffer: EventBuffer
+    ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry, cursor=4812)  # from a previous life
         registry.claim_room(conn, ROOM_A)
 
@@ -890,7 +1011,9 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         )
         assert (await _take(stream, 2))[1][0] == "gap"
 
-        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("for you", addressed=True)
+        )
         ((_, data),) = await _take(stream, 1)
         await stream.aclose()
 
@@ -901,13 +1024,21 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
 class TestAGapNamesTheRoomsThatLostEvents:
     """ "Something was dropped" is unactionable across a dozen rooms."""
 
-    async def test_an_expired_cursor_names_them(self) -> None:
+    async def test_an_expired_cursor_names_them(
+        self, db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(max_events_per_agent=2, sequence_base=0)
-        buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
-        buffer.enqueue(AGENT, ROOM_B, _message("dropped", room=ROOM_B))
-        buffer.enqueue(AGENT, ROOM_A, _message("kept"))
-        buffer.enqueue(AGENT, ROOM_B, _message("kept", room=ROOM_B))
+        buffer = db_buffer
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("dropped"))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("dropped", room=ROOM_B)
+        )
+        await age_events(session_factory, AGENT, seconds=2 * 3600)
+        await buffer.expire(TENANT_ZERO_ID)
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("kept"))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("kept", room=ROOM_B)
+        )
 
         conn = _open(registry, cursor=0)
         registry.claim_room(conn, ROOM_A)
@@ -922,10 +1053,14 @@ class TestAGapNamesTheRoomsThatLostEvents:
         assert frames[1][0] == "gap"
         assert sorted(frames[1][1]["rooms"]) == [ROOM_A, ROOM_B]
 
-    async def test_a_restart_names_the_rooms_the_connection_covers(self) -> None:
+    async def test_a_restart_names_the_rooms_the_connection_covers(
+        self, db_buffer: EventBuffer
+    ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
-        buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+        buffer = db_buffer
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("after the restart")
+        )
 
         conn = _open(registry, cursor=4812)
         registry.claim_room(conn, ROOM_A)
@@ -940,7 +1075,9 @@ class TestAGapNamesTheRoomsThatLostEvents:
         assert frames[1][1]["rooms"] == [ROOM_A]
         assert frames[1][1]["all_rooms"] is True
 
-    async def test_a_restart_says_the_loss_is_not_confined_to_them(self) -> None:
+    async def test_a_restart_says_the_loss_is_not_confined_to_them(
+        self, db_buffer: EventBuffer
+    ) -> None:
         """A watcher of every room names none, and its rooms arrive afterwards.
 
         Reporting only what the connection had claimed would leave every room
@@ -948,8 +1085,10 @@ class TestAGapNamesTheRoomsThatLostEvents:
         restart made invisible in exactly the rooms the agent works in.
         """
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
-        buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+        buffer = db_buffer
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_A, _message("after the restart")
+        )
         conn = _open(registry, scope="all", cursor=4812)
 
         stream = event_frames(
@@ -962,19 +1101,30 @@ class TestAGapNamesTheRoomsThatLostEvents:
         assert frames[1][1]["all_rooms"] is True
 
         registry.claim_room(conn, ROOM_B)
-        buffer.enqueue(AGENT, ROOM_B, _message("chatter", room=ROOM_B))
-        buffer.enqueue(AGENT, ROOM_B, _message("for you", addressed=True, room=ROOM_B))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("chatter", room=ROOM_B)
+        )
+        await buffer.enqueue(
+            TENANT_ZERO_ID,
+            AGENT,
+            ROOM_B,
+            _message("for you", addressed=True, room=ROOM_B),
+        )
         delivered = await _take(stream, 3)  # subscription_changed, then both
         await stream.aclose()
 
         assert delivered[-1][1]["missed"]["count"] is None
         assert "restarted" in delivered[-1][1]["missed"]["reason"]
 
-    async def test_a_dropped_event_gap_is_confined_to_the_rooms_it_names(self) -> None:
+    async def test_a_dropped_event_gap_is_confined_to_the_rooms_it_names(
+        self, db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(max_events_per_agent=1, sequence_base=0)
-        buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
-        buffer.enqueue(AGENT, ROOM_A, _message("kept"))
+        buffer = db_buffer
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("dropped"))
+        await age_events(session_factory, AGENT, seconds=2 * 3600)
+        await buffer.expire(TENANT_ZERO_ID)
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("kept"))
 
         conn = _open(registry, cursor=0)
         registry.claim_room(conn, ROOM_A)
@@ -989,13 +1139,13 @@ class TestAGapNamesTheRoomsThatLostEvents:
         assert frames[1][1]["all_rooms"] is False
 
 
-async def test_a_delivered_event_names_no_session() -> None:
+async def test_a_delivered_event_names_no_session(db_buffer: EventBuffer) -> None:
     """Routing a room's events to a session is the watcher's, from its own placements."""
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     conn = _open(registry, scope="all")
     registry.place_session(AGENT, "session-1", ROOM_A, conn.id)
-    buffer.enqueue(AGENT, ROOM_A, _message("hello"))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("hello"))
 
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     (_, (name, data)) = await _take(stream, 2)
@@ -1004,10 +1154,15 @@ async def test_a_delivered_event_names_no_session() -> None:
     assert "session_id" not in data
 
 
-async def test_new_boot_reports_gap_and_keeps_messages_when_old_cursor_is_below_head():
+async def test_new_boot_reports_gap_and_keeps_messages_when_old_cursor_is_below_head(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=2 << 32)
-    sequences = [buffer.enqueue(AGENT, ROOM_A, _message(str(i))) for i in range(3)]
+    buffer = db_buffer_on(session_factory, sequence_base=2 << 32)
+    sequences = [
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message(str(i)))
+        for i in range(3)
+    ]
     conn = _open(registry, cursor=(1 << 32) + 2)
     registry.claim_room(conn, ROOM_A)
     frames = await _take(
@@ -1018,17 +1173,21 @@ async def test_new_boot_reports_gap_and_keeps_messages_when_old_cursor_is_below_
     assert [frame[1]["sequence"] for frame in frames[2:]] == sequences
 
 
-async def test_each_delivered_event_counts_as_an_agent_bridge_event_out() -> None:
+async def test_each_delivered_event_counts_as_an_agent_bridge_event_out(
+    db_buffer: EventBuffer,
+) -> None:
     registry_metrics = MetricsRegistry()
     install(registry_metrics)
     try:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry)
         registry.claim_room(conn, ROOM_A)
         registry.claim_room(conn, ROOM_B)
-        buffer.enqueue(AGENT, ROOM_A, _message("one"))
-        buffer.enqueue(AGENT, ROOM_B, _message("two", room=ROOM_B))
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
+        await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, ROOM_B, _message("two", room=ROOM_B)
+        )
 
         stream = event_frames(
             conn=conn, registry=registry, buffer=buffer, approvals=None
@@ -1072,9 +1231,11 @@ class TestBothTransportsEncodeTheSameFrames:
     def test_the_keepalive_is_a_comment_on_the_event_stream(self) -> None:
         assert encode_sse(KEEPALIVE) == b": keepalive\n\n"
 
-    async def test_closing_the_event_stream_detaches_its_connection(self) -> None:
+    async def test_closing_the_event_stream_detaches_its_connection(
+        self, db_buffer: EventBuffer
+    ) -> None:
         registry = AgentConnectionRegistry()
-        buffer = EventBuffer(sequence_base=0)
+        buffer = db_buffer
         conn = _open(registry)
 
         body = sse_stream(

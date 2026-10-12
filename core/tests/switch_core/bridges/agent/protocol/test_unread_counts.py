@@ -8,6 +8,8 @@ to doubt, so the absence of a count is itself an answer.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from switch_core.bridges.agent.protocol.event_buffer import (
     COUNTED_FROM_A_HOLE,
     NO_BASELINE,
@@ -54,7 +56,9 @@ def _message(room: str, *, addressed: bool = False, body: str = "hi") -> AgentEv
 def _chatter(buffer: EventBuffer, room: str, times: int = 1) -> int:
     seq = 0
     for index in range(times):
-        seq = buffer.enqueue(AGENT, room, _message(room, body=f"{room}-{index}"))
+        seq = await buffer.enqueue(
+            TENANT_ZERO_ID, AGENT, room, _message(room, body=f"{room}-{index}")
+        )
     return seq
 
 
@@ -64,10 +68,10 @@ async def test_a_room_counts_only_its_own_chatter() -> None:
     buffer.ensure_counting(AGENT, READER, ROOM_B, 0)
 
     _chatter(buffer, ROOM_A, times=3)
-    head = buffer.head(AGENT)
+    head = await buffer.head(TENANT_ZERO_ID, AGENT)
 
-    assert buffer.unread(AGENT, ROOM_A, head).count == 3
-    assert buffer.unread(AGENT, ROOM_B, head).count == 0
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_A, head)).count == 3
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_B, head)).count == 0
 
 
 async def test_catching_up_on_one_room_leaves_the_others_alone() -> None:
@@ -77,11 +81,11 @@ async def test_catching_up_on_one_room_leaves_the_others_alone() -> None:
     _chatter(buffer, ROOM_A, times=2)
     _chatter(buffer, ROOM_B, times=1)
 
-    head = buffer.head(AGENT)
+    head = await buffer.head(TENANT_ZERO_ID, AGENT)
     buffer.caught_up(AGENT, _connection(READER), ROOM_A, head, READER)
 
-    assert buffer.unread(AGENT, ROOM_A, head).count == 0
-    assert buffer.unread(AGENT, ROOM_B, head).count == 1
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_A, head)).count == 0
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_B, head)).count == 1
 
 
 async def test_a_second_connection_does_not_start_the_room_over() -> None:
@@ -89,9 +93,15 @@ async def test_a_second_connection_does_not_start_the_room_over() -> None:
     buffer = EventBuffer(sequence_base=0)
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=2)
-    buffer.ensure_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
+    buffer.ensure_counting(
+        AGENT, "connection-2", ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
 
 async def test_the_connection_that_takes_a_room_over_can_clear_it() -> None:
@@ -106,12 +116,22 @@ async def test_the_connection_that_takes_a_room_over_can_clear_it() -> None:
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=3)
 
-    buffer.take_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
+    buffer.take_counting(
+        AGENT, "connection-2", ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
     buffer.caught_up(
-        AGENT, _connection("connection-2"), ROOM_A, buffer.head(AGENT), "connection-2"
+        AGENT,
+        _connection("connection-2"),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        "connection-2",
     )
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 0
 
 
 async def test_delivering_a_room_does_not_take_it_from_a_session() -> None:
@@ -120,20 +140,34 @@ async def test_delivering_a_room_does_not_take_it_from_a_session() -> None:
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=2)
 
-    buffer.ensure_counting(AGENT, "connection-shared", ROOM_A, buffer.head(AGENT))
+    buffer.ensure_counting(
+        AGENT, "connection-shared", ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
     buffer.caught_up(
         AGENT,
         _connection("connection-shared"),
         ROOM_A,
-        buffer.head(AGENT),
+        await buffer.head(TENANT_ZERO_ID, AGENT),
         "connection-shared",
     )
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
     buffer.caught_up(
-        AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT), "connection-shared"
+        AGENT,
+        _session("session-a"),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        "connection-shared",
     )
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 0
 
 
 async def test_taking_a_room_does_take_it_from_a_session() -> None:
@@ -147,16 +181,22 @@ async def test_taking_a_room_does_take_it_from_a_session() -> None:
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=3)
 
-    buffer.take_counting(AGENT, "connection-legacy", ROOM_A, buffer.head(AGENT))
+    buffer.take_counting(
+        AGENT, "connection-legacy", ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
     buffer.caught_up(
         AGENT,
         _connection("connection-legacy"),
         ROOM_A,
-        buffer.head(AGENT),
+        await buffer.head(TENANT_ZERO_ID, AGENT),
         "connection-legacy",
     )
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 0
 
 
 async def test_a_displaced_session_cannot_adopt_the_count_it_lost() -> None:
@@ -170,7 +210,7 @@ async def test_a_displaced_session_cannot_adopt_the_count_it_lost() -> None:
     buffer = EventBuffer(sequence_base=0)
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=3)
-    in_flight = buffer.head(AGENT)
+    in_flight = await buffer.head(TENANT_ZERO_ID, AGENT)
 
     buffer.take_counting(AGENT, "connection-legacy", ROOM_A, in_flight)
     buffer.caught_up(
@@ -179,10 +219,18 @@ async def test_a_displaced_session_cannot_adopt_the_count_it_lost() -> None:
     _chatter(buffer, ROOM_A, times=2)
 
     buffer.caught_up(
-        AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT), "connection-a"
+        AGENT,
+        _session("session-a"),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        "connection-a",
     )
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
 
 async def test_a_session_adopts_a_count_opened_in_its_connections_name() -> None:
@@ -197,14 +245,24 @@ async def test_a_session_adopts_a_count_opened_in_its_connections_name() -> None
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     buffer.mark_restarted(AGENT)
     _chatter(buffer, ROOM_A, times=2)
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).reason == RESTARTED
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).reason == RESTARTED
 
-    buffer.caught_up(AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT), READER)
+    buffer.caught_up(
+        AGENT,
+        _session("session-a"),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        READER,
+    )
     _chatter(buffer, ROOM_A, times=1)
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)) == Unread(
-        count=1, reason=None
-    )
+    assert await buffer.unread(
+        TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    ) == Unread(count=1, reason=None)
 
 
 async def test_a_read_by_the_session_that_lost_the_room_clears_nothing() -> None:
@@ -220,13 +278,17 @@ async def test_a_read_by_the_session_that_lost_the_room_clears_nothing() -> None
     buffer.ensure_counting(AGENT, shared, ROOM_A, 0)
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=3)
-    in_flight = buffer.head(AGENT)
+    in_flight = await buffer.head(TENANT_ZERO_ID, AGENT)
 
     buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_A)
     _chatter(buffer, ROOM_A, times=2)
     buffer.caught_up(AGENT, _session("session-a"), ROOM_A, in_flight, shared)
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 5
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 5
 
 
 async def test_the_session_that_took_the_room_still_clears_it() -> None:
@@ -237,9 +299,19 @@ async def test_the_session_that_took_the_room_still_clears_it() -> None:
     _chatter(buffer, ROOM_A, times=2)
 
     buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_A)
-    buffer.caught_up(AGENT, _session("session-b"), ROOM_A, buffer.head(AGENT), READER)
+    buffer.caught_up(
+        AGENT,
+        _session("session-b"),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        READER,
+    )
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 0
 
 
 async def test_taking_a_room_inherits_what_went_past_unread_in_it() -> None:
@@ -250,7 +322,11 @@ async def test_taking_a_room_inherits_what_went_past_unread_in_it() -> None:
 
     buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_A)
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 4
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 4
 
 
 async def test_a_room_counted_for_the_first_time_counts_what_is_retained() -> None:
@@ -260,14 +336,20 @@ async def test_a_room_counted_for_the_first_time_counts_what_is_retained() -> No
 
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
 
 async def test_a_room_nothing_recorded_a_baseline_for_has_no_count() -> None:
     buffer = EventBuffer(sequence_base=0)
     _chatter(buffer, ROOM_A, times=2)
 
-    unread = buffer.unread(AGENT, ROOM_A, buffer.head(AGENT))
+    unread = await buffer.unread(
+        TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
 
     assert unread.count is None
     assert unread.reason == NO_BASELINE
@@ -279,11 +361,23 @@ async def test_a_baseline_survives_the_room_being_covered_or_taken_again() -> No
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=2)
 
-    buffer.ensure_counting(AGENT, READER, ROOM_A, buffer.head(AGENT))
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+    buffer.ensure_counting(
+        AGENT, READER, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
-    buffer.take_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+    buffer.take_counting(
+        AGENT, "connection-2", ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
 
 async def test_a_restart_leaves_a_room_unknown_rather_than_at_zero() -> None:
@@ -292,15 +386,23 @@ async def test_a_restart_leaves_a_room_unknown_rather_than_at_zero() -> None:
     buffer.mark_restarted(AGENT)
     _chatter(buffer, ROOM_A, times=1)
 
-    unread = buffer.unread(AGENT, ROOM_A, buffer.head(AGENT))
+    unread = await buffer.unread(
+        TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
 
     assert unread.count is None
     assert unread.reason == RESTARTED
 
     # And it stays unknown until the reader actually catches up, rather than
     # being repaired by the room changing hands.
-    buffer.take_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count is None
+    buffer.take_counting(
+        AGENT, "connection-2", ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count is None
 
 
 async def test_a_restart_covers_rooms_it_could_not_have_named() -> None:
@@ -320,7 +422,9 @@ async def test_a_restart_covers_rooms_it_could_not_have_named() -> None:
     buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_B)
 
     for room in (ROOM_A, ROOM_B):
-        unread = buffer.unread(AGENT, room, buffer.head(AGENT))
+        unread = await buffer.unread(
+            TENANT_ZERO_ID, AGENT, room, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
         assert unread.count is None
         assert unread.reason == RESTARTED
 
@@ -329,10 +433,18 @@ async def test_reading_a_room_after_a_restart_makes_it_countable_again() -> None
     buffer = EventBuffer(sequence_base=0)
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     buffer.mark_restarted(AGENT)
-    buffer.caught_up(AGENT, _connection(READER), ROOM_A, buffer.head(AGENT), READER)
+    buffer.caught_up(
+        AGENT,
+        _connection(READER),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        READER,
+    )
 
     _chatter(buffer, ROOM_A, times=1)
-    unread = buffer.unread(AGENT, ROOM_A, buffer.head(AGENT))
+    unread = await buffer.unread(
+        TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+    )
 
     assert unread == Unread(count=1, reason=None)
 
@@ -344,13 +456,13 @@ async def test_a_count_that_lost_history_is_a_floor_in_that_room_only() -> None:
 
     _chatter(buffer, ROOM_A, times=3)
     _chatter(buffer, ROOM_B, times=1)
-    head = buffer.head(AGENT)
+    head = await buffer.head(TENANT_ZERO_ID, AGENT)
 
-    lost = buffer.unread(AGENT, ROOM_A, head)
+    lost = await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_A, head)
     assert lost.count == 1
     assert lost.reason == COUNTED_FROM_A_HOLE
 
-    intact = buffer.unread(AGENT, ROOM_B, head)
+    intact = await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_B, head)
     assert intact.count == 1
     assert intact.reason is None
 
@@ -360,10 +472,20 @@ async def test_catching_up_past_a_hole_makes_the_count_exact_again() -> None:
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=3)
 
-    buffer.caught_up(AGENT, _connection(READER), ROOM_A, buffer.head(AGENT), READER)
+    buffer.caught_up(
+        AGENT,
+        _connection(READER),
+        ROOM_A,
+        await buffer.head(TENANT_ZERO_ID, AGENT),
+        READER,
+    )
     _chatter(buffer, ROOM_A, times=1)
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).reason is None
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).reason is None
 
 
 async def test_a_drop_names_the_rooms_that_lost_events() -> None:
@@ -371,8 +493,13 @@ async def test_a_drop_names_the_rooms_that_lost_events() -> None:
     _chatter(buffer, ROOM_A, times=2)
     _chatter(buffer, ROOM_B, times=2)
 
-    assert buffer.rooms_dropped_after(AGENT, 0) == (ROOM_A,)
-    assert buffer.rooms_dropped_after(AGENT, buffer.head(AGENT)) == ()
+    assert await buffer.rooms_dropped_after(TENANT_ZERO_ID, AGENT, 0) == (ROOM_A,)
+    assert (
+        await buffer.rooms_dropped_after(
+            TENANT_ZERO_ID, AGENT, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+        == ()
+    )
 
 
 async def test_only_unaddressed_messages_are_counted() -> None:
@@ -380,8 +507,11 @@ async def test_only_unaddressed_messages_are_counted() -> None:
     buffer = EventBuffer(sequence_base=0)
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
 
-    buffer.enqueue(AGENT, ROOM_A, _message(ROOM_A, addressed=True))
-    buffer.enqueue(
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message(ROOM_A, addressed=True)
+    )
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
         AGENT,
         ROOM_A,
         AgentEvent(
@@ -390,9 +520,13 @@ async def test_only_unaddressed_messages_are_counted() -> None:
             payload=CommandPayload(command="reset", user_id="@u:s", user_name="u"),
         ),
     )
-    buffer.enqueue(AGENT, ROOM_A, _message(ROOM_A))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message(ROOM_A))
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 1
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 1
 
 
 async def test_a_count_stops_at_the_event_it_is_reported_alongside() -> None:
@@ -400,10 +534,12 @@ async def test_a_count_stops_at_the_event_it_is_reported_alongside() -> None:
     buffer = EventBuffer(sequence_base=0)
     buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=2)
-    addressed = buffer.enqueue(AGENT, ROOM_A, _message(ROOM_A, addressed=True))
+    addressed = await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM_A, _message(ROOM_A, addressed=True)
+    )
     _chatter(buffer, ROOM_A, times=5)
 
-    assert buffer.unread(AGENT, ROOM_A, addressed).count == 2
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, ROOM_A, addressed)).count == 2
 
 
 async def test_dropping_a_reader_leaves_the_room_behind_by_what_it_was() -> None:
@@ -414,4 +550,8 @@ async def test_dropping_a_reader_leaves_the_room_behind_by_what_it_was() -> None
 
     buffer.drop_reader(AGENT, READER)
 
-    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 1
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, ROOM_A, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 1

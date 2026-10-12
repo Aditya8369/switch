@@ -20,6 +20,8 @@ they are the ones that show whether the removal was really acted on.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 
 import pytest
@@ -51,7 +53,7 @@ async def _wait_buffered(
     """
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        for item in harness.event_buffer.read_from(agent_id, 0):
+        for item in await harness.event_buffer.read_from(TENANT_ZERO_ID, agent_id, 0):
             if (
                 item.room_id == room_id
                 and getattr(item.event.payload, "body", None) == body
@@ -66,7 +68,10 @@ async def _wait_buffered(
 
 
 def _rooms_in_buffer(harness: Harness, agent_id: str) -> set[str]:
-    return {item.room_id for item in harness.event_buffer.read_from(agent_id, 0)}
+    return {
+        item.room_id
+        for item in await harness.event_buffer.read_from(TENANT_ZERO_ID, agent_id, 0)
+    }
 
 
 async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> None:

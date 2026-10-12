@@ -31,10 +31,13 @@ if TYPE_CHECKING:
 def db_buffer_on(
     session_factory: async_sessionmaker[AsyncSession],
     *,
+    sequence_base: int = 0,
     retention_seconds: float = 3600,
 ) -> EventBuffer:
     return EventBuffer(
-        session_factory, sequence_base=0, retention_seconds=retention_seconds
+        session_factory,
+        sequence_base=sequence_base,
+        retention_seconds=retention_seconds,
     )
 
 

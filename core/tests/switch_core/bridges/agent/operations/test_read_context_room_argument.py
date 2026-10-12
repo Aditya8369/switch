@@ -13,6 +13,8 @@ reach and not privilege.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from collections.abc import Callable
 from typing import Any
 
@@ -182,7 +184,8 @@ async def test_the_room_is_advertised_as_an_argument() -> None:
 
 
 def _chatter(protocol: _Protocol, room_id: str) -> None:
-    protocol.event_buffer.enqueue(
+    await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID,
         AGENT,
         room_id,
         AgentEvent(
@@ -202,7 +205,11 @@ def _chatter(protocol: _Protocol, room_id: str) -> None:
 
 def _unread(protocol: _Protocol, room_id: str) -> int | None:
     buffer = protocol.event_buffer
-    return buffer.unread(AGENT, room_id, buffer.head(AGENT)).count
+    return (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, room_id, await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count
 
 
 @pytest.mark.asyncio
@@ -314,7 +321,14 @@ async def test_a_session_reading_after_a_restart_repairs_its_rooms_count(
     buffer.ensure_counting(AGENT, CONN, CONNECTED_ROOM, 0)
     buffer.mark_restarted(AGENT)
     _chatter(protocol, CONNECTED_ROOM)
-    assert buffer.unread(AGENT, CONNECTED_ROOM, buffer.head(AGENT)).reason == RESTARTED
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID,
+            AGENT,
+            CONNECTED_ROOM,
+            await buffer.head(TENANT_ZERO_ID, AGENT),
+        )
+    ).reason == RESTARTED
 
     token = set_call_context(
         CallContext(

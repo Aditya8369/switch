@@ -14,6 +14,8 @@ every room-scoped call into "several rooms, pick one".
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -274,7 +276,7 @@ async def test_connecting_takes_the_rooms_unread_count(
     buffer = protocol.event_buffer
     buffer.hand_counting_to(AGENT, Reader(id="session-b", is_session=True), "room-c")
     for index in range(2):
-        buffer.enqueue(AGENT, "room-c", _chatter("room-c", index))
+        await buffer.enqueue(TENANT_ZERO_ID, AGENT, "room-c", _chatter("room-c", index))
 
     with call_context(_caller("session-a", None)):
         await definitions.connect_to_room("room-c", include_general_instructions=False)
@@ -283,11 +285,15 @@ async def test_connecting_takes_the_rooms_unread_count(
         AGENT,
         Reader(id="session-b", is_session=True),
         "room-c",
-        buffer.head(AGENT),
+        await buffer.head(TENANT_ZERO_ID, AGENT),
         CONNECTION,
     )
 
-    assert buffer.unread(AGENT, "room-c", buffer.head(AGENT)).count == 2
+    assert (
+        await buffer.unread(
+            TENANT_ZERO_ID, AGENT, "room-c", await buffer.head(TENANT_ZERO_ID, AGENT)
+        )
+    ).count == 2
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,8 @@ door, where the caller *is* the connection.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 import asyncio
 from typing import Any
 
@@ -132,7 +134,8 @@ async def test_an_all_scope_subscribe_accumulates() -> None:
 
 
 def _chatter(protocol: _Protocol, room_id: str, index: int) -> None:
-    protocol.event_buffer.enqueue(
+    await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID,
         AGENT_ID,
         room_id,
         AgentEvent(
@@ -169,12 +172,12 @@ async def test_subscribing_takes_over_the_rooms_unread_count() -> None:
     await _subscribe(protocol, ROOM_A, second.stream_generation, "conn-b", True)
 
     buffer = protocol.event_buffer
-    head = buffer.head(AGENT_ID)
-    assert buffer.unread(AGENT_ID, ROOM_A, head).count == 3
+    head = await buffer.head(TENANT_ZERO_ID, AGENT_ID)
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 3
     buffer.caught_up(
         AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head, "conn-b"
     )
-    assert buffer.unread(AGENT_ID, ROOM_A, head).count == 0
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 0
 
 
 @pytest.mark.asyncio
@@ -200,19 +203,19 @@ async def test_a_legacy_subscribe_takes_the_room_from_a_managed_session() -> Non
     await _subscribe(protocol, ROOM_A, legacy.stream_generation, "conn-b", True)
 
     assert protocol.connections.claimant_of(AGENT_ID, ROOM_A) is legacy
-    head = buffer.head(AGENT_ID)
-    assert buffer.unread(AGENT_ID, ROOM_A, head).count == 3
+    head = await buffer.head(TENANT_ZERO_ID, AGENT_ID)
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 3
     buffer.caught_up(
         AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head, "conn-b"
     )
-    assert buffer.unread(AGENT_ID, ROOM_A, head).count == 0
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, head)).count == 0
 
     for index in range(2):
         _chatter(protocol, ROOM_A, 10 + index)
-    later = buffer.head(AGENT_ID)
+    later = await buffer.head(TENANT_ZERO_ID, AGENT_ID)
     buffer.caught_up(AGENT_ID, session, ROOM_A, later, "conn-a")
 
-    assert buffer.unread(AGENT_ID, ROOM_A, later).count == 2
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT_ID, ROOM_A, later)).count == 2
 
 
 @pytest.mark.asyncio

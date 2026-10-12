@@ -12,6 +12,8 @@ skipped — and `confirm()` marks those events consumed on the way past.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from typing import Any
 
 from switch_core.bridges.agent.api.handlers import _record_beat
@@ -79,7 +81,7 @@ async def test_a_cursor_past_the_head_is_pulled_back_to_it() -> None:
 
     beaten = _beat(protocol, cursor=9)
 
-    assert protocol.event_buffer.head(AGENT_ID) == 0
+    assert await protocol.event_buffer.head(TENANT_ZERO_ID, AGENT_ID) == 0
     assert conn.cursor == 0
     assert beaten.cursor == 0
 
@@ -93,9 +95,11 @@ async def test_the_first_event_after_a_restart_is_still_delivered() -> None:
     protocol.connections.claim_room(conn, ROOM_ID, takeover=True)
 
     _beat(protocol, cursor=9)
-    protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
+    await protocol.event_buffer.enqueue(TENANT_ZERO_ID, AGENT_ID, ROOM_ID, _message())
 
-    delivered = protocol.event_buffer.read_from(AGENT_ID, conn.cursor, rooms={ROOM_ID})
+    delivered = await protocol.event_buffer.read_from(
+        TENANT_ZERO_ID, AGENT_ID, conn.cursor, rooms={ROOM_ID}
+    )
     assert [item.seq for item in delivered] == [1]
 
 
@@ -103,7 +107,9 @@ async def test_a_cursor_within_the_buffer_is_left_alone() -> None:
     protocol = _Protocol()
     conn = _connect(protocol)
     for _ in range(3):
-        protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
+        await protocol.event_buffer.enqueue(
+            TENANT_ZERO_ID, AGENT_ID, ROOM_ID, _message()
+        )
 
     _beat(protocol, cursor=2)
 
@@ -128,8 +134,12 @@ async def test_the_clamped_value_is_what_gets_confirmed() -> None:
 async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position():
     protocol = _Protocol()
     protocol.event_buffer = EventBuffer(sequence_base=2 << 32)
-    sequence = protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
+    sequence = await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, ROOM_ID, _message()
+    )
     conn = _connect(protocol, cursor=2 << 32)
     _beat(protocol, cursor=(1 << 32) + 2)
     assert conn.cursor == 2 << 32
-    assert protocol.event_buffer.read_from(AGENT_ID, conn.cursor)[0].seq == sequence
+    assert (
+        await protocol.event_buffer.read_from(TENANT_ZERO_ID, AGENT_ID, conn.cursor)
+    )[0].seq == sequence

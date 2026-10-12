@@ -10,6 +10,8 @@ holding the events, not only the reader that would have fetched more.
 
 from __future__ import annotations
 
+from switch_core.db.models import TENANT_ZERO_ID
+
 from types import SimpleNamespace
 
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -90,15 +92,21 @@ async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
 
 async def test_the_rooms_retained_events_are_forgotten() -> None:
     buffer = EventBuffer(sequence_base=0)
-    buffer.enqueue(AGENT, LEFT, _message(LEFT, "said in the old room"))
-    buffer.enqueue(AGENT, KEPT, _message(KEPT, "said in this one"))
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, LEFT, _message(LEFT, "said in the old room")
+    )
+    await buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, KEPT, _message(KEPT, "said in this one")
+    )
 
     await _removed(_client(buffer, AgentConnectionRegistry()), "!left:test")
 
     # Read at the level every reader is built on, filter or no filter: this is
     # what closes it for the stream, which has no membership of its own to
     # apply and would otherwise replay the room on every resume.
-    assert [item.room_id for item in buffer.read_from(AGENT, 0)] == [KEPT]
+    assert [
+        item.room_id for item in await buffer.read_from(TENANT_ZERO_ID, AGENT, 0)
+    ] == [KEPT]
 
 
 async def test_the_rooms_claim_is_released() -> None:
@@ -123,11 +131,13 @@ async def test_the_rooms_claim_is_released() -> None:
 async def test_a_room_that_cannot_be_resolved_drops_nothing() -> None:
     """Rather than guessing which room was meant and emptying the wrong one."""
     buffer = EventBuffer(sequence_base=0)
-    buffer.enqueue(AGENT, LEFT, _message(LEFT, "still here"))
+    await buffer.enqueue(TENANT_ZERO_ID, AGENT, LEFT, _message(LEFT, "still here"))
 
     await _removed(_client(buffer, AgentConnectionRegistry()), "!unknown:test")
 
-    assert [item.room_id for item in buffer.read_from(AGENT, 0)] == [LEFT]
+    assert [
+        item.room_id for item in await buffer.read_from(TENANT_ZERO_ID, AGENT, 0)
+    ] == [LEFT]
 
 
 class _CapturingTransport:
