@@ -1,7 +1,6 @@
 import { mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { promisify } from 'node:util';
+import { join } from 'node:path';
 import {
   execProvider,
   findOnPath,
@@ -78,19 +77,11 @@ async function gitHubToolStatuses(
 ): Promise<ToolStatus[]> {
   const tools = ['git', 'gh'];
   if (os === 'win32') return tools.map((tool) => ({ tool, state: 'unsupported' }));
-  const directories = (path ?? '').split(delimiter).filter(Boolean);
-  const found = async (tool: string) => {
-    for (const directory of directories)
-      try {
-        await access(join(directory, tool), constants.X_OK);
-        return true;
-      } catch {
-        // Not here.
-      }
-    return false;
-  };
   return Promise.all(
-    tools.map(async (tool) => ({ tool, state: (await found(tool)) ? 'ok' : 'missing' }) as const)
+    tools.map(
+      async (tool) =>
+        ({ tool, state: (await findOnPath(tool, path)) !== null ? 'ok' : 'missing' }) as const
+    )
   );
 }
 

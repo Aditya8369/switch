@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { killProcessTree } from './process-fence';
-import { isStopMessage } from './stop-request';
 import { Redactions, tokenForms } from './redaction';
 import { ServiceCredential } from './service-credential';
+import { isStopMessage } from './stop-request';
 
 /**
  * How long a session host that has finished may take to exit once it has

@@ -3,7 +3,11 @@ import { realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { cliToolsBase, generateSealingKeyPair, isStopMessage } from '@switch-console/agent-providers';
+import {
+  cliToolsBase,
+  generateSealingKeyPair,
+  isStopMessage,
+} from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
