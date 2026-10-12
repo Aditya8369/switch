@@ -16,6 +16,7 @@ import {
   ProviderStatuses,
   StatusCollector,
   statusFingerprint,
+  toolStatuses,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
@@ -472,6 +473,28 @@ describe('a CLI whose version cannot be read', () => {
   });
 });
 
+describe('toolStatuses', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-tools-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('reports git and gh as found on PATH, and as unsupported on Windows', async () => {
+    writeFileSync(join(dir, 'git'), '#!/bin/sh\n');
+    chmodSync(join(dir, 'git'), 0o755);
+    writeFileSync(join(dir, 'gh'), 'not executable');
+    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux')).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
+    expect(await toolStatuses(dir, 'win32')).toEqual([
+      { tool: 'git', state: 'unsupported' },
+      { tool: 'gh', state: 'unsupported' },
+    ]);
+  });
+});
+
 describe('StatusCollector', () => {
   let dir: string;
   let store: ControllerStore;
@@ -501,6 +524,10 @@ describe('StatusCollector', () => {
       store,
       runtime,
       providers,
+      tools: async () => [
+        { tool: 'git', state: 'ok' },
+        { tool: 'gh', state: 'missing' },
+      ],
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
@@ -515,6 +542,10 @@ describe('StatusCollector', () => {
     expect(statusReportSchema.safeParse({ ...first, seq: 1 }).success).toBe(true);
     expect(first.controller).toEqual({ version: '0.1.0', protocol: 2, assignment_revision: 7 });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
+    expect(first.tools).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
     expect(first.agents[0]).toMatchObject({
       agent_id: 'agent-1',
       applied_revision: 2,
