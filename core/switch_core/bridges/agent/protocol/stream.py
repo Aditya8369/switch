@@ -6,10 +6,13 @@ never asks again; it opens once and reads. `api/handlers.py` sends them over
 the WebSocket, or, for a client built before it, as a Server-Sent Events
 stream: both encode the same frames from the same loop, so they cannot drift.
 
-Every event carries its sequence number, so a client that reconnects names the
-last one it processed and resumes exactly where it stopped. Gaps are reported
-as their own event rather than skipped: a client that has missed events must
-never see a stream that looks complete.
+Every event carries its place, so a client that reconnects names how far it
+got and resumes exactly where it stopped. A client that holds a position is
+told each event's source and number (`position`); one that holds a single
+number is told that number, or, when the stream reads more than one source, a
+ticket standing for the position. Gaps are reported as their own event rather
+than skipped: a client that has missed events must never see a stream that
+looks complete.
 """
 
 from __future__ import annotations
@@ -32,9 +35,11 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Closure,
 )
 from switch_core.bridges.agent.protocol.event_buffer import (
+    BufferedEvent,
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.bridges.agent.protocol.positions import SLIPS, Position, room_source
 from switch_core.observability.catalogue import BRIDGE_EVENTS_OUT
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import current_tenant_id
@@ -139,6 +144,7 @@ def _connection_state(conn: AgentConnection) -> dict[str, Any]:
         "spawn_capable": conn.spawn_capable,
         "rooms": sorted(conn.rooms),
         "cursor": conn.cursor,
+        "position": dict(conn.position),
         "protocol": PROTOCOL_VERSION,
         "heartbeat_interval_seconds": 2.0,
         "server": server_declaration("agent-protocol"),
@@ -208,7 +214,6 @@ async def _event_stream(
     speaks = conn.declaration.speaks
     if (
         approvals is not None
-        and tenant_id is not None
         and conn.scope == "all"
         and speaks is not None
         and speaks >= APPROVAL_OUTCOME_PROTOCOL_REVISION
@@ -222,104 +227,17 @@ async def _event_stream(
             resync[0] = True
             conn.wake.set()
 
-        unsubscribe_outcomes = approvals.subscribe(tenant_id, agent_id, owe, recheck)
+        unsubscribe_outcomes = approvals.subscribe(tenant, agent_id, owe, recheck)
         resync[0] = True
+    # Rooms this stream has made sure are being counted, so a pass of the loop
+    # asks the database only about rooms it has not seen yet.
+    counted: set[str] = set()
+    last_keepalive = time.monotonic()
     try:
         yield _frame("connection_state", _connection_state(conn))
 
-        # A cursor below where this agent's numbering starts was issued before
-        # its events were kept here, by a server that no longer holds them;
-        # one ahead of everything held belongs to some other history. Say so.
-        # Staying quiet would leave the client believing it is caught up when
-        # its numbering no longer means anything.
-        head = await buffer.head(tenant, agent_id)
-        floor = await buffer.first_seq(tenant, agent_id)
-        if 0 < conn.cursor < floor - 1:
-            # Numbering only ever starts above every earlier one, so the client
-            # keeps its sequence-based dedupe (nothing is reused); what it has
-            # lost is every event from before.
-            logger.warning(
-                "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
-                "earlier server boot (this boot starts at %s)",
-                agent_id,
-                conn.id,
-                conn.cursor,
-                floor,
-            )
-            previous = conn.cursor
-            conn.cursor = floor - 1
-            buffer.mark_restarted(agent_id)
-            yield _frame(
-                "gap",
-                {
-                    "from_sequence": previous,
-                    "resumed_at": conn.cursor,
-                    "rooms": sorted(conn.rooms),
-                    "all_rooms": True,
-                    "reason": "the server restarted since your last connection; "
-                    "events from before the restart are gone in every room, "
-                    "including any this connection has yet to claim — re-read "
-                    "room context",
-                },
-            )
-        elif conn.cursor > head:
-            logger.warning(
-                "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
-                "buffer only reaches %s — treating as a restart",
-                agent_id,
-                conn.id,
-                conn.cursor,
-                head,
-            )
-            conn.cursor = head
-            # Every room of this agent loses its baseline with the buffer that
-            # held it, not only the rooms this connection has named — it may
-            # have named none, and its sessions claim theirs later. Starting a
-            # fresh baseline for any of them would answer the next "how far
-            # behind am I in this room" with a zero the agent has no reason to
-            # doubt.
-            buffer.mark_restarted(agent_id)
-            yield _frame(
-                "gap",
-                {
-                    "from_sequence": head,
-                    "resumed_at": head,
-                    "rooms": sorted(conn.rooms),
-                    "all_rooms": True,
-                    "reason": "the server restarted since your last connection; "
-                    "sequence numbers have been reset and events from before "
-                    "the restart are gone in every room, including any this "
-                    "connection has yet to claim — re-read room context",
-                },
-            )
-
-        # A cursor the buffer can no longer serve is reported, not silently
-        # moved to head. The client re-reads room context to recover.
-        lost = await buffer.rooms_dropped_after(tenant, agent_id, conn.cursor)
-        if lost:
-            oldest = await buffer.oldest_retained(tenant, agent_id)
-            logger.warning(
-                "[STREAM] agent=%s connection=%s resumed from expired cursor %s "
-                "(oldest retained %s, rooms %s)",
-                agent_id,
-                conn.id,
-                conn.cursor,
-                oldest,
-                ", ".join(lost),
-            )
-            resumed_at = max(oldest - 1, 0)
-            conn.cursor = resumed_at
-            yield _frame(
-                "gap",
-                {
-                    "from_sequence": conn.cursor,
-                    "resumed_at": resumed_at,
-                    "rooms": list(lost),
-                    "all_rooms": False,
-                    "reason": "events older than the retention window were "
-                    "dropped; re-read room context",
-                },
-            )
+        for gap in await _opening_gaps(conn, buffer, tenant):
+            yield _frame("gap", gap)
 
         while True:
             if conn.stream_generation != generation:
@@ -381,8 +299,9 @@ async def _event_stream(
             if conn.scope == "single" and not conn.rooms:
                 # A session connection that has not claimed a room yet must not
                 # read. It would find every event uncovered — it covers nothing
-                # — and the skip path advances the cursor, so it would consume
-                # its way to the end of the buffer while waiting for its room.
+                # — and the skip path advances the position, so it would consume
+                # its way to the end of the agent's events while waiting for its
+                # room.
                 #
                 # That window is not an edge case: a session spawned to answer a
                 # message opens its connection *before* the session boots and
@@ -391,98 +310,114 @@ async def _event_stream(
                 #
                 # Park until a room is claimed. `claim_room` sets `wake`, so the
                 # loop resumes the moment there is something to cover, with the
-                # cursor still where it started.
+                # position still where it started.
                 conn.wake.clear()
                 if not conn.rooms and not await _wait_for_wake(conn):
                     yield KEEPALIVE
                 continue
 
-            # Where counting starts for a room nothing is counting yet. It is
-            # the cursor rather than head because the backlog this connection
-            # is about to work through is backlog it genuinely has not seen; a
-            # room covered later starts from wherever the cursor has reached by
-            # then, which is the same rule. Covering is not taking: the room
-            # slot changes hands at the doors, not on every pass of this loop.
-            for room_id in conn.rooms:
-                buffer.ensure_counting(agent_id, conn.id, room_id, conn.cursor)
+            # Where counting starts for a room nothing is counting yet: now. A
+            # room covered later starts from then too. Covering is not taking:
+            # the room slot changes hands at the doors, not on every pass.
+            for room_id in conn.rooms - counted:
+                await buffer.ensure_counting(tenant, agent_id, conn.id, room_id)
+                counted.add(room_id)
+
+            conversation_rooms: set[str] = set()
+            if conn.reads_conversation:
+                conversation_rooms = await _conversation_rooms(
+                    conn, registry, buffer, tenant
+                )
+                # A room this connection has never read starts where the room
+                # is now: what was said before it covered the room is history,
+                # read with `read_context`, not a backlog to deliver.
+                fresh = {
+                    room_id
+                    for room_id in conversation_rooms
+                    if room_source(room_id) not in conn.position
+                }
+                for room_id, head in (await buffer.room_heads(tenant, fresh)).items():
+                    conn.position[room_source(room_id)] = head
 
             try:
-                pending = await buffer.read_from(
+                pending, looked = await buffer.read(
                     tenant,
                     agent_id,
-                    conn.cursor,
-                    notifiable_only=conn.delivery_filter == "addressed",
+                    conn.position,
+                    conversation_rooms=conversation_rooms,
+                    notifiable_only=not conn.reads_conversation,
                     limit=CATCH_UP_BATCH,
                 )
             except CursorExpiredError as exc:
+                resumed_at = max(exc.oldest - 1, 0)
+                conn.position[SLIPS] = resumed_at
                 yield _frame(
                     "gap",
-                    {
-                        "from_sequence": exc.requested,
-                        "resumed_at": max(exc.oldest - 1, 0),
-                        "rooms": list(exc.rooms),
-                        "all_rooms": False,
-                        "reason": str(exc),
-                    },
+                    _gap(
+                        conn,
+                        from_sequence=exc.requested,
+                        resumed_at=resumed_at,
+                        rooms=list(exc.rooms),
+                        all_rooms=False,
+                        reason=str(exc),
+                    ),
                 )
-                conn.cursor = max(exc.oldest - 1, 0)
                 continue
 
-            if not pending:
-                # Nothing above the cursor is for this connection: the filter
-                # excluded all of it. Advance past it anyway.
-                #
-                # `read_from` does not return filtered-out events, so the cursor
-                # cannot advance through them the way it does for events skipped
-                # by room coverage below. Leaving it behind them makes the
-                # "anything new?" re-check further down permanently true, and
-                # this loop spins at full speed instead of waiting — starving the
-                # event loop, so no heartbeat is processed, so every connection
-                # in the process is declared dead and reconnects, forever.
-                #
-                # Nothing is lost by moving past them: the cursor records what
-                # has been written out, not what the agent has caught up on.
-                # The events stay in the buffer and each room's watermark stays
-                # where it was, so what was skipped here is still countable.
-                #
-                # An empty result means the scan reached the end without hitting
-                # the batch limit, so head is exactly how far we have looked.
-                head = await buffer.head(tenant, agent_id)
-                if head > conn.cursor:
-                    conn.cursor = head
-
-            delivered = False
+            # Room coverage is evaluated per event rather than up front: a
+            # sibling claiming a room must take effect immediately, without
+            # tearing the stream down. An uncovered event of the agent's own is
+            # passed over, and the position moves past it all the same.
+            deliver: list[BufferedEvent] = []
             for item in pending:
-                # Room coverage is evaluated per event rather than up front: a
-                # sibling claiming a room must take effect immediately, without
-                # tearing the stream down.
-                if not registry.covers(conn, item.room_id):
-                    conn.cursor = item.seq
+                if item.source == SLIPS and not registry.covers(conn, item.room_id):
+                    conn.position[SLIPS] = item.seq
                     continue
+                deliver.append(item)
+
+            tickets = await _tickets_for(conn, buffer, tenant, deliver)
+            delivered = False
+            for index, item in enumerate(deliver):
                 payload = item.event.model_dump(mode="json")
-                payload["sequence"] = item.seq
+                frame_seq = _number_for(conn, item, tickets, index)
+                payload["sequence"] = frame_seq if frame_seq is not None else item.seq
+                if conn.speaks_positions:
+                    payload["position"] = {item.source: item.seq}
                 if item.notifiable:
                     # Told on the way past, on the one event the agent is being
                     # woken for anyway. A count of its own would be a wake
                     # spent on "you may have missed something you may not care
                     # about".
                     unread = await buffer.unread(
-                        tenant, agent_id, item.room_id, item.seq
+                        tenant, agent_id, item.room_id, item.room_seq
                     )
                     payload["missed"] = {
                         "count": unread.count,
                         "reason": unread.reason,
                     }
-                # Advance before yielding: the cursor tracks what the server has
-                # written out. What the client has actually processed comes back
-                # on its heartbeat, which is the value that governs resume.
-                conn.cursor = item.seq
+                # Advance before yielding: the position tracks what the server
+                # has written out. What the client has actually processed comes
+                # back on its heartbeat, which is what governs resume.
+                if item.seq > conn.position.get(item.source, -1):
+                    conn.position[item.source] = item.seq
+                if tickets:
+                    conn.ticket = tickets[index]
                 delivered = True
                 metrics().increment(
                     BRIDGE_EVENTS_OUT,
                     {"bridge": "agent", "platform": "switch", "kind": item.event.type},
                 )
-                yield _frame(item.event.type, payload, seq=item.seq)
+                yield _frame(item.event.type, payload, seq=frame_seq)
+
+            # Past what was looked at and not delivered: events the filter left
+            # out, rows that are not conversation. Nothing is lost by moving
+            # past them: the position records what has been written out, not
+            # what the agent has caught up on, so they stay countable. Not
+            # moving past them would leave "anything new?" below permanently
+            # true, and the loop would spin instead of waiting.
+            for source, seq in looked.items():
+                if seq > conn.position.get(source, -1):
+                    conn.position[source] = seq
 
             if delivered:
                 continue
@@ -496,17 +431,209 @@ async def _event_stream(
                 or conn.released_rooms
                 or outcomes
                 or resync[0]
-                or await buffer.head(tenant, agent_id) > conn.cursor
+                or await buffer.head(tenant, agent_id) > conn.position.get(SLIPS, 0)
                 or conn.rooms != last_rooms
             ):
                 continue
 
-            if not await _wait_for_work(bell, conn):
+            # The conversation rings no bell: it is read once it has settled,
+            # so a stream that reads it looks again when it may have.
+            timeout = (
+                buffer.settle_seconds
+                if conn.reads_conversation
+                else KEEPALIVE_INTERVAL_SECONDS
+            )
+            if await _wait_for_work(bell, conn, timeout):
+                continue
+            if time.monotonic() - last_keepalive >= KEEPALIVE_INTERVAL_SECONDS:
+                last_keepalive = time.monotonic()
                 yield KEEPALIVE
     finally:
         if unsubscribe_outcomes is not None:
             unsubscribe_outcomes()
         registry.detach_stream(conn, generation)
+
+
+def _gap(
+    conn: AgentConnection,
+    *,
+    from_sequence: int,
+    resumed_at: int,
+    rooms: list[str],
+    all_rooms: bool,
+    reason: str,
+) -> dict[str, Any]:
+    """A gap frame: the integers an older client acts on, and the position."""
+    return {
+        "from_sequence": from_sequence,
+        "resumed_at": resumed_at,
+        "resumed_position": dict(conn.position),
+        "rooms": rooms,
+        "all_rooms": all_rooms,
+        "reason": reason,
+    }
+
+
+async def _opening_gaps(
+    conn: AgentConnection, buffer: EventBuffer, tenant: str
+) -> list[dict[str, Any]]:
+    """What the client's resume point says it missed, told before anything else.
+
+    A ticket the server no longer holds, a number from before this agent's
+    events were kept here, one ahead of everything held, or one older than
+    what is still retained. Each is reported, never smoothed over: a client
+    left believing it is caught up when its numbering no longer means anything
+    never re-reads what it lost.
+    """
+    agent_id = conn.agent_id
+    gaps: list[dict[str, Any]] = []
+    if conn.resume_lost:
+        conn.resume_lost = False
+        gaps.append(
+            _gap(
+                conn,
+                from_sequence=conn.resume_requested,
+                resumed_at=conn.cursor,
+                rooms=sorted(conn.rooms),
+                all_rooms=True,
+                reason="where you left off is no longer known to the server; "
+                "re-read room context",
+            )
+        )
+        return gaps
+
+    at = conn.position.get(SLIPS, 0)
+    head = await buffer.head(tenant, agent_id)
+    floor = await buffer.first_seq(tenant, agent_id)
+    if 0 < at < floor - 1:
+        # Numbering only ever starts above every earlier one, so the client
+        # keeps its sequence-based dedupe (nothing is reused); what it has lost
+        # is every event from before.
+        logger.warning(
+            "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
+            "earlier server boot (this agent's events start at %s)",
+            agent_id,
+            conn.id,
+            at,
+            floor,
+        )
+        conn.position[SLIPS] = floor - 1
+        gaps.append(
+            _gap(
+                conn,
+                from_sequence=at,
+                resumed_at=floor - 1,
+                rooms=sorted(conn.rooms),
+                all_rooms=True,
+                reason="the server restarted since your last connection; "
+                "events from before the restart are gone in every room, "
+                "including any this connection has yet to claim — re-read "
+                "room context",
+            )
+        )
+        at = floor - 1
+    elif at > head:
+        logger.warning(
+            "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
+            "agent's events only reach %s — treating as a restart",
+            agent_id,
+            conn.id,
+            at,
+            head,
+        )
+        conn.position[SLIPS] = head
+        gaps.append(
+            _gap(
+                conn,
+                from_sequence=head,
+                resumed_at=head,
+                rooms=sorted(conn.rooms),
+                all_rooms=True,
+                reason="the server restarted since your last connection; "
+                "sequence numbers have been reset and events from before "
+                "the restart are gone in every room, including any this "
+                "connection has yet to claim — re-read room context",
+            )
+        )
+        at = head
+
+    # A point the agent's events can no longer serve is reported, not silently
+    # moved to head. The client re-reads room context to recover.
+    lost = await buffer.rooms_dropped_after(tenant, agent_id, at)
+    if lost:
+        oldest = await buffer.oldest_retained(tenant, agent_id)
+        logger.warning(
+            "[STREAM] agent=%s connection=%s resumed from expired cursor %s "
+            "(oldest retained %s, rooms %s)",
+            agent_id,
+            conn.id,
+            at,
+            oldest,
+            ", ".join(lost),
+        )
+        resumed_at = max(oldest - 1, 0)
+        conn.position[SLIPS] = resumed_at
+        gaps.append(
+            _gap(
+                conn,
+                from_sequence=at,
+                resumed_at=resumed_at,
+                rooms=list(lost),
+                all_rooms=False,
+                reason="events older than the retention window were "
+                "dropped; re-read room context",
+            )
+        )
+    return gaps
+
+
+async def _conversation_rooms(
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
+    buffer: EventBuffer,
+    tenant: str,
+) -> set[str]:
+    """The rooms whose conversation this connection is sent: the room it holds,
+    for a session; for a connection over every room, each room the agent is in
+    that no live sibling holds."""
+    if conn.scope == "single":
+        return set(conn.rooms)
+    member = await buffer.member_rooms(tenant, conn.agent_id)
+    return {room_id for room_id in member if registry.covers(conn, room_id)}
+
+
+async def _tickets_for(
+    conn: AgentConnection,
+    buffer: EventBuffer,
+    tenant: str,
+    deliver: list[BufferedEvent],
+) -> list[int]:
+    """Tickets for the events about to be sent, when the client holds one number
+    and the stream reads more than one source: each stands for the position
+    after its event, so the number the client sends back resumes it there."""
+    if conn.speaks_positions or not conn.reads_conversation or not deliver:
+        return []
+    positions: list[Position] = []
+    position = dict(conn.position)
+    for item in deliver:
+        if item.seq > position.get(item.source, -1):
+            position[item.source] = item.seq
+        positions.append(dict(position))
+    return await buffer.mint_tickets(tenant, conn.agent_id, positions)
+
+
+def _number_for(
+    conn: AgentConnection, item: BufferedEvent, tickets: list[int], index: int
+) -> int | None:
+    """The number a delivered event is sent with: its ticket, for a client that
+    holds one number over more than one source; otherwise its number in the
+    agent's own events, or none for the conversation, whose place is in
+    `position`."""
+    if tickets:
+        return tickets[index]
+    if item.source == SLIPS:
+        return item.seq
+    return None
 
 
 async def _wait_for_wake(conn: AgentConnection) -> bool:
@@ -523,11 +650,15 @@ async def _wait_for_wake(conn: AgentConnection) -> bool:
         return False
 
 
-async def _wait_for_work(bell: asyncio.Event, conn: AgentConnection) -> bool:
+async def _wait_for_work(
+    bell: asyncio.Event,
+    conn: AgentConnection,
+    timeout: float = KEEPALIVE_INTERVAL_SECONDS,
+) -> bool:
     """Wait for a new event or a change to the connection itself.
 
-    Returns False when neither happened before the keepalive interval, so the
-    caller can write a comment and keep the socket warm.
+    Returns False when neither happened within `timeout`, so the caller can
+    look again or write a comment to keep the socket warm.
     """
     waiters = [
         asyncio.ensure_future(bell.wait()),
@@ -536,7 +667,7 @@ async def _wait_for_work(bell: asyncio.Event, conn: AgentConnection) -> bool:
     try:
         done, _ = await asyncio.wait(
             waiters,
-            timeout=KEEPALIVE_INTERVAL_SECONDS,
+            timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )
         return bool(done)

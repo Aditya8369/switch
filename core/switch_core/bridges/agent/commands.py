@@ -536,6 +536,8 @@ async def _dispatch_control_command(
                 thread_id=event.thread_id,
             ),
         ),
+        room_seq=event.room_seq,
+        message_key=event.message_id,
     )
 
 

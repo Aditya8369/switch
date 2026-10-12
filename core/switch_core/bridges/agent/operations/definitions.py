@@ -348,7 +348,9 @@ async def connect_to_room(
             # one agent share it, and each of them is in a room of its own.
             reader = counting_reader()
             if reader is not None:
-                protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
+                await protocol.event_buffer.hand_counting_to(
+                    require_tenant_id(), agent_id, reader, room.id
+                )
 
             await bind_room_for_connectionless_caller(
                 protocol,
@@ -687,11 +689,13 @@ async def read_context(
     before_ms = parse_timestamp_ms(before) if before else None
 
     buffer = protocol.event_buffer
-    # Sampled before the read, because anything enqueued while the history
-    # response is in flight is not in that response. Clearing through the
-    # later head would report a zero for a message the agent never saw;
-    # clearing through this one can only leave something counted twice.
-    through = await buffer.head(require_tenant_id(), agent_id)
+    tenant_id = require_tenant_id()
+    # Where the room is, sampled before the read, because anything written
+    # while the history response is in flight is not in that response.
+    # Clearing through the later position would report a zero for a message
+    # the agent never saw; clearing through this one can only leave something
+    # counted twice.
+    through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
     context = await protocol.read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
@@ -702,7 +706,9 @@ async def read_context(
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
         # leaves every count alone, including this one.
-        buffer.caught_up(agent_id, reader, room_id, through, session_key())
+        await buffer.caught_up(
+            tenant_id, agent_id, reader, room_id, through, session_key()
+        )
 
     return context
 

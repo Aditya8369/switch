@@ -149,6 +149,9 @@ class ConnectionBeatRequest(BaseModel):
 
     connection_id: str
     cursor: int = 0
+    #: How far the client has read, one number per source, from a client that
+    #: holds a position (agent-protocol revision 9); preferred over `cursor`.
+    position: dict[str, int] | None = None
     #: The incarnation of the connection this client is attached to, as the
     #: server told it on `connection_state`. Fences the tick: a client that has
     #: been displaced still holds the id and the token, and is otherwise

@@ -459,7 +459,6 @@ async def record_beat(
         confirmed = min(
             cursor, await protocol.event_buffer.head(principal.tenant_id, agent_id)
         )
-        protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
         presence.resume_from(conn, agent_id, confirmed)
     return sorted(agents)
 

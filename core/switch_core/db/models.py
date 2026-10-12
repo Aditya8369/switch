@@ -2342,21 +2342,36 @@ class DeliveryCursor(TenantScoped, Base):
 
 
 class AgentEventRow(TenantScoped, Base):
-    """One event queued for one agent, at its position in that agent's stream.
+    """One event that is for one agent, at its position in that agent's stream.
 
-    What the in-memory event buffer held, made durable: an agent that comes
-    back after a restart, or to another process, resumes from its position
-    here. `seq` is the agent's offset, contiguous and never reused (see
-    `AgentEventHead`); `payload` is the event as it goes on the wire. Rows are
-    delivery copies, deleted after the retention window; the conversation
-    itself is `messages`, which this never touches.
+    Written only for what concerns the agent: a message addressed to it, a
+    join it listens for, a task it is part of, a command sent to it. Those are
+    decided once, when the room's row is delivered to the agent's consumer,
+    and cannot be decided again later, so the decision is kept here. The rest
+    of a room's conversation is read from `messages` itself and never copied.
+
+    `seq` is the agent's own offset, contiguous and never reused (see
+    `AgentEventHead`); `payload` is the event as it goes on the wire.
+    `room_seq` is the room row the event came from (for several files posted
+    as one message, the row that completed it), and `message_key` the id that
+    row's conversation is known by (the attachment group, or the row's own
+    event id), so the conversation read from `messages` can leave out what is
+    already here. Rows are deleted after the retention window; `messages`,
+    the conversation itself, is never touched.
     """
 
     __tablename__ = "agent_events"
     __table_args__ = (
         Index("ix_agent_events_tenant_id", "tenant_id"),
         Index("ix_agent_events_created_at", "created_at"),
-        Index("ix_agent_events_agent_room", "tenant_id", "agent_id", "room_id"),
+        Index(
+            "ix_agent_events_agent_room_seq",
+            "tenant_id",
+            "agent_id",
+            "room_id",
+            "room_seq",
+        ),
+        Index("ix_agent_events_agent_message_key", "agent_id", "message_key"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -2368,6 +2383,8 @@ class AgentEventRow(TenantScoped, Base):
     agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
     seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     notifiable: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -2423,6 +2440,123 @@ class AgentEventDrop(TenantScoped, Base):
     agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
     room_id: Mapped[str] = mapped_column(Text, primary_key=True)
     dropped_through: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class AgentRoomRead(TenantScoped, Base):
+    """How far an agent has caught up on one room, and who is reading it.
+
+    `caught_up_seq` is the room's `messages.seq` the agent last caught up
+    through; unaddressed conversation after it is what the agent is told it
+    missed. `occupant_id` is the session or connection in the room now: only
+    its reading clears the count. Kept here rather than in a process so the
+    count survives a restart and reads the same from every process.
+    """
+
+    __tablename__ = "agent_room_reads"
+    __table_args__ = (
+        Index("ix_agent_room_reads_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_room_reads_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_room_reads_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    caught_up_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    occupant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    occupant_is_session: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentPollPosition(TenantScoped, Base):
+    """Where a long-polling client has read up to, kept for it.
+
+    A polling client sends no position and has nowhere to keep one, so the
+    server keeps it, per reader: the agent-wide poll, the notifications poll,
+    and each room's poll.
+    """
+
+    __tablename__ = "agent_poll_positions"
+    __table_args__ = (
+        Index("ix_agent_poll_positions_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_poll_positions_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    reader_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    position: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+agent_position_ticket_sequence = Sequence(
+    "agent_position_ticket",
+    metadata=Base.metadata,
+    # Above every number an agent stream has issued before positions, so a
+    # client comparing numbers never mistakes a ticket for an older event.
+    # Below 2**53, where a JavaScript client stops counting exactly.
+    start=2**48,
+)
+
+
+class AgentPositionTicket(TenantScoped, Base):
+    """A position handed to a client that can only hold one number.
+
+    Clients speaking agent-protocol revision 8 or older track a single number
+    per stream. A stream that reads from more than one source (the agent's own
+    events and the rooms' conversation) has a position with one number per
+    source, so each event such a client is sent carries the id of a ticket
+    holding the position after it, and the id it sends back is looked up here.
+    Clients that speak positions never create one. Deleted with the events
+    they point at, after the retention window.
+    """
+
+    __tablename__ = "agent_position_tickets"
+    __table_args__ = (
+        Index("ix_agent_position_tickets_tenant_id", "tenant_id"),
+        Index("ix_agent_position_tickets_created_at", "created_at"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_position_tickets_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        agent_position_ticket_sequence,
+        primary_key=True,
+        server_default=agent_position_ticket_sequence.next_value(),
+    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class MediaBlob(TenantScoped, Base):

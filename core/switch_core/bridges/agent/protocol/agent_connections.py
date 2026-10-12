@@ -45,6 +45,7 @@ from switch_core.bridges.agent.protocol.liveness import (
 from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER as TAKEN_OVER
 from switch_core.bridges.agent.protocol.liveness import CloseCode as CloseCode
 from switch_core.bridges.agent.protocol.liveness import Closure as Closure
+from switch_core.bridges.agent.protocol.positions import SLIPS, Position, merged
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     AGENT_CONNECTIONS_EXPIRED,
@@ -92,6 +93,11 @@ SESSION_COMMAND_PROTOCOL_REVISION = 5
 # The revision from which a client takes a `room_released` frame: a room claim
 # or session placement on its connection was taken over by another connection.
 ROOM_RELEASED_PROTOCOL_REVISION = 6
+
+# A client that holds a position (one number per source) rather than one number:
+# it opens with `start_at`, reads `position` off each event, and reports its
+# position on every heartbeat. Older clients are given one number throughout.
+POSITIONS_PROTOCOL_REVISION = 9
 
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
@@ -391,7 +397,10 @@ class AgentConnection:
     scope: Scope
     delivery_filter: DeliveryFilter
     spawn_capable: bool
-    cursor: int
+    # How far this connection has been sent, one number per source
+    # (`positions.py`): the agent's own events, and for a connection that reads
+    # the conversation, each room it covers.
+    position: Position
     last_beat: float
     opened_at: float
     # Rooms this connection has subscribed to. A `single` connection holds at
@@ -423,9 +432,39 @@ class AgentConnection:
     # Rooms another connection took off this one, not yet written to its
     # stream, with the session of this connection that was placed there.
     released_rooms: dict[str, str | None] = field(default_factory=dict)
+    # The last ticket handed to this connection's client, when it reads more
+    # than one source and can only hold one number (see `speaks_positions`).
+    ticket: int = 0
+    # Set when the client asked to resume from a number the server no longer
+    # holds (an unknown or expired ticket): its stream opens with a gap. The
+    # number it asked for is kept to say so.
+    resume_lost: bool = False
+    resume_requested: int = 0
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
+
+    @property
+    def reads_conversation(self) -> bool:
+        """Whether this connection is sent the rooms' conversation as well as
+        the agent's own events: one that asked for everything, not only what is
+        addressed to the agent."""
+        return self.delivery_filter == "all"
+
+    @property
+    def speaks_positions(self) -> bool:
+        """Whether the client holds a position rather than one number."""
+        speaks = self.declaration.speaks
+        return speaks is not None and speaks >= POSITIONS_PROTOCOL_REVISION
+
+    @property
+    def cursor(self) -> int:
+        """The one number a client that cannot hold a position is told: the
+        agent's own events, when that is all the connection reads; otherwise
+        the ticket for the position."""
+        if self.reads_conversation:
+            return self.ticket
+        return self.position.get(SLIPS, 0)
 
 
 # The `(transport, client)` an agent run by an agents controller counts under:
@@ -503,7 +542,7 @@ class AgentConnectionRegistry:
         scope: Scope,
         delivery_filter: DeliveryFilter,
         spawn_capable: bool,
-        cursor: int,
+        position: Position,
         declaration: ClientDeclaration,
         expected_generation: int | None,
         transport: Transport = "websocket",
@@ -561,7 +600,8 @@ class AgentConnectionRegistry:
             existing.scope = scope
             existing.delivery_filter = delivery_filter
             existing.spawn_capable = spawn_capable
-            existing.cursor = cursor
+            existing.position = dict(position)
+            existing.ticket = 0
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
@@ -597,7 +637,7 @@ class AgentConnectionRegistry:
             scope=scope,
             delivery_filter=delivery_filter,
             spawn_capable=spawn_capable,
-            cursor=cursor,
+            position=dict(position),
             last_beat=now,
             opened_at=now,
             stream_attached=True,
@@ -752,10 +792,12 @@ class AgentConnectionRegistry:
         self,
         agent_id: str,
         connection_id: str,
-        cursor: int,
+        position: Position,
         generation: int | None,
     ) -> AgentConnection:
-        """Record a client tick and its cursor.
+        """Record a client tick and how far it has read.
+
+        The position only ever moves forward, source by source.
 
         Rejects a tick for a connection with no stream: the client is alive but
         receiving nothing, and must be told to reopen rather than left believing
@@ -765,8 +807,8 @@ class AgentConnectionRegistry:
         actually attached to. Sharing an id is what makes takeover work, and it
         is also what makes a displaced client's tick indistinguishable from the
         winner's — same id, same token. Unfenced, the loser keeps the
-        connection alive on the winner's behalf and, because a higher cursor is
-        adopted, drags the winner past events it was never sent. Nothing is
+        connection alive on the winner's behalf and, because a higher position
+        is adopted, drags the winner past events it was never sent. Nothing is
         mutated before the check, so a refused tick costs the winner nothing.
 
         `None` is a tick that cannot be fenced, and it is accepted only from a
@@ -793,8 +835,7 @@ class AgentConnectionRegistry:
             raise NoStreamAttachedError(connection_id)
         conn.last_beat = time.monotonic()
         conn.beats += 1
-        if cursor > conn.cursor:
-            conn.cursor = cursor
+        conn.position = merged(conn.position, position)
         return conn
 
     def require(self, agent_id: str, connection_id: str) -> AgentConnection:

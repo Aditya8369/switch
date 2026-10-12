@@ -83,6 +83,10 @@ class InboundEvent:
     sender: str
     timestamp: int
     content: dict[str, object] = field(default_factory=dict)
+    #: The row's position in its room (`messages.seq`), so whatever is made of
+    #: this event can say which row it came from. 0 when it was not read from a
+    #: room's log.
+    seq: int = 0
 
 
 @dataclass(frozen=True)

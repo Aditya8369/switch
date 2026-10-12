@@ -6,6 +6,12 @@ from pydantic import BaseModel, ConfigDict
 class SwitchEvent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    # The room row this event was read from: its position in the room and its
+    # event id. Filled at dispatch, not part of the event content; 0 and None
+    # for events that were not read from a room's log.
+    room_seq: int = 0
+    source_event_id: str | None = None
+
 
 # ── Command ───────────────────────────────────────────────────────────────────
 
