@@ -53,8 +53,8 @@ function setup() {
   const emitted: UserChangesEvent[] = [];
   const timers: { fn: () => void; ms: number }[] = [];
   const deps: UserChangesDeps = {
-    target: async (serverId) => ({
-      url: `ws://server/${serverId}/gateway/changes/ws`,
+    target: async (serverId, workspaceId) => ({
+      url: `ws://server/${serverId}/gateway/changes/ws${workspaceId ? `#${workspaceId}` : ''}`,
       headers: { Cookie: 'switch_auth=abc' },
     }),
     socket: FakeSocket as unknown as UserChangesDeps['socket'],
@@ -95,8 +95,13 @@ describe('user changes', () => {
     socket.frame('changed', { changes: [{ kind: 'managed_agent', id: 'a1' }] });
     expect(service.isLive('s1')).toBe(true);
     expect(emitted).toEqual([
-      { serverId: 's1', type: 'live', kinds: ['managed_agent', 'machine'] },
-      { serverId: 's1', type: 'changed', changes: [{ kind: 'managed_agent', id: 'a1' }] },
+      { serverId: 's1', workspaceId: null, type: 'live', kinds: ['managed_agent', 'machine'] },
+      {
+        serverId: 's1',
+        workspaceId: null,
+        type: 'changed',
+        changes: [{ kind: 'managed_agent', id: 'a1' }],
+      },
     ]);
   });
 
@@ -118,7 +123,7 @@ describe('user changes', () => {
     socket.frame('hello', { kinds: ['machine'], ping_interval_s: 25 });
     socket.fire('close', { code: 1012 });
     expect(service.isLive('s1')).toBe(false);
-    expect(emitted.at(-1)).toEqual({ serverId: 's1', type: 'down' });
+    expect(emitted.at(-1)).toEqual({ serverId: 's1', workspaceId: null, type: 'down' });
     const retry = timers.at(-1)!;
     expect(retry.ms).toBeLessThanOrEqual(1000);
     retry.fn();
@@ -173,6 +178,22 @@ describe('user changes', () => {
     await tick();
     FakeSocket.opened.at(-1)!.fire('close', { code: 1006 });
     expect(timers.at(-1)!.ms).toBeGreaterThan(5_000);
+  });
+
+  it('opens one socket per workspace on a server, each with its own session', async () => {
+    const { service, emitted } = setup();
+    service.watch('s1', 'w1');
+    service.watch('s1', 'w2');
+    await tick();
+    expect(FakeSocket.opened.map((s) => s.url)).toEqual([
+      'ws://server/s1/gateway/changes/ws#w1',
+      'ws://server/s1/gateway/changes/ws#w2',
+    ]);
+    FakeSocket.opened[1].frame('changed', { changes: [{ kind: 'machine', id: 'm1' }] });
+    expect(emitted.at(-1)).toMatchObject({ serverId: 's1', workspaceId: 'w2', type: 'changed' });
+    service.unwatch('s1', 'w1');
+    expect(FakeSocket.opened[0].closedWith).toBe(1000);
+    expect(FakeSocket.opened[1].closedWith).toBeNull();
   });
 
   it('closes the socket when the last watcher goes', async () => {

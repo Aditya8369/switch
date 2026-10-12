@@ -2,7 +2,10 @@ import {
   gatewaySocketTarget,
   type GatewaySocketTarget,
 } from '@main/core/switch-servers/gateway-client';
-import { withReachableServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import {
+  withReachableServerWorkspaceSession,
+  withReachableWorkspaceSession,
+} from '@main/core/workspaces/workspace-session';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { type UserChange, userChangesChannel } from '@shared/events/userChangesEvents';
@@ -39,7 +42,7 @@ const MISSED_PINGS = 3;
 type Hello = { kinds: string[]; ping_interval_s: number };
 
 export type UserChangesDeps = {
-  target: (serverId: string) => Promise<GatewaySocketTarget>;
+  target: (serverId: string, workspaceId: string | null) => Promise<GatewaySocketTarget>;
   socket: HeaderedWebSocket | undefined;
   emit: typeof events.emit;
   setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
@@ -50,10 +53,15 @@ export type UserChangesDeps = {
 };
 
 const defaultDeps: UserChangesDeps = {
-  target: (serverId) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
-      gatewaySocketTarget(server, '/changes/ws')
-    ),
+  // The cookie of the workspace the lists show, so the socket's session is
+  // bound to that workspace's tenant.
+  target: (serverId, workspaceId) => {
+    const open = (server: Parameters<typeof gatewaySocketTarget>[0]) =>
+      gatewaySocketTarget(server, '/changes/ws');
+    return workspaceId === null
+      ? withReachableServerWorkspaceSession(serverId, open)
+      : withReachableWorkspaceSession(workspaceId, open);
+  },
   socket: (globalThis as unknown as { WebSocket?: HeaderedWebSocket }).WebSocket,
   emit: (...args) => events.emit(...args),
   setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -77,6 +85,7 @@ class ServerSocket {
 
   constructor(
     private readonly serverId: string,
+    private readonly workspaceId: string | null,
     private readonly deps: UserChangesDeps
   ) {}
 
@@ -103,7 +112,7 @@ class ServerSocket {
     if (!Socket) return; // No WebSocket in this runtime: the lists keep polling.
     let target: GatewaySocketTarget;
     try {
-      target = await this.deps.target(this.serverId);
+      target = await this.deps.target(this.serverId, this.workspaceId);
     } catch (error) {
       this.schedule(this.retryMs, `could not prepare: ${String(error)}`);
       return;
@@ -149,6 +158,7 @@ class ServerSocket {
         this.arm(socket, hello.ping_interval_s);
         this.deps.emit(userChangesChannel, {
           serverId: this.serverId,
+          workspaceId: this.workspaceId,
           type: 'live',
           kinds: hello.kinds,
         });
@@ -161,6 +171,7 @@ class ServerSocket {
       case 'changed':
         this.deps.emit(userChangesChannel, {
           serverId: this.serverId,
+          workspaceId: this.workspaceId,
           type: 'changed',
           changes: (frame.data?.changes ?? []) as UserChange[],
         });
@@ -185,7 +196,11 @@ class ServerSocket {
   private setDown(): void {
     if (!this.live) return;
     this.live = false;
-    this.deps.emit(userChangesChannel, { serverId: this.serverId, type: 'down' });
+    this.deps.emit(userChangesChannel, {
+      serverId: this.serverId,
+      workspaceId: this.workspaceId,
+      type: 'down',
+    });
   }
 
   private schedule(ms: number, why: string): void {
@@ -206,30 +221,34 @@ class ServerSocket {
 
 export function createUserChangesService(deps: UserChangesDeps = defaultDeps) {
   const sockets = new Map<string, ServerSocket>();
+  const keyOf = (serverId: string, workspaceId: string | null) =>
+    `${serverId}\u0000${workspaceId ?? ''}`;
   return {
-    /** A list for this server is shown: keep its change socket open. */
-    watch(serverId: string): void {
-      let socket = sockets.get(serverId);
+    /** A list for this server and workspace is shown: keep its change socket open. */
+    watch(serverId: string, workspaceId: string | null = null): void {
+      const key = keyOf(serverId, workspaceId);
+      let socket = sockets.get(key);
       if (!socket) {
-        socket = new ServerSocket(serverId, deps);
-        sockets.set(serverId, socket);
+        socket = new ServerSocket(serverId, workspaceId, deps);
+        sockets.set(key, socket);
       }
       socket.watchers += 1;
       if (socket.watchers === 1) socket.start();
     },
     /** The list is gone; close the socket once nothing watches it. */
-    unwatch(serverId: string): void {
-      const socket = sockets.get(serverId);
+    unwatch(serverId: string, workspaceId: string | null = null): void {
+      const key = keyOf(serverId, workspaceId);
+      const socket = sockets.get(key);
       if (!socket) return;
       socket.watchers = Math.max(0, socket.watchers - 1);
       if (socket.watchers === 0) {
         socket.stop();
-        sockets.delete(serverId);
+        sockets.delete(key);
       }
     },
-    /** Whether the server is pushing changes right now. */
-    isLive(serverId: string): boolean {
-      return sockets.get(serverId)?.live ?? false;
+    /** Whether the server is pushing changes for this workspace right now. */
+    isLive(serverId: string, workspaceId: string | null = null): boolean {
+      return sockets.get(keyOf(serverId, workspaceId))?.live ?? false;
     },
   };
 }

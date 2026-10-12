@@ -7,12 +7,21 @@ export type UserChange = {
   id: string | null;
 };
 
-export type UserChangesEvent =
+/**
+ * The socket's server and the workspace its session is bound to (null: the
+ * server's workspace in scope when it opened). A session is one tenant's, so
+ * each workspace on a server has a socket of its own.
+ */
+type SocketScope = { serverId: string; workspaceId: string | null };
+
+export type UserChangesEvent = SocketScope &
   /** The server's change socket is open: lists it covers no longer need polling. */
-  | { serverId: string; type: 'live'; kinds: string[] }
-  /** The socket closed; poll until it is open again. */
-  | { serverId: string; type: 'down' }
-  | { serverId: string; type: 'changed'; changes: UserChange[] };
+  (
+    | { type: 'live'; kinds: string[] }
+    /** The socket closed; poll until it is open again. */
+    | { type: 'down' }
+    | { type: 'changed'; changes: UserChange[] }
+  );
 
 /** Change notices from the servers Console is signed in to. */
 export const userChangesChannel = defineEvent<UserChangesEvent>('user-changes:event');
