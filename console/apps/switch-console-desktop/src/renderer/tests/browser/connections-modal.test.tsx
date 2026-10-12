@@ -134,7 +134,7 @@ beforeEach(() => {
   switchServers.cloudMachines.mockReset();
   switchServers.getConnectionCatalog.mockReset();
   switchServers.getGitHubConnection.mockReset();
-  serverFlags.service_connections = false;
+  serverFlags.service_connections = true;
   switchServers.connectServiceWithKey.mockReset();
   switchServers.disconnectService.mockReset();
   openExternalUrl.mockReset().mockResolvedValue(true);
@@ -178,11 +178,14 @@ async function openConnections(): Promise<HTMLElement> {
   return dialog()!;
 }
 
-it('offers Connections on a server with cloud machines', async () => {
+it('offers no Connections for cloud machines alone, without service connections', async () => {
+  serverFlags.service_connections = false;
   switchServers.cloudMachines.mockResolvedValue([]);
   await render();
 
-  await vi.waitFor(() => expect(button(/^connections$/i, container!)).toBeDefined());
+  await vi.waitFor(() => expect(featureFlags.get).toHaveBeenCalledWith('server'));
+  await act(async () => {});
+  expect(button(/^connections$/i, container!)).toBeUndefined();
 });
 
 it('offers Connections on a server with service connections and no cloud machine', async () => {
@@ -195,6 +198,7 @@ it('offers Connections on a server with service connections and no cloud machine
 });
 
 it('offers no Connections without service connections or cloud machines', async () => {
+  serverFlags.service_connections = false;
   switchServers.cloudMachines.mockResolvedValue(null);
   await render();
 

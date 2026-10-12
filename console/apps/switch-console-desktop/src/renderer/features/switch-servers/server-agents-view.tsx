@@ -63,8 +63,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
-  // Connections are offered on a server with service connections, which any
-  // agent can be granted, or with cloud machines.
+  // Connections are offered where the server has service connections on.
   const serviceConnections = useFeatureFlags(serverId).service_connections;
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
@@ -76,7 +75,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
       action={
-        (machines.data || serviceConnections) && (
+        serviceConnections && (
           <Button variant="outline" size="sm" onClick={() => showConnectionsModal({ serverId })}>
             <Plug className="size-4" />
             Connections

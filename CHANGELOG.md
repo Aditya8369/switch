@@ -1573,10 +1573,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
-- **Service connections follow the server's `service_connections` flag.**
-  With it off, Your Agents offers Connections only for cloud machines, the
-  Connections list offers GitHub alone, and no agent shows Service access;
-  turning it on reaches a running Console without a restart.
+- **Service connections follow the server's `service_connections` flag,**
+  apart from cloud machines. With it off, Your Agents offers no Connections,
+  no agent shows Service access, and setting up Switch Cloud goes straight
+  from signing in to the first cloud agent; turning it on reaches a running
+  Console without a restart.
 - **Managed servers turn agent management on.** A server Console runs, on
   this computer or on an SSH host, now starts with agent management enabled
   and the controller token secret it needs, generated once and shared by every
