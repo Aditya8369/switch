@@ -223,6 +223,16 @@ as its owner there, that off stops its sessions within a minute, and, for a
 token that lives longer, that a token already handed out stays valid until it
 expires or the owner disconnects.
 
+## Switching connections on
+
+The whole feature is behind the `service_connections` feature flag
+(`FEATURE_FLAGS_ENABLED`), off by default. Off, the routes for connections,
+sign-ins, keys and grants are not mounted, on either the gateway or the agent
+API: an agent host reads the missing `service-grants` route as no grants, and
+Switch Console and the dashboard, which ask those routes, offer GitHub's link
+alone, as a server from before connections did. GitHub's own connect routes,
+the boot-time GitHub move and the token upkeep run either way.
+
 ## Switching a service off
 
 `DISABLED_SERVICES` is JSON, `{"<slug>": "<reason>"}`; an empty reason reads

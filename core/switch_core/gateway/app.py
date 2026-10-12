@@ -154,9 +154,10 @@ def create_gateway_app(
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
     app.include_router(providers_router, tags=["agent providers"])
-    app.include_router(service_connections_router, tags=["service-connections"])
     app.state.service_flows = ServiceFlows(config.gateway_public_url)
-    app.include_router(service_flows_router, tags=["service-connections"])
+    if config.service_connections_enabled:
+        app.include_router(service_connections_router, tags=["service-connections"])
+        app.include_router(service_flows_router, tags=["service-connections"])
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie

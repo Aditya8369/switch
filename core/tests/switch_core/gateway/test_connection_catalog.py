@@ -8,14 +8,24 @@ from switch_core.db.models import User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.connection_catalog import router
-from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.keys import Keyring
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 
+class _Config:
+    def __init__(self, service_connections_enabled: bool) -> None:
+        self.service_connections_enabled = service_connections_enabled
+
+
 @pytest.fixture
-async def catalog_app(session_factory):
+def services_on() -> bool:
+    return True
+
+
+@pytest.fixture
+async def catalog_app(session_factory, services_on):
     async with session_factory() as session:
         for user_id in ("catalog-user", "other-user"):
             session.add(
@@ -38,6 +48,7 @@ async def catalog_app(session_factory):
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[get_config] = lambda: _Config(services_on)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
@@ -90,6 +101,14 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
         "auth_type": "oauth",
         "status": "not_connected",
     }
+
+
+@pytest.mark.parametrize("services_on", [False])
+async def test_with_service_connections_off_github_alone_is_offered(catalog_app):
+    client, _ = catalog_app
+    result = statuses(await client.get("/gateway/provider-connections/catalog"))
+    assert result.pop("github") == "not_connected"
+    assert set(result.values()) == {"coming_soon"}
 
 
 async def test_catalog_reports_only_the_callers_connection(catalog_app):

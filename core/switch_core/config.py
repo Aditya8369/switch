@@ -17,6 +17,7 @@ from switch_core.feature_flags import (
     AGENT_MANAGEMENT,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
+    SERVICE_CONNECTIONS,
 )
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
@@ -1060,6 +1061,10 @@ class SwitchConfig(BaseSettings):
     @property
     def hosted_agents_enabled(self) -> bool:
         return self.feature_flags[HOSTED_AGENTS]
+
+    @property
+    def service_connections_enabled(self) -> bool:
+        return self.feature_flags[SERVICE_CONNECTIONS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

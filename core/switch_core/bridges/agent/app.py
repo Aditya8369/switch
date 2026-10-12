@@ -148,7 +148,10 @@ def create_agent_bridge_app(
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
-    app.include_router(service_router, prefix="/agents", tags=["service connections"])
+    if config.service_connections_enabled:
+        app.include_router(
+            service_router, prefix="/agents", tags=["service connections"]
+        )
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
     app.include_router(version_router, tags=["version"])

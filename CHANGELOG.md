@@ -78,6 +78,12 @@ version of their own to them without also giving them a release of their own.
   controller). Giving one queues a `provider.login` operation the machine takes
   it up with; revoking the machine deletes its logins. Migration
   `d41c7a9e2b58` adds `sealed_provider_logins`.
+- **The `service_connections` feature flag** shows or hides service
+  connections. Off, which is the default, the routes for connections,
+  sign-ins, keys and grants are not mounted: agent hosts read that as no
+  grants, and Switch Console and the dashboard offer GitHub's link alone, as
+  before. Turn it on with `FEATURE_FLAGS_ENABLED=service_connections` (Helm:
+  `switchCore.featureFlags.enabled`) for everything below.
 - **Agents use their owner's GitHub through grants.** A person connects their
   GitHub account once; an agent's owner then grants it repositories, to read or
   to read and push, from the agent's page in the gateway or in Switch Console.
