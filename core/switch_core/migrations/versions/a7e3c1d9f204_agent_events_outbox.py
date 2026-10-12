@@ -1,7 +1,7 @@
 """Agent events in Postgres: what is for each agent, and where each reader is
 
 Revision ID: a7e3c1d9f204
-Revises: dce217a97f54
+Revises: 7c3e91a4d5b2
 Create Date: 2026-10-12
 
 The event buffer kept each agent's queued events, and every reader's place in
@@ -30,7 +30,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "a7e3c1d9f204"
-down_revision = "dce217a97f54"
+down_revision = "7c3e91a4d5b2"
 branch_labels = None
 depends_on = None
 
