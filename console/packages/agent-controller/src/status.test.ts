@@ -495,15 +495,19 @@ describe('toolStatuses', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('reports git and gh as found on PATH, and as unsupported on Windows', async () => {
+  // PATH is looked up as this machine does, so the POSIX case runs off Windows.
+  it.skipIf(process.platform === 'win32')('reports git and gh as found on PATH', async () => {
     writeFileSync(join(dir, 'git'), '#!/bin/sh\n');
     chmodSync(join(dir, 'git'), 0o755);
     writeFileSync(join(dir, 'gh'), 'not executable');
-    const noVendorTools = join(dir, 'tools');
-    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux', noVendorTools)).toEqual([
+    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux', join(dir, 'tools'))).toEqual([
       { tool: 'git', state: 'ok' },
       { tool: 'gh', state: 'missing' },
     ]);
+  });
+
+  it('reports git and gh as unsupported on Windows', async () => {
+    const noVendorTools = join(dir, 'tools');
     expect(await toolStatuses(dir, 'win32', noVendorTools)).toEqual([
       { tool: 'git', state: 'unsupported' },
       { tool: 'gh', state: 'unsupported' },

@@ -452,48 +452,51 @@ describe('the skills of the agent’s service grants', () => {
     }
   });
 
-  it('set up GitHub for a session with a service endpoint and a GitHub grant', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
-    // The machine's own helper, which follows Switch's for when it gives no token.
-    await writeFile(join(root, '.gitconfig'), '[credential]\n\thelper = machine-own\n');
-    vi.stubEnv('HOME', root);
-    vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
-    vi.stubEnv('GIT_CONFIG_GLOBAL', join(root, '.gitconfig'));
-    try {
-      const prepared = await prepareSharedConfig(
-        root,
-        await configFor(root, 'claude'),
-        runtime,
-        { grants: [GITHUB_GRANT], unavailable: null },
-        {
-          endpoint: { url: 'http://127.0.0.1:5555', token: 'per-session-bearer' },
-          execPath: '/usr/bin/node',
-          entrypoint: '/opt/switch/shared-host.mjs',
-        },
-        {}
-      );
-      const env = prepared.input.env;
-      expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
-      expect(env.SWITCH_SERVICE_BEARER).toBe('per-session-bearer');
-      expect(env.GIT_CONFIG_PARAMETERS).toContain(
-        "/opt/switch/shared-host.mjs'\\'' --git-credential"
-      );
-      expect(env.GIT_CONFIG_PARAMETERS).toContain(
-        "'credential.https://github.com.useHttpPath=true'"
-      );
-      expect(JSON.parse(env.SWITCH_GITHUB_FALLBACK ?? '{}')).toEqual({
-        helpers: ['machine-own'],
-        wrapper: join(root, 'bin'),
-      });
-      expect(env.PATH?.split(':')[0]).toBe(join(root, 'bin'));
-      expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
-      // The helpers ask for GitHub's token; none is in the session's environment.
-      expect(env.GH_TOKEN).toBeUndefined();
-    } finally {
-      vi.unstubAllEnvs();
-      await rm(root, { recursive: true, force: true });
+  it.skipIf(process.platform === 'win32')(
+    'set up GitHub for a session with a service endpoint and a GitHub grant',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+      // The machine's own helper, which follows Switch's for when it gives no token.
+      await writeFile(join(root, '.gitconfig'), '[credential]\n\thelper = machine-own\n');
+      vi.stubEnv('HOME', root);
+      vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+      vi.stubEnv('GIT_CONFIG_GLOBAL', join(root, '.gitconfig'));
+      try {
+        const prepared = await prepareSharedConfig(
+          root,
+          await configFor(root, 'claude'),
+          runtime,
+          { grants: [GITHUB_GRANT], unavailable: null },
+          {
+            endpoint: { url: 'http://127.0.0.1:5555', token: 'per-session-bearer' },
+            execPath: '/usr/bin/node',
+            entrypoint: '/opt/switch/shared-host.mjs',
+          },
+          {}
+        );
+        const env = prepared.input.env;
+        expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
+        expect(env.SWITCH_SERVICE_BEARER).toBe('per-session-bearer');
+        expect(env.GIT_CONFIG_PARAMETERS).toContain(
+          "/opt/switch/shared-host.mjs'\\'' --git-credential"
+        );
+        expect(env.GIT_CONFIG_PARAMETERS).toContain(
+          "'credential.https://github.com.useHttpPath=true'"
+        );
+        expect(JSON.parse(env.SWITCH_GITHUB_FALLBACK ?? '{}')).toEqual({
+          helpers: ['machine-own'],
+          wrapper: join(root, 'bin'),
+        });
+        expect(env.PATH?.split(':')[0]).toBe(join(root, 'bin'));
+        expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
+        // The helpers ask for GitHub's token; none is in the session's environment.
+        expect(env.GH_TOKEN).toBeUndefined();
+      } finally {
+        vi.unstubAllEnvs();
+        await rm(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('are read as the session starts, and a session starts without them when they cannot be', async () => {
     const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));

@@ -39,28 +39,32 @@ describe('Git credential requests', () => {
     expect(parseCredentialRequest('no equals sign\n')).toBe(null);
   });
 
-  it("adds its settings after the environment's own, where no secret filter strips them", () => {
-    const env = githubSessionEnvironment({
-      env: { GIT_CONFIG_PARAMETERS: "'user.name=Ada'", PATH: '/usr/bin' },
-      execPath: '/usr/bin/node',
-      entrypoint: '/opt/switch/shared-host.mjs',
-      wrapperDirectory: '/state/bin',
-      isolate: false,
-      machineHelpers: ['osxkeychain'],
-    });
-    expect(env).toEqual({
-      GIT_CONFIG_PARAMETERS: [
-        "'user.name=Ada'",
-        "'credential.https://github.com.helper='",
-        `'credential.https://github.com.helper=!ELECTRON_RUN_AS_NODE=1 '\\''/usr/bin/node'\\'' '\\''/opt/switch/shared-host.mjs'\\'' --git-credential'`,
-        "'credential.https://github.com.useHttpPath=true'",
-      ].join(' '),
-      SWITCH_GITHUB_FALLBACK: JSON.stringify({ helpers: ['osxkeychain'], wrapper: '/state/bin' }),
-      PATH: '/state/bin:/usr/bin',
-    });
-    // Nothing a `*KEY*`, `*SECRET*` or `*TOKEN*` filter would take.
-    expect(Object.keys(env).filter((name) => /KEY|SECRET|TOKEN/i.test(name))).toEqual([]);
-  });
+  // The helpers do not run on Windows yet, so neither do their settings.
+  it.skipIf(process.platform === 'win32')(
+    "adds its settings after the environment's own, where no secret filter strips them",
+    () => {
+      const env = githubSessionEnvironment({
+        env: { GIT_CONFIG_PARAMETERS: "'user.name=Ada'", PATH: '/usr/bin' },
+        execPath: '/usr/bin/node',
+        entrypoint: '/opt/switch/shared-host.mjs',
+        wrapperDirectory: '/state/bin',
+        isolate: false,
+        machineHelpers: ['osxkeychain'],
+      });
+      expect(env).toEqual({
+        GIT_CONFIG_PARAMETERS: [
+          "'user.name=Ada'",
+          "'credential.https://github.com.helper='",
+          `'credential.https://github.com.helper=!ELECTRON_RUN_AS_NODE=1 '\\''/usr/bin/node'\\'' '\\''/opt/switch/shared-host.mjs'\\'' --git-credential'`,
+          "'credential.https://github.com.useHttpPath=true'",
+        ].join(' '),
+        SWITCH_GITHUB_FALLBACK: JSON.stringify({ helpers: ['osxkeychain'], wrapper: '/state/bin' }),
+        PATH: '/state/bin:/usr/bin',
+      });
+      // Nothing a `*KEY*`, `*SECRET*` or `*TOKEN*` filter would take.
+      expect(Object.keys(env).filter((name) => /KEY|SECRET|TOKEN/i.test(name))).toEqual([]);
+    }
+  );
 
   it('reads the repository from a Git credential path', () => {
     expect(repositoryOfPath('org/repo.git')).toBe('org/repo');
