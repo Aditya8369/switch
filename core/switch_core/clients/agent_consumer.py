@@ -463,7 +463,7 @@ class AgentConsumer(Consumer[AgentActor]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_buffer.drop_room(self.agent.id, meta.room_id)
+        await self._event_buffer.drop_room(self.tenant_id, self.agent.id, meta.room_id)
         self._connections.release_room_everywhere(self.agent.id, meta.room_id)
         self._connections.controllers.room_left(self.agent.id, meta.room_id)
 
@@ -511,7 +511,8 @@ class AgentConsumer(Consumer[AgentActor]):
                 session, meta.room_id, self.agent.id
             )
             member_name = await self._member_name(session, event)
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -639,7 +640,8 @@ class AgentConsumer(Consumer[AgentActor]):
         # Serialising runs once per agent per message, so only when it will be seen.
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             agent_event,
@@ -867,7 +869,8 @@ class AgentConsumer(Consumer[AgentActor]):
             logger.debug(
                 "Enqueuing media event %s", agent_event.model_dump_json(indent=2)
             )
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             agent_event,
@@ -898,7 +901,8 @@ class AgentConsumer(Consumer[AgentActor]):
         if handled:
             return
 
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -1358,7 +1362,9 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         if meta is None or agent_event is None:
             return
-        self._event_buffer.enqueue(self.agent.id, meta.room_id, agent_event)
+        await self._event_buffer.enqueue(
+            self.tenant_id, self.agent.id, meta.room_id, agent_event
+        )
 
     async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
         if event.requester_agent_id != self.agent.id:
@@ -1366,7 +1372,8 @@ class AgentConsumer(Consumer[AgentActor]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -1388,7 +1395,8 @@ class AgentConsumer(Consumer[AgentActor]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -1411,7 +1419,8 @@ class AgentConsumer(Consumer[AgentActor]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -1434,7 +1443,8 @@ class AgentConsumer(Consumer[AgentActor]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_buffer.enqueue(
+        await self._event_buffer.enqueue(
+            self.tenant_id,
             self.agent.id,
             meta.room_id,
             AgentEvent(

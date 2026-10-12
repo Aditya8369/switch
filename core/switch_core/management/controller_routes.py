@@ -430,7 +430,7 @@ async def attach_stream(
     )
 
 
-def record_beat(
+async def record_beat(
     *,
     principal: ControllerPrincipal,
     protocol: AgentCore,
@@ -456,7 +456,9 @@ def record_beat(
             continue
         # Clamped to the head, as an agent's own beat is: a higher number
         # belongs to a previous life of this process.
-        confirmed = min(cursor, protocol.event_buffer.head(agent_id))
+        confirmed = min(
+            cursor, await protocol.event_buffer.head(principal.tenant_id, agent_id)
+        )
         protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
         presence.resume_from(conn, agent_id, confirmed)
     return sorted(agents)
@@ -627,7 +629,7 @@ async def _receive_pongs(
         if not isinstance(message, dict) or message.get("type") != "pong":
             continue
         try:
-            record_beat(
+            await record_beat(
                 principal=principal,
                 protocol=protocol,
                 connection_id=connection_id,

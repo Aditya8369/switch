@@ -519,7 +519,8 @@ async def _dispatch_control_command(
     # Switch Console when we know its deeplink.
     body = f"{ack} ([Open in Switch Console]({deeplink}))" if deeplink else ack
     await _reply(client, room, event, body)
-    client._event_buffer.enqueue(
+    await client._event_buffer.enqueue(
+        client.tenant_id,
         client.agent.id,
         meta.room_id,
         AgentEvent(

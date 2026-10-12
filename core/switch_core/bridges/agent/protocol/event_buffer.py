@@ -1,30 +1,26 @@
-"""Per-agent sequenced event buffer (CHOO-1857).
+"""Per-agent sequenced events (CHOO-1857), kept in Postgres.
 
-Replaces the destructive per-room `asyncio.Queue` fan-out. Events are appended
-with a monotonically increasing sequence number and stay readable until they
-age out of the retention window or the per-agent cap forces them out. Reading
-never removes, so several readers can consume the same events independently and
-a reader that drops off can resume from its cursor.
+Every event an agent should see is a row in `agent_events`, numbered in that
+agent's own sequence. Reading never removes, so several readers consume the
+same events independently and a reader that drops off resumes from its cursor,
+on any process and across restarts. Rows are deleted only when they age out of
+the retention window (`expire`), and never because a reader has confirmed
+them: cursors record progress, they do not decide what is kept.
 
-Retention is deliberately independent of what readers have confirmed: an event
-remains readable for its window whether or not somebody has already consumed
-it. Cursors record progress; they do not decide what is kept.
+Deletion is never silent. Each room's newest deleted event is recorded in
+`agent_event_drops`, and the next reader resuming from before it is told it
+missed events there, by name.
 
-The buffer lives in memory: it cannot outlive the process, and persisting it
-would recreate the stale-state bug this design removes. `switch-core` is
-single-process by construction, so an in-process structure is authoritative.
-It sits behind a narrow surface (`enqueue`, `read_from`, `wait`, `confirm`)
-so it can be moved to Postgres later without touching its callers.
+A new row announces itself (`db/agent_event_notify_ddl.py`), and the listener
+in every process rings that agent's doorbell, so the process holding the
+agent's connection wakes and reads. The doorbell is a wake-up and never the
+record: a missed one costs latency, not an event.
 
-Overflow is never silent: when the cap forces events out, the rooms that lost
-events are flagged and the next reader to ask is told it missed events there.
-
-How far behind a reader is in a room is derived here rather than tallied: every
-event is retained with its room and whether it was addressed, so "unaddressed
-traffic in this room since you last caught up" is a scan between two sequence
-numbers at the moment somebody asks. The only thing recorded is where each room
-was last caught up, which is one number and cannot drift out of step with the
-events it describes.
+How far behind a reader is in a room is derived rather than tallied: rows keep
+their room and whether they were addressed, so "unaddressed traffic in this
+room since you last caught up" is a count between two sequence numbers at the
+moment somebody asks. Where each room was last caught up is still held in this
+process, and is lost with it (see `mark_restarted`).
 """
 
 from __future__ import annotations
@@ -32,11 +28,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 
 from switch_core.bridges.agent.protocol.types import AgentEvent
-from switch_core.logging_context import log_context
+from switch_core.db.models import AgentEventDrop, AgentEventHead, AgentEventRow
+from switch_core.db.session_scope import tenant_session
 from switch_core.observability.catalogue import (
     AGENT_BUFFER_SCAN_DURATION,
     AGENT_BUFFER_SCANNED,
@@ -44,21 +45,15 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.metrics import metrics
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-# Maximum events retained per agent. Beyond this the oldest are dropped and the
-# agent is flagged with a gap. Sized for chat-rate traffic: an agent would have
-# to accumulate this many unread events before any reader catches up.
-DEFAULT_MAX_EVENTS_PER_AGENT = 2000
+logger = logging.getLogger(__name__)
 
 # How long an event stays readable. This is the resume window: a client that
 # reconnects within it recovers every event it missed, and one that reconnects
 # later is told it has a gap rather than handed a partial stream.
-DEFAULT_RETENTION_SECONDS = 15 * 60
-
-# An agent past the cap drops an event on every enqueue, and a warning per drop
-# is a log line per delivered message. One per agent per interval says the same.
-OVERFLOW_WARNING_INTERVAL_SECONDS = 60.0
+DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
 
 _READ = {"operation": "read"}
 _UNREAD = {"operation": "unread"}
@@ -123,7 +118,6 @@ class BufferedEvent:
     room_id: str
     event: AgentEvent
     notifiable: bool
-    appended_at: float
 
 
 @dataclass(frozen=True)
@@ -171,31 +165,26 @@ class Unread:
 class EventBuffer:
     def __init__(
         self,
-        max_events_per_agent: int = DEFAULT_MAX_EVENTS_PER_AGENT,
-        retention_seconds: float = DEFAULT_RETENTION_SECONDS,
+        session_factory: async_sessionmaker[AsyncSession],
         *,
         sequence_base: int,
+        retention_seconds: float = DEFAULT_RETENTION_SECONDS,
     ) -> None:
-        # Each boot numbers from its own base, above every earlier boot's, so a
-        # sequence number is never reused and a cursor from a previous boot is
-        # recognisably below this one's floor.
+        self._session_factory = session_factory
+        # An agent's first event is numbered from this boot's base, above every
+        # earlier boot's, so a cursor from before the agent had any rows here
+        # is recognisably older than all of them. After that its numbers come
+        # from its head row and survive restarts.
         self.sequence_floor = sequence_base + 1
-        self.boot = sequence_base >> 32
-        self._max_events = max_events_per_agent
         self._retention_seconds = retention_seconds
-        self._events: dict[str, deque[BufferedEvent]] = {}
-        self._next_seq: dict[str, int] = {}
+        # Per process, and only the wake-up: which of this process's readers
+        # to ring when a row lands. Rung by `enqueue` here and by the listener
+        # for rows other processes write.
         self._notify: dict[str, asyncio.Event] = {}
         # reader id -> last sequence number that reader has confirmed. Used to
         # resume a reader and to report progress; deliberately NOT used to
-        # decide what to drop. Retention is by age and cap alone, so a reader
-        # that connects after an event was already consumed by someone else
-        # still sees it.
+        # decide what to delete.
         self._cursors: dict[str, dict[str, int]] = {}
-        # agent -> room -> highest sequence number dropped from that room. Any
-        # reader resuming from at or below it has missed events there, and
-        # knowing which room is what lets the warning name one.
-        self._dropped_through: dict[str, dict[str, int]] = {}
         # agent -> room -> how far behind that room is, and who is in it.
         # Distinct from the delivery cursor, which records what the server has
         # written out: the two are allowed to diverge, and that divergence is
@@ -211,38 +200,51 @@ class EventBuffer:
         self._counting: dict[str, dict[str, _Counting]] = {}
         # Agents whose baselines were lost with a previous life of this
         # process. A room counted for the first time after that starts unknown
-        # rather than at a number: the conversation it missed before the
-        # restart is gone from the buffer, so a count taken from what is left
-        # would be a floor presented as a total.
+        # rather than at a number: where it was last caught up is gone, so a
+        # count from anywhere would be a guess presented as a total.
         self._restarted: set[str] = set()
-        # agent -> when its last overflow warning was logged, and how many
-        # overflow drops have gone unlogged since.
-        self._overflow_warned_at: dict[str, float] = {}
-        self._overflow_unlogged: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Producing
     # ------------------------------------------------------------------
 
-    def enqueue(self, agent_id: str, room_id: str, event: AgentEvent) -> int:
-        """Append an event for an agent and return its sequence number."""
-        seq = self._next_seq.get(agent_id, self.sequence_floor)
-        if seq >= self.sequence_floor - 1 + (1 << 32):
-            raise RuntimeError(
-                "Agent event sequence range exhausted; restart the server."
-            )
-        self._next_seq[agent_id] = seq + 1
+    async def enqueue(
+        self, tenant_id: str, agent_id: str, room_id: str, event: AgentEvent
+    ) -> int:
+        """Append an event for an agent and return its sequence number.
 
-        events = self._events.setdefault(agent_id, deque())
-        events.append(
-            BufferedEvent(
-                seq=seq,
-                room_id=room_id,
-                event=event,
-                notifiable=is_notifiable(event),
-                appended_at=time.monotonic(),
+        The number comes from the agent's head row, advanced in the same
+        transaction as the insert, so numbers are contiguous and never handed
+        out twice, even after the rows before them have been deleted.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            claim = (
+                insert(AgentEventHead)
+                .values(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    first_seq=self.sequence_floor,
+                    last_seq=self.sequence_floor,
+                )
+                .on_conflict_do_update(
+                    index_elements=[AgentEventHead.agent_id],
+                    set_={"last_seq": AgentEventHead.last_seq + 1},
+                )
+                .returning(AgentEventHead.last_seq)
             )
-        )
+            seq = (await session.execute(claim)).scalar_one()
+            session.add(
+                AgentEventRow(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    seq=seq,
+                    room_id=room_id,
+                    type=event.type,
+                    payload=event.model_dump(mode="json"),
+                    notifiable=is_notifiable(event),
+                )
+            )
+            await session.commit()
         logger.debug(
             "[EVENT-BUF] append agent=%s room=%s type=%s seq=%s",
             agent_id,
@@ -250,16 +252,16 @@ class EventBuffer:
             event.type,
             seq,
         )
-        self._trim(agent_id)
-        self._wake(agent_id)
+        self.ring(agent_id)
         return seq
 
     # ------------------------------------------------------------------
     # Consuming
     # ------------------------------------------------------------------
 
-    def read_from(
+    async def read_from(
         self,
+        tenant_id: str,
         agent_id: str,
         after_seq: int,
         *,
@@ -271,40 +273,40 @@ class EventBuffer:
 
         `rooms=None` means every room the agent has events for; otherwise only
         the given rooms. Raises `CursorExpiredError` if `after_seq` predates
-        what the buffer still holds.
-
-        The window is enforced here as well as on append, because an agent
-        that goes quiet appends nothing and would otherwise go on serving
-        events long past it. Elsewhere the promise that an event stops being
-        readable when its window ends is relied on to decide how long a record
-        about it has to be kept.
+        what is still retained.
         """
         started = time.perf_counter()
-        self._trim(agent_id)
-        self._check_cursor(agent_id, after_seq)
-
-        out: list[BufferedEvent] = []
-        events = self._events.get(agent_id, ())
-        scanned = len(events)
-        for index, item in enumerate(events):
-            if item.seq <= after_seq:
-                continue
-            if rooms is not None and item.room_id not in rooms:
-                continue
-            if notifiable_only and not item.notifiable:
-                continue
-            out.append(item)
-            if limit is not None and len(out) >= limit:
-                scanned = index + 1
-                break
-        self._record_scan(_READ, scanned, started)
+        await self._check_cursor(tenant_id, agent_id, after_seq)
+        query = (
+            select(AgentEventRow)
+            .where(AgentEventRow.agent_id == agent_id, AgentEventRow.seq > after_seq)
+            .order_by(AgentEventRow.seq)
+        )
+        if rooms is not None:
+            query = query.where(AgentEventRow.room_id.in_(rooms))
+        if notifiable_only:
+            query = query.where(AgentEventRow.notifiable.is_(True))
+        if limit is not None:
+            query = query.limit(limit)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = (await session.scalars(query)).all()
+        out = [
+            BufferedEvent(
+                seq=row.seq,
+                room_id=row.room_id,
+                event=AgentEvent.model_validate(row.payload),
+                notifiable=row.notifiable,
+            )
+            for row in rows
+        ]
+        self._record_scan(_READ, len(out), started)
         return out
 
     async def wait(self, agent_id: str, timeout: float) -> None:
         """Block until an event is appended for the agent, or the timeout passes.
 
         A wake-up is advisory: callers re-read from their cursor rather than
-        trusting this to deliver anything. The buffer is the record; this is
+        trusting this to deliver anything. The rows are the record; this is
         only the doorbell.
         """
         notify = self._notify.setdefault(agent_id, asyncio.Event())
@@ -315,31 +317,89 @@ class EventBuffer:
             return
 
     def doorbell(self, agent_id: str) -> asyncio.Event:
-        """The wake-up signal for an agent, shared by every reader.
+        """The wake-up signal for an agent, shared by every reader here.
 
-        Set whenever an event is appended. Readers re-read from their own
-        cursor when woken; the signal carries no payload, so a spurious or
-        missed wake costs latency, never correctness.
+        Set whenever an event is appended, by this process or another.
+        Readers re-read from their own cursor when woken; the signal carries
+        no payload, so a spurious or missed wake costs latency, never
+        correctness.
         """
         return self._notify.setdefault(agent_id, asyncio.Event())
 
-    def head(self, agent_id: str) -> int:
+    def ring(self, agent_id: str) -> None:
+        """Wake this process's readers of an agent. Called by `enqueue` and by
+        the listener when another process appends."""
+        notify = self._notify.get(agent_id)
+        if notify is not None:
+            notify.set()
+
+    def ring_everyone(self) -> None:
+        """Wake every reader here, after the listener was disconnected and may
+        have missed announcements."""
+        for notify in self._notify.values():
+            notify.set()
+
+    async def head(self, tenant_id: str, agent_id: str) -> int:
         """The sequence number of the most recent event (the floor less one if none)."""
-        return self._next_seq.get(agent_id, self.sequence_floor) - 1
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            last = await session.scalar(
+                select(AgentEventHead.last_seq).where(
+                    AgentEventHead.agent_id == agent_id
+                )
+            )
+        return self.sequence_floor - 1 if last is None else last
 
-    def oldest_retained(self, agent_id: str) -> int:
-        """Sequence number of the oldest retained event (0 if the buffer is empty)."""
-        events = self._events.get(agent_id)
-        return events[0].seq if events else 0
+    async def heads(self, tenant_id: str, agent_ids: set[str]) -> dict[str, int]:
+        """`head` for several agents in one read, for a reader serving many."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = (
+                await session.execute(
+                    select(AgentEventHead.agent_id, AgentEventHead.last_seq).where(
+                        AgentEventHead.agent_id.in_(agent_ids)
+                    )
+                )
+            ).all()
+        found = {agent_id: last for agent_id, last in rows}
+        return {
+            agent_id: found.get(agent_id, self.sequence_floor - 1)
+            for agent_id in agent_ids
+        }
 
-    def has_gap_before(self, agent_id: str, after_seq: int) -> bool:
-        """Whether resuming from `after_seq` would skip dropped events."""
-        return bool(self.rooms_dropped_after(agent_id, after_seq))
+    async def first_seq(self, tenant_id: str, agent_id: str) -> int:
+        """Where the agent's numbering starts: anything below it was issued
+        before the agent had events here, by a server that no longer holds them."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            first = await session.scalar(
+                select(AgentEventHead.first_seq).where(
+                    AgentEventHead.agent_id == agent_id
+                )
+            )
+        return self.sequence_floor if first is None else first
 
-    def rooms_dropped_after(self, agent_id: str, after_seq: int) -> tuple[str, ...]:
+    async def oldest_retained(self, tenant_id: str, agent_id: str) -> int:
+        """Sequence number of the oldest retained event (0 if there is none)."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            oldest = await session.scalar(
+                select(func.min(AgentEventRow.seq)).where(
+                    AgentEventRow.agent_id == agent_id
+                )
+            )
+        return oldest or 0
+
+    async def rooms_dropped_after(
+        self, tenant_id: str, agent_id: str, after_seq: int
+    ) -> tuple[str, ...]:
         """The rooms that lost events a reader at `after_seq` would have seen."""
-        markers = self._dropped_through.get(agent_id, {})
-        return tuple(sorted(room for room, seq in markers.items() if seq > after_seq))
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rooms = (
+                await session.scalars(
+                    select(AgentEventDrop.room_id).where(
+                        AgentEventDrop.agent_id == agent_id,
+                        AgentEventDrop.dropped_through > after_seq,
+                    )
+                )
+            ).all()
+        return tuple(sorted(rooms))
 
     # ------------------------------------------------------------------
     # Reader bookkeeping
@@ -470,13 +530,15 @@ class EventBuffer:
         if held.baseline is None or through_seq > held.baseline:
             held.baseline = through_seq
 
-    def unread(self, agent_id: str, room_id: str, through_seq: int) -> Unread:
+    async def unread(
+        self, tenant_id: str, agent_id: str, room_id: str, through_seq: int
+    ) -> Unread:
         """Unaddressed messages in one room the agent has not caught up on.
 
         Counted on demand from the retained events rather than tallied as they
-        arrive, so it cannot disagree with what the buffer holds. Only
-        messages: an agent is told how much conversation went past it, not how
-        many admin events did.
+        arrive, so it cannot disagree with them. Only messages: an agent is
+        told how much conversation went past it, not how many admin events
+        did.
 
         Asked by room alone, with no reader: a connection carrying every
         session of an agent could not say which of them a room's count belongs
@@ -490,20 +552,27 @@ class EventBuffer:
             return Unread(count=None, reason=RESTARTED)
 
         started = time.perf_counter()
-        events = self._events.get(agent_id, ())
-        count = sum(
-            1
-            for item in events
-            if item.room_id == room_id
-            and baseline < item.seq <= through_seq
-            and item.event.type == "message"
-            and not item.notifiable
-        )
-        self._record_scan(_UNREAD, len(events), started)
-        dropped = self._dropped_through.get(agent_id, {}).get(room_id, 0)
-        if dropped > baseline:
-            return Unread(count=count, reason=COUNTED_FROM_A_HOLE)
-        return Unread(count=count, reason=None)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            count = await session.scalar(
+                select(func.count()).where(
+                    AgentEventRow.agent_id == agent_id,
+                    AgentEventRow.room_id == room_id,
+                    AgentEventRow.seq > baseline,
+                    AgentEventRow.seq <= through_seq,
+                    AgentEventRow.type == "message",
+                    AgentEventRow.notifiable.is_(False),
+                )
+            )
+            dropped = await session.scalar(
+                select(AgentEventDrop.dropped_through).where(
+                    AgentEventDrop.agent_id == agent_id,
+                    AgentEventDrop.room_id == room_id,
+                )
+            )
+        self._record_scan(_UNREAD, count or 0, started)
+        if dropped is not None and dropped > baseline:
+            return Unread(count=count or 0, reason=COUNTED_FROM_A_HOLE)
+        return Unread(count=count or 0, reason=None)
 
     def register_reader(self, agent_id: str, reader_id: str, cursor: int) -> None:
         self._cursors.setdefault(agent_id, {})[reader_id] = cursor
@@ -529,14 +598,12 @@ class EventBuffer:
             readers.pop(reader_id, None)
 
     def remove(self, agent_id: str) -> None:
-        self._events.pop(agent_id, None)
+        """Forget what this process holds about an agent. Its rows go with the
+        agent's own row (`ON DELETE CASCADE`)."""
         self._notify.pop(agent_id, None)
         self._cursors.pop(agent_id, None)
-        self._dropped_through.pop(agent_id, None)
         self._counting.pop(agent_id, None)
         self._restarted.discard(agent_id)
-        self._overflow_warned_at.pop(agent_id, None)
-        self._overflow_unlogged.pop(agent_id, None)
 
     def _begin(
         self, agent_id: str, room_id: str, occupant: Reader, baseline: int
@@ -547,33 +614,91 @@ class EventBuffer:
             baseline=None if agent_id in self._restarted else baseline,
         )
 
-    def drop_room(self, agent_id: str, room_id: str) -> None:
-        """Forget everything retained for this agent in one room.
+    async def drop_room(self, tenant_id: str, agent_id: str, room_id: str) -> None:
+        """Delete everything retained for this agent in one room.
 
-        Called when the agent is removed from it. The buffer is keyed by agent
-        and knows nothing about who is in what, so an event queued while it was
+        Called when the agent is removed from it. The rows are keyed by agent
+        and know nothing about who is in what, so an event queued while it was
         a member stays readable after it is not.
 
         Sequence numbers are untouched and no gap is recorded: a reader that
         skips these has missed nothing it was entitled to, and saying otherwise
         would send it to re-read the context of a room it is not in.
         """
-        events = self._events.get(agent_id)
-        if not events:
-            return
-        kept = [item for item in events if item.room_id != room_id]
-        dropped = len(events) - len(kept)
-        if not dropped:
-            return
-        events.clear()
-        events.extend(kept)
-        logger.info(
-            "[EVENT-BUF] dropped %s retained event(s) for agent=%s room=%s: "
-            "no longer a member",
-            dropped,
-            agent_id,
-            room_id,
-        )
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            result = await session.execute(
+                delete(AgentEventRow).where(
+                    AgentEventRow.agent_id == agent_id,
+                    AgentEventRow.room_id == room_id,
+                )
+            )
+            await session.commit()
+        dropped = result.rowcount or 0  # type: ignore[attr-defined]
+        if dropped:
+            logger.info(
+                "[EVENT-BUF] dropped %s retained event(s) for agent=%s room=%s: "
+                "no longer a member",
+                dropped,
+                agent_id,
+                room_id,
+            )
+
+    # ------------------------------------------------------------------
+    # Retention
+    # ------------------------------------------------------------------
+
+    async def expire(self, tenant_id: str) -> int:
+        """Delete one tenant's events older than the retention window.
+
+        Lossy, so it records, per agent and room, the newest event it deleted:
+        the next reader resuming from before that is told it missed events
+        there. Retention is deliberately independent of what readers have
+        confirmed: an event stays readable for its window whether or not
+        somebody has already consumed it, so a reader that arrives late still
+        sees recent history.
+        """
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            deleted = (
+                await session.execute(
+                    delete(AgentEventRow)
+                    .where(AgentEventRow.created_at < cutoff)
+                    .returning(
+                        AgentEventRow.agent_id, AgentEventRow.room_id, AgentEventRow.seq
+                    )
+                )
+            ).all()
+            through: dict[tuple[str, str], int] = {}
+            for agent_id, room_id, seq in deleted:
+                key = (agent_id, room_id)
+                through[key] = max(seq, through.get(key, 0))
+            for (agent_id, room_id), seq in through.items():
+                await session.execute(
+                    insert(AgentEventDrop)
+                    .values(
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        room_id=room_id,
+                        dropped_through=seq,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=[
+                            AgentEventDrop.agent_id,
+                            AgentEventDrop.room_id,
+                        ],
+                        set_={
+                            "dropped_through": func.greatest(
+                                AgentEventDrop.dropped_through, seq
+                            )
+                        },
+                    )
+                )
+            await session.commit()
+        if deleted:
+            metrics().increment(
+                AGENT_EVENTS_DROPPED, {"reason": "retention"}, len(deleted)
+            )
+        return len(deleted)
 
     # ------------------------------------------------------------------
     # Legacy long-poll compatibility
@@ -581,8 +706,8 @@ class EventBuffer:
     # Polling clients send no cursor and have nowhere to keep one, so the
     # server holds it for them: "everything after the last thing I gave you,
     # and record that I gave it". Behaviour is unchanged from their point of
-    # view — they never see a duplicate — but reads are no longer destructive,
-    # so a streaming reader on the same agent is unaffected.
+    # view — they never see a duplicate — but reads are not destructive, so a
+    # streaming reader on the same agent is unaffected.
     #
     # Delivery stays at-most-once for these callers, exactly as before: the
     # cursor advances on send, so a response lost in flight loses its events.
@@ -590,31 +715,25 @@ class EventBuffer:
     # ------------------------------------------------------------------
 
     async def poll(
-        self, agent_id: str, *, rooms: set[str], timeout: float = 30
+        self, tenant_id: str, agent_id: str, *, rooms: set[str], timeout: float = 30
     ) -> list[AgentEvent]:
         """Everything queued for this agent in the rooms it is in.
 
         `rooms` is how the caller applies membership, and it is required: the
-        buffer is keyed by agent and knows nothing about who is in what, so an
+        rows are keyed by agent and know nothing about who is in what, so an
         event queued while the agent was a member stays queued after it is
         removed. A default would make the leak the thing a new caller gets for
         free.
-
-        Read once, before the wait. A room the agent is added to while this is
-        parked has its first events held back to the next poll, which the
-        caller makes immediately; asking the caller to re-read membership
-        mid-poll would buy that one round trip at the cost of a callback
-        reaching back out of the buffer, and this stays behind the narrow
-        surface described at the top of the module.
         """
         return await self._legacy_poll(
-            agent_id, "legacy:all", timeout=timeout, rooms=rooms
+            tenant_id, agent_id, "legacy:all", timeout=timeout, rooms=rooms
         )
 
     async def poll_room(
-        self, agent_id: str, room_id: str, timeout: float = 30
+        self, tenant_id: str, agent_id: str, room_id: str, timeout: float = 30
     ) -> list[AgentEvent]:
         return await self._legacy_poll(
+            tenant_id,
             agent_id,
             f"legacy:room:{room_id}",
             timeout=timeout,
@@ -623,7 +742,7 @@ class EventBuffer:
         )
 
     async def poll_notifications(
-        self, agent_id: str, *, rooms: set[str], timeout: float = 30
+        self, tenant_id: str, agent_id: str, *, rooms: set[str], timeout: float = 30
     ) -> list[AgentEvent]:
         """The notifiable half of `poll`, under the same membership rule.
 
@@ -631,6 +750,7 @@ class EventBuffer:
         the one a removal matters most on.
         """
         return await self._legacy_poll(
+            tenant_id,
             agent_id,
             "legacy:notifications",
             timeout=timeout,
@@ -640,6 +760,7 @@ class EventBuffer:
 
     async def _legacy_poll(
         self,
+        tenant_id: str,
         agent_id: str,
         reader_id: str,
         *,
@@ -648,17 +769,25 @@ class EventBuffer:
         notifiable_only: bool = False,
         rooms_are_membership: bool = True,
     ) -> list[AgentEvent]:
-        args = (agent_id, reader_id, rooms, notifiable_only, rooms_are_membership)
-        events = self._legacy_take(*args)
+        args = (
+            tenant_id,
+            agent_id,
+            reader_id,
+            rooms,
+            notifiable_only,
+            rooms_are_membership,
+        )
+        events = await self._legacy_take(*args)
         if events:
             return events
 
         await self.wait(agent_id, timeout)
 
-        return self._legacy_take(*args)
+        return await self._legacy_take(*args)
 
-    def _legacy_take(
+    async def _legacy_take(
         self,
+        tenant_id: str,
         agent_id: str,
         reader_id: str,
         rooms: set[str],
@@ -668,44 +797,53 @@ class EventBuffer:
         """One read, moving the cursor past what this reader can never want.
 
         Past what it can never want, and no further. A legacy read has no
-        limit, so it always reaches the end of the buffer, and leaving the
-        cursor behind an event the filter excluded parks it below the head
-        indefinitely — until retention trims it and the next read reports a
-        gap that never happened.
+        limit, so it always reaches the end, and leaving the cursor behind an
+        event the filter excluded parks it below the head indefinitely — until
+        retention deletes it and the next read reports a gap that never
+        happened.
 
         Which exclusions are permanent depends on the filter.
         `notifiable_only` tests a property of the event, which is fixed, so
         those can be skipped for good. A room set taken from membership is not
-        fixed: an agent added to a room the buffer already holds events for
-        would find the cursor already past them, and they would never be
-        delivered. `poll_room`'s filter is the reader's own scope rather than a
+        fixed: an agent added to a room that already has events for it would
+        find the cursor already past them, and they would never be delivered.
+        `poll_room`'s filter is the reader's own scope rather than a
         membership snapshot, so there the exclusions are permanent too — hence
         `rooms_are_membership`.
         """
-        cursor = self._legacy_cursor(agent_id, reader_id)
-        events = self._legacy_read(agent_id, reader_id, cursor, rooms, notifiable_only)
+        cursor = await self._legacy_cursor(tenant_id, agent_id, reader_id)
+        events = await self._legacy_read(
+            tenant_id, agent_id, reader_id, cursor, rooms, notifiable_only
+        )
         if rooms_are_membership:
-            self.confirm(
-                agent_id, reader_id, self._last_seq_in_rooms(agent_id, cursor, rooms)
-            )
+            through = await self._last_seq_in_rooms(tenant_id, agent_id, cursor, rooms)
         else:
-            self.confirm(agent_id, reader_id, self.head(agent_id))
+            through = await self.head(tenant_id, agent_id)
+        self.confirm(agent_id, reader_id, through)
         return [item.event for item in events]
 
-    def _last_seq_in_rooms(self, agent_id: str, after_seq: int, rooms: set[str]) -> int:
+    async def _last_seq_in_rooms(
+        self, tenant_id: str, agent_id: str, after_seq: int, rooms: set[str]
+    ) -> int:
         """The newest retained event after `after_seq` in one of `rooms`.
 
         `after_seq` itself when there is none, so a caller confirming this
         never moves a cursor over an event held for a room the agent is not in
         yet.
         """
-        last = after_seq
-        for item in self._events.get(agent_id, ()):
-            if item.seq > after_seq and item.room_id in rooms:
-                last = item.seq
-        return last
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            last = await session.scalar(
+                select(func.max(AgentEventRow.seq)).where(
+                    AgentEventRow.agent_id == agent_id,
+                    AgentEventRow.seq > after_seq,
+                    AgentEventRow.room_id.in_(rooms),
+                )
+            )
+        return after_seq if last is None else last
 
-    def _legacy_cursor(self, agent_id: str, reader_id: str) -> int:
+    async def _legacy_cursor(
+        self, tenant_id: str, agent_id: str, reader_id: str
+    ) -> int:
         readers = self._cursors.setdefault(agent_id, {})
         if reader_id not in readers:
             # A poller seen for the first time starts before the oldest
@@ -713,11 +851,13 @@ class EventBuffer:
             # accumulated while nobody was polling and the first poll drained
             # them. Starting at head would silently swallow anything that
             # arrived before the client got around to asking.
-            readers[reader_id] = max(self.oldest_retained(agent_id) - 1, 0)
+            oldest = await self.oldest_retained(tenant_id, agent_id)
+            readers[reader_id] = max(oldest - 1, 0)
         return readers[reader_id]
 
-    def _legacy_read(
+    async def _legacy_read(
         self,
+        tenant_id: str,
         agent_id: str,
         reader_id: str,
         cursor: int,
@@ -725,8 +865,12 @@ class EventBuffer:
         notifiable_only: bool,
     ) -> list[BufferedEvent]:
         try:
-            return self.read_from(
-                agent_id, cursor, rooms=rooms, notifiable_only=notifiable_only
+            return await self.read_from(
+                tenant_id,
+                agent_id,
+                cursor,
+                rooms=rooms,
+                notifiable_only=notifiable_only,
             )
         except CursorExpiredError as exc:
             # A polling client cannot be told about a gap — it has no protocol
@@ -742,8 +886,12 @@ class EventBuffer:
             )
             resumed = max(exc.oldest - 1, 0)
             self._cursors.setdefault(agent_id, {})[reader_id] = resumed
-            return self.read_from(
-                agent_id, resumed, rooms=rooms, notifiable_only=notifiable_only
+            return await self.read_from(
+                tenant_id,
+                agent_id,
+                resumed,
+                rooms=rooms,
+                notifiable_only=notifiable_only,
             )
 
     # ------------------------------------------------------------------
@@ -760,85 +908,11 @@ class EventBuffer:
         )
         registry.observe(AGENT_BUFFER_SCANNED, operation, scanned)
 
-    def _wake(self, agent_id: str) -> None:
-        notify = self._notify.get(agent_id)
-        if notify is not None:
-            notify.set()
-
-    def _check_cursor(self, agent_id: str, after_seq: int) -> None:
-        rooms = self.rooms_dropped_after(agent_id, after_seq)
+    async def _check_cursor(
+        self, tenant_id: str, agent_id: str, after_seq: int
+    ) -> None:
+        rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
         if not rooms:
             return
-        markers = self._dropped_through[agent_id]
-        raise CursorExpiredError(agent_id, after_seq, max(markers.values()) + 1, rooms)
-
-    def _trim(self, agent_id: str) -> None:
-        """Enforce the retention window and the cap.
-
-        Both are lossy, so both record a gap that the next reader resuming from
-        before it will be told about. Retention is deliberately independent of
-        what readers have confirmed: an event stays readable for its window
-        whether or not somebody has already consumed it, so a reader that
-        arrives late still sees recent history.
-        """
-        events = self._events.get(agent_id)
-        if not events:
-            return
-
-        dropped: dict[str, int] = {}
-        expired = 0
-        cutoff = time.monotonic() - self._retention_seconds
-        while events and events[0].appended_at < cutoff:
-            item = events.popleft()
-            dropped[item.room_id] = item.seq
-            expired += 1
-        if expired:
-            metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "retention"}, expired)
-
-        overflow = len(events) - self._max_events
-        if overflow > 0:
-            for _ in range(overflow):
-                item = events.popleft()
-                dropped[item.room_id] = item.seq
-            metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "overflow"}, overflow)
-            self._warn_overflow(agent_id, overflow, dropped)
-
-        if dropped:
-            markers = self._dropped_through.setdefault(agent_id, {})
-            for room_id, seq in dropped.items():
-                markers[room_id] = max(seq, markers.get(room_id, 0))
-
-    def _warn_overflow(
-        self, agent_id: str, overflow: int, dropped: dict[str, int]
-    ) -> None:
-        """Log that the cap forced events out, at most once per interval per agent.
-
-        The drops in between are not lost: the metric still counts each one, and
-        the next line says how many went unlogged.
-        """
-        now = time.monotonic()
-        last = self._overflow_warned_at.get(agent_id)
-        if last is not None and now - last < OVERFLOW_WARNING_INTERVAL_SECONDS:
-            self._overflow_unlogged[agent_id] = (
-                self._overflow_unlogged.get(agent_id, 0) + overflow
-            )
-            return
-        unlogged = self._overflow_unlogged.pop(agent_id, 0)
-        self._overflow_warned_at[agent_id] = now
-        # The agent is a field as well as being in the message: this fires
-        # from the buffer's own bookkeeping rather than from anything the
-        # agent called, so there is no request context to inherit it from,
-        # and "which agent is falling behind" is the only question this
-        # line is ever read to answer.
-        with log_context(agent_id=agent_id):
-            logger.warning(
-                "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
-                "through seq=%s in rooms %s, plus %s dropped since the last "
-                "warning; readers resuming from before this will be told they "
-                "missed events",
-                agent_id,
-                self._max_events,
-                max(dropped.values()),
-                ", ".join(sorted(dropped)),
-                unlogged,
-            )
+        oldest = await self.oldest_retained(tenant_id, agent_id)
+        raise CursorExpiredError(agent_id, after_seq, oldest, rooms)

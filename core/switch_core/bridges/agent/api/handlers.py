@@ -119,7 +119,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Agent, Task
+from switch_core.db.models import Agent, Task, require_tenant_id
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
@@ -784,8 +784,9 @@ async def poll_events(
     return EventResponse(events=events)
 
 
-def _resolve_start_cursor(
+async def _resolve_start_cursor(
     protocol: AgentCore,
+    tenant_id: str,
     agent_id: str,
     start_from: str,
     last_event_id: str | None = None,
@@ -797,7 +798,7 @@ def _resolve_start_cursor(
     """
     raw = last_event_id or start_from
     if raw in ("", "head"):
-        return protocol.event_buffer.head(agent_id)
+        return await protocol.event_buffer.head(tenant_id, agent_id)
     try:
         return max(int(raw), 0)
     except ValueError as exc:
@@ -903,7 +904,9 @@ async def _open_connection(
             detail=f"filter must be 'all' or 'addressed', got {event_filter!r}",
         )
 
-    cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
+    cursor = await _resolve_start_cursor(
+        protocol, agent.tenant_id, agent.id, start_from, last_event_id
+    )
 
     conn = _register_connection(
         protocol=protocol,
@@ -1043,7 +1046,7 @@ async def _open_event_stream(
     )
 
 
-def _record_beat(
+async def _record_beat(
     protocol: AgentCore,
     agent_id: str,
     connection_id: str,
@@ -1053,17 +1056,19 @@ def _record_beat(
     """Count a client's beat, and adopt its cursor: a pong on the socket, or a
     `POST /connection/beat` from an event-stream client.
 
-    The cursor is clamped to the buffer head first. The buffer is in memory,
-    so a restart resets the sequence while a client keeps reporting the
-    number it had reached, and neither `beat()` nor `confirm()` will move a
-    cursor backwards: adopting the stale number would skip every event up to
-    it, silently, and mark them consumed on the way past.
+    The cursor is clamped to the agent's head first. A client can report a
+    number from some other history (a restored database, another server),
+    and neither `beat()` nor `confirm()` will move a cursor backwards:
+    adopting it would skip every event up to it, silently, and mark them
+    consumed on the way past.
 
     Raises the registry's refusal when the connection is no longer this
     client's to beat for: another socket took it over (`taken_over`), or it
     has no stream attached (`no_stream`), or it is gone.
     """
-    cursor = min(cursor, protocol.event_buffer.head(agent_id))
+    cursor = min(
+        cursor, await protocol.event_buffer.head(require_tenant_id(), agent_id)
+    )
     conn = protocol.connections.beat(agent_id, connection_id, cursor, generation)
     protocol.event_buffer.confirm(agent_id, conn.id, cursor)
     return conn
@@ -1087,7 +1092,7 @@ async def connection_beat(
     recovered by reopening.
     """
     try:
-        conn = _record_beat(
+        conn = await _record_beat(
             protocol, agent.id, req.connection_id, req.cursor, req.generation
         )
     except (
@@ -1279,7 +1284,7 @@ async def _receive_pongs(
         raw = message.get("cursor", 0)
         cursor = raw if isinstance(raw, int) and raw >= 0 else 0
         try:
-            _record_beat(protocol, agent_id, connection_id, cursor, generation)
+            await _record_beat(protocol, agent_id, connection_id, cursor, generation)
         except ConnectionError_ as refusal:
             return refusal
 

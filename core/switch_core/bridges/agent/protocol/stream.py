@@ -194,6 +194,9 @@ async def _event_stream(
     last_rooms = set(conn.rooms)
 
     tenant_id = current_tenant_id()
+    if tenant_id is None:
+        raise RuntimeError("An agent stream runs inside its agent's tenant")
+    tenant: str = tenant_id
 
     # Approval answers and expiries, for the agent's own stream only: the
     # watcher that routes work to its sessions. Owed ones are read on opening
@@ -224,17 +227,17 @@ async def _event_stream(
     try:
         yield _frame("connection_state", _connection_state(conn))
 
-        # A cursor ahead of everything we hold is a cursor from a previous
-        # life of this process: the buffer is in memory, so a restart resets
-        # the sequence. Say so. Staying quiet would leave the client believing
-        # it is caught up when its numbering no longer means anything.
-        head = buffer.head(agent_id)
-        floor = buffer.sequence_floor
+        # A cursor below where this agent's numbering starts was issued before
+        # its events were kept here, by a server that no longer holds them;
+        # one ahead of everything held belongs to some other history. Say so.
+        # Staying quiet would leave the client believing it is caught up when
+        # its numbering no longer means anything.
+        head = await buffer.head(tenant, agent_id)
+        floor = await buffer.first_seq(tenant, agent_id)
         if 0 < conn.cursor < floor - 1:
-            # Every boot numbers above the previous one, so a cursor below this
-            # boot's floor is one a restart left behind. The client keeps its
-            # sequence-based dedupe (nothing is reused); what it has lost is
-            # every event the old buffer held.
+            # Numbering only ever starts above every earlier one, so the client
+            # keeps its sequence-based dedupe (nothing is reused); what it has
+            # lost is every event from before.
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
                 "earlier server boot (this boot starts at %s)",
@@ -292,9 +295,9 @@ async def _event_stream(
 
         # A cursor the buffer can no longer serve is reported, not silently
         # moved to head. The client re-reads room context to recover.
-        lost = buffer.rooms_dropped_after(agent_id, conn.cursor)
+        lost = await buffer.rooms_dropped_after(tenant, agent_id, conn.cursor)
         if lost:
-            oldest = buffer.oldest_retained(agent_id)
+            oldest = await buffer.oldest_retained(tenant, agent_id)
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from expired cursor %s "
                 "(oldest retained %s, rooms %s)",
@@ -404,7 +407,8 @@ async def _event_stream(
                 buffer.ensure_counting(agent_id, conn.id, room_id, conn.cursor)
 
             try:
-                pending = buffer.read_from(
+                pending = await buffer.read_from(
+                    tenant,
                     agent_id,
                     conn.cursor,
                     notifiable_only=conn.delivery_filter == "addressed",
@@ -443,7 +447,7 @@ async def _event_stream(
                 #
                 # An empty result means the scan reached the end without hitting
                 # the batch limit, so head is exactly how far we have looked.
-                head = buffer.head(agent_id)
+                head = await buffer.head(tenant, agent_id)
                 if head > conn.cursor:
                     conn.cursor = head
 
@@ -462,7 +466,9 @@ async def _event_stream(
                     # woken for anyway. A count of its own would be a wake
                     # spent on "you may have missed something you may not care
                     # about".
-                    unread = buffer.unread(agent_id, item.room_id, item.seq)
+                    unread = await buffer.unread(
+                        tenant, agent_id, item.room_id, item.seq
+                    )
                     payload["missed"] = {
                         "count": unread.count,
                         "reason": unread.reason,
@@ -490,7 +496,7 @@ async def _event_stream(
                 or conn.released_rooms
                 or outcomes
                 or resync[0]
-                or buffer.head(agent_id) > conn.cursor
+                or await buffer.head(tenant, agent_id) > conn.cursor
                 or conn.rooms != last_rooms
             ):
                 continue

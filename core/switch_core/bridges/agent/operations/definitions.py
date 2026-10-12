@@ -46,7 +46,7 @@ from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge, User
+from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
@@ -691,7 +691,7 @@ async def read_context(
     # response is in flight is not in that response. Clearing through the
     # later head would report a zero for a message the agent never saw;
     # clearing through this one can only leave something counted twice.
-    through = buffer.head(agent_id)
+    through = await buffer.head(require_tenant_id(), agent_id)
 
     context = await protocol.read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
