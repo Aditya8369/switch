@@ -1,8 +1,8 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
-import { vertexCredentialFixture } from '@switch-console/agent-providers/testing';
+import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -16,6 +16,7 @@ import {
   ProviderStatuses,
   StatusCollector,
   statusFingerprint,
+  toolStatuses,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
@@ -407,6 +408,11 @@ describe('ProviderStatuses with logins given to the machine', () => {
   });
 });
 
+/** `path` as a pattern: Windows names a CLI with PATHEXT's casing, `.CMD`. */
+function escape(path: string): string {
+  return path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('PathProviderLocator', () => {
   let dir: string;
   beforeEach(() => {
@@ -415,13 +421,14 @@ describe('PathProviderLocator', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it('finds a CLI by the plugin’s binary names, and reads its version', async () => {
-    const script = join(dir, 'cursor-agent');
-    writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
-    chmodSync(script, 0o755);
+    const script = await writeNodeCli(dir, 'cursor-agent', 'console.log("2026.01.15-abc")');
     writeFileSync(join(dir, 'claude'), 'not executable');
-    const locator = new PathProviderLocator(`/nonexistent:${dir}`, join(dir, 'probe-home'));
+    const locator = new PathProviderLocator(
+      ['/nonexistent', dir].join(delimiter),
+      join(dir, 'probe-home')
+    );
     expect(await locator.locate('cursor')).toEqual({
-      path: script,
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
       version: '2026.01.15-abc',
       versionProblem: null,
     });
@@ -430,19 +437,26 @@ describe('PathProviderLocator', () => {
   });
 
   it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {
-    const script = join(dir, 'opencode');
-    writeFileSync(
-      script,
-      '#!/bin/sh\nmkdir -p "$XDG_DATA_HOME/opencode" "$HOME/.cache" || exit 1\necho 1.18.35\n'
+    const script = await writeNodeCli(
+      dir,
+      'opencode',
+      `const { mkdirSync } = require('node:fs');
+       const { join } = require('node:path');
+       mkdirSync(join(process.env.XDG_DATA_HOME, 'opencode'), { recursive: true });
+       mkdirSync(join(process.env.HOME, '.cache'), { recursive: true });
+       console.log('1.18.35');`
     );
-    chmodSync(script, 0o755);
     const previous = process.env.HOME;
     process.env.HOME = '/nonexistent';
     try {
       const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
         'opencode'
       );
-      expect(located).toEqual({ path: script, version: '1.18.35', versionProblem: null });
+      expect(located).toEqual({
+        path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+        version: '1.18.35',
+        versionProblem: null,
+      });
     } finally {
       process.env.HOME = previous;
     }
@@ -457,18 +471,70 @@ describe('a CLI whose version cannot be read', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it('says why, so the report can carry it', async () => {
-    const script = join(dir, 'opencode');
-    writeFileSync(script, '#!/bin/sh\necho "EROFS: read-only file system" >&2\nexit 1\n');
-    chmodSync(script, 0o755);
+    const script = await writeNodeCli(
+      dir,
+      'opencode',
+      'console.error("EROFS: read-only file system"); process.exit(1);'
+    );
     const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
     expect(located).toEqual({
-      path: script,
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
       version: null,
       versionProblem: 'exited 1: EROFS: read-only file system',
     });
     expect(
       providerStatusFrom('opencode', located, null, '2026-01-01T00:00:00Z').version_problem
     ).toBe('exited 1: EROFS: read-only file system');
+  });
+});
+
+describe('toolStatuses', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-tools-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  // PATH is looked up as this machine does, so the POSIX case runs off Windows.
+  it.skipIf(process.platform === 'win32')('reports git and gh as found on PATH', async () => {
+    writeFileSync(join(dir, 'git'), '#!/bin/sh\n');
+    chmodSync(join(dir, 'git'), 0o755);
+    writeFileSync(join(dir, 'gh'), 'not executable');
+    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux', join(dir, 'tools'))).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
+  });
+
+  it('reports git and gh as unsupported on Windows', async () => {
+    const noVendorTools = join(dir, 'tools');
+    expect(await toolStatuses(dir, 'win32', noVendorTools)).toEqual([
+      { tool: 'git', state: 'unsupported' },
+      { tool: 'gh', state: 'unsupported' },
+    ]);
+  });
+
+  it('reports each vendor tool a session here has set up', async () => {
+    const tools = join(dir, 'tools');
+    mkdirSync(tools);
+    const entry = (state: string) => ({
+      version: '1.2.3',
+      target: 'linux-x64',
+      state,
+      detail: null,
+      checked_at: '2026-10-08T00:00:00Z',
+    });
+    writeFileSync(
+      join(tools, 'status.json'),
+      JSON.stringify({ zcli: entry('failed'), excli: entry('ok'), wincli: entry('unsupported') })
+    );
+    expect(await toolStatuses('/nonexistent', 'linux', tools)).toEqual([
+      { tool: 'git', state: 'missing' },
+      { tool: 'gh', state: 'missing' },
+      { tool: 'excli', state: 'ok' },
+      { tool: 'wincli', state: 'unsupported' },
+      { tool: 'zcli', state: 'missing' },
+    ]);
   });
 });
 
@@ -501,6 +567,10 @@ describe('StatusCollector', () => {
       store,
       runtime,
       providers,
+      tools: async () => [
+        { tool: 'git', state: 'ok' },
+        { tool: 'gh', state: 'missing' },
+      ],
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
@@ -515,6 +585,10 @@ describe('StatusCollector', () => {
     expect(statusReportSchema.safeParse({ ...first, seq: 1 }).success).toBe(true);
     expect(first.controller).toEqual({ version: '0.1.0', protocol: 2, assignment_revision: 7 });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
+    expect(first.tools).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
     expect(first.agents[0]).toMatchObject({
       agent_id: 'agent-1',
       applied_revision: 2,

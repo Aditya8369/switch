@@ -1,10 +1,13 @@
-import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, mkdir, statfs } from 'node:fs/promises';
+import { mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { promisify } from 'node:util';
-import type { ProviderReadiness } from '@switch-console/agent-providers';
+import { join } from 'node:path';
+import {
+  execProvider,
+  findOnPath,
+  type ProviderReadiness,
+  providerUnsupportedReason,
+  readCliToolStatuses,
+} from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
@@ -20,6 +23,7 @@ import {
   type ProviderStatus,
   type ReasonCode,
   type StatusReport,
+  type ToolStatus,
 } from './schemas';
 import type { GivenLogin, LoginProblem, SealedLogins } from './sealed-logins';
 import type { AgentRow, ControllerStore } from './store';
@@ -47,6 +51,40 @@ export type LocatedProvider = {
   versionProblem: string | null;
 };
 
+/**
+ * The tools Switch sets up for a session whose agent has a GitHub grant: `ok`
+ * when on PATH, `missing` when not. Its helpers do not run on Windows, so
+ * there both are `unsupported`, and such an agent uses the machine's own
+ * sign-in.
+ *
+ * Then each vendor command-line tool a session here has set up, from the
+ * machine's tool folder (`cliToolsBase`): `ok` once its pinned build is
+ * installed, `missing` when the last install failed, `unsupported` where the
+ * catalog has no build for this machine. A tool no session has needed yet is
+ * not named.
+ */
+export async function toolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform,
+  cliBase: string
+): Promise<ToolStatus[]> {
+  return [...(await gitHubToolStatuses(path, os)), ...(await readCliToolStatuses(cliBase))];
+}
+
+async function gitHubToolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform
+): Promise<ToolStatus[]> {
+  const tools = ['git', 'gh'];
+  if (os === 'win32') return tools.map((tool) => ({ tool, state: 'unsupported' }));
+  return Promise.all(
+    tools.map(
+      async (tool) =>
+        ({ tool, state: (await findOnPath(tool, path)) !== null ? 'ok' : 'missing' }) as const
+    )
+  );
+}
+
 /** Finds a provider's CLI on this machine. */
 export interface ProviderLocator {
   locate(provider: Provider): Promise<LocatedProvider | null>;
@@ -72,26 +110,17 @@ export class PathProviderLocator implements ProviderLocator {
     const plugin = pluginRegistry.get(provider);
     if (!plugin) throw new Error(`No provider plugin is registered for '${provider}'.`);
     const dependency = plugin.capabilities.hostDependency;
-    const directories = (this.path ?? '').split(delimiter).filter(Boolean);
-    for (const name of dependency.binaryNames)
-      for (const directory of directories) {
-        const candidate = join(directory, name);
-        try {
-          await access(candidate, constants.X_OK);
-        } catch {
-          continue;
-        }
-        if (dependency.skipVersionProbe)
-          return { path: candidate, version: null, versionProblem: null };
-        return {
-          path: candidate,
-          ...(await readVersion(
-            candidate,
-            dependency.versionArgs ?? ['--version'],
-            this.probeHome
-          )),
-        };
-      }
+    if (providerUnsupportedReason(provider, process.platform) !== null) return null;
+    for (const name of dependency.binaryNames) {
+      const candidate = await findOnPath(name, this.path);
+      if (candidate === null) continue;
+      if (dependency.skipVersionProbe)
+        return { path: candidate, version: null, versionProblem: null };
+      return {
+        path: candidate,
+        ...(await readVersion(candidate, dependency.versionArgs ?? ['--version'], this.probeHome)),
+      };
+    }
     return null;
   }
 }
@@ -104,7 +133,7 @@ async function readVersion(
 ): Promise<{ version: string | null; versionProblem: string | null }> {
   try {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    const { stdout, stderr } = await promisify(execFile)(binary, args, {
+    const { stdout, stderr } = await execProvider(binary, args, {
       timeout: VERSION_TIMEOUT_MS,
       env: {
         ...process.env,
@@ -496,6 +525,8 @@ export class StatusCollector {
       store: ControllerStore;
       runtime: AgentRuntime;
       providers: ProviderStatuses;
+      /** The tools sessions are set up with (`toolStatuses`). */
+      tools: () => Promise<ToolStatus[]>;
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
       dataDir: string;
@@ -565,7 +596,7 @@ export class StatusCollector {
         workspaces_dir: this.deps.workspacesDir,
       },
       providers: this.deps.providers.snapshot(),
-      tools: [],
+      tools: await this.deps.tools(),
       agents,
     };
   }
@@ -579,6 +610,7 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
   return JSON.stringify({
     revision: report.controller.assignment_revision,
     providers: report.providers.map((p) => [p.provider, p.installed, p.version, p.auth, p.reason]),
+    tools: report.tools.map((t) => [t.tool, t.state, t.reason]),
     agents: report.agents.map((a) => [
       a.agent_id,
       a.applied_revision,

@@ -746,7 +746,16 @@ export async function runAgentHost(
     // Before any session is started below: a host asks for its tools as soon
     // as its provider comes up.
     unbind.push(
-      links.answer(agentId, sessionToolAnswerer({ identity, connectionId, placements, publish }))
+      links.answer(
+        agentId,
+        sessionToolAnswerer({
+          identity,
+          connectionId,
+          placements,
+          publish,
+          redactions: links.redactions,
+        })
+      )
     );
     // A host coming up — started from Console after it failed, say — takes
     // the messages that waited for it.
@@ -1341,11 +1350,20 @@ export async function runAgentHost(
         }
       }
     };
+    // A turn ending while the definition is being applied is not lost: the
+    // pass is run again once the one under way is done.
+    let again = false;
     const redefine = () => {
-      if (redefining) return;
+      if (redefining) {
+        again = true;
+        return;
+      }
       redefining = true;
       pending = pending.then(applyDefinition).finally(() => {
         redefining = false;
+        if (!again) return;
+        again = false;
+        redefine();
       });
       void pending.catch((error: Error) => fail(error));
     };
