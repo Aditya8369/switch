@@ -10,9 +10,10 @@ holding the events, not only the reader that would have fetched more.
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
 from types import SimpleNamespace
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
@@ -24,11 +25,19 @@ from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.clients.actor import Actor
 from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
 from switch_core.clients.consumer import Consumer
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.transport import InboundMembership, RoomRef
+from tests.db_buffer import seed_agent
 
 AGENT = "agent-1"
 LEFT = "room-left"
 KEPT = "room-kept"
+
+
+@pytest.fixture(autouse=True)
+async def _agent_row(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent whose events are retained, so they have a row to belong to."""
+    await seed_agent(session_factory, AGENT)
 
 
 def _message(room_id: str, body: str) -> AgentEvent:
@@ -78,6 +87,7 @@ def _client(
         _event_buffer=buffer,
         _connections=connections,
         agent=SimpleNamespace(id=AGENT),
+        tenant_id=TENANT_ZERO_ID,
         _resolve_room_meta=_resolve_room_meta,
     )
 
@@ -90,8 +100,8 @@ async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
     )
 
 
-async def test_the_rooms_retained_events_are_forgotten() -> None:
-    buffer = EventBuffer(sequence_base=0)
+async def test_the_rooms_retained_events_are_forgotten(db_buffer: EventBuffer) -> None:
+    buffer = db_buffer
     await buffer.enqueue(
         TENANT_ZERO_ID, AGENT, LEFT, _message(LEFT, "said in the old room")
     )
@@ -109,7 +119,7 @@ async def test_the_rooms_retained_events_are_forgotten() -> None:
     ] == [KEPT]
 
 
-async def test_the_rooms_claim_is_released() -> None:
+async def test_the_rooms_claim_is_released(db_buffer: EventBuffer) -> None:
     connections = AgentConnectionRegistry()
     conn = connections.open(
         agent_id=AGENT,
@@ -123,14 +133,16 @@ async def test_the_rooms_claim_is_released() -> None:
     )
     connections.claim_room(conn, LEFT)
 
-    await _removed(_client(EventBuffer(sequence_base=0), connections), "!left:test")
+    await _removed(_client(db_buffer, connections), "!left:test")
 
     assert conn.rooms == set()
 
 
-async def test_a_room_that_cannot_be_resolved_drops_nothing() -> None:
+async def test_a_room_that_cannot_be_resolved_drops_nothing(
+    db_buffer: EventBuffer,
+) -> None:
     """Rather than guessing which room was meant and emptying the wrong one."""
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     await buffer.enqueue(TENANT_ZERO_ID, AGENT, LEFT, _message(LEFT, "still here"))
 
     await _removed(_client(buffer, AgentConnectionRegistry()), "!unknown:test")

@@ -11,15 +11,30 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.clients.agent_consumer import AgentConsumer
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
+from tests.db_buffer import seed_agent
 
 _LOGGER = "switch_core.clients.agent_consumer"
+AGENT = "agent-1"
 
 
-def _consumer(enqueued: list[AgentEvent]) -> SimpleNamespace:
+@pytest.fixture(autouse=True)
+async def _agent_row(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent the consumer queues for, so its events have a row to belong to."""
+    await seed_agent(session_factory, AGENT)
+
+
+async def _enqueued(buffer: EventBuffer) -> list[AgentEvent]:
+    return [item.event for item in await buffer.read_from(TENANT_ZERO_ID, AGENT, 0)]
+
+
+def _consumer(buffer: EventBuffer) -> SimpleNamespace:
     """An unaddressed delivery: no store is consulted, the event is enqueued."""
 
     async def _resolve_room_meta(_room_id: str) -> SimpleNamespace:
@@ -28,12 +43,11 @@ def _consumer(enqueued: list[AgentEvent]) -> SimpleNamespace:
         )
 
     return SimpleNamespace(
-        agent=SimpleNamespace(id="agent-1", name="helper"),
+        agent=SimpleNamespace(id=AGENT, name="helper"),
+        tenant_id=TENANT_ZERO_ID,
         _resolve_room_meta=_resolve_room_meta,
         _addressed_without_lookup=lambda _event, _meta: False,
-        _event_buffer=SimpleNamespace(
-            enqueue=lambda _agent, _room, event: enqueued.append(event)
-        ),
+        _event_buffer=buffer,
     )
 
 
@@ -63,33 +77,35 @@ def dumps(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 @pytest.mark.asyncio
-async def test_an_event_is_not_serialised_for_a_debug_line_nobody_logs(dumps, caplog):
+async def test_an_event_is_not_serialised_for_a_debug_line_nobody_logs(
+    dumps, caplog, db_buffer
+):
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    enqueued: list[AgentEvent] = []
 
     await AgentConsumer.on_message(
-        _consumer(enqueued),  # type: ignore[arg-type]
+        _consumer(db_buffer),  # type: ignore[arg-type]
         RoomRef(room_id="!room:server"),
         _message(),
     )
 
-    assert len(enqueued) == 1
+    assert len(await _enqueued(db_buffer)) == 1
     assert dumps == []
     assert not [r for r in caplog.records if "Enqueuing event" in r.getMessage()]
 
 
 @pytest.mark.asyncio
-async def test_the_debug_line_is_still_logged_when_debug_is_on(dumps, caplog):
+async def test_the_debug_line_is_still_logged_when_debug_is_on(
+    dumps, caplog, db_buffer
+):
     caplog.set_level(logging.DEBUG, logger=_LOGGER)
-    enqueued: list[AgentEvent] = []
 
     await AgentConsumer.on_message(
-        _consumer(enqueued),  # type: ignore[arg-type]
+        _consumer(db_buffer),  # type: ignore[arg-type]
         RoomRef(room_id="!room:server"),
         _message(),
     )
 
-    assert len(enqueued) == 1
+    assert len(await _enqueued(db_buffer)) == 1
     assert dumps == [1]
     lines = [r for r in caplog.records if "Enqueuing event" in r.getMessage()]
     assert len(lines) == 1
@@ -98,9 +114,10 @@ async def test_the_debug_line_is_still_logged_when_debug_is_on(dumps, caplog):
 
 @pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
 @pytest.mark.asyncio
-async def test_a_media_event_is_serialised_only_when_debug_is_on(dumps, caplog, level):
+async def test_a_media_event_is_serialised_only_when_debug_is_on(
+    dumps, caplog, level, db_buffer
+):
     caplog.set_level(level, logger=_LOGGER)
-    enqueued: list[AgentEvent] = []
     media = InboundMedia(
         room_id="!room:server",
         event_id="$media",
@@ -112,7 +129,7 @@ async def test_a_media_event_is_serialised_only_when_debug_is_on(dumps, caplog, 
     )
 
     await AgentConsumer._emit_media(
-        _consumer(enqueued),  # type: ignore[arg-type]
+        _consumer(db_buffer),  # type: ignore[arg-type]
         RoomRef(room_id="!room:server"),
         media,
         SimpleNamespace(  # type: ignore[arg-type]
@@ -125,7 +142,7 @@ async def test_a_media_event_is_serialised_only_when_debug_is_on(dumps, caplog, 
         "a file",
     )
 
-    assert len(enqueued) == 1
+    assert len(await _enqueued(db_buffer)) == 1
     logged = [r for r in caplog.records if "Enqueuing media event" in r.getMessage()]
     if level == logging.DEBUG:
         assert dumps == [1]
