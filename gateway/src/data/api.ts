@@ -2210,6 +2210,25 @@ export interface ServiceConnection {
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: number | null;
+  /**
+   * What a person pastes to connect a service connected with a key, and where
+   * they make one; null for any other. A key is connected from Switch Console.
+   */
+  key: ServiceKeyForm | null;
+}
+
+/** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
+export interface ServiceKeyField {
+  name: string;
+  label: string;
+  secret: boolean;
+  help: string | null;
+  choices: string[] | null;
+}
+
+export interface ServiceKeyForm {
+  fields: ServiceKeyField[];
+  help_url: string | null;
 }
 
 /** Every catalog service and the signed-in person's connection to it. */

@@ -152,9 +152,47 @@ describe('readServiceGrants', () => {
       },
     };
     const grant = { ...GITHUB, service: 'example', resources: {}, cli_tools: [cli] };
-    expect(await readServiceGrants(SWITCH, answering(200, { grants: [grant] }))).toEqual([grant]);
+    expect(await readServiceGrants(SWITCH, answering(200, { grants: [grant] }))).toEqual([
+      { ...grant, cli_tools: [{ ...cli, env: null }] },
+    ]);
     const shell = { ...grant, cli_tools: [{ ...cli, binary: 'sh -c' }] };
     await expect(readServiceGrants(SWITCH, answering(200, { grants: [shell] }))).rejects.toThrow();
+
+    const env = { EXCLI_API_KEY: '{api_key}', EXCLI_SITE: 'https://api.{site}' };
+    const keyed = { ...grant, cli_tools: [{ ...cli, token_env: null, env }] };
+    expect(await readServiceGrants(SWITCH, answering(200, { grants: [keyed] }))).toEqual([keyed]);
+    for (const tool of [
+      { ...cli, env },
+      { ...cli, token_env: null, env: null },
+    ])
+      await expect(
+        readServiceGrants(SWITCH, answering(200, { grants: [{ ...grant, cli_tools: [tool] }] }))
+      ).rejects.toThrow('one of the two');
+  });
+
+  it('reads a vendor MCP server’s header templates, and the bearer from a Switch before them', async () => {
+    const url = 'https://mcp.{site}/api/unstable/mcp-server/mcp';
+    const headers = { DD_API_KEY: '{api_key}', DD_APPLICATION_KEY: '{application_key}' };
+    const keyed = {
+      ...GITHUB,
+      service: 'datadog',
+      mcp_servers: [{ name: 'datadog', url, headers }],
+    };
+    expect(await readServiceGrants(SWITCH, answering(200, { grants: [keyed] }))).toEqual([keyed]);
+    const older = {
+      ...GITHUB,
+      service: 'jira',
+      mcp_servers: [{ name: 'jira', url: 'https://mcp.example.test/v1' }],
+    };
+    expect(
+      (await readServiceGrants(SWITCH, answering(200, { grants: [older] })))[0].mcp_servers
+    ).toEqual([
+      {
+        name: 'jira',
+        url: 'https://mcp.example.test/v1',
+        headers: { Authorization: 'Bearer {token}' },
+      },
+    ]);
   });
 
   it('reads a grant from a Switch before command-line tools as having none', async () => {

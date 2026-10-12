@@ -8,6 +8,7 @@ import {
   type ServiceRefusal,
   type ServiceTokenAnswer,
 } from './service-access';
+import { redactServiceToken } from './service-credential';
 
 /** A token is asked for again this long before it must be (`useUntil`). */
 export const REFRESH_BEFORE_MS = 5 * 60_000;
@@ -22,8 +23,8 @@ export const GRANT_CHECK_MS = 30_000;
  * The service tokens of one agent's sessions on this machine: one per
  * service, shared by the sessions, asked for on first use and again five
  * minutes before Switch said to stop using it (`useUntil`: its expiry, or an
- * hour after it was issued if that is sooner). Every token is added to
- * `redactions` as it arrives.
+ * hour after it was issued if that is sooner). Every token, and each secret
+ * field of a key, is added to `redactions` as it arrives.
  *
  * A session's helper reports a token the service refused (Git erasing it,
  * `gh` told 401): it is a token Switch revoked when the grant changed, and is
@@ -143,7 +144,7 @@ export class AgentServiceTokens {
       .issue(this.deps.endpoint, service)
       .then((outcome) => {
         if ('token' in outcome) {
-          this.deps.redactions.add(outcome.token);
+          redactServiceToken(this.deps.redactions, outcome.token);
           this.cached.set(service, outcome);
           this.checkedAt.set(service, this.deps.now());
         }

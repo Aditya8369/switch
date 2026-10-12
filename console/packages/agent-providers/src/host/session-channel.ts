@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { killProcessTree } from './process-fence';
 import { isStopMessage } from './stop-request';
 import { Redactions, tokenForms } from './redaction';
+import { ServiceCredential } from './service-credential';
 
 /**
  * How long a session host that has finished may take to exit once it has
@@ -402,7 +403,9 @@ export class SessionLinks {
   private shareToken(agentId: string, token: string): void {
     const held = this.agentTokens.get(agentId) ?? new Set<string>();
     this.agentTokens.set(agentId, held);
-    const forms = [...new Set(tokenForms(token))].filter((form) => !held.has(form));
+    const forms = [...new Set(ServiceCredential.of(token).secrets.flatMap(tokenForms))].filter(
+      (form) => !held.has(form)
+    );
     if (!forms.length) return;
     for (const form of forms) held.add(form);
     for (const [root, link] of this.links)

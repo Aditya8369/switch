@@ -2,9 +2,10 @@
 
 Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
-whose tools are its own MCP servers or its command-line tool, connected,
-granted and called from a session on generic parts, with Atlassian (Jira) and
-Google Workspace as the first. v1's tables,
+whose tools are its own MCP servers or its command-line tool, and any vendor
+people connect with a key they paste, connected, granted and called from a
+session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
+as the first. v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -12,7 +13,7 @@ GitHub works as it did.
 
 | v1 | v2 |
 |---|---|
-| One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github` or the generic `oauth` |
+| One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github`, the generic `oauth`, or `api_key` |
 | Catalog `connection.yaml` v2 | v3: `adapter`, `token`, `auth.oauth`, `auth.identity`, `mcp` or `cli` (below) |
 | Every token minted per issue, at most an hour | `minted` (GitHub) or `pass_through`: the owner's own access token, with the catalog's lifetime cap |
 | Grants with a level, tools and resources | A pass-through grant is **on or off**: it takes the connection's level |
@@ -229,6 +230,110 @@ expires or the owner disconnects.
 reason and cannot be connected, granted or issued a token (403 `forbidden`);
 disconnecting still works. A slug outside the catalog stops the server.
 
+## Keys
+
+For a vendor whose people connect with a key rather than a sign-in (Datadog,
+New Relic, PagerDuty, Snowflake and the like), an entry names
+`adapter: api_key`:
+
+```yaml
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none                 # a key is used as it is
+  api_key:
+    fields:                     # 1 to 4; at least one secret
+      - { name: api_key, label: API key, secret: true, help: Where to make it. }
+      - name: site              # not secret: a choice, never free text
+        label: Site
+        secret: false
+        choices: [example.com, eu.example.com]
+    identity:                   # checks the key, before anything is stored
+      method: GET               # or POST, with a JSON body
+      url: "https://api.{site}/me"          # a URL names only choices
+      headers: { X-Api-Key: "{api_key}" }
+      account_id: user.id       # optional: without it, the key's SHA-256
+      label: user.email         # optional: without it, the name and choices
+    help_url: https://docs.example.com/keys
+token: { kind: pass_through, max_lifetime: 3600 }   # handed out an hour at a time
+mcp:
+  servers:
+    - name: example
+      url: "https://mcp.{site}/mcp"
+      headers: { Authorization: "Token token={api_key}" }
+# or cli: with env: { EXAMPLE_KEY: "{api_key}" } in place of token_env
+tools: { mode: pass_through }
+```
+
+The loader refuses a template naming an unknown field, a URL naming a secret
+one, a server without headers, an entry naming `access` (a key reaches
+whatever its vendor let it), and a token handed out for longer than an hour.
+
+- **Connecting.** Switch Console shows the entry's fields (the services list
+  carries them as `key`) and sends them to
+  `PUT /gateway/service-connections/{service}/key`. Core holds each field to
+  the entry (a choice among its choices, a secret one printable line without
+  spaces), makes the identity call, and stores the fields encrypted only when
+  the vendor accepts them; a refusal names the fields to check. One account
+  is linked to one person in a workspace, as for a sign-in. Re-pasting
+  replaces the key in place, keeping the grants.
+- **The token.** The connection's secret is the token a session host is
+  handed: compact JSON, `{"public": {...}, "secret": {...}}`. Each issue
+  hands it out for an hour, so the grant checks run at least hourly, and the
+  host's grant check reaches running sessions within half a minute.
+- **Sessions.** The host renders each MCP server's `url` and `headers`, or the
+  tool's `env`, from the token, and redacts every secret field on its own as
+  well as the whole token. The key never reaches the coding tool.
+- **Grants** are on or off, as for any pass-through service, at the highest
+  level: what the agent can do is what the key allows.
+- **Disconnecting** forgets the key, and says that only the vendor can revoke
+  it. Keys do not expire and are not refreshed.
+
+### Datadog
+
+Datadog's remote MCP server takes an API key and an application key in
+headers named with underscores (`DD_API_KEY`, `DD_APPLICATION_KEY`), unlike its
+REST API's hyphens, at `https://mcp.<site>/api/unstable/mcp-server/mcp`, for
+the six commercial sites (not GovCloud). The identity call is the REST API's
+`/api/v1/validate`, which checks the API key; the application key is checked
+by the MCP server on the first call, since a key scoped to `mcp_read` alone
+may not read the current user. A Datadog administrator turns MCP access on for
+the organization (Organization Settings, Preferences), and the application key
+needs `mcp_read`, and `mcp_write` for changes.
+
+## Adding a connector
+
+A connector is a catalog entry and a skill, with no code, when the vendor fits
+one of three shapes. Pick the first that fits:
+
+1. **A remote MCP server with OAuth** (Atlassian): `adapter: oauth` with `mcp`.
+   Where the vendor offers dynamic client registration, nothing is set up on
+   the server (`registration: dynamic`); otherwise each server's operator
+   registers an OAuth app and names it in `<PREFIX>_CLIENT_CONFIG_PATH`
+   (`registration: static`).
+2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
+   `cli`, a pinned release per platform with its SHA-256, and the allow and
+   deny lists that keep it to the vendor's own commands.
+3. **A key** (Datadog): `adapter: api_key`, above, with `mcp` or `cli`.
+
+Then:
+
+- `connections/catalog/<slug>/connection.yaml`, and `skill/SKILL.md` with
+  `name: <slug>` and a description in its frontmatter. The skill describes
+  tasks, tools and limits, never credentials: the loader refuses one that
+  mentions an access token, an API key, `GH_TOKEN` or `gh auth`.
+- No two entries may give a session a server of the same name, and none may
+  be named `switch`.
+- Tests: the shipped entry's values in `tests/switch_core/connections/
+  test_loader.py`, and anything the adapter does differently in its own tests.
+- QA by hand against the real vendor, from Switch Console (which starts every
+  connect): connect, grant to an agent, use the tools in a session, check the
+  token appears nowhere in the transcript or the room, turn the grant off and
+  check the session stops within a minute, disconnect. A vendor without
+  dynamic registration needs a development OAuth app of the tester's own.
+- Say in the entry's comments what the vendor needs turned on (Datadog's MCP
+  access) and anything measured rather than documented (a token's lifetime).
+
 ## Atlassian
 
 Built from a sign-in run against a test Atlassian Cloud site with default MCP
@@ -331,6 +436,9 @@ it as unavailable, with its reason, and the next token request fails.
 - Google Workspace on Switch's hosted service, which waits on Google's review
   of Switch's own app.
 - Keeping a CLI vendor's token out of the CLI's process (a credential proxy).
-- Live runs against a real Jira site and a real Google Workspace stay manual
-  and outside CI, which tests `gws`'s handling against a stand-in, never the
-  real binary.
+- Live runs against a real Jira site, a real Google Workspace and a real
+  Datadog organization stay manual and outside CI, which tests `gws`'s
+  handling against a stand-in, never the real binary, and Datadog's key check
+  against a stand-in transport.
+- Connecting a key from the web dashboard: Switch Console starts it, as every
+  connect.

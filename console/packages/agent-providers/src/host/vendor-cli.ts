@@ -24,6 +24,7 @@ import {
 import type { HttpMcpServerSpec } from '../adapter';
 import type { Redactions } from './redaction';
 import { type CliTool, type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
+import { redactServiceToken, type ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
 import type { VendorServers } from './vendor-mcp';
 
@@ -232,10 +233,14 @@ async function move(from: string, to: string): Promise<void> {
   }
 }
 
-/** The run's environment: its token, its folders, and the host's network settings. Nothing else. */
+/**
+ * The run's environment: its token (or its key's fields, each variable of
+ * `env` rendered from the key), its folders, and the host's network settings.
+ * Nothing else.
+ */
 export function runEnvironment(input: {
   tool: CliTool;
-  token: string;
+  credential: ServiceCredential;
   home: string;
   config: string;
   tmp: string;
@@ -258,7 +263,11 @@ export function runEnvironment(input: {
   env.HOME = input.home;
   env.TMPDIR = input.tmp;
   if (input.tool.config_env) env[input.tool.config_env] = input.config;
-  env[input.tool.token_env] = input.token;
+  if (input.tool.env !== null)
+    for (const [name, template] of Object.entries(input.tool.env))
+      env[name] = input.credential.render(template);
+  else if (input.tool.token_env !== null) env[input.tool.token_env] = input.credential.token;
+  else throw new Error(`${input.tool.name} names no variable to put its token in.`);
   return env;
 }
 
@@ -360,8 +369,9 @@ export function refusedToken(tool: CliTool, code: number | null, stdout: string)
  * fresh folder of its own holding an empty `.env` (so the tool reads no
  * settings from the folders around it), and gets an environment of its token,
  * a configuration folder for the session, and the host's network settings.
- * The token is asked for on every run over the pipe, added to this session's
- * redactions, and never reaches the coding tool: not its environment,
+ * The token is asked for on every run over the pipe, added (with each secret
+ * field of a key) to this session's redactions, and never reaches the coding
+ * tool: not its environment,
  * arguments or files, and not the output, which is redacted. A run that ends
  * as the catalog says a refused token does is run once more on a token asked
  * for again. Output past the catalog's cap is saved to a file in the session's
@@ -466,31 +476,30 @@ class CliRunner {
     const binary = await this.deps.binary(this.tool);
     let rejected: string | null = null;
     for (let attempt = 0; ; attempt += 1) {
-      const token = await this.token(rejected);
-      const result = await this.runOnce(binary, checked.args, paths, token);
+      const credential = await this.credential(rejected);
+      const result = await this.runOnce(binary, checked.args, paths, credential);
       if (result.kind === 'done') return result.result;
       if (attempt > 0)
         return refusal(
           `${this.service} refused this agent's token again after Switch issued a new one.`
         );
-      rejected = token;
+      rejected = credential.token;
     }
   }
 
-  private async token(rejected: string | null): Promise<string> {
+  private async credential(rejected: string | null): Promise<ServiceCredential> {
     const answer = serviceTokenAnswerSchema.parse(
       await this.deps.ask({ type: 'service-token', service: this.service, rejected })
     );
     if (answer.kind === 'refused') throw new Error(answer.message);
-    this.deps.redactions.add(answer.token);
-    return answer.token;
+    return redactServiceToken(this.deps.redactions, answer.token);
   }
 
   private async runOnce(
     binary: string,
     args: string[],
     paths: ResolvedPath[],
-    token: string
+    credential: ServiceCredential
   ): Promise<{ kind: 'done'; result: ToolResult } | { kind: 'token-refused' }> {
     const home = join(this.folder, 'home');
     const config = join(this.folder, 'config');
@@ -513,7 +522,7 @@ class CliRunner {
         cwd: run,
         env: runEnvironment({
           tool: this.tool,
-          token,
+          credential,
           home,
           config,
           tmp,

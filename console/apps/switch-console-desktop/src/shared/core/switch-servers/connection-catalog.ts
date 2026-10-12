@@ -1,5 +1,22 @@
 import { z } from 'zod';
 
+/** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
+export const serviceKeyFieldSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+  secret: z.boolean(),
+  help: z.string().nullable(),
+  choices: z.array(z.string()).nullable(),
+});
+export type ServiceKeyField = z.infer<typeof serviceKeyFieldSchema>;
+
+/** What a person pastes to connect a service connected with a key, and where they make one. */
+export const serviceKeyFormSchema = z.object({
+  fields: z.array(serviceKeyFieldSchema).min(1),
+  help_url: z.string().nullable(),
+});
+export type ServiceKeyForm = z.infer<typeof serviceKeyFormSchema>;
+
 export const connectionCatalogEntrySchema = z.object({
   slug: z.string(),
   name: z.string(),
@@ -24,6 +41,10 @@ export const connectionCatalogEntrySchema = z.object({
    * vendor that matches the port registered; null for any port.
    */
   loopback_ports: z.array(z.number().int()).nullable(),
+  /** The fields a person pastes to connect it, for a service connected with a key; else null. */
+  key: serviceKeyFormSchema.nullable(),
+  /** The connected account as people recognise it; null when not connected. */
+  external_identity: z.string().nullable(),
 });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntrySchema>;
 
@@ -38,6 +59,8 @@ export const connectionCatalogSchema = z.object({
         pass_through: true,
         token_lifetime: true,
         loopback_ports: true,
+        key: true,
+        external_identity: true,
       })
       .extend({ status: z.enum(['connected', 'not_connected', 'coming_soon']) })
   ),
@@ -60,6 +83,8 @@ export const serviceConnectionsSchema = z.object({
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
+      key: serviceKeyFormSchema.nullable().default(null),
+      external_identity: z.string().nullable().default(null),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization', 'error']),
     })
   ),

@@ -4,20 +4,31 @@ import { type HttpMcpServer, serveMcpOverHttp } from '@sandboxaq/switch-agent-ru
 import { afterEach, describe, expect, it } from 'vitest';
 import type { HttpMcpServerSpec } from '../adapter';
 import { Redactions } from './redaction';
-import type { ServiceGrant, ServiceTokenAnswer } from './service-access';
+import { type ServiceGrant, serviceGrantSchema, type ServiceTokenAnswer } from './service-access';
 import type { HostAsk } from './session-channel';
 import { startVendorServers, textResult, type VendorServers } from './vendor-mcp';
 
 const GOOD = 'synthetic-vendor-token-accepted-by-the-mcp-server';
 const STALE = 'synthetic-vendor-token-the-vendor-no-longer-takes';
 const VENDOR_URL = 'https://mcp.example.test/v1/mcp';
+const API_KEY = 'synthetic-datadog-api-key';
+const APP_KEY = 'synthetic-datadog-application-key';
+const KEY = JSON.stringify({
+  public: { site: 'datadoghq.eu' },
+  secret: { api_key: API_KEY, application_key: APP_KEY },
+});
 
 const servers: { close: () => Promise<void> }[] = [];
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
 });
 
-function grant(service: string, mcp: { name: string; url: string }[]): ServiceGrant {
+const BEARER = { Authorization: 'Bearer {token}' };
+
+function grant(
+  service: string,
+  mcp: { name: string; url: string; headers?: Record<string, string> }[]
+): ServiceGrant {
   return {
     service,
     access: 'write',
@@ -25,7 +36,7 @@ function grant(service: string, mcp: { name: string; url: string }[]): ServiceGr
     tools: [],
     resources: {},
     skill: null,
-    mcp_servers: mcp,
+    mcp_servers: mcp.map((server) => ({ headers: BEARER, ...server })),
     cli_tools: [],
   };
 }
@@ -204,6 +215,87 @@ describe('a granted vendor’s MCP servers', () => {
     expect(Date.now() - started_at).toBeLessThan(5_000);
     const tools = await (await client(vendors.specs.example!)).listTools();
     expect(tools.tools).toHaveLength(1);
+  });
+
+  it('sends a key’s fields in the headers and address the server’s templates name', async () => {
+    const { server, calls } = await vendor();
+    const seen: { url: string; headers: Headers }[] = [];
+    // A stand-in for a vendor taking the key in headers of its own: the
+    // loopback server takes only `GOOD` as a bearer, so the keys are swapped
+    // for it once they are seen to be right.
+    const keyed: typeof fetch = async (url, init) => {
+      const headers = new Headers(init?.headers);
+      seen.push({ url: String(url), headers });
+      const forwarded = new Headers(headers);
+      if (headers.get('DD_API_KEY') === API_KEY && headers.get('DD_APPLICATION_KEY') === APP_KEY)
+        forwarded.set('Authorization', `Bearer ${GOOD}`);
+      return fetch(server.url, { ...init, headers: forwarded });
+    };
+    const vendors = await started(
+      [
+        grant('datadog', [
+          {
+            name: 'datadog',
+            url: 'https://mcp.{site}/api/unstable/mcp-server/mcp',
+            headers: { DD_API_KEY: '{api_key}', DD_APPLICATION_KEY: '{application_key}' },
+          },
+        ]),
+      ],
+      [token(KEY), token(KEY)],
+      keyed
+    );
+    const tool = await client(vendors.specs.datadog!);
+    expect((await tool.listTools()).tools.map((t) => t.name)).toEqual(['search_items']);
+    await tool.callTool({ name: 'search_items', arguments: { query: 'errors' } });
+    expect(calls).toEqual([{ name: 'search_items', args: { query: 'errors' } }]);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const request of seen) {
+      expect(request.url).toBe('https://mcp.datadoghq.eu/api/unstable/mcp-server/mcp');
+      expect(request.headers.get('Authorization')).toBeNull();
+    }
+    expect(JSON.stringify(vendors.specs)).not.toContain(API_KEY);
+    expect(vendors.redactions.list()).toEqual(expect.arrayContaining([KEY, API_KEY, APP_KEY]));
+    expect(vendors.redactions.text(`api ${API_KEY} app ${APP_KEY} at datadoghq.eu`)).toBe(
+      'api [REDACTED] app [REDACTED] at datadoghq.eu'
+    );
+  });
+
+  it('sends a token as a bearer when the server names no headers, as from an older Switch', async () => {
+    const { server } = await vendor();
+    const authorizations: (string | null)[] = [];
+    const [older] = serviceGrantSchema.parse({
+      service: 'example',
+      access: 'write',
+      tool_mode: 'deny',
+      tools: [],
+      resources: {},
+      skill: null,
+      mcp_servers: [{ name: 'example', url: VENDOR_URL }],
+    }).mcp_servers;
+    expect(older.headers).toEqual(BEARER);
+    const vendors = await started([grant('example', [older])], [token(GOOD)], async (url, init) => {
+      authorizations.push(new Headers(init?.headers).get('Authorization'));
+      return routedTo(server.url, [])(url, init);
+    });
+    expect((await (await client(vendors.specs.example!)).listTools()).tools).toHaveLength(1);
+    expect(authorizations.length).toBeGreaterThan(0);
+    expect(new Set(authorizations)).toEqual(new Set([`Bearer ${GOOD}`]));
+  });
+
+  it('refuses to call a vendor when a template names what the token does not carry', async () => {
+    const asked: string[] = [];
+    const vendors = await started(
+      [grant('datadog', [{ name: 'datadog', url: 'https://mcp.{region}/mcp', headers: {} }])],
+      [token(KEY)],
+      async (url) => {
+        asked.push(String(url));
+        throw new Error('not reached');
+      }
+    );
+    await expect((await client(vendors.specs.datadog!)).listTools()).rejects.toThrow(
+      'names {region}'
+    );
+    expect(asked).toEqual([]);
   });
 
   it('refuses a vendor server that is not HTTPS', async () => {

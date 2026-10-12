@@ -3,6 +3,7 @@ import http from 'node:http';
 import { z } from 'zod';
 import type { Redactions } from './redaction';
 import { serviceTokenAnswerSchema } from './service-access';
+import { redactServiceToken } from './service-credential';
 import {
   serviceFallbackNotice,
   type ServiceNotices,
@@ -133,7 +134,7 @@ export async function startServiceEndpoint(input: {
     const answer = serviceTokenAnswerSchema.parse(raw);
     if (answer.kind === 'token') {
       ended.delete(service);
-      input.redactions.add(answer.token);
+      redactServiceToken(input.redactions, answer.token);
       if (repository !== null && !(await reaches(answer.token, repository)))
         return {
           status: 403,

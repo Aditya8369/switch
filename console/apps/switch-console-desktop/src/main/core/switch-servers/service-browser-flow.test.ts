@@ -43,6 +43,8 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       pass_through: true,
       token_lifetime: 28_800,
       loopback_ports: ports,
+      key: null,
+      external_identity: null,
     },
   ];
 }

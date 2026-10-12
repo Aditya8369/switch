@@ -50,6 +50,7 @@ import {
   ensureCloudMachine,
   listCloudMachines,
   disconnectGitHub,
+  connectServiceWithKey,
   disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
@@ -336,6 +337,10 @@ export const switchServersController = createRPCController({
   cancelServiceConnection: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       cancelServiceBrowserFlow(server, service, id)
+    ),
+  connectServiceWithKey: (serverId: string, service: string, fields: Record<string, string>) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      connectServiceWithKey(server, service, fields)
     ),
   disconnectService: (serverId: string, service: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectService(server, service)),

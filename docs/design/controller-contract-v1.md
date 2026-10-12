@@ -240,14 +240,18 @@ type ServiceGrant = {
   resources: ServiceResources
   revision: number                    // moves on every change to the grant; a token answer names the one it was issued under
   skill: { name: string; content: string } | null   // the service's SKILL.md
-  mcp_servers: { name: string; url: string }[]       // the vendor's MCP servers a session calls; [] for GitHub. Additive
+  mcp_servers: { name: string; url: string; headers: Record<string, string> }[]
+                                      // the vendor's MCP servers a session calls; [] for GitHub. Additive.
+                                      // `url` and `headers` are templates (below); absent headers mean
+                                      // { Authorization: "Bearer {token}" }
   cli_tools: ServiceCliTool[]                         // the vendor's command-line tool a session's host runs; [] for most. Additive
 }
 
 type ServiceCliTool = {               // as the catalog entry's `cli` block has it
   name: string                        // the tool's name in the session, beside `switch` and any MCP server's
   binary: string                      // the executable, run without a shell
-  token_env: string                   // the only place the token goes: this variable, in the run's own environment
+  token_env: string | null            // the only place the token goes: this variable, in the run's own environment
+  env: Record<string, string> | null  // instead, for a key service: each variable set from its template (below)
   config_env: string | null           // where the tool has one: a configuration folder made for the session
   allow: string[]                     // a command's first argument is one of these
   deny: string[]                      // first arguments, and flags refused anywhere in a command
@@ -274,6 +278,7 @@ type ServiceResources =
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
 - **When grants are read.** The agent's host reads its grants when a session starts, and a change of skills applies from the next session. No stream frame announces a change. While it holds a token, the host reads the grants again at most every 30 seconds, when a token is asked for, and drops the token once its grant's `revision` is not the token's `grant_revision`, so a widened, narrowed or removed grant reaches running sessions within that. A removed grant also fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone: a token already handed out stays valid at the vendor until it expires, and while the host cannot read the grants a removed grant stops a running session by `use_until`, within the hour.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
+- **Templates and key tokens.** A template's `{token}` is the token as handed out; any other `{name}` is a field of a key service's token. A key service (catalog `adapter: api_key`) hands out its token as compact JSON, `{"public": {...}, "secret": {...}}`: the fields the owner pasted (`secret`) and picked (`public`, the only ones a URL may name). The host renders each server's `url` and `headers`, or a tool's `env`, from it, and redacts every `secret` value on its own as well as the whole token.
 - **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself. A service with `cli_tools` is the same: the host serves each tool on loopback, checks every command against `allow`, `deny` and `path_flags`, asks for the token on each run, and runs `binary` itself with the token only in `token_env` of that run's environment.
 
 ### Provider logins (Management)

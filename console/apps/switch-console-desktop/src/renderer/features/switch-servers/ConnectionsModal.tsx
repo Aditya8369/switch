@@ -6,6 +6,7 @@ import { DialogFooter } from '@renderer/lib/ui/dialog';
 import { ConnectionsGrid, useConnectionCatalog } from './connections-step';
 import { ManagedGitHubStep } from './managed-github-step';
 import { ServiceConnectStep } from './service-connect-step';
+import { ServiceKeyStep } from './service-key-step';
 
 /** A server's connection catalog, opened from its Your Agents page. */
 export function ConnectionsModal({ serverId, onClose }: { serverId: string } & BaseModalProps) {
@@ -23,6 +24,10 @@ export function ConnectionsModal({ serverId, onClose }: { serverId: string } & B
 
   if (open === 'github') return <ManagedGitHubStep serverId={serverId} onBack={back} />;
   const opened = catalog.connections?.find((connection) => connection.slug === open);
+  if (opened?.key)
+    return (
+      <ServiceKeyStep serverId={serverId} connection={opened} form={opened.key} onBack={back} />
+    );
   if (opened) return <ServiceConnectStep serverId={serverId} connection={opened} onBack={back} />;
 
   return (

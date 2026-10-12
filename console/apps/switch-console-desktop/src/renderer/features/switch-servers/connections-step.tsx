@@ -16,6 +16,7 @@ import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
 import { ManagedGitHubStep } from './managed-github-step';
 import { ServiceConnectStep } from './service-connect-step';
+import { ServiceKeyStep } from './service-key-step';
 
 const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
   connected: 'Connected',
@@ -178,6 +179,10 @@ export function ConnectionsStep({
       />
     );
   const opened = catalog.connections?.find((connection) => connection.slug === open);
+  if (opened?.key)
+    return (
+      <ServiceKeyStep serverId={serverId} connection={opened} form={opened.key} onBack={back} />
+    );
   if (opened) return <ServiceConnectStep serverId={serverId} connection={opened} onBack={back} />;
 
   const githubConnected = catalog.connections?.some(

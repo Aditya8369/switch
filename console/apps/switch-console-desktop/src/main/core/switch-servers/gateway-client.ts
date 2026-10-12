@@ -30,8 +30,10 @@ import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import {
   SERVICE_CALLBACK_PATH,
   type ServiceFlowStart,
+  type ServiceKeyConnected,
   serviceFlowSchema,
   serviceFlowStartSchema,
+  serviceKeyConnectedSchema,
 } from '@shared/core/switch-servers/service-connection';
 import {
   type ServiceGrants,
@@ -2786,6 +2788,8 @@ export async function getConnectionCatalog(
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
     loopback_ports: entry.loopback_ports,
+    key: entry.key,
+    external_identity: entry.external_identity,
   }));
 }
 
@@ -2804,6 +2808,8 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
+        key: null,
+        external_identity: null,
       }))
   );
 }
@@ -3042,6 +3048,24 @@ export async function cancelServiceConnection(server: SwitchServer, service: str
     authenticated: true,
     method: 'DELETE',
   });
+}
+/**
+ * Connect `service` with a pasted key: Switch checks it with the vendor before
+ * keeping it, and never sends it back. A refusal (the vendor refused the key,
+ * a field is malformed, the account is linked to someone else) is thrown, its
+ * `detail` written for the person.
+ */
+export async function connectServiceWithKey(
+  server: SwitchServer,
+  service: string,
+  fields: Record<string, string>
+): Promise<ServiceKeyConnected> {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}/key`,
+    { authenticated: true, method: 'PUT', body: { fields } }
+  );
+  return serviceKeyConnectedSchema.parse(await response.json());
 }
 /** Disconnect `service`: its grants go with it, and what was issued is revoked. */
 export async function disconnectService(server: SwitchServer, service: string) {

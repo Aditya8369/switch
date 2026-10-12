@@ -22,3 +22,10 @@ export const serviceFlowSchema = z.object({
   error: z.string().nullable(),
 });
 export type ServiceFlow = z.infer<typeof serviceFlowSchema>;
+
+/** `PUT /service-connections/{service}/key`: the key Switch checked and kept, and whose it is. */
+export const serviceKeyConnectedSchema = z.object({
+  warning: z.string().nullable(),
+  external_identity: z.string(),
+});
+export type ServiceKeyConnected = z.infer<typeof serviceKeyConnectedSchema>;

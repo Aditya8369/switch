@@ -122,6 +122,19 @@ version of their own to them without also giving them a release of their own.
   refused its token. `auth.oauth.authorization_params` sends extra sign-in
   parameters a vendor needs, from a fixed allowlist. The grants answer gains
   `cli_tools`, additively.
+- **Services people connect with a key, starting with Datadog.** A catalog
+  entry with `adapter: api_key` names the fields a person pastes (one to three
+  secret keys) or picks (a site or region, never free text), a call that
+  checks them, and header or environment templates that put them into the
+  vendor's MCP requests or CLI runs. Core checks a key with its vendor before
+  storing it, encrypted, through
+  `PUT /gateway/service-connections/{service}/key`, and hands it to sessions an
+  hour at a time like any pass-through token; the coding tool never sees it.
+  Keys are not refreshed, and disconnecting forgets one but cannot revoke it
+  at the vendor, which the answer says. The grants answer's MCP servers carry
+  their `headers` templates and a CLI its `env` ones (both additive). Datadog
+  needs MCP access turned on for the organization and an application key with
+  `mcp_read`.
 - **`DISABLED_SERVICES`** switches catalog services off on a server, as JSON
   mapping each to the reason people are shown (an empty one reads "Switched off
   on this server."). A switched-off service is listed with its reason and
@@ -1618,6 +1631,12 @@ version of their own to them without also giving them a release of their own.
   line saying what was left out.
 - Service access in an agent's settings shows services such as Atlassian as an
   on/off switch, saying what on means and how soon off takes effect.
+- **Connect a service with a key, such as Datadog, from Connections.** You
+  paste its keys and pick its site in a form; Switch checks the key with the
+  service before keeping it, and never shows it again. Agents granted the
+  service use it with your key, which the session host puts in each request or
+  run as the service's catalog entry says, and scrubs each key from everything
+  the session records.
 
 #### Changed
 - The agents controller reports `git` and `gh` as found, missing, or not

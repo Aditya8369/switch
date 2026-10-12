@@ -252,6 +252,8 @@ function onOff(
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,
+    key: null,
+    external_identity: null,
     ...overrides,
   };
 }
@@ -342,4 +344,29 @@ it('cannot turn on a service that is not connected, or not available, and says w
   await act(async () => exampleSwitch(el)!.click());
   await act(async () => el.querySelector<HTMLElement>('[aria-label="Other for helper"]')!.click());
   expect(workspaces.setServiceGrant).not.toHaveBeenCalled();
+});
+
+it('says a key service is used with the owner’s key, and nothing of tokens expiring', async () => {
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [],
+    addressing_open: false,
+  });
+  workspaces.getServiceConnections.mockResolvedValue([
+    onOff('connected', {
+      auth_type: 'api_key',
+      token_lifetime: 24 * 3600,
+      key: {
+        fields: [{ name: 'api_key', label: 'API key', secret: true, help: null, choices: null }],
+        help_url: null,
+      },
+    }),
+  ]);
+  const el = await render();
+
+  await vi.waitFor(() => expect(exampleSwitch(el)).not.toBeNull());
+  expect(el.textContent).toContain(
+    'On, helper uses Example with your key, as far as the key allows. Turning it off stops its sessions using Example within a minute.'
+  );
+  expect(el.textContent).not.toContain('token');
+  expect(el.textContent).not.toContain('expires');
 });

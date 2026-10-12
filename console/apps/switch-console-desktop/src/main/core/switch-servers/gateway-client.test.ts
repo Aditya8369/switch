@@ -61,6 +61,7 @@ const {
   startServiceConnection,
   completeServiceConnection,
   confirmServiceConnection,
+  connectServiceWithKey,
   disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
@@ -1145,6 +1146,8 @@ describe('GitHub connection transport', () => {
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
+        key: null,
+        external_identity: 'ada-gh',
       },
       expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
       expect.objectContaining({
@@ -1178,6 +1181,8 @@ describe('GitHub connection transport', () => {
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
+        key: null,
+        external_identity: null,
       },
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1352,6 +1357,70 @@ describe('a service sign-in', () => {
     await expect(startServiceConnection(SERVER, 'example', input)).rejects.toThrow(
       'invalid sign-in URL'
     );
+  });
+
+  it('connects with a key on the service’s key route, and reads its form from the catalog', async () => {
+    const key = {
+      fields: [
+        { name: 'api_key', label: 'API key', secret: true, help: 'Org settings.', choices: null },
+        { name: 'site', label: 'Site', secret: false, help: null, choices: ['example.test'] },
+      ],
+      help_url: 'https://docs.example.test/keys',
+    };
+    answer({
+      connections: [
+        {
+          slug: 'example',
+          name: 'Example',
+          category: 'Observability',
+          description: 'Metrics.',
+          enabled: true,
+          auth_type: 'api_key',
+          connectable: true,
+          configured: true,
+          unavailable_reason: null,
+          status: 'not_connected',
+          pass_through: true,
+          token_lifetime: 3600,
+          key,
+          external_identity: null,
+        },
+      ],
+    });
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      expect.objectContaining({ slug: 'example', auth_type: 'api_key', key }),
+    ]);
+
+    answer({ warning: null, external_identity: 'Example key · example.test' });
+    const fields = { api_key: 'synthetic-example-key', site: 'example.test' };
+    expect(await connectServiceWithKey(SERVER, 'example', fields)).toEqual({
+      warning: null,
+      external_identity: 'Example key · example.test',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections/example/key');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual({ fields });
+  });
+
+  it('throws the vendor’s refusal of a key with Switch’s detail', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'Example refused the key (HTTP 403).',
+          code: 'validation_error',
+          retryable: false,
+        }),
+        { status: 422 }
+      )
+    );
+    await expect(
+      connectServiceWithKey(SERVER, 'example', { api_key: 'synthetic-wrong-key' })
+    ).rejects.toMatchObject({
+      status: 422,
+      detail: 'Example refused the key (HTTP 403).',
+      code: 'validation_error',
+    });
   });
 
   it('disconnects through the service’s connection', async () => {

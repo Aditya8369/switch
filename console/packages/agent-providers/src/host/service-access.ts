@@ -17,48 +17,59 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,62}$/;
 const COMMAND = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,62}$/;
 const FLAG = /^(-[A-Za-z]|--[a-z0-9][a-z0-9-]{0,62})$/;
+const HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-/** A vendor's command-line tool, as the catalog entry's `cli` block has it (contract §5). */
-export const cliToolSchema = z.object({
-  name: z.string().regex(SLUG),
-  binary: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/),
-  token_env: z.string().regex(ENV_NAME),
-  config_env: z.string().regex(ENV_NAME).nullable(),
-  allow: z.array(z.string().regex(COMMAND)).min(1),
-  deny: z.array(z.string().refine((value) => COMMAND.test(value) || FLAG.test(value))),
-  path_flags: z.record(z.string().regex(FLAG), z.enum(['read', 'write'])),
-  /** Positional file arguments: the one right after `after`, wherever it stands. */
-  path_args: z.array(
-    z.object({
-      after: z.string().regex(/^\+?[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/),
-      direction: z.enum(['read', 'write']),
-    })
-  ),
-  output_cap_bytes: z.number().int().min(1024),
-  timeout_s: z.number().int().min(1),
-  token_refused: z.object({
-    exit_code: z.number().int().min(1).max(255),
-    json_path: z.string().regex(/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/),
-    value: z.union([z.number(), z.string()]),
-  }),
-  /** The pinned build, per `<platform>-<arch>` as Node names them. */
-  release: z.object({
-    version: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$/),
-    targets: z.record(
-      z.string().regex(/^[a-z0-9]+-[a-z0-9]+$/),
+/**
+ * A vendor's command-line tool, as the catalog entry's `cli` block has it
+ * (contract §5). The token goes in `token_env`; a key's fields go in `env`'s
+ * variables instead, each a template of them (`service-credential.ts`).
+ */
+export const cliToolSchema = z
+  .object({
+    name: z.string().regex(SLUG),
+    binary: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/),
+    token_env: z.string().regex(ENV_NAME).nullable().default(null),
+    /** Absent from a Switch from before keys, whose tools all take `token_env`. */
+    env: z.record(z.string().regex(ENV_NAME), z.string()).nullable().default(null),
+    config_env: z.string().regex(ENV_NAME).nullable(),
+    allow: z.array(z.string().regex(COMMAND)).min(1),
+    deny: z.array(z.string().refine((value) => COMMAND.test(value) || FLAG.test(value))),
+    path_flags: z.record(z.string().regex(FLAG), z.enum(['read', 'write'])),
+    /** Positional file arguments: the one right after `after`, wherever it stands. */
+    path_args: z.array(
       z.object({
-        url: z
-          .string()
-          .url()
-          .refine((url) => url.startsWith('https://')),
-        sha256: z.string().regex(/^[0-9a-f]{64}$/),
-        path: z
-          .string()
-          .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,3}$/),
+        after: z.string().regex(/^\+?[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/),
+        direction: z.enum(['read', 'write']),
       })
     ),
-  }),
-});
+    output_cap_bytes: z.number().int().min(1024),
+    timeout_s: z.number().int().min(1),
+    token_refused: z.object({
+      exit_code: z.number().int().min(1).max(255),
+      json_path: z.string().regex(/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/),
+      value: z.union([z.number(), z.string()]),
+    }),
+    /** The pinned build, per `<platform>-<arch>` as Node names them. */
+    release: z.object({
+      version: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$/),
+      targets: z.record(
+        z.string().regex(/^[a-z0-9]+-[a-z0-9]+$/),
+        z.object({
+          url: z
+            .string()
+            .url()
+            .refine((url) => url.startsWith('https://')),
+          sha256: z.string().regex(/^[0-9a-f]{64}$/),
+          path: z
+            .string()
+            .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,3}$/),
+        })
+      ),
+    }),
+  })
+  .refine((tool) => (tool.token_env === null) !== (tool.env === null), {
+    message: 'A command-line tool takes its token in token_env or its key in env: one of the two.',
+  });
 export type CliTool = z.infer<typeof cliToolSchema>;
 
 export const serviceGrantSchema = z.object({
@@ -73,10 +84,20 @@ export const serviceGrantSchema = z.object({
   /**
    * The vendor's MCP servers a session calls for this service, each under its
    * own name. Empty for a service whose tools are not MCP (GitHub's are git
-   * and gh), and from a Switch that predates them.
+   * and gh), and from a Switch that predates them. `url` and each header's
+   * value are templates of the token (`service-credential.ts`); a Switch from
+   * before header templates sends none, meaning the token as a bearer.
    */
   mcp_servers: z
-    .array(z.object({ name: z.string().regex(SLUG), url: z.string().url() }))
+    .array(
+      z.object({
+        name: z.string().regex(SLUG),
+        url: z.string().url(),
+        headers: z
+          .record(z.string().regex(HEADER_NAME), z.string())
+          .default({ Authorization: 'Bearer {token}' }),
+      })
+    )
     .default([]),
   /**
    * The vendor's command-line tool, which this host runs for the session

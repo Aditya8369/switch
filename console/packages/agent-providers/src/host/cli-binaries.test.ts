@@ -15,6 +15,7 @@ function tool(targets: CliTool['release']['targets']): CliTool {
     name: 'example-cli',
     binary: 'excli',
     token_env: 'EXCLI_TOKEN',
+    env: null,
     config_env: null,
     allow: ['items'],
     deny: [],

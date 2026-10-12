@@ -176,6 +176,7 @@ describe("ServiceAccessSection", () => {
     status,
     pass_through: true,
     token_lifetime: 3600,
+    key: null,
     ...overrides,
   });
   const NONE: ServiceGrants = { grants: [], addressing_open: false };
@@ -227,6 +228,27 @@ describe("ServiceAccessSection", () => {
         body: null,
       }),
     );
+  });
+
+  it("says a key service is used with the owner's key, and to connect it from Switch Console", async () => {
+    const key = {
+      fields: [{ name: "api_key", label: "API key", secret: true, help: null, choices: null }],
+      help_url: null,
+    };
+    mockServer(NONE, [
+      onOff("active", { key, token_lifetime: 24 * 3600 }),
+      onOff("not_connected", { slug: "other", name: "Other", key }),
+    ]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    await screen.findByLabelText("Example for helper");
+    expect(
+      screen.getByText(
+        "On, helper uses Example with your key, as far as the key allows. Turning it off stops its sessions using Example within a minute.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/stays valid/)).toBeNull();
+    expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText(/To turn Other on, first connect it from Switch Console/)).toBeTruthy();
   });
 
   it("says why a service cannot be turned on: not connected, or not available here", async () => {

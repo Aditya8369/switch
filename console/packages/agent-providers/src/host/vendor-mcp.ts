@@ -12,6 +12,7 @@ import {
 import type { HttpMcpServerSpec } from '../adapter';
 import type { Redactions } from './redaction';
 import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
+import { redactServiceToken, type ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
 
 /** How long a vendor has to list its tools before the session goes on without them. */
@@ -27,15 +28,20 @@ export type VendorServers = {
 
 class VendorRefusedToken extends Error {}
 
+type VendorMcpServer = ServiceGrant['mcp_servers'][number];
+
 /**
  * A granted vendor's MCP servers, served to this session's CLI on loopback.
  *
  * One loopback server per vendor server, each behind a bearer minted for this
  * run, so a slow or failing vendor is one failed server and the Switch tools
  * keep working. The vendor's token never reaches the CLI: every list and call
- * asks the agent host for it over the pipe, adds it to this session's
- * redactions, and calls the vendor from here, over HTTPS, with redirects
- * refused. A 401 asks again, naming the refused token, and retries once.
+ * asks the agent host for it over the pipe, adds it (and each secret field of
+ * a key) to this session's redactions, and calls the vendor from here, over
+ * HTTPS, with redirects refused. The server's URL and headers are templates
+ * of the token, so the address is known only once a token is: it is rendered
+ * on every connection and refused unless HTTPS. A 401 asks again, naming the
+ * refused token, and retries once.
  *
  * Tools pass through as the vendor lists them, until they are classified by
  * access level. Only text reaches the CLI: anything else a tool answers is
@@ -55,10 +61,9 @@ export async function startVendorServers(input: {
   try {
     for (const grant of input.grants) {
       for (const server of grant.mcp_servers) {
-        const url = new URL(server.url);
-        if (url.protocol !== 'https:')
+        if (new URL(server.url).protocol !== 'https:')
           throw new Error(`${grant.service}'s MCP server ${server.name} is not served over HTTPS.`);
-        const vendor = new VendorServer(grant.service, url, input);
+        const vendor = new VendorServer(grant.service, server, input);
         const bearer = randomBytes(32).toString('hex');
         const served = await serveMcpOverHttp(bearer, {
           listTools: () => vendor.listTools(),
@@ -82,7 +87,7 @@ export async function startVendorServers(input: {
 class VendorServer {
   constructor(
     private readonly service: string,
-    private readonly url: URL,
+    private readonly server: VendorMcpServer,
     private readonly deps: {
       ask: (ask: HostAsk) => Promise<unknown>;
       redactions: Redactions;
@@ -125,9 +130,9 @@ class VendorServer {
     const signal = AbortSignal.timeout(timeoutMs);
     let rejected: string | null = null;
     for (let attempt = 0; ; attempt += 1) {
-      const token = await this.token(rejected);
+      const credential = await this.credential(rejected);
       try {
-        return await this.connected(token, signal, exchange);
+        return await this.connected(credential, signal, exchange);
       } catch (error) {
         if (signal.aborted)
           throw new Error(`${this.service} did not ${what} within ${timeoutMs / 1000} s.`);
@@ -136,27 +141,37 @@ class VendorServer {
           throw new Error(
             `${this.service} refused this agent's token again after Switch issued a new one.`
           );
-        rejected = token;
+        rejected = credential.token;
       }
     }
   }
 
-  private async token(rejected: string | null): Promise<string> {
+  private async credential(rejected: string | null): Promise<ServiceCredential> {
     const answer = serviceTokenAnswerSchema.parse(
       await this.deps.ask({ type: 'service-token', service: this.service, rejected })
     );
     if (answer.kind === 'refused') throw new Error(answer.message);
-    this.deps.redactions.add(answer.token);
-    return answer.token;
+    return redactServiceToken(this.deps.redactions, answer.token);
   }
 
   private async connected<T>(
-    token: string,
+    credential: ServiceCredential,
     signal: AbortSignal,
     exchange: (client: Client) => Promise<T>
   ): Promise<T> {
-    const transport = new StreamableHTTPClientTransport(this.url, {
-      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    const url = new URL(credential.render(this.server.url));
+    if (url.protocol !== 'https:')
+      throw new Error(
+        `${this.service}'s MCP server ${this.server.name} is not served over HTTPS once its address is filled in.`
+      );
+    const headers = Object.fromEntries(
+      Object.entries(this.server.headers).map(([name, template]) => [
+        name,
+        credential.render(template),
+      ])
+    );
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers },
       fetch: (url, init) =>
         this.deps.fetch(url, {
           ...init,

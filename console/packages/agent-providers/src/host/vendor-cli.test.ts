@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { HttpMcpServerSpec } from '../adapter';
 import { Redactions } from './redaction';
 import type { CliTool, ServiceGrant, ServiceTokenAnswer } from './service-access';
+import { ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
 import {
   checkCommand,
@@ -50,6 +51,10 @@ switch (what) {
   case 'argv':
     console.log(JSON.stringify(process.argv.slice(2)));
     break;
+  case 'key':
+    console.log(['api', process.env.EXCLI_API_KEY, 'app', process.env.EXCLI_APP_KEY, 'site', process.env.EXCLI_SITE, 'token', process.env.EXCLI_TOKEN ?? 'none'].join(' '));
+    console.error('stderr ' + process.env.EXCLI_APP_KEY);
+    process.exit(2);
   case 'leak':
     console.log('stdout ' + token);
     console.error('stderr ' + token);
@@ -91,6 +96,7 @@ const TOOL: CliTool = {
   name: 'example-cli',
   binary: 'excli',
   token_env: 'EXCLI_TOKEN',
+  env: null,
   config_env: 'EXCLI_CONFIG_DIR',
   allow: ['items', 'boards'],
   deny: ['auth', '--profile'],
@@ -101,6 +107,23 @@ const TOOL: CliTool = {
   token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },
   release: { version: '1.2.3', targets: {} },
 };
+
+/** The tool as an api_key entry has it: the key's fields in variables of their own. */
+const KEY_TOOL: CliTool = {
+  ...TOOL,
+  token_env: null,
+  env: {
+    EXCLI_API_KEY: '{api_key}',
+    EXCLI_APP_KEY: '{application_key}',
+    EXCLI_SITE: 'https://api.{site}',
+  },
+};
+const API_KEY = 'synthetic-api-key-for-the-cli';
+const APP_KEY = 'synthetic-application-key-for-the-cli';
+const KEY = JSON.stringify({
+  public: { site: 'datadoghq.eu' },
+  secret: { api_key: API_KEY, application_key: APP_KEY },
+});
 
 function grant(tool: CliTool = TOOL): ServiceGrant {
   return {
@@ -202,7 +225,7 @@ describe('runEnvironment', () => {
   it('holds the token, the folders and the host’s network settings, and nothing else', () => {
     const env = runEnvironment({
       tool: TOOL,
-      token: GOOD,
+      credential: ServiceCredential.of(GOOD),
       home: '/h',
       config: '/c',
       tmp: '/t',
@@ -223,6 +246,40 @@ describe('runEnvironment', () => {
       EXCLI_CONFIG_DIR: '/c',
       EXCLI_TOKEN: GOOD,
     });
+  });
+
+  it('sets each of a key’s variables from its template, and no token variable', () => {
+    const env = runEnvironment({
+      tool: KEY_TOOL,
+      credential: ServiceCredential.of(KEY),
+      home: '/h',
+      config: '/c',
+      tmp: '/t',
+      hostEnv: {},
+      platform: 'linux',
+    });
+    expect(env).toEqual({
+      HOME: '/h',
+      TMPDIR: '/t',
+      EXCLI_CONFIG_DIR: '/c',
+      EXCLI_API_KEY: API_KEY,
+      EXCLI_APP_KEY: APP_KEY,
+      EXCLI_SITE: 'https://api.datadoghq.eu',
+    });
+  });
+
+  it('refuses a template naming a field the key does not carry', () => {
+    expect(() =>
+      runEnvironment({
+        tool: { ...KEY_TOOL, env: { EXCLI_REGION: '{region}' } },
+        credential: ServiceCredential.of(KEY),
+        home: '/h',
+        config: '/c',
+        tmp: '/t',
+        hostEnv: {},
+        platform: 'linux',
+      })
+    ).toThrow('names {region}');
   });
 });
 
@@ -342,6 +399,20 @@ describe.skipIf(process.platform === 'win32')('startVendorClis', () => {
     expect(result.text).not.toContain(GOOD);
     expect(result.text).toContain('stdout [REDACTED]');
     expect(result.text).toContain('stderr [REDACTED]');
+  });
+
+  it('runs with a key’s fields in their variables, and scrubs each secret from the output', async () => {
+    const { run, redactions } = await started([token(KEY)], KEY_TOOL);
+    const result = await run(['items', 'key']);
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(
+      'api [REDACTED] app [REDACTED] site https://api.datadoghq.eu token none'
+    );
+    expect(result.text).toContain('stderr [REDACTED]');
+    expect(result.text).not.toContain(API_KEY);
+    expect(result.text).not.toContain(APP_KEY);
+    expect(redactions.list()).toEqual(expect.arrayContaining([KEY, API_KEY, APP_KEY]));
+    expect(redactions.list()).not.toContain('datadoghq.eu');
   });
 
   it('asks again once when the vendor refuses the token, naming the refused one', async () => {

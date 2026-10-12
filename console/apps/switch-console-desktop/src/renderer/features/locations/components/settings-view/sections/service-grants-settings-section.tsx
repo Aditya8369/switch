@@ -283,9 +283,7 @@ function OnOffGrant({
           To turn {service.name} on, first connect it from the server&apos;s Connections.
         </p>
       )}
-      <p className="mt-1 text-xs text-foreground-muted">
-        {onOffGrantNote(agentName, service.name, service.token_lifetime)}
-      </p>
+      <p className="mt-1 text-xs text-foreground-muted">{onOffGrantNote(agentName, service)}</p>
     </div>
   );
 }

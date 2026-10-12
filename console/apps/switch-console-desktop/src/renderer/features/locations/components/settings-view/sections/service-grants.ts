@@ -1,3 +1,4 @@
+import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 
 /** The repository ids a GitHub grant names. */
@@ -41,16 +42,21 @@ export const REMOVED_GRANT_NOTE =
 /**
  * What turning on a service whose agents use the owner's own token means, and
  * how long turning it off takes: Switch stops handing it out within a minute,
- * and a token that lives longer stays valid at the vendor until it expires.
+ * and a token that lives longer stays valid at the vendor until it expires. A
+ * service connected with a key hands out the key itself, which does not
+ * expire, so its note says only how far the key reaches.
  */
 export function onOffGrantNote(
   agentName: string,
-  serviceName: string,
-  tokenLifetime: number | null
+  service: Pick<ConnectionCatalogEntry, 'name' | 'token_lifetime' | 'key'>
 ): string {
-  const note = `On, ${agentName} acts as you at ${serviceName}, with everything your ${serviceName} connection allows. Turning it off stops its sessions using ${serviceName} within a minute.`;
-  return tokenLifetime !== null && tokenLifetime > 3600
-    ? `${note} A token already handed out stays valid at ${serviceName} until it expires or you disconnect.`
+  const { name } = service;
+  const off = `Turning it off stops its sessions using ${name} within a minute.`;
+  if (service.key !== null)
+    return `On, ${agentName} uses ${name} with your key, as far as the key allows. ${off}`;
+  const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connection allows. ${off}`;
+  return service.token_lifetime !== null && service.token_lifetime > 3600
+    ? `${note} A token already handed out stays valid at ${name} until it expires or you disconnect.`
     : note;
 }
 
