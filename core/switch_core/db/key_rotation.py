@@ -27,6 +27,8 @@ from switch_core.db.models import (
     ProviderConnection,
     ServerConnector,
     TrustSettings,
+    ServiceConnection,
+    ServiceTokenIssuance,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.keys import Keyring
@@ -42,6 +44,8 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (MessagingInstall, "encrypted_bot_token"),
     (ProviderConnection, "encrypted_credential"),
     (MachineWorkspace, "enrollment_code_encrypted"),
+    (ServiceConnection, "encrypted_secret"),
+    (ServiceTokenIssuance, "encrypted_token"),
 )
 # `trust_settings` is a global table (`rls_ddl.GLOBAL_TABLES`), not a tenant's —
 # one row for the deployment — so it is swept once here rather than through

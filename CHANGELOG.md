@@ -78,6 +78,25 @@ version of their own to them without also giving them a release of their own.
   controller). Giving one queues a `provider.login` operation the machine takes
   it up with; revoking the machine deletes its logins. Migration
   `d41c7a9e2b58` adds `sealed_provider_logins`.
+- **Agents use their owner's GitHub through grants.** A person connects their
+  GitHub account once; an agent's owner then grants it repositories, to read or
+  to read and push, from the agent's page in the gateway or in Switch Console.
+  The agent's sessions get installation tokens for exactly those repositories,
+  valid for at most an hour, each issue recorded. They are revoked when the
+  grant narrows or goes, the owner disconnects GitHub or re-links another
+  account, the agent is deleted, or its owner leaves the workspace. Agents with
+  a runtime of their own cannot be granted anything yet. New routes:
+  `GET /agents/{id}/service-grants` and `POST /agents/{id}/service-tokens/{service}`
+  for agents and their controllers, and `/gateway/service-connections` and
+  `/gateway/agents/{id}/service-grants` for people. Pushes, pull requests and
+  comments made this way appear as the GitHub App.
+- **`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`** configure the
+  GitHub App (both or neither; the key path absolute). The Helm chart sets
+  them from `switchCore.githubConnectionsSecret` and the new
+  `switchCore.githubAppPrivateKeyPath`, the signing key's path in a Secret the
+  chart mounts.
+  `SERVICE_TOKEN_RETENTION_DAYS` (default 30) sets how long issue records are
+  kept; tokens' values are dropped as soon as they expire.
 - **The Helm chart turns agent management on from its values.**
   `switchCore.agentManagement.enabled` and `secrets.controllerTokenSecret` (or
   `CONTROLLER_TOKEN_SECRET` in `secrets.existingSecret`) set
@@ -129,10 +148,29 @@ version of their own to them without also giving them a release of their own.
   instead.
 - **Hosted launches require `agent_management`.** `HOSTED_LAUNCH_CAPACITY` above
   0 now needs the `agent_management` flag enabled.
+- **GitHub moves onto service connections when the new release first starts,**
+  once per workspace: each GitHub connection. A connection that cannot be read
+  is skipped and logged, and its owner connects GitHub again. So is a second
+  person linked to the same GitHub account as someone else: they must connect a
+  different GitHub account, or the first must disconnect theirs. A workspace
+  whose move fails is logged and tried again at the next start; the others
+  still move. The old table is left as it was, but nothing is written back to
+  it: after rolling back to the previous release, people connect GitHub again
+  (GitHub renews sign-ins by replacing them, so the copies there stop working
+  within hours), and disconnects and removed grants made on this release do
+  not carry back. Rolling back means downgrading this release's migrations,
+  which drops the service connection, grant and token record tables and
+  everything made in them on this release. Tokens already handed out then stay
+  valid until they expire, within the hour, as nothing is left to revoke them.
 
 #### Removed
 - **The `feature_flags` table is dropped.** The migration logs which flags were
   on at upgrade so they can be re-expressed through the feature-flag setting.
+
+#### Deprecated
+- `HOSTED_GITHUB_CONFIG_PATH` still configures the GitHub App's sign-in, with a
+  warning, for this release. It names no signing key, so GitHub can then be
+  connected but not granted.
 
 #### Fixed
 - **The Helm chart's Ingress now routes every agent API path to switch-core.**
@@ -1484,6 +1522,28 @@ version of their own to them without also giving them a release of their own.
   Codex, OpenCode or Antigravity sign-in. Console seals it to the machine's own
   key before it leaves, so the server only relays it, and shows whether the
   provider signs in with it on the machine.
+- **Agents granted GitHub can use it in every session.** Git's credential
+  helper and a `gh` wrapper are set up for `https://github.com` in the session
+  alone, and ask the agent host for a short-lived token; SSH remotes and other
+  hosts keep your own setup. Nothing is set up for an agent without a GitHub
+  grant, or on Windows yet. A token GitHub refuses is replaced on the next
+  command. Tokens are scrubbed from session logs, transcripts, activity shown
+  on messaging platforms and anything the agent posts to a room.
+- **Service access in an agent's settings and on a managed agent's page,**
+  Switch cloud agents included: its grants, the GitHub repositories they
+  reach, and a warning, with "Make owner-only", when anyone can address the
+  agent.
+- The skills of an agent's granted services reach each session, and a session
+  is told when its agent's grants could not be loaded.
+- A server's Connections show a connection that needs reconnecting, and why a
+  service cannot be granted on that server.
+
+#### Changed
+- The agents controller reports `git` and `gh` as found, missing, or not
+  supported on Windows.
+- **An idle session now parks after a day rather than 30 minutes.** Set
+  `SWITCH_SESSION_PARK_AFTER_MS` on the session host to choose another
+  timeout, or `off` to never park.
 
 #### Fixed
 - **A session whose provider offers hundreds of models no longer dies on its
@@ -1506,11 +1566,6 @@ version of their own to them without also giving them a release of their own.
   turn had ended with subagents still running in the background was stopped
   after the idle timeout, taking the subagents with it. Those subagents now
   count as activity, and the idle wait starts again when the last one stops.
-
-#### Changed
-- **An idle session now parks after a day rather than 30 minutes.** Set
-  `SWITCH_SESSION_PARK_AFTER_MS` on the session host to choose another
-  timeout, or `off` to never park.
 
 ### [0.38.1] - 2026-10-01
 
@@ -3427,6 +3482,11 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+#### Added
+- Serves the session-side half of service grants: granted skills in each
+  session, the GitHub credential helper and `gh` wrapper, and scrubbing of
+  issued tokens, as Switch Console does.
 
 ### [1.9.12] - 2026-10-01
 

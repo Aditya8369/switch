@@ -11,6 +11,7 @@ import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 const switchServers = vi.hoisted(() => ({
   cloudMachines: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
+  servesServiceConnections: vi.fn(async () => true),
 }));
 const navigate = vi.hoisted(() => vi.fn());
 
