@@ -25,11 +25,13 @@ const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
  * `openFrames`). That path is kept for a compatibility window and goes when
  * those servers are gone.
  *
- * Every event carries a sequence number, and a reconnect names the last one we
- * handled, so we get exactly what we missed. A gap is never silent: if the
- * server cannot serve our cursor it says so, and `onGap` fires so the caller
- * can tell the agent to re-read context rather than carry on believing it saw
- * everything.
+ * Every event carries its place, and a reconnect names how far we got, so we
+ * get exactly what we missed. The place is a position, one number per source
+ * of events (see `Position`), from a server that speaks agent-protocol 9; an
+ * older one numbers every event in a single sequence, and is sent that number
+ * beside the position. A gap is never silent: if the server cannot serve our
+ * position it says so, and `onGap` fires so the caller can tell the agent to
+ * re-read context rather than carry on believing it saw everything.
  */
 
 /** How long a request on the side (a room claim, placements, a beat) may take. */
@@ -97,6 +99,39 @@ export class PlacementsRefusedError extends Error {
 
 export type StreamScope = 'single' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
+
+/**
+ * How far a connection has read: one number per source of events, each
+ * counted on its own. `s` is the agent's own events, the ones addressed to it;
+ * `r:<room id>` is a room's conversation, read by a connection that is sent
+ * everything said there. Sources are the server's to name, so this runtime
+ * keeps whatever it is sent and never interprets the keys.
+ */
+export type Position = Record<string, number>;
+
+/** The source holding the agent's own events, the one number a server from
+ * before positions (agent-protocol 8 and older) understands. */
+const OWN_EVENTS = 's';
+
+/** A position as sent, or null when it is not one. */
+function readPosition(raw: unknown): Position | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const position: Position = {};
+  for (const [source, value] of Object.entries(raw)) {
+    if (!Number.isSafeInteger(value) || (value as number) < 0) return null;
+    position[source] = value as number;
+  }
+  return position;
+}
+
+/** Each source at the further of the two. A position never moves back except
+ * when the server says it must (a gap). */
+function furthest(current: Position, reported: Position): Position {
+  const position = { ...current };
+  for (const [source, value] of Object.entries(reported))
+    position[source] = Math.max(position[source] ?? 0, value);
+  return position;
+}
 
 /**
  * Why a stream ended, in the form a caller can branch on.
@@ -302,7 +337,9 @@ export interface SwitchEventStreamDeps {
     reason: string;
     /** The rooms that lost events. Absent from a server that predates naming them. */
     rooms?: string[];
+    /** Where the agent's own events resume (`s`). */
     resumedAt?: number;
+    /** Whether that moved back: the server's numbering restarted. */
     cursorReset?: boolean;
   }): void | Promise<void>;
   /** Fired when another stream took this connection over, or it was closed.
@@ -353,10 +390,10 @@ type HeaderedWebSocket = new (url: string, init: { headers: Record<string, strin
 
 export class SwitchEventStream {
   private readonly deps: SwitchEventStreamDeps;
-  /** Highest sequence number received. Sent with every pong and as
-   * `start_from` when reopening. Seeded from `startCursor` when the caller
-   * needs to begin behind head rather than at it. */
-  private cursor: number;
+  /** How far we have read. Sent with every pong and beat, and as `start_at`
+   * when reopening. Seeded from `startCursor` when the caller needs to begin
+   * behind head rather than at it. */
+  private reached: Position;
   /** Aborts only the current socket, so a reconnect can replace it without
    * tearing down the connection. */
   private socketAbort: AbortController | null = null;
@@ -438,13 +475,19 @@ export class SwitchEventStream {
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
     this.rooms = [...deps.rooms];
-    this.cursor = deps.startCursor ?? 0;
+    this.reached = deps.startCursor === undefined ? {} : { [OWN_EVENTS]: deps.startCursor };
     this.spawnCapable = deps.spawnCapable === true;
     this.declaredSpawnCapable = this.spawnCapable;
   }
 
-  get position(): number {
-    return this.cursor;
+  get position(): Position {
+    return { ...this.reached };
+  }
+
+  /** How far we have read in the agent's own events: what a server from
+   * before positions is told, as `start_from`, `Last-Event-ID` and `cursor`. */
+  private get cursor(): number {
+    return this.reached[OWN_EVENTS] ?? 0;
   }
 
   /**
@@ -800,6 +843,9 @@ export class SwitchEventStream {
           filter,
           start_from:
             this.cursor > 0 || this.deps.startCursor !== undefined ? String(this.cursor) : 'head',
+          // Where we are in every source, which a server that speaks
+          // positions takes over `start_from`. Nothing read yet is head.
+          start_at: Object.keys(this.reached).length ? JSON.stringify(this.reached) : 'head',
           // What we are and what we speak, declared on the connect we already
           // make (CHOO-1865). A client that says nothing records as unknown
           // server-side, and a declaration cannot be backfilled after the fact
@@ -833,7 +879,6 @@ export class SwitchEventStream {
           });
         })) {
           await this.handleFrame(frame);
-          if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
       } catch (error) {
         if (error instanceof OpenRefused) {
@@ -1018,7 +1063,7 @@ export class SwitchEventStream {
         return;
       }
       if (parsed.event === 'ping') {
-        socket.send(JSON.stringify({ type: 'pong', cursor: this.cursor }));
+        socket.send(JSON.stringify({ type: 'pong', cursor: this.cursor, position: this.reached }));
         return;
       }
       if (parsed.event === 'refused') {
@@ -1068,8 +1113,13 @@ export class SwitchEventStream {
   private async handleFrame(frame: SocketFrame): Promise<void> {
     const { log, onGap, onEvicted, onEvent } = this.deps;
     switch (frame.event) {
-      case 'connection_state':
+      case 'connection_state': {
         if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
+        // Where the server starts us, which for an open at head is the first
+        // we hear of where head was. Kept, so a reopen before any event
+        // arrives resumes from there rather than from wherever head has got to.
+        const opened = readPosition(frame.data.position);
+        if (opened) this.reached = furthest(this.reached, opened);
         this.announces = frame.data.announce_session_starts === true;
         this.attachedOver = this.openingOver;
         // Reached over the stream: whether the server has a socket for next
@@ -1104,6 +1154,7 @@ export class SwitchEventStream {
         this.redeclare();
         this.deps.onConnected?.();
         return;
+      }
       case 'room_released': {
         const roomId = frame.data.room_id;
         const sessionId = frame.data.session_id ?? null;
@@ -1145,6 +1196,12 @@ export class SwitchEventStream {
         const resumedAt = frame.data.resumed_at;
         if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
           throw new Error('Switch returned an invalid gap resume cursor.');
+        // Where every source resumes, from a server that speaks positions.
+        // Taken whole rather than merged: a gap is the one thing that can move
+        // a position back.
+        const resumed = readPosition(frame.data.resumed_position);
+        if (frame.data.resumed_position !== undefined && resumed === null)
+          throw new Error('Switch returned an invalid gap resume position.');
         await onGap({
           fromSequence: Number(frame.data.from_sequence ?? 0),
           reason: String(frame.data.reason ?? 'events were missed'),
@@ -1153,7 +1210,9 @@ export class SwitchEventStream {
             ? {}
             : { resumedAt: Number(resumedAt), cursorReset: Number(resumedAt) < this.cursor }),
         });
-        if (resumedAt !== undefined) this.cursor = Number(resumedAt);
+        if (resumed) this.reached = resumed;
+        else if (resumedAt !== undefined)
+          this.reached = { ...this.reached, [OWN_EVENTS]: Number(resumedAt) };
         return;
       }
       case 'evicted': {
@@ -1195,16 +1254,30 @@ export class SwitchEventStream {
         return;
       }
       default:
-        if (typeof frame.data.type !== 'string') {
+        if (typeof frame.data.type === 'string')
+          await onEvent(frame.data as unknown as AgentBridgeEvent);
+        else
           // A frame this runtime does not know and cannot read as a room event.
           log.warn('SwitchEventStream: unknown frame dropped', {
             event: 'switch_stream_unknown_frame',
             frame: frame.event,
           });
-          return;
-        }
-        await onEvent(frame.data as unknown as AgentBridgeEvent);
+        this.passed(frame);
     }
+  }
+
+  /**
+   * Moves past an event once it has been handled: to the place the server
+   * names for it, or, from a server before positions, to its number.
+   *
+   * After the handler and not before, so an event whose handler throws is
+   * delivered again on the reopen that follows rather than counted as read.
+   */
+  private passed(frame: SocketFrame): void {
+    const place =
+      readPosition(frame.data.position) ??
+      (frame.id ? { [OWN_EVENTS]: Number(frame.id) || 0 } : null);
+    if (place) this.reached = furthest(this.reached, place);
   }
 
   /**
@@ -1305,6 +1378,7 @@ export class SwitchEventStream {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,
           cursor: this.cursor,
+          position: this.reached,
           generation: this.generation,
         });
         return { answered: true, status: resp.status, ok: resp.ok, body: await resp.text() };
