@@ -49,12 +49,12 @@ function installationOf(
   return github.installations.find((i) => i.id === resources.installation_id) ?? null;
 }
 
-/** The repositories a GitHub grant names, by name where the person can still see them. */
+/** The repositories a GitHub grant names, by full name where the person can still see them. */
 function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
   const installation = installationOf(github, grant.resources);
   return repositoryIds(grant.resources).map((id) => {
     const repository = installation?.repositories.find((r) => r.id === id);
-    return repository ? `${installation!.account}/${repository.name}` : `repository ${id}`;
+    return repository ? repository.name : `repository ${id}`;
   });
 }
 

@@ -39,8 +39,8 @@ const GITHUB = {
       id: 7,
       account: 'example-org',
       repositories: [
-        { id: 70, name: 'project' },
-        { id: 71, name: 'docs' },
+        { id: 70, name: 'example-org/project' },
+        { id: 71, name: 'example-org/docs' },
       ],
     },
   ],
