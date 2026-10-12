@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
+from switch_core.connections.adapters.github import load_github_app
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
@@ -58,12 +59,14 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.service_connections import (
+    router as service_connections_router,
+)
 from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Purpose
-from switch_core.providers.github import GitHubConnections
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
@@ -138,10 +141,9 @@ def create_gateway_app(
         )
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
+    app.state.github_app = load_github_app(config)
     app.state.github_connections = (
-        GitHubConnections(config.hosted_github_config_path)
-        if config.hosted_github_config_path
-        else None
+        app.state.github_app.connections if app.state.github_app else None
     )
     app.include_router(
         github_connections_router,
@@ -149,6 +151,7 @@ def create_gateway_app(
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
     app.include_router(providers_router, tags=["agent providers"])
+    app.include_router(service_connections_router, tags=["service-connections"])
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie
