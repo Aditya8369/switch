@@ -169,6 +169,9 @@ class ServiceToken:
     token: str = field(repr=False)
     expires_at: datetime
     resources: dict[str, Any]
+    # The grant's revision it was issued under: an agent host holding the
+    # token compares it with the grants answer, and asks again once it moves.
+    grant_revision: int
 
 
 def effective_tools(
@@ -505,7 +508,9 @@ class ServiceBroker:
         except BaseException as error:
             await self._discard(adapter, decision, principal, issued, session, error)
             raise
-        return ServiceToken(issued.token, issued.expires_at, issued.resources)
+        return ServiceToken(
+            issued.token, issued.expires_at, issued.resources, decision.grant_revision
+        )
 
     async def _record(
         self,
@@ -805,6 +810,7 @@ class ServiceBroker:
                     "tool_mode": grant.tool_mode,
                     "tools": list(grant.tools),
                     "resources": dict(grant.resources),
+                    "revision": grant.revision,
                     "skill": (
                         None
                         if skill is None

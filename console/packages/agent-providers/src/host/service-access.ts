@@ -9,7 +9,8 @@ import { validServiceToken } from './service-github';
  * agent's own Switch endpoint: its own key, or the agents controller's relay,
  * which forwards `/agents/{id}/...` as the controller. A grant gives the
  * session its service's skill and, through the agent host, the service's
- * tokens; a change of grants reaches a session when it next starts.
+ * tokens. A change of skills reaches a session when it next starts; a change
+ * of access reaches its tokens within half a minute (`AgentServiceTokens`).
  */
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -20,6 +21,8 @@ export const serviceGrantSchema = z.object({
   tool_mode: z.enum(['allow', 'deny']),
   tools: z.array(z.string()),
   resources: z.record(z.string(), z.unknown()),
+  /** Moves on every change to the grant. Absent from a Switch from before it. */
+  revision: z.number().int().optional(),
   skill: z.object({ name: z.string().regex(SLUG), content: z.string() }).nullable(),
 });
 export type ServiceGrant = z.infer<typeof serviceGrantSchema>;
@@ -103,10 +106,18 @@ export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
 ]);
 export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
 
-export type IssuedServiceToken = { token: string; expiresAt: number };
+/**
+ * `grantRevision` is the grant's revision the token was issued under, or null
+ * from a Switch from before it, whose tokens are kept until they expire.
+ */
+export type IssuedServiceToken = { token: string; expiresAt: number; grantRevision: number | null };
 export type ServiceRefusal = { code: string; message: string; retryable: boolean };
 
-const issuedSchema = z.object({ token: z.string(), expires_at: z.string() });
+const issuedSchema = z.object({
+  token: z.string(),
+  expires_at: z.string(),
+  grant_revision: z.number().int().optional(),
+});
 const refusalSchema = z.object({
   error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }),
 });
@@ -150,7 +161,11 @@ export async function issueServiceToken(
   const expiresAt = issued.success ? Date.parse(issued.data.expires_at) : Number.NaN;
   if (!issued.success || !validServiceToken(issued.data.token) || !Number.isFinite(expiresAt))
     throw new Error(`Switch answered a ${service} token request with something that is not one.`);
-  return { token: issued.data.token, expiresAt: onLocalClock(expiresAt, response) };
+  return {
+    token: issued.data.token,
+    expiresAt: onLocalClock(expiresAt, response),
+    grantRevision: issued.data.grant_revision ?? null,
+  };
 }
 
 /**

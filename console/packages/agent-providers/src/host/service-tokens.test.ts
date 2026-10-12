@@ -1,10 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Redactions } from './redaction';
-import type { IssuedServiceToken, ServiceRefusal } from './service-access';
-import { AgentServiceTokens, REFRESH_BEFORE_MS, REJECTION_WINDOW_MS } from './service-tokens';
+import type { IssuedServiceToken, ServiceGrant, ServiceRefusal } from './service-access';
+import {
+  AgentServiceTokens,
+  GRANT_CHECK_MS,
+  REFRESH_BEFORE_MS,
+  REJECTION_WINDOW_MS,
+} from './service-tokens';
 
 const HOUR = 60 * 60_000;
 const ENDPOINT = { endpoint: 'https://switch.test', token: 'agent-key', agentId: 'agent' };
+
+function grant(service: string, revision: number): ServiceGrant {
+  return {
+    service,
+    access: 'write',
+    tool_mode: 'deny',
+    tools: [],
+    resources: {},
+    revision,
+    skill: null,
+  };
+}
 
 function tokens(outcomes: (IssuedServiceToken | ServiceRefusal | Error)[]) {
   let now = 1_000_000;
@@ -14,16 +31,21 @@ function tokens(outcomes: (IssuedServiceToken | ServiceRefusal | Error)[]) {
     if (next instanceof Error) throw next;
     return next;
   });
+  const readGrants = vi.fn(async (): Promise<ServiceGrant[]> => {
+    throw new Error('grants not expected');
+  });
   const redactions = new Redactions();
   const service = new AgentServiceTokens({
     endpoint: ENDPOINT,
     redactions,
     now: () => now,
     issue,
+    readGrants,
   });
   return {
     service,
     issue,
+    readGrants,
     redactions,
     at: () => now,
     advance: (ms: number) => {
@@ -37,8 +59,8 @@ afterEach(() => vi.restoreAllMocks());
 describe('AgentServiceTokens', () => {
   it('hands out one token until five minutes before it expires, then asks again', async () => {
     const t = tokens([]);
-    const first = { token: 'synthetic-one', expiresAt: t.at() + HOUR };
-    const second = { token: 'synthetic-two', expiresAt: t.at() + 2 * HOUR };
+    const first = { token: 'synthetic-one', expiresAt: t.at() + HOUR, grantRevision: null };
+    const second = { token: 'synthetic-two', expiresAt: t.at() + 2 * HOUR, grantRevision: null };
     t.issue.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
     t.advance(HOUR - REFRESH_BEFORE_MS - 1);
@@ -55,7 +77,7 @@ describe('AgentServiceTokens', () => {
     let release!: (value: IssuedServiceToken) => void;
     t.issue.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
     const asks = [t.service.answer('github', null), t.service.answer('github', null)];
-    release({ token: 'synthetic-shared', expiresAt: t.at() + HOUR });
+    release({ token: 'synthetic-shared', expiresAt: t.at() + HOUR, grantRevision: null });
     expect(await Promise.all(asks)).toEqual([
       expect.objectContaining({ token: 'synthetic-shared' }),
       expect.objectContaining({ token: 'synthetic-shared' }),
@@ -66,9 +88,21 @@ describe('AgentServiceTokens', () => {
   it('replaces a token the service refused, but at most once a minute', async () => {
     const t = tokens([]);
     t.issue
-      .mockResolvedValueOnce({ token: 'synthetic-revoked', expiresAt: t.at() + HOUR })
-      .mockResolvedValueOnce({ token: 'synthetic-fresh', expiresAt: t.at() + HOUR })
-      .mockResolvedValueOnce({ token: 'synthetic-later', expiresAt: t.at() + 2 * HOUR });
+      .mockResolvedValueOnce({
+        token: 'synthetic-revoked',
+        expiresAt: t.at() + HOUR,
+        grantRevision: null,
+      })
+      .mockResolvedValueOnce({
+        token: 'synthetic-fresh',
+        expiresAt: t.at() + HOUR,
+        grantRevision: null,
+      })
+      .mockResolvedValueOnce({
+        token: 'synthetic-later',
+        expiresAt: t.at() + 2 * HOUR,
+        grantRevision: null,
+      });
     await t.service.answer('github', null);
     expect(await t.service.answer('github', 'synthetic-revoked')).toMatchObject({
       token: 'synthetic-fresh',
@@ -90,13 +124,21 @@ describe('AgentServiceTokens', () => {
   it('passes on a refusal that ends the service, and forgets the token', async () => {
     const t = tokens([]);
     t.issue
-      .mockResolvedValueOnce({ token: 'synthetic-one', expiresAt: t.at() + HOUR })
+      .mockResolvedValueOnce({
+        token: 'synthetic-one',
+        expiresAt: t.at() + HOUR,
+        grantRevision: null,
+      })
       .mockResolvedValueOnce({
         code: 'grant_missing',
         message: 'No GitHub grant.',
         retryable: false,
       })
-      .mockResolvedValueOnce({ token: 'synthetic-regranted', expiresAt: t.at() + 2 * HOUR });
+      .mockResolvedValueOnce({
+        token: 'synthetic-regranted',
+        expiresAt: t.at() + 2 * HOUR,
+        grantRevision: null,
+      });
     await t.service.answer('github', null);
     t.advance(HOUR - REFRESH_BEFORE_MS + 1);
     expect(await t.service.answer('github', null)).toEqual({
@@ -112,7 +154,11 @@ describe('AgentServiceTokens', () => {
     const t = tokens([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     t.issue
-      .mockResolvedValueOnce({ token: 'synthetic-one', expiresAt: t.at() + HOUR })
+      .mockResolvedValueOnce({
+        token: 'synthetic-one',
+        expiresAt: t.at() + HOUR,
+        grantRevision: null,
+      })
       .mockResolvedValueOnce({ code: 'internal', message: 'GitHub is down.', retryable: true })
       .mockRejectedValueOnce(new Error('Switch could not be reached for a github token: offline'));
     await t.service.answer('github', null);
@@ -125,6 +171,106 @@ describe('AgentServiceTokens', () => {
       code: 'unreachable',
       message: 'Switch could not be reached for a github token: offline',
       final: false,
+    });
+  });
+
+  describe('a running grant change', () => {
+    it('drops a token whose grant has moved on, at the next ask past half a minute', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce({
+          token: 'synthetic-read',
+          expiresAt: t.at() + HOUR,
+          grantRevision: 1,
+        })
+        .mockResolvedValueOnce({
+          token: 'synthetic-write',
+          expiresAt: t.at() + HOUR,
+          grantRevision: 2,
+        });
+      t.readGrants.mockResolvedValue([grant('github', 2)]);
+      await t.service.answer('github', null);
+      t.advance(GRANT_CHECK_MS - 1);
+      expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-read' });
+      expect(t.readGrants).not.toHaveBeenCalled();
+      t.advance(1);
+      expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-write' });
+      expect(t.readGrants).toHaveBeenCalledWith(ENDPOINT);
+      expect(t.issue).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a token whose grant stands, and reads the grants once for asks at the same time', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce({
+        token: 'synthetic-one',
+        expiresAt: t.at() + HOUR,
+        grantRevision: 3,
+      });
+      t.readGrants.mockResolvedValue([grant('github', 3)]);
+      await t.service.answer('github', null);
+      t.advance(GRANT_CHECK_MS);
+      const answers = await Promise.all([
+        t.service.answer('github', null),
+        t.service.answer('github', null),
+      ]);
+      expect(answers).toEqual([
+        expect.objectContaining({ token: 'synthetic-one' }),
+        expect.objectContaining({ token: 'synthetic-one' }),
+      ]);
+      expect(t.readGrants).toHaveBeenCalledTimes(1);
+      expect(t.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes on Switch's refusal once the grant is gone", async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce({
+          token: 'synthetic-one',
+          expiresAt: t.at() + HOUR,
+          grantRevision: 1,
+        })
+        .mockResolvedValueOnce({
+          code: 'grant_missing',
+          message: 'No GitHub grant.',
+          retryable: false,
+        });
+      t.readGrants.mockResolvedValue([]);
+      await t.service.answer('github', null);
+      t.advance(GRANT_CHECK_MS);
+      expect(await t.service.answer('github', null)).toMatchObject({
+        kind: 'refused',
+        code: 'grant_missing',
+        final: true,
+      });
+    });
+
+    it('keeps the token, with a warning, while the grants cannot be read', async () => {
+      const t = tokens([]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      t.issue.mockResolvedValueOnce({
+        token: 'synthetic-one',
+        expiresAt: t.at() + HOUR,
+        grantRevision: 1,
+      });
+      t.readGrants.mockRejectedValue(new Error('offline'));
+      await t.service.answer('github', null);
+      t.advance(GRANT_CHECK_MS);
+      expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
+      expect(warn.mock.calls[0]?.[0]).toContain('offline');
+      expect(t.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it('never reads the grants for a token from a Switch that names no revision', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce({
+        token: 'synthetic-one',
+        expiresAt: t.at() + HOUR,
+        grantRevision: null,
+      });
+      await t.service.answer('github', null);
+      t.advance(10 * GRANT_CHECK_MS);
+      expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
+      expect(t.readGrants).not.toHaveBeenCalled();
     });
   });
 });
