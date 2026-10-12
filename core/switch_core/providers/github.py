@@ -71,6 +71,32 @@ def rate_limited(response: httpx.Response) -> bool:
     )
 
 
+def sso_hidden_organizations(header: str | None) -> list[int]:
+    """The organization ids an `X-GitHub-SSO: partial-results` header names:
+    those whose single sign-on this token is not authorized for, so a list
+    GitHub answered leaves out what they hold."""
+    if not header:
+        return []
+    kind, _, rest = header.partition(";")
+    if kind.strip() != "partial-results":
+        return []
+    for part in rest.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "organizations":
+            return [int(v) for v in value.split(",") if v.strip().isdigit()]
+    return []
+
+
+@dataclass(frozen=True)
+class GitHubReach:
+    """The App's installations a person reaches, and the organizations whose
+    single sign-on hid installations from their sign-in (`sso_hidden`), which
+    a new sign-in that authorizes them shows."""
+
+    installations: list[dict]
+    sso_hidden: list[int]
+
+
 @dataclass
 class GitHubFlow:
     tenant_id: str
@@ -193,6 +219,12 @@ class GitHubConnections:
     async def request(
         self, method: str, url: str, *, token: str, data: dict | None
     ) -> dict:
+        result, _ = await self.request_with_headers(method, url, token=token, data=data)
+        return result
+
+    async def request_with_headers(
+        self, method: str, url: str, *, token: str, data: dict | None
+    ) -> tuple[dict, httpx.Headers]:
         headers = {"Accept": "application/json", "X-GitHub-Api-Version": "2022-11-28"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -232,7 +264,7 @@ class GitHubConnections:
                 raise GitHubError(
                     "GitHub authorization was not completed. Connect again."
                 )
-            return result
+            return result, response.headers
         except (httpx.HTTPError, ValueError):
             raise GitHubUnavailableError(
                 "Could not reach GitHub or read its response. Please try again."
@@ -325,8 +357,32 @@ class GitHubConnections:
             "Too many GitHub results to display. Limit the app's repository access and try again."
         )
 
-    async def repositories(self, token: str) -> list[dict]:
-        installations = await self.pages("/user/installations", "installations", token)
+    async def _installations(self, token: str) -> tuple[list[dict], list[int]]:
+        """The App's installations the person reaches, and the organizations
+        whose single sign-on hid theirs from this token (GitHub's
+        `X-GitHub-SSO: partial-results; organizations=…`)."""
+        values: list[dict] = []
+        hidden: set[int] = set()
+        for page in range(1, 11):
+            result, headers = await self.request_with_headers(
+                "GET",
+                f"https://api.github.com/user/installations?per_page=100&page={page}",
+                token=token,
+                data=None,
+            )
+            hidden.update(sso_hidden_organizations(headers.get("x-github-sso")))
+            batch = result.get("installations")
+            if not isinstance(batch, list):
+                raise GitHubError("GitHub returned an invalid installation list.")
+            values.extend(batch)
+            if len(batch) < 100:
+                return values, sorted(hidden)
+        raise GitHubError(
+            "Too many GitHub results to display. Limit the app's repository access and try again."
+        )
+
+    async def repositories(self, token: str) -> GitHubReach:
+        installations, sso_hidden = await self._installations(token)
         result = []
         for installation in installations:
             if not isinstance(installation, dict):
@@ -355,7 +411,7 @@ class GitHubConnections:
                     "repositories": selected,
                 }
             )
-        return result
+        return GitHubReach(installations=result, sso_hidden=sso_hidden)
 
     async def installation_repositories(
         self, token: str, installation_id: int, wanted: set[int]

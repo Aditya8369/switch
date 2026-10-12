@@ -267,3 +267,25 @@ it('opens the GitHub step from the grid and returns to it', async () => {
   );
   expect(switchServers.getConnectionCatalog).toHaveBeenCalledTimes(2);
 });
+
+it("says when an organization's single sign-on hides its installation", async () => {
+  switchServers.cloudMachines.mockResolvedValue([]);
+  switchServers.getConnectionCatalog.mockResolvedValue(CATALOG);
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'connected',
+    login: 'example-user',
+    install_url: 'https://github.com/apps/example/installations/new',
+    installations: [],
+    sso_hidden_organizations: [21955855],
+  });
+  await render();
+  const modal = await openConnections();
+  await vi.waitFor(() => expect(button(/GitHub/, modal)?.disabled).toBe(false));
+
+  await act(async () => button(/GitHub/, modal)!.click());
+  await vi.waitFor(() =>
+    expect(dialog()!.querySelector('[role="alert"]')?.textContent).toMatch(
+      /single sign-on hides its installation/
+    )
+  );
+});

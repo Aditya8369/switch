@@ -18,6 +18,7 @@ from switch_core.providers.github import (
     INSTALLATION_PAGES,
     GitHubConnections,
     GitHubError,
+    sso_hidden_organizations,
 )
 
 
@@ -46,7 +47,10 @@ def _repo(repo_id: int) -> dict:
 
 
 def _serve(
-    monkeypatch, installations: dict[int, int], suspended: frozenset[int] = frozenset()
+    monkeypatch,
+    installations: dict[int, int],
+    suspended: frozenset[int] = frozenset(),
+    sso: str | None = None,
 ) -> list[str]:
     """Answer `/user/installations`, and `/user/installations/{id}/repositories`
     for installations of the given sizes, numbering each one's repositories
@@ -60,6 +64,7 @@ def _serve(
         if segments == ["user", "installations"]:
             return httpx.Response(
                 200,
+                headers={} if sso is None else {"X-GitHub-SSO": sso},
                 json={
                     "installations": [
                         {
@@ -149,3 +154,31 @@ async def test_an_installation_beyond_the_cap_fails_loudly(github, monkeypatch) 
 
     with pytest.raises(GitHubError, match="more than"):
         await github.installation_repositories("gho_user", 1, {7})
+
+
+async def test_the_listing_names_organizations_whose_sso_hid_installations(
+    github, monkeypatch
+) -> None:
+    _serve(monkeypatch, {1: 2}, sso="partial-results; organizations=21955855,20582480")
+    reach = await github.repositories("SYNTHETIC-USER-TOKEN")
+    assert [i["id"] for i in reach.installations] == [1]
+    assert reach.sso_hidden == [20582480, 21955855]
+
+
+async def test_a_listing_without_the_header_hides_nothing(github, monkeypatch) -> None:
+    _serve(monkeypatch, {1: 2})
+    assert (await github.repositories("SYNTHETIC-USER-TOKEN")).sso_hidden == []
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (None, []),
+        ("", []),
+        ("partial-results; organizations=1,2", [1, 2]),
+        ("partial-results; organizations=", []),
+        ("required; url=https://github.com/orgs/example/sso?x=1", []),
+    ],
+)
+def test_reading_the_sso_header(header, expected) -> None:
+    assert sso_hidden_organizations(header) == expected

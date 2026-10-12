@@ -353,7 +353,7 @@ async def connection_status(
     if token is None:
         return {"status": "not_connected", "install_url": github.install_url}
     try:
-        installations = await github.repositories(token)
+        reach = await github.repositories(token)
     except GitHubAuthorizationError as error:
         raise HTTPException(422, str(error)) from None
     except GitHubError as error:
@@ -365,7 +365,10 @@ async def connection_status(
     return {
         "status": "connected",
         "login": row.external_identity,
-        "installations": installations,
+        "installations": reach.installations,
+        # Organizations whose single sign-on hides their installations from
+        # this sign-in: connecting again and authorizing them shows those.
+        "sso_hidden_organizations": reach.sso_hidden,
         "install_url": github.install_url,
     }
 
