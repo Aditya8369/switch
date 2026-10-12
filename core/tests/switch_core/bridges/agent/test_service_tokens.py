@@ -136,6 +136,7 @@ class TestIssuing:
         assert "name: github" in grant["skill"]["content"]
         # GitHub's tools are git and gh, not MCP servers a session calls.
         assert grant["mcp_servers"] == []
+        assert grant["cli_tools"] == []
 
     async def test_a_token_names_the_grant_revision_the_grants_answer_carries(
         self, harness: Harness

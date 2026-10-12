@@ -1,11 +1,13 @@
 import { mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   execProvider,
   findOnPath,
   type ProviderReadiness,
   providerUnsupportedReason,
+  readCliToolStatuses,
 } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
@@ -55,8 +57,22 @@ export type LocatedProvider = {
  * when on PATH, `missing` when not. Its helpers do not run on Windows, so
  * there both are `unsupported`, and such an agent uses the machine's own
  * sign-in.
+ *
+ * Then each vendor command-line tool a session here has set up, from the
+ * machine's tool folder (`cliToolsBase`): `ok` once its pinned build is
+ * installed, `missing` when the last install failed, `unsupported` where the
+ * catalog has no build for this machine. A tool no session has needed yet is
+ * not named.
  */
 export async function toolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform,
+  cliBase: string
+): Promise<ToolStatus[]> {
+  return [...(await gitHubToolStatuses(path, os)), ...(await readCliToolStatuses(cliBase))];
+}
+
+async function gitHubToolStatuses(
   path: string | undefined,
   os: NodeJS.Platform
 ): Promise<ToolStatus[]> {
