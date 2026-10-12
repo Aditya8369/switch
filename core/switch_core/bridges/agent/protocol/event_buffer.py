@@ -95,12 +95,14 @@ logger = logging.getLogger(__name__)
 # partial stream. The conversation is never deleted, so it has no window.
 DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
 
-# How old a room row has to be before it is read as conversation. The agent's
-# consumer decides, as the row is delivered to it, whether the row is for the
-# agent; reading it sooner could hand the row over as conversation a moment
-# before the same row arrives as the agent's own event. Seconds, because the
-# consumer takes milliseconds; what can still race it is a consumer stalled
-# for longer, and the cost then is the message twice, never not at all.
+# How old a room row has to be before it is read as conversation, when nothing
+# later in the room is among the agent's own events yet (that would show the
+# consumer is past it). The agent's consumer decides, as the row is delivered
+# to it, whether the row is for the agent; reading it sooner could hand the row
+# over as conversation a moment before the same row arrives as the agent's own
+# event. Seconds, because the consumer takes milliseconds; what can still race
+# it is a consumer stalled for longer, and the cost then is the message twice,
+# never not at all.
 CONVERSATION_SETTLE_SECONDS = 2.0
 
 # How long several files posted as one message are waited for before the parts

@@ -437,8 +437,9 @@ async def _event_stream(
             ):
                 continue
 
-            # The conversation rings no bell: it is read once it has settled,
-            # so a stream that reads it looks again when it may have.
+            # The conversation rings no bell: a row past the agent's newest own
+            # event is read once it has settled, so a stream that reads it
+            # looks again when one may have.
             timeout = (
                 buffer.settle_seconds
                 if conn.reads_conversation
