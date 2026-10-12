@@ -14,6 +14,8 @@ import type { HostAsk } from './session-channel';
 const ASK_TIMEOUT_MS = 90_000;
 const MAX_BODY_BYTES = 32 * 1024;
 const PATH = /^\/services\/([a-z0-9][a-z0-9-]{0,62})\/token$/;
+/** How long Switch's final refusal is repeated before the agent host is asked again. */
+export const ENDED_RECHECK_MS = 30_000;
 
 /** The session's endpoint as its helpers find it, in `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_BEARER`. */
 export type ServiceEndpointServer = { url: string; token: string; close: () => Promise<void> };
@@ -24,15 +26,17 @@ export type ServiceEndpointServer = { url: string; token: string; close: () => P
  * minted for this run, serving only the services granted when the session
  * started. Each ask goes up the pipe to the agent host, which holds the
  * tokens. A refusal that ends the service's use (the grant gone, the
- * connection changed) is final for the rest of this session: the helper is
- * told Switch's reason, then and every time after.
+ * connection changed) is repeated to the helper for half a minute without
+ * asking again, then the agent host is asked afresh, so a grant made again
+ * reaches the session.
  *
  * With `unavailable`, why the grants could not be read as the session
  * started, every request is refused with that reason.
  *
  * A request may name the repository it is for (`owner/name`); one the token
- * does not reach (`repositoryVisible`, asked once a repository per session) is
- * refused, as one outside the grant.
+ * does not reach (`repositoryVisible`, asked once a repository per token) is
+ * refused, as one outside the grant. A new token, which a changed grant
+ * brings, is asked about again.
  *
  * A refusal is not the end of it: the helper then answers nothing and Git (or
  * `gh`) uses the machine's own sign-in, if it has one. Every refusal is
@@ -47,14 +51,20 @@ export async function startServiceEndpoint(input: {
   /** Whether a refused request falls back to the machine's own sign-in, as the notices say. */
   fallback: boolean;
   repositoryVisible: (token: string, repository: string) => Promise<boolean | null>;
+  now: () => number;
 }): Promise<ServiceEndpointServer> {
   const secret = randomBytes(32).toString('hex');
   const expected = Buffer.from(`Bearer ${secret}`);
-  const ended = new Map<string, string>();
+  const ended = new Map<string, { reason: string; at: number }>();
   const visible = new Map<string, boolean>();
+  let visibleFor: string | null = null;
 
   /** Whether the token reaches `repository`; when GitHub cannot say, it is taken to. */
   const reaches = async (token: string, repository: string): Promise<boolean> => {
+    if (token !== visibleFor) {
+      visible.clear();
+      visibleFor = token;
+    }
     const key = repository.toLowerCase();
     const known = visible.get(key);
     if (known !== undefined) return known;
@@ -82,8 +92,9 @@ export async function startServiceEndpoint(input: {
           error: `This agent had no ${service} grant when this session started. A grant made since reaches the session when it next starts.`,
         },
       };
-    const reason = ended.get(service);
-    if (reason !== undefined) return { status: 403, body: { error: reason } };
+    const end = ended.get(service);
+    if (end !== undefined && input.now() - end.at < ENDED_RECHECK_MS)
+      return { status: 403, body: { error: end.reason } };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let raw: unknown;
     try {
@@ -107,6 +118,7 @@ export async function startServiceEndpoint(input: {
     }
     const answer = serviceTokenAnswerSchema.parse(raw);
     if (answer.kind === 'token') {
+      ended.delete(service);
       input.redactions.add(answer.token);
       if (repository !== null && !(await reaches(answer.token, repository)))
         return {
@@ -117,7 +129,7 @@ export async function startServiceEndpoint(input: {
       return { status: 200, body: { token: answer.token, expires_at: answer.expiresAt } };
     }
     if (answer.final) {
-      ended.set(service, answer.message);
+      ended.set(service, { reason: answer.message, at: input.now() });
       return { status: 403, body: { error: answer.message } };
     }
     return { status: 503, body: { error: answer.message } };

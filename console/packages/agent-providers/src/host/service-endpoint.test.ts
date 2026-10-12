@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Redactions } from './redaction';
 import type { ServiceTokenAnswer } from './service-access';
-import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
+import {
+  ENDED_RECHECK_MS,
+  type ServiceEndpointServer,
+  startServiceEndpoint,
+} from './service-endpoint';
 import { ServiceNotices } from './service-notices';
 import type { HostAsk } from './session-channel';
 
@@ -23,6 +27,7 @@ async function endpoint(
     shown.push(message);
   });
   const checked: string[] = [];
+  let now = 1_000_000;
   const server = await startServiceEndpoint({
     services,
     unavailable,
@@ -34,6 +39,7 @@ async function endpoint(
       checked.push(repository);
       return repository === 'org/unknown' ? null : repository === 'org/granted';
     },
+    now: () => now,
     ask: async (ask) => {
       asked.push(ask);
       const next = answers.shift();
@@ -48,7 +54,10 @@ async function endpoint(
       headers: { Authorization: `Bearer ${token}` },
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
-  return { server, asked, redactions, post, shown, checked };
+  const advance = (ms: number) => {
+    now += ms;
+  };
+  return { server, asked, redactions, post, shown, checked, advance };
 }
 
 const HOUR_LATER = new Date(Date.now() + 3_600_000).toISOString();
@@ -130,7 +139,7 @@ describe('the session service endpoint', () => {
     expect(e.shown).toEqual([]);
   });
 
-  it("stops serving a service for the session on Switch's final refusal", async () => {
+  it("repeats Switch's final refusal for half a minute, then asks again", async () => {
     const e = await endpoint([
       {
         kind: 'refused',
@@ -138,6 +147,7 @@ describe('the session service endpoint', () => {
         message: 'The GitHub grant was removed.',
         final: true,
       },
+      { kind: 'token', token: 'synthetic-regranted', expiresAt: HOUR_LATER },
     ]);
     for (let i = 0; i < 2; i++) {
       const response = await e.post('github', { rejected: null });
@@ -145,6 +155,20 @@ describe('the session service endpoint', () => {
       expect(await response.json()).toEqual({ error: 'The GitHub grant was removed.' });
     }
     expect(e.asked).toHaveLength(1);
+    e.advance(ENDED_RECHECK_MS);
+    const regranted = await e.post('github', { rejected: null });
+    expect(regranted.status).toBe(200);
+    expect(e.asked).toHaveLength(2);
+  });
+
+  it('asks again whether a new token reaches a repository the old one did not', async () => {
+    const e = await endpoint([
+      { kind: 'token', token: 'synthetic-narrow', expiresAt: HOUR_LATER },
+      { kind: 'token', token: 'synthetic-wide', expiresAt: HOUR_LATER },
+    ]);
+    await e.post('github', { rejected: null, repository: 'org/other' });
+    await e.post('github', { rejected: null, repository: 'org/other' });
+    expect(e.checked).toEqual(['org/other', 'org/other']);
   });
 
   it('says why when a token cannot be had for now, and asks again next time', async () => {
@@ -176,6 +200,7 @@ describe('the session service endpoint', () => {
         notices: new ServiceNotices(),
         fallback: true,
         repositoryVisible: async () => null,
+        now: Date.now,
         redactions: new Redactions(),
         ask: () => new Promise(() => {}),
       });
