@@ -7,8 +7,9 @@ export function grantedRepositoryIds(resources: Record<string, unknown>): number
 }
 
 /**
- * The repositories a GitHub grant names, as `account/name` where the person
- * can still see them and by id where they no longer can.
+ * The repositories a GitHub grant names, by their full name (`owner/name`, as
+ * GitHub gives it) where the person can still see them and by id where they
+ * no longer can.
  */
 export function grantedRepositoryNames(
   github: GitHubConnection | undefined,
@@ -20,9 +21,7 @@ export function grantedRepositoryNames(
       : undefined;
   return grantedRepositoryIds(resources).map((id) => {
     const repository = installation?.repositories.find((candidate) => candidate.id === id);
-    return repository && installation
-      ? `${installation.account}/${repository.name}`
-      : `repository ${id}`;
+    return repository ? repository.name : `repository ${id}`;
   });
 }
 

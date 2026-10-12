@@ -5,7 +5,9 @@ const GITHUB = {
   status: 'connected' as const,
   login: 'ada-gh',
   install_url: 'https://github.com/apps/example/installations/new',
-  installations: [{ id: 7, account: 'example-org', repositories: [{ id: 70, name: 'project' }] }],
+  installations: [
+    { id: 7, account: 'example-org', repositories: [{ id: 70, name: 'example-org/project' }] },
+  ],
 };
 
 describe('GitHub grant helpers', () => {

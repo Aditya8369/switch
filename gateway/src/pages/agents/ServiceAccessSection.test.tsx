@@ -38,8 +38,8 @@ const GITHUB = {
       id: 7,
       account: "example-org",
       repositories: [
-        { id: 70, name: "project" },
-        { id: 71, name: "docs" },
+        { id: 70, name: "example-org/project" },
+        { id: 71, name: "example-org/docs" },
       ],
     },
   ],
@@ -133,7 +133,7 @@ describe("ServiceAccessSection", () => {
     fireEvent.mouseDown(account);
     fireEvent.click(await screen.findByText("example-org"));
     fireEvent.mouseDown(screen.getByLabelText("Repositories"));
-    fireEvent.click(await screen.findByText("docs"));
+    fireEvent.click(await screen.findByText("example-org/docs"));
     fireEvent.click(screen.getByRole("button", { name: "Grant" }));
     await waitFor(() =>
       expect(calls).toContainEqual({
