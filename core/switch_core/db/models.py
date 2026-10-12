@@ -27,6 +27,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
+from switch_core.db.agent_event_notify_ddl import (
+    CREATE_AGENT_EVENT_NOTIFY_FUNCTION,
+    CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
+    DROP_AGENT_EVENT_NOTIFY_TRIGGER,
+)
 from switch_core.db.base import Base
 from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.notify_ddl import (
@@ -2336,6 +2341,90 @@ class DeliveryCursor(TenantScoped, Base):
     )
 
 
+class AgentEventRow(TenantScoped, Base):
+    """One event queued for one agent, at its position in that agent's stream.
+
+    What the in-memory event buffer held, made durable: an agent that comes
+    back after a restart, or to another process, resumes from its position
+    here. `seq` is the agent's offset, contiguous and never reused (see
+    `AgentEventHead`); `payload` is the event as it goes on the wire. Rows are
+    delivery copies, deleted after the retention window; the conversation
+    itself is `messages`, which this never touches.
+    """
+
+    __tablename__ = "agent_events"
+    __table_args__ = (
+        Index("ix_agent_events_tenant_id", "tenant_id"),
+        Index("ix_agent_events_created_at", "created_at"),
+        Index("ix_agent_events_agent_room", "tenant_id", "agent_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_events_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    notifiable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentEventHead(TenantScoped, Base):
+    """Where an agent's stream starts and how far it has got.
+
+    Offsets come from here rather than from the highest row, because rows are
+    deleted as they age and an offset must never be handed out twice: a reader
+    resuming after it would take a new event for one it had seen. `first_seq`
+    is above every offset the in-memory buffer ever issued, so a cursor from
+    before the outbox is recognisably older than anything here.
+    """
+
+    __tablename__ = "agent_event_heads"
+    __table_args__ = (
+        Index("ix_agent_event_heads_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_event_heads_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    first_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class AgentEventDrop(TenantScoped, Base):
+    """The newest event deleted from one of an agent's rooms.
+
+    A reader resuming from at or below it missed events in that room, and is
+    told so by name rather than handed a stream that looks complete.
+    """
+
+    __tablename__ = "agent_event_drops"
+    __table_args__ = (
+        Index("ix_agent_event_drops_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_event_drops_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    dropped_through: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class MediaBlob(TenantScoped, Base):
     """The bytes behind an attachment.
 
@@ -2398,6 +2487,21 @@ event.listen(
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
 
+event.listen(
+    AgentEventRow.__table__,
+    "after_create",
+    DDL(CREATE_AGENT_EVENT_NOTIFY_FUNCTION).execute_if(dialect="postgresql"),
+)
+event.listen(
+    AgentEventRow.__table__,
+    "after_create",
+    DDL(CREATE_AGENT_EVENT_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+event.listen(
+    AgentEventRow.__table__,
+    "before_drop",
+    DDL(DROP_AGENT_EVENT_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
 
 # ── Session activity ──────────────────────────────────────────────────────────
 #
