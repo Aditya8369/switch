@@ -44,7 +44,6 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import IDLE
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -66,6 +65,7 @@ from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
+from tests.db_buffer import db_buffer_on
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
@@ -139,7 +139,7 @@ def protocol_service(
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
     svc.config = SimpleNamespace(keyring=TEST_KEYRING)  # type: ignore[assignment]
     svc.telemetry = None
-    svc.event_buffer = EventBuffer(sequence_base=0)
+    svc.event_buffer = db_buffer_on(session_factory)
     svc.connections = AgentConnectionRegistry()
     svc.approval_outcomes = None  # type: ignore[assignment]
     svc.room_store = RoomStore()
@@ -587,7 +587,7 @@ async def attach(
     return Answer(200, {})
 
 
-def beat(
+async def beat(
     harness: Harness,
     controller: EnrolledController,
     *,
@@ -598,7 +598,7 @@ def beat(
     """A pong, answered as the socket would: the agents on success, the
     refusal its `evicted` frame would name otherwise."""
     try:
-        agents = controller_routes.record_beat(
+        agents = await controller_routes.record_beat(
             principal=_principal(controller),
             protocol=harness.protocol,
             connection_id=connection_id,

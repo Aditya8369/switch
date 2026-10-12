@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.commands import room_control_frame
 from switch_core.bridges.agent.protocol.event_buffer import Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.management import controller_routes
 from switch_core.management.schemas import (
@@ -279,7 +280,7 @@ class TestTheControllerConnection:
             stream = await open_stream(harness, controller, opened.json())
             await take(stream, 2)
             pong = _fixture("controller_pong.json")
-            beaten = beat(
+            beaten = await beat(
                 harness,
                 controller,
                 connection_id=opened.json()["connection_id"],
@@ -361,10 +362,11 @@ class TestStreamFrames:
                 agent_id,
                 Reader(id=presence.holder_id(binding), is_session=False),
                 room_id,
-                buffer.head(agent_id),
+                await buffer.head(TENANT_ZERO_ID, agent_id),
                 None,
             )
-            harness.protocol.event_buffer.enqueue(
+            await harness.protocol.event_buffer.enqueue(
+                TENANT_ZERO_ID,
                 agent_id,
                 room_id,
                 AgentEvent(
