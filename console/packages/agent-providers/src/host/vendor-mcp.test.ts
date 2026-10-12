@@ -217,6 +217,23 @@ describe('a granted vendor’s MCP servers', () => {
     expect(tools.tools).toHaveLength(1);
   });
 
+  it('gives up on an agent host that does not hand out a token in time', async () => {
+    const vendors = await startVendorServers({
+      grants: [grant('example', [{ name: 'example', url: VENDOR_URL }])],
+      ask: () => new Promise(() => {}),
+      redactions: new Redactions(),
+      listTimeoutMs: 300,
+      callTimeoutMs: 300,
+      fetch: () => Promise.reject(new Error('the vendor is not reached')),
+    });
+    servers.push(vendors);
+    const started_at = Date.now();
+    await expect((await client(vendors.specs.example!)).listTools()).rejects.toThrow(
+      'did not hand out a example token'
+    );
+    expect(Date.now() - started_at).toBeLessThan(5_000);
+  });
+
   it('sends a key’s fields in the headers and address the server’s templates name', async () => {
     const { server, calls } = await vendor();
     const seen: { url: string; headers: Headers }[] = [];

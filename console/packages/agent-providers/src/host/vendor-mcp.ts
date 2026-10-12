@@ -130,7 +130,11 @@ class VendorServer {
     const signal = AbortSignal.timeout(timeoutMs);
     let rejected: string | null = null;
     for (let attempt = 0; ; attempt += 1) {
-      const credential = await this.credential(rejected);
+      const credential: ServiceCredential = await withinSignal(
+        this.credential(rejected),
+        signal,
+        `The agent host did not hand out a ${this.service} token within ${timeoutMs / 1000} s.`
+      );
       try {
         return await this.connected(credential, signal, exchange);
       } catch (error) {
@@ -191,6 +195,25 @@ class VendorServer {
       await client.close().catch(() => {});
     }
   }
+}
+
+/** `work`, or `message` as an error once `signal` aborts, whichever comes first. */
+function withinSignal<T>(work: Promise<T>, signal: AbortSignal, message: string): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error(message));
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error(message));
+    signal.addEventListener('abort', abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      }
+    );
+  });
 }
 
 type VendorContent = { type: string; text?: unknown; resource?: unknown; uri?: unknown };
