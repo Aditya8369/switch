@@ -20,12 +20,11 @@ they are the ones that show whether the removal was really acted on.
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
 import asyncio
 
 import pytest
 
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
 
