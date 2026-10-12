@@ -961,7 +961,11 @@ class TestPassThrough:
             assert agent is not None
             [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
         assert grant["mcp_servers"] == [
-            {"name": "example", "url": "https://mcp.example.test/v1/mcp"}
+            {
+                "name": "example",
+                "url": "https://mcp.example.test/v1/mcp",
+                "headers": {"Authorization": "Bearer {token}"},
+            }
         ]
         assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
@@ -982,6 +986,7 @@ class TestPassThrough:
                 "name": "example-cli",
                 "binary": "excli",
                 "token_env": "EXCLI_TOKEN",
+                "env": None,
                 "config_env": "EXCLI_CONFIG_DIR",
                 "allow": ["items", "boards"],
                 "deny": ["auth", "--profile"],

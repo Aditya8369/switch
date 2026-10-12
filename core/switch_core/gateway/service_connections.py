@@ -14,18 +14,25 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import parse_policy
 from switch_core.connections.broker import (
+    KEY_CONSENT,
     ServiceBroker,
     ServiceError,
     effective_tools,
     get_service_broker,
 )
-from switch_core.connections.loader import CATALOG, AccessLevel
-from switch_core.db.models import Agent, ServiceGrant, User, require_tenant_id
+from switch_core.connections.loader import CATALOG, AccessLevel, ConnectionDefinition
+from switch_core.db.models import (
+    Agent,
+    ServiceConnection,
+    ServiceGrant,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
@@ -123,6 +130,9 @@ async def list_service_connections(
                     if definition.auth.oauth is None
                     else definition.auth.oauth.loopback_ports
                 ),
+                # What a person pastes to connect a service connected with a
+                # key, and where they make one; null for any other.
+                "key": _key_form(definition),
                 "status": "not_connected" if connection is None else connection.status,
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
@@ -131,6 +141,88 @@ async def list_service_connections(
             }
         )
     return {"connections": entries}
+
+
+def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
+    sign_in = definition.auth.api_key
+    if definition.adapter != "api_key" or sign_in is None:
+        return None
+    return {
+        "fields": [
+            {
+                "name": field.name,
+                "label": field.label,
+                "secret": field.secret,
+                "help": field.help,
+                "choices": field.choices,
+            }
+            for field in sign_in.fields
+        ],
+        "help_url": sign_in.help_url,
+    }
+
+
+class KeyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fields: dict[str, str]
+
+
+@router.put("/service-connections/{service}/key", response_model=None)
+async def connect_with_key(
+    service: str,
+    body: KeyBody,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any] | JSONResponse:
+    """Connect a service with a pasted key, once its vendor accepts the key.
+
+    The key is checked with the vendor before anything is stored, and never
+    sent back. Re-pasting replaces it in place, keeping the grants.
+    """
+    try:
+        checked = await broker.check_key(service, body.fields)
+    except ServiceError as error:
+        return service_refusal(error)
+    name = CATALOG[service].definition.name
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"service-link:{require_tenant_id()}:{service}"},
+    )
+    taken = await session.scalar(
+        select(ServiceConnection.user_id).where(
+            ServiceConnection.tenant_id == require_tenant_id(),
+            ServiceConnection.service == service,
+            ServiceConnection.user_id != user.id,
+            ServiceConnection.account_id == checked.account_id,
+        )
+    )
+    if taken is not None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    f"This {name} key's account is already linked to another "
+                    "Switch user in this workspace. Remove that link first."
+                ),
+                "code": "account_linked_elsewhere",
+                "retryable": False,
+            },
+        )
+    try:
+        warning = await broker.connect(
+            session,
+            user_id=user.id,
+            service=service,
+            consent=KEY_CONSENT,
+            granted_scopes=[],
+            account_id=checked.account_id,
+            external_identity=checked.label,
+            secret=checked.secret,
+        )
+    except ServiceError as error:
+        return service_refusal(error)
+    return {"warning": warning, "external_identity": checked.label}
 
 
 @router.delete("/service-connections/{service}", response_model=None)

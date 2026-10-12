@@ -11,6 +11,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.broker import ServiceBroker
@@ -59,7 +60,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, environ={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian"}
+    assert set(adapters) == {"github", "atlassian", "datadog"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -69,6 +70,13 @@ def test_github_without_the_app_is_left_not_set_up() -> None:
         CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
     )
     assert "github" not in adapters
+
+
+def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+    )
+    assert isinstance(adapters["datadog"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:

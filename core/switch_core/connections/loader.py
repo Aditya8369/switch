@@ -7,15 +7,19 @@ ship none. The catalog is validated once, at import, so a malformed
 entry stops the server rather than surfacing on the first launch.
 
 An enabled entry also names the adapter that reaches the vendor (``adapter``:
-``github``, or the generic ``oauth``), says what each access level reaches
+``github``, the generic ``oauth``, or ``api_key`` for a vendor whose people
+paste a key rather than sign in), says what each access level reaches
 (``access``: OAuth scopes, or GitHub App permissions), which of the service's
 tools each level offers (``tools``), how its sign-in is refreshed
 (``auth.refresh``) and what a token it hands out is (``token``). An ``oauth``
 entry also says how its OAuth client is had and where a sign-in may return
 (``auth.oauth``), how the account's stable id is read (``auth.identity``), and
 how its tools reach a session: the vendor's MCP servers (``mcp``), or the
-vendor's command-line tool, run by the session host (``cli``). Placeholder
-entries may leave all of those out.
+vendor's command-line tool, run by the session host (``cli``). An ``api_key``
+entry names the fields a person pastes and the call that checks them
+(``auth.api_key``), and how the session host puts them into each MCP request's
+headers or each CLI run's environment, by template. Placeholder entries may
+leave all of those out.
 """
 
 import re
@@ -51,7 +55,7 @@ class CatalogError(RuntimeError):
 AccessLevel = Literal["read", "write"]
 
 
-AdapterName = Literal["github", "oauth"]
+AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
@@ -154,6 +158,135 @@ class ConnectionIdentity(BaseModel):
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
 
+FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+# A choice ends up in a URL's host or path, so it is a plain DNS-ish word.
+CHOICE_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,62}$"
+TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]*)\}")
+# What a session host puts in a template for a token that is not made of
+# fields: the whole token, as an OAuth entry's servers take it.
+TOKEN_PLACEHOLDER = "token"
+
+
+def template_fields(template: str) -> list[str]:
+    """The fields a template names, as `{name}`; a stray brace is refused."""
+    names = TEMPLATE_FIELD_RE.findall(template)
+    if TEMPLATE_FIELD_RE.sub("", template).count("{") or TEMPLATE_FIELD_RE.sub(
+        "", template
+    ).count("}"):
+        raise ValueError(f"{template!r} has a brace that names no field")
+    for name in names:
+        if not re.fullmatch(FIELD_NAME_PATTERN, name):
+            raise ValueError(f"{template!r} names a field that cannot be one: {name!r}")
+    return names
+
+
+class ApiKeyField(BaseModel):
+    """One value a person pastes, or picks, to connect.
+
+    A `secret` field is the key itself, typed freely and never shown again.
+    Any other field is a choice among `choices` (a site, a region), which
+    templates may put in a URL: never free text.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=FIELD_NAME_PATTERN)
+    label: str = Field(min_length=1, max_length=64)
+    secret: bool
+    help: str | None = Field(
+        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
+    )
+    choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def _secret_or_choice(self) -> "ApiKeyField":
+        if self.name == TOKEN_PLACEHOLDER:
+            raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
+        if self.secret == (self.choices is not None):
+            raise ValueError(
+                f"field {self.name} is a secret typed freely, or a choice among "
+                "choices: one of the two"
+            )
+        if self.choices is not None and len(set(self.choices)) != len(self.choices):
+            raise ValueError(f"field {self.name} lists a choice twice")
+        return self
+
+
+class ApiKeyIdentity(BaseModel):
+    """The call that checks a pasted key and says whose it is: `method` to
+    `url`, with `headers` (and a JSON `body`, for a POST), each a template of
+    the fields. `account_id` and `label` are dotted paths in its JSON answer;
+    without `account_id` the account is the key itself (its SHA-256), and
+    without `label` the connection is named by the service and its choices."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"]
+    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] = Field(
+        min_length=1
+    )
+    body: dict[str, object] | None = None
+    account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
+    label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_for_post(self) -> "ApiKeyIdentity":
+        if (self.body is not None) != (self.method == "POST"):
+            raise ValueError("a POST identity call sends a body, and only one does")
+        return self
+
+
+class ApiKeySignIn(BaseModel):
+    """How a person connects with a key: the fields they paste or pick, the
+    call that checks them, and where they make the key (`help_url`)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    identity: ApiKeyIdentity
+    help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+
+    @model_validator(mode="after")
+    def _fields_used_well(self) -> "ApiKeySignIn":
+        names = [field.name for field in self.fields]
+        if len(set(names)) != len(names):
+            raise ValueError("two fields share a name")
+        if not any(field.secret for field in self.fields):
+            raise ValueError("an api_key sign-in has at least one secret field")
+        check_templates(
+            self,
+            urls=[self.identity.url],
+            values=list(self.identity.headers.values()),
+            where="the identity call",
+        )
+        return self
+
+    def field_names(self) -> set[str]:
+        return {field.name for field in self.fields}
+
+    def choice_names(self) -> set[str]:
+        return {field.name for field in self.fields if not field.secret}
+
+
+def check_templates(
+    sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
+) -> None:
+    """Templates name only the sign-in's fields, and a URL only its choices."""
+    known = sign_in.field_names()
+    choices = sign_in.choice_names()
+    for url in urls:
+        for name in template_fields(url):
+            if name not in choices:
+                raise ValueError(
+                    f"{where}'s URL may name only a choice field, not {name!r}"
+                )
+    for value in values:
+        for name in template_fields(value):
+            if name not in known:
+                raise ValueError(f"{where} names an unknown field {name!r}")
+
+
 class ConnectionAuth(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["oauth", "api_key"]
@@ -163,6 +296,7 @@ class ConnectionAuth(BaseModel):
     refresh: Literal["rotating", "reusable", "none"] | None = None
     oauth: OAuthClient | None = None
     identity: ConnectionIdentity | None = None
+    api_key: ApiKeySignIn | None = None
 
 
 class TokenPolicy(BaseModel):
@@ -189,9 +323,15 @@ class TokenPolicy(BaseModel):
 
 
 class McpServer(BaseModel):
+    """One vendor MCP server. `headers` are an api_key entry's, templates of
+    its fields; an OAuth entry's server takes the token as a bearer."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: str = Field(pattern=SLUG_PATTERN)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] | None = (
+        Field(default=None, min_length=1)
+    )
 
 
 class ConnectionMcp(BaseModel):
@@ -269,7 +409,8 @@ class ConnectionCli(BaseModel):
     through a shell.
 
     `name` is the tool's name in the session. The token goes only into
-    `token_env` in the run's own environment; `config_env`, where the tool has
+    `token_env` in the run's own environment (an api_key entry's fields into
+    `env`'s variables, by template); `config_env`, where the tool has
     one, names a configuration folder made for the session. A command's first
     argument must be in `allow` and not in `deny`, which also names flags
     refused anywhere in a command. `path_flags` are the flags whose value is a
@@ -283,7 +424,11 @@ class ConnectionCli(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: str = Field(pattern=SLUG_PATTERN)
     binary: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
-    token_env: str = Field(pattern=ENV_NAME_PATTERN)
+    token_env: str | None = Field(default=None, pattern=ENV_NAME_PATTERN)
+    # An api_key entry's: each variable set in the run, a template of its fields.
+    env: dict[Annotated[str, Field(pattern=ENV_NAME_PATTERN)], str] | None = Field(
+        default=None, min_length=1, max_length=8
+    )
     config_env: str | None = Field(default=None, pattern=ENV_NAME_PATTERN)
     allow: list[Annotated[str, Field(pattern=COMMAND_PATTERN)]] = Field(min_length=1)
     deny: list[Annotated[str, Field(pattern=f"{COMMAND_PATTERN}|{FLAG_PATTERN}")]]
@@ -311,8 +456,15 @@ class ConnectionCli(BaseModel):
         afters = [argument.after for argument in self.path_args]
         if len(set(afters)) != len(afters):
             raise ValueError("a path argument is named twice")
-        if self.token_env == self.config_env:
-            raise ValueError("token_env and config_env name the same variable")
+        if (self.token_env is None) == (self.env is None):
+            raise ValueError(
+                "a command-line tool takes its token in token_env, or its key's "
+                "fields in env: one of the two"
+            )
+        if self.config_env is not None and (
+            self.config_env == self.token_env or self.config_env in (self.env or {})
+        ):
+            raise ValueError("config_env names a variable the credential sets")
         return self
 
 
@@ -388,7 +540,8 @@ class ConnectionDefinition(BaseModel):
                 for name, value in (
                     ("adapter", self.adapter),
                     ("token", self.token),
-                    ("access", self.access),
+                    # A key reaches whatever its vendor let it; no level is named.
+                    ("access", self.access or self.adapter == "api_key" or None),
                     ("tools", self.tools),
                     ("auth.refresh", self.auth.refresh),
                 )
@@ -400,7 +553,66 @@ class ConnectionDefinition(BaseModel):
             self._check_github()
         elif self.adapter == "oauth":
             self._check_oauth()
+        elif self.adapter == "api_key":
+            self._check_api_key()
+        if self.adapter != "api_key":
+            if self.auth.api_key is not None:
+                raise ValueError("only the api_key adapter has key fields")
+            if self.mcp is not None and any(s.headers for s in self.mcp.servers):
+                raise ValueError("only an api_key entry's MCP servers name headers")
+            if self.cli is not None and self.cli.env is not None:
+                raise ValueError("only an api_key entry's tool takes env templates")
         return self
+
+    def _check_api_key(self) -> None:
+        if self.auth.type != "api_key":
+            raise ValueError("the api_key adapter connects with a pasted key")
+        if self.auth.oauth is not None or self.auth.identity is not None:
+            raise ValueError("an api_key entry has no OAuth client or identity")
+        if self.auth.refresh not in (None, "none"):
+            raise ValueError("a key is not refreshed: refresh is none")
+        if self.mcp is not None and self.cli is not None:
+            raise ValueError(
+                "an api_key entry's tools are its MCP servers or its command-line "
+                "tool, not both"
+            )
+        if self.enabled and (self.auth.api_key is None or not (self.mcp or self.cli)):
+            raise ValueError("an api_key entry needs auth.api_key, and mcp or cli")
+        if self.token is not None and (
+            self.token.kind != "pass_through" or self.token.max_lifetime > 3600
+        ):
+            raise ValueError(
+                "an api_key entry passes the key through, handed out for at most "
+                "an hour at a time"
+            )
+        if self.access is not None:
+            raise ValueError("a key reaches whatever its vendor let it: no access")
+        if self.tools is not None and self.tools.mode != "pass_through":
+            raise ValueError("an api_key entry's tools pass through")
+        sign_in = self.auth.api_key
+        if sign_in is None:
+            return
+        if self.mcp is not None:
+            for server in self.mcp.servers:
+                if server.headers is None:
+                    raise ValueError(
+                        f"MCP server {server.name} names the headers the key goes in"
+                    )
+                check_templates(
+                    sign_in,
+                    urls=[server.url],
+                    values=list(server.headers.values()),
+                    where=f"MCP server {server.name}",
+                )
+        if self.cli is not None:
+            if self.cli.env is None:
+                raise ValueError("an api_key entry's tool names env templates")
+            check_templates(
+                sign_in,
+                urls=[],
+                values=list(self.cli.env.values()),
+                where=f"command-line tool {self.cli.name}",
+            )
 
     def _check_github(self) -> None:
         if self.auth.oauth is not None or self.auth.identity is not None:
@@ -422,6 +634,8 @@ class ConnectionDefinition(BaseModel):
                 "an oauth entry's tools are its MCP servers or its command-line "
                 "tool, not both"
             )
+        if self.cli is not None and self.cli.token_env is None:
+            raise ValueError("an oauth entry's tool takes its token in token_env")
         if self.enabled:
             missing = [
                 name

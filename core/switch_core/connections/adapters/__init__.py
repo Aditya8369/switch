@@ -29,6 +29,11 @@ class ReauthorizationRequiredError(ServiceAdapterError):
     """The vendor refused the connection's sign-in for good: revoked or lapsed."""
 
 
+class ConnectionNotRevocable(ServiceAdapterError):
+    """Switch cannot revoke this kind of credential (a pasted key): only the
+    vendor can. The message tells the person to, and is shown as it is."""
+
+
 @dataclass(frozen=True)
 class ConnectionSecret:
     """A connection's decrypted secret, as stored.

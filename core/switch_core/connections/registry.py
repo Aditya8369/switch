@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapter
+from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
 from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
@@ -163,6 +164,9 @@ def build_adapters(
                     ),
                     http,
                 )
+        elif definition.adapter == "api_key":
+            # A key needs nothing set up on the server: people paste their own.
+            adapters[slug] = ApiKeyAdapter(definition, http)
         else:
             raise ServiceSetupError(
                 f"Connection {slug} names the {definition.adapter} adapter, which "

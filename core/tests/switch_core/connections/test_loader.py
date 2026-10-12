@@ -15,7 +15,6 @@ PLACEHOLDERS = {
     "gitlab",
     "bitbucket",
     "microsoft-365",
-    "datadog",
     "new-relic",
     "notion",
     "linear",
@@ -26,10 +25,16 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_atlassian_and_google_workspace():
-    assert set(CATALOG) == PLACEHOLDERS | {"github", "atlassian", "google-workspace"}
+def test_shipped_catalog_enables_github_atlassian_datadog_and_google_workspace():
+    assert set(CATALOG) == PLACEHOLDERS | {
+        "github",
+        "atlassian",
+        "datadog",
+        "google-workspace",
+    }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "atlassian",
+        "datadog",
         "github",
         "google-workspace",
     ]
@@ -697,7 +702,7 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
         ("binary: excli", "binary: ../excli", "binary"),
         ("binary: excli", "binary: sh -c", "binary"),
         ("token_env: EXCLI_TOKEN", "token_env: excli-token", "token_env"),
-        ("config_env: EXCLI_CONFIG_DIR", "config_env: EXCLI_TOKEN", "same variable"),
+        ("config_env: EXCLI_CONFIG_DIR", "config_env: EXCLI_TOKEN", "credential sets"),
         ("allow: [items, boards]", "allow: []", "allow"),
         ("allow: [items, boards]", "allow: [items, items]", "allowed twice"),
         ("allow: [items, boards]", "allow: [items, auth]", "both allowed and denied"),
@@ -803,4 +808,159 @@ def test_rejects_two_entries_that_name_a_session_server_alike(catalog_copy):
         catalog_copy, CLI_ENTRY.replace("name: example-cli", "name: atlassian")
     )
     with pytest.raises(CatalogError, match="atlassian and example both name"):
+        load_catalog(catalog_copy)
+
+
+API_KEY_ENTRY = """slug: example
+name: Example
+category: Observability
+description: Query Example telemetry.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - { name: api_key, label: API key, secret: true }
+      - name: region
+        label: Region
+        secret: false
+        choices: [us.example.test, eu.example.test]
+    identity:
+      method: GET
+      url: "https://api.{region}/me"
+      headers: { X-Key: "{api_key}" }
+      account_id: account.id
+      label: account.email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: example
+      url: "https://mcp.{region}/mcp"
+      headers: { Authorization: "Token token={api_key}" }
+tools: { mode: pass_through }
+"""
+
+
+def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
+    definition = CATALOG["datadog"].definition
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("api_key", True),
+        ("application_key", True),
+        ("site", False),
+    ]
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url == "https://mcp.{site}/api/unstable/mcp-server/mcp"
+    # The MCP server's header names have underscores; the REST API's hyphens.
+    assert server.headers == {
+        "DD_API_KEY": "{api_key}",
+        "DD_APPLICATION_KEY": "{application_key}",
+    }
+    assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
+    assert definition.token is not None and definition.token.max_lifetime == 3600
+
+
+def test_loads_an_api_key_entry(catalog_copy):
+    _write_example(catalog_copy, API_KEY_ENTRY)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.adapter == "api_key"
+    assert definition.access is None
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.choice_names() == {"region"}
+    assert definition.mcp is not None
+    assert definition.mcp.servers[0].headers == {
+        "Authorization": "Token token={api_key}"
+    }
+
+
+def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
+    cli = CLI_ENTRY.split("cli:\n", 1)[1].split("access:\n", 1)[0]
+    cli = cli.replace(
+        "  token_env: EXCLI_TOKEN\n", '  env: { EXCLI_KEY: "{api_key}" }\n'
+    )
+    text = API_KEY_ENTRY.replace(
+        API_KEY_ENTRY[API_KEY_ENTRY.index("mcp:\n") : API_KEY_ENTRY.index("tools:")],
+        "cli:\n" + cli,
+    )
+    _write_example(catalog_copy, text)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.cli is not None
+    assert definition.cli.env == {"EXCLI_KEY": "{api_key}"}
+    assert definition.cli.token_env is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            '      url: "https://mcp.{region}/mcp"\n',
+            '      url: "https://mcp.example.test/{api_key}"\n',
+            "may name only a choice field",
+        ),
+        (
+            '      headers: { Authorization: "Token token={api_key}" }\n',
+            '      headers: { Authorization: "Token token={secret}" }\n',
+            "unknown field",
+        ),
+        (
+            '      headers: { Authorization: "Token token={api_key}" }\n',
+            "",
+            "names the headers the key goes in",
+        ),
+        (
+            '      headers: { X-Key: "{api_key}" }\n',
+            '      headers: { X-Key: "{api_key" }\n',
+            "brace that names no field",
+        ),
+        (
+            "      - { name: api_key, label: API key, secret: true }\n",
+            "",
+            "at least one secret field",
+        ),
+        (
+            "        secret: false\n",
+            "        secret: true\n",
+            "one of the two",
+        ),
+        ("  refresh: none\n", "  refresh: rotating\n", "refresh is none"),
+        (
+            "token: { kind: pass_through, max_lifetime: 3600 }",
+            "token: { kind: pass_through, max_lifetime: 7200 }",
+            "at most an hour",
+        ),
+        (
+            "tools: { mode: pass_through }",
+            'tools: { mode: pass_through }\naccess:\n  read: { scopes: ["x"] }',
+            "no access",
+        ),
+        (
+            "      method: GET\n",
+            "      method: POST\n",
+            "sends a body",
+        ),
+    ],
+)
+def test_rejects_an_inconsistent_api_key_entry(catalog_copy, old, new, message):
+    assert old in API_KEY_ENTRY
+    _write_example(catalog_copy, API_KEY_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+            '    - name: example\n      url: "https://mcp.example.test/v1/mcp"\n'
+            '      headers: { X-Key: "{token}" }\n',
+        ),
+    )
+    with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)

@@ -40,6 +40,7 @@ from starlette.requests import Request
 
 from switch_core.connections.adapters import (
     AccessToken,
+    ConnectionNotRevocable,
     ConnectionSecret,
     IssuedToken,
     IssueRequest,
@@ -48,8 +49,10 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
+from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.loader import (
+    TOKEN_PLACEHOLDER,
     AccessLevel,
     Connection,
     ConnectionDefinition,
@@ -192,10 +195,33 @@ class ServiceToken:
     grant_revision: int
 
 
+# A pasted key reaches whatever its vendor let it.
+KEY_CONSENT: AccessLevel = "write"
+
+
+@dataclass(frozen=True)
+class CheckedKey:
+    """A pasted key its vendor accepted: whose it is, and what is stored."""
+
+    account_id: str
+    label: str
+    secret: ConnectionSecret = field(repr=False)
+
+
 def _passes_through(entry: Connection) -> bool:
     """Whether `entry` hands its agents the owner's own token."""
     token = entry.definition.token
     return token is not None and token.kind == "pass_through"
+
+
+def _level_reach(entry: Connection, access: AccessLevel) -> dict[str, Any] | None:
+    """What the catalog says `access` reaches, or None where it has no such
+    level. A key reaches whatever its vendor let it, at either level."""
+    if entry.definition.adapter == "api_key":
+        return {}
+    levels = entry.definition.access
+    level = None if levels is None else getattr(levels, access)
+    return None if level is None else level.model_dump(exclude_none=True)
 
 
 def _consent(connection: ServiceConnection) -> AccessLevel:
@@ -497,9 +523,8 @@ class ServiceBroker:
                 "grant read-only.",
                 retryable=False,
             )
-        levels = entry.definition.access
-        level = None if levels is None else getattr(levels, access)
-        if level is None:
+        reach = _level_reach(entry, access)
+        if reach is None:
             raise ServiceError(
                 403,
                 FORBIDDEN,
@@ -513,7 +538,7 @@ class ServiceBroker:
             owner_id=owner_id,
             service=service,
             access=access,
-            reach=level.model_dump(exclude_none=True),
+            reach=reach,
             resources=dict(grant.resources),
             tools=effective_tools(entry, access, grant.tool_mode, list(grant.tools)),
         )
@@ -942,11 +967,19 @@ class ServiceBroker:
                     ),
                     # Where the session calls the service's tools: its host
                     # serves each to the CLI on loopback and calls the vendor.
+                    # `url` and `headers` are templates: `{token}` is the token
+                    # handed out, and an api_key entry's `{field}`s are the
+                    # fields its token carries.
                     "mcp_servers": (
                         []
                         if mcp is None
                         else [
-                            {"name": server.name, "url": server.url}
+                            {
+                                "name": server.name,
+                                "url": server.url,
+                                "headers": server.headers
+                                or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
+                            }
                             for server in mcp.servers
                         ]
                     ),
@@ -1065,9 +1098,8 @@ class ServiceBroker:
                 "write access to grant writing.",
                 retryable=False,
             )
-        levels = entry.definition.access
-        level = None if levels is None else getattr(levels, level_name)
-        if level is None:
+        reach = _level_reach(entry, level_name)
+        if reach is None:
             raise ServiceError(
                 422,
                 VALIDATION_ERROR,
@@ -1089,7 +1121,6 @@ class ServiceBroker:
                 f"Not {level_name} tools of {name}: {', '.join(unknown)}.",
                 retryable=False,
             )
-        reach = level.model_dump(exclude_none=True)
         await session.commit()
 
         owner_token = await self._access_token(actor_id, service, adapter)
@@ -1231,6 +1262,8 @@ class ServiceBroker:
                     )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(replaced)
+            except ConnectionNotRevocable as error:
+                warnings.append(str(error))
             except Exception as error:
                 logger.error(
                     "%s old sign-in revocation failed: error_type=%s",
@@ -1244,6 +1277,51 @@ class ServiceBroker:
         if await self.revoke_pending(session, issued_on_it):
             warnings.append(ACCESS_WARNING)
         return " ".join(warnings) or None
+
+    async def check_key(self, service: str, fields: dict[str, str]) -> CheckedKey:
+        """A pasted key for `service`, once its vendor accepts it: whose it is,
+        and the secret a connection keeps. Connect it with `connect`, at
+        `KEY_CONSENT`: a key reaches whatever its vendor let it, so the
+        connection's level is the highest a grant can take."""
+        definition = self._entry(service).definition
+        self._require_switched_on(service)
+        if definition.adapter != "api_key":
+            raise ServiceError(
+                404,
+                NOT_FOUND,
+                f"{definition.name} is not connected with a key.",
+                retryable=False,
+            )
+        adapter = self._adapters.get(service)
+        if not isinstance(adapter, ApiKeyAdapter):
+            raise ServiceError(
+                503,
+                INTERNAL,
+                self.availability(service) or "Not available on this server.",
+                retryable=False,
+            )
+        try:
+            values = adapter.checked_fields(fields)
+            async with asyncio.timeout(VENDOR_CALL_SECONDS):
+                identity = await adapter.identify(values)
+        except ServiceUnavailableError as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        except TimeoutError:
+            raise ServiceError(
+                503,
+                INTERNAL,
+                f"{definition.name} did not answer in time. Please try again.",
+                retryable=True,
+            ) from None
+        except ServiceAdapterError as error:
+            raise ServiceError(
+                422, VALIDATION_ERROR, str(error), retryable=False
+            ) from None
+        return CheckedKey(
+            account_id=identity.account_id,
+            label=identity.label,
+            secret=adapter.secret(values),
+        )
 
     async def connection_access_token(
         self, session: AsyncSession, user_id: str, service: str
@@ -1407,6 +1485,8 @@ class ServiceBroker:
                     )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(secret)
+            except ConnectionNotRevocable as error:
+                warnings.append(str(error))
             except Exception as error:
                 logger.error(
                     "%s sign-in revocation failed: error_type=%s",
