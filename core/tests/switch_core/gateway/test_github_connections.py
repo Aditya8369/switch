@@ -26,7 +26,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.github_connections import router
 from switch_core.keys import Keyring
-from switch_core.providers.github import GitHubConnections, GitHubError
+from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 from switch_core.tenant_context import tenant_scope
 
@@ -58,19 +58,22 @@ async def github_app(tmp_path, session_factory):
     github.revoke = AsyncMock()
     github.request = AsyncMock(return_value={"id": 123, "login": "example-user"})
     github.repositories = AsyncMock(
-        return_value=[
-            {
-                "id": 456,
-                "account": "example-user",
-                "repositories": [
-                    {
-                        "id": 789,
-                        "name": "example/project",
-                        "permissions": {"push": True},
-                    }
-                ],
-            }
-        ]
+        return_value=GitHubReach(
+            installations=[
+                {
+                    "id": 456,
+                    "account": "example-user",
+                    "repositories": [
+                        {
+                            "id": 789,
+                            "name": "example/project",
+                            "permissions": {"push": True},
+                        }
+                    ],
+                }
+            ],
+            sso_hidden=[],
+        )
     )
     async with session_factory() as session:
         user = User(
@@ -185,6 +188,7 @@ async def test_browser_handoff_requires_console_completion_and_saves_encrypted(
         status.json()["installations"][0]["repositories"][0]["name"]
         == "example/project"
     )
+    assert status.json()["sso_hidden_organizations"] == []
     assert "SYNTHETIC-ACCESS" not in status.text
     async with factory() as session:
         row = await session.scalar(
