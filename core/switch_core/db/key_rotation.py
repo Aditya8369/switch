@@ -27,6 +27,7 @@ from switch_core.db.models import (
     ProviderConnection,
     ServerConnector,
     ServiceConnection,
+    ServiceOAuthClient,
     ServiceTokenIssuance,
     TrustSettings,
 )
@@ -47,11 +48,14 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ServiceConnection, "encrypted_secret"),
     (ServiceTokenIssuance, "encrypted_token"),
 )
-# `trust_settings` is a global table (`rls_ddl.GLOBAL_TABLES`), not a tenant's —
-# one row for the deployment — so it is swept once here rather than through
-# the per-tenant loop below, which would run it redundantly once per tenant.
+# Tables no tenant holds (`rls_ddl.GLOBAL_TABLES`): one row set for the
+# deployment, swept once here in a session bound to no tenant rather than once
+# per tenant by the loop below. `trust_settings` is Switch Trust's one
+# guardrails policy; `service_oauth_clients` holds the OAuth clients Core
+# registered for itself at vendors.
 _GLOBAL_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (TrustSettings, "api_key_encrypted"),
+    (ServiceOAuthClient, "encrypted_secret"),
 )
 
 
@@ -102,6 +106,10 @@ async def reencrypt_stored_secrets(
     """Bring every tenant's encrypted values, plus the deployment's global
     ones, onto the current key."""
     total = 0
+    async with session_factory() as session:
+        for model, column in _GLOBAL_ENCRYPTED_TEXT_COLUMNS:
+            total += await reencrypt_stale_text(session, keyring, model, column)
+        await session.commit()
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             for model, column in _ENCRYPTED_JSON_COLUMNS:
@@ -109,10 +117,6 @@ async def reencrypt_stored_secrets(
             for model, column in _ENCRYPTED_TEXT_COLUMNS:
                 total += await reencrypt_stale_text(session, keyring, model, column)
             await session.commit()
-    async with session_factory() as session:
-        for model, column in _GLOBAL_ENCRYPTED_TEXT_COLUMNS:
-            total += await reencrypt_stale_text(session, keyring, model, column)
-        await session.commit()
     if total:
         logger.warning(
             "Re-encrypted %d stored secret(s) under key %r. Older keys and "

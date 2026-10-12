@@ -77,6 +77,10 @@ def _require_matching_keypair(
         )
 
 
+# A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
+_SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
 class SwitchConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
 
@@ -251,6 +255,12 @@ class SwitchConfig(BaseSettings):
     # unless the deprecated hosted settings above still name an App.
     github_app_config_path: str | None = None
     github_app_private_key_path: str | None = None
+    # Catalog services switched off on this server, each with the reason
+    # people are shown, as JSON: {"<slug>": "<reason>"}. An empty reason shows
+    # "Switched off on this server." A switched-off service is listed with its
+    # reason, and cannot be connected, granted or issued; disconnecting still
+    # works. Unknown slugs stop the server.
+    disabled_services: dict[str, str] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -1103,6 +1113,20 @@ class SwitchConfig(BaseSettings):
             and not Path(self.github_app_private_key_path).is_absolute()
         ):
             raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH must be an absolute path.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_disabled_services(self) -> "SwitchConfig":
+        for slug, reason in self.disabled_services.items():
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"DISABLED_SERVICES names an invalid service: {slug!r}"
+                )
+            if len(reason) > 300 or "\n" in reason:
+                raise ValueError(
+                    f"DISABLED_SERVICES' reason for {slug} must be one line of at "
+                    "most 300 characters."
+                )
         return self
 
     @model_validator(mode="after")

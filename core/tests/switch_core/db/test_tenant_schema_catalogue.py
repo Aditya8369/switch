@@ -115,6 +115,10 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # Switch Trust's one guardrails policy for the whole deployment.
             # A policy that varied per tenant would be a new scoped table.
             "trust_settings",
+            # The OAuth client Core registered for itself at a vendor: the
+            # vendor sees one Switch, so one client per deployment and
+            # service, holding no person's account.
+            "service_oauth_clients",
         }
 
     async def test_scoped_is_everything_else(self) -> None:
