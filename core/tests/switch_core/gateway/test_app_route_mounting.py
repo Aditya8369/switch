@@ -83,4 +83,3 @@ def test_service_connections_are_mounted_only_with_their_flag() -> None:
     assert SERVICE_ROUTES <= on
     # GitHub's own link was there before service connections, and stays.
     assert "/provider-connections/github" in off
-
