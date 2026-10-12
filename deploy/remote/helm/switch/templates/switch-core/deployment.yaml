@@ -1,6 +1,3 @@
-{{- if ne (int .Values.switchCore.replicaCount) 1 }}
-{{- fail "switchCore.replicaCount must be 1: switch-core keeps the per-agent event buffer, the invite bus, the presence bus and the message listener's subscriber registry in memory, so a second replica would never hear signals raised in the first." }}
-{{- end }}
 {{- include "switch.validateDbTls" . }}
 {{- include "switch.validateLogging" . }}
 {{- include "switch.validateObservability" . }}

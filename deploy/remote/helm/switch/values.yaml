@@ -618,12 +618,10 @@ switchCore:
     # for it, so this must match switch-core's own COLLABORATION_CALLBACK_PORT
     # default.
     port: 8081
-  # switch-core MUST run as a single replica. Live state stays in the process
-  # rather than the database: the per-agent event buffer,
-  # the invite and presence buses, and the message listener's subscriber registry. A
-  # second replica would hold its own copy of each, so a signal raised in one
-  # would never reach a client attached to the other. This is enforced at
-  # render time; do not raise it.
+  # How many switch-core pods to run. Every pod serves the API and holds client
+  # connections. Each bridge, server connector and command reader runs on one
+  # pod at a time, through leases in the database, and each message is routed
+  # to its agents as it is written, so any pod can take any request.
   replicaCount: 1
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
