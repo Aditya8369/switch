@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, main } from './main';
+import { infoChange, isSupervised, main } from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ControllerStore } from './store';
@@ -280,5 +280,31 @@ describe('infoChange', () => {
     });
     expect(() => infoChange({ name: 'x'.repeat(201) })).toThrow(/at most 200/);
     expect(() => infoChange({ description: 'y'.repeat(501) })).toThrow(/at most 500/);
+  });
+});
+
+describe('isSupervised', () => {
+  it('restarts on 7 under the separate-users service, launchd, or anything systemd runs', () => {
+    expect(isSupervised(null, false, {})).toBe(false);
+    expect(
+      isSupervised(
+        {
+          v: 1,
+          user: 'builder',
+          uid: 1001,
+          gid: 990,
+          dataDir: '/var/lib/controller',
+          agentsDir: '/var/lib/switch-agents/1001',
+          agentUsers: 4,
+          node: '/usr/bin/node',
+          bundle: '/opt/shared-host.mjs',
+          releasesDir: null,
+        },
+        false,
+        {}
+      )
+    ).toBe(true);
+    expect(isSupervised(null, true, {})).toBe(true);
+    expect(isSupervised(null, false, { INVOCATION_ID: 'abc' })).toBe(true);
   });
 });
