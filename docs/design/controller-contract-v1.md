@@ -215,7 +215,7 @@ GET /agents/{agent_id}/service-grants                auth: controller token acti
   → 200 { grants: ServiceGrant[] }
 
 POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
-  → 200 { token: string, expires_at: Time, resources: ServiceResources }   // ≤ 1h, Cache-Control: no-store. Every issuance is recorded
+  → 200 { token: string, expires_at: Time, resources: ServiceResources, grant_revision: number }   // ≤ 1h, Cache-Control: no-store. Every issuance is recorded
   → 403 grant_missing | not_assigned | forbidden
   → 404 connector_not_connected | not_found          // not_found: no such service
   → 409 connector_revoked | grant_account_changed | managed_by_controller
@@ -230,6 +230,7 @@ type ServiceGrant = {
   tool_mode: "allow" | "deny"         // allow: only `tools`; deny: every tool of the level except `tools`
   tools: string[]
   resources: ServiceResources
+  revision: number                    // moves on every change to the grant; a token answer names the one it was issued under
   skill: { name: string; content: string } | null   // the service's SKILL.md
 }
 
@@ -239,7 +240,7 @@ type ServiceResources =
 ```
 
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
-- **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once.
+- **When grants are read.** The agent's host reads its grants when a session starts, and a change of skills applies from the next session. No stream frame announces a change. While it holds a token, the host reads the grants again at most every 30 seconds, when a token is asked for, and drops the token once its grant's `revision` is not the token's `grant_revision`, so a widened or removed grant reaches running sessions within that. A removed or narrowed grant also fails the next fetch, and a GitHub token already issued is revoked at once.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
 - **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper.
 

@@ -99,4 +99,5 @@ async def service_token(
         "token": token.token,
         "expires_at": token.expires_at.isoformat(),
         "resources": token.resources,
+        "grant_revision": token.grant_revision,
     }

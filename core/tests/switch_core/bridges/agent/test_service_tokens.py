@@ -132,6 +132,25 @@ class TestIssuing:
         assert grant["skill"]["name"] == "github"
         assert "name: github" in grant["skill"]["content"]
 
+    async def test_a_token_names_the_grant_revision_the_grants_answer_carries(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, key = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await grant_directly(harness.session_factory, agent_id, owner.id)
+
+        token = await _fetch(harness, agent_id, bearer(key))
+        async with harness.client() as client:
+            grants = await client.get(
+                f"/agents/{agent_id}/service-grants", headers=bearer(key)
+            )
+
+        assert token.status_code == 200, token.text
+        [grant] = grants.json()["grants"]
+        assert isinstance(token.json()["grant_revision"], int)
+        assert token.json()["grant_revision"] == grant["revision"]
+
 
 class TestRefusals:
     async def test_an_agent_with_no_grant(self, harness: Harness) -> None:

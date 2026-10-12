@@ -12,7 +12,7 @@ import {
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
 import type { Redactions } from './redaction';
-import { issueServiceToken } from './service-access';
+import { issueServiceToken, readServiceGrants } from './service-access';
 import { AgentServiceTokens } from './service-tokens';
 import type { AskHandler, Caller, HostAsk } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
@@ -46,6 +46,7 @@ export function sessionToolAnswerer(deps: {
     redactions: deps.redactions,
     now: Date.now,
     issue: issueServiceToken,
+    readGrants: readServiceGrants,
   });
   let catalog: Promise<SwitchToolCatalog> | null = null;
   const tools = (): Promise<SwitchToolCatalog> => {
