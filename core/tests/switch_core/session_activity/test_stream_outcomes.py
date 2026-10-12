@@ -47,7 +47,14 @@ async def approvals(service, postgres_url) -> AsyncIterator[ApprovalOutcomes]:
         await listener.stop()
 
 
-def _open_stream(approvals, *, agent_id=AGENT, scope="all", speaks=PROTOCOL_VERSION):
+def _open_stream(
+    approvals,
+    buffer: EventBuffer,
+    *,
+    agent_id=AGENT,
+    scope="all",
+    speaks=PROTOCOL_VERSION,
+):
     registry = AgentConnectionRegistry()
     conn = registry.open(
         agent_id=agent_id,
@@ -62,7 +69,7 @@ def _open_stream(approvals, *, agent_id=AGENT, scope="all", speaks=PROTOCOL_VERS
     return event_frames(
         conn=conn,
         registry=registry,
-        buffer=EventBuffer(sequence_base=0),
+        buffer=buffer,
         approvals=approvals,
     )
 
@@ -98,9 +105,11 @@ async def _open(service, request_id="req-1", **overrides):
     return await service.open_approval(AGENT, SESSION, **values)
 
 
-async def test_an_answer_is_pushed_down_the_open_stream(service, approvals, people):
+async def test_an_answer_is_pushed_down_the_open_stream(
+    service, approvals, people, db_buffer
+):
     await _open(service)
-    stream = _open_stream(approvals)
+    stream = _open_stream(approvals, db_buffer)
     try:
         await anext(stream)  # connection_state
         waiting = asyncio.create_task(anext(stream))
@@ -126,7 +135,7 @@ async def test_an_answer_is_pushed_down_the_open_stream(service, approvals, peop
 
 
 async def test_an_outcome_owed_from_before_the_stream_opened_is_sent_first(
-    service, approvals, people
+    service, approvals, people, db_buffer
 ):
     await _open(service)
     await service.answer_approval(
@@ -136,7 +145,7 @@ async def test_an_outcome_owed_from_before_the_stream_opened_is_sent_first(
         answer=pick("deny"),
         answerer=PlatformPerson(people.owner),
     )
-    stream = _open_stream(approvals)
+    stream = _open_stream(approvals, db_buffer)
     try:
         await anext(stream)  # connection_state
         outcome = _outcome(await asyncio.wait_for(anext(stream), 5))
@@ -145,7 +154,9 @@ async def test_an_outcome_owed_from_before_the_stream_opened_is_sent_first(
         await stream.aclose()
 
 
-async def test_an_acknowledged_outcome_is_not_sent_again(service, approvals, people):
+async def test_an_acknowledged_outcome_is_not_sent_again(
+    service, approvals, people, db_buffer
+):
     await _open(service)
     await service.answer_approval(
         AGENT,
@@ -155,7 +166,7 @@ async def test_an_acknowledged_outcome_is_not_sent_again(service, approvals, peo
         answerer=PlatformPerson(people.owner),
     )
     await service.mark_delivered(AGENT, SESSION, "req-1")
-    stream = _open_stream(approvals)
+    stream = _open_stream(approvals, db_buffer)
     try:
         await anext(stream)  # connection_state
         await _no_frame_within(stream, 0.5)
@@ -163,9 +174,9 @@ async def test_an_acknowledged_outcome_is_not_sent_again(service, approvals, peo
         await stream.aclose()
 
 
-async def test_an_expiry_is_pushed(service, approvals, session_factory):
+async def test_an_expiry_is_pushed(service, approvals, session_factory, db_buffer):
     await _open(service, expires_at=datetime.now(UTC) + timedelta(minutes=5))
-    stream = _open_stream(approvals)
+    stream = _open_stream(approvals, db_buffer)
     try:
         await anext(stream)  # connection_state
         waiting = asyncio.create_task(anext(stream))
@@ -184,13 +195,13 @@ async def test_an_expiry_is_pushed(service, approvals, session_factory):
 
 
 async def test_only_the_agents_own_watcher_stream_hears_its_outcomes(
-    service, approvals, people, session_factory
+    service, approvals, people, session_factory, db_buffer
 ):
     async with session_factory() as db, db.begin():
         await make_agent(db, "other-agent")
     await _open(service)
-    other = _open_stream(approvals, agent_id="other-agent")
-    session_stream = _open_stream(approvals, scope="single")
+    other = _open_stream(approvals, db_buffer, agent_id="other-agent")
+    session_stream = _open_stream(approvals, db_buffer, scope="single")
     try:
         await anext(other)
         await anext(session_stream)
@@ -208,7 +219,7 @@ async def test_only_the_agents_own_watcher_stream_hears_its_outcomes(
         await session_stream.aclose()
 
 
-async def test_a_stream_without_approvals_carries_none(service, people):
+async def test_a_stream_without_approvals_carries_none(service, people, db_buffer):
     await _open(service)
     await service.answer_approval(
         AGENT,
@@ -217,7 +228,7 @@ async def test_a_stream_without_approvals_carries_none(service, people):
         answer=pick("allow"),
         answerer=PlatformPerson(people.owner),
     )
-    stream = _open_stream(None)
+    stream = _open_stream(None, db_buffer)
     try:
         await anext(stream)
         await _no_frame_within(stream, 0.3)
@@ -226,7 +237,7 @@ async def test_a_stream_without_approvals_carries_none(service, people):
 
 
 async def test_a_client_that_declared_no_revision_is_sent_none(
-    service, approvals, people
+    service, approvals, people, db_buffer
 ):
     # An older client hands unknown frames to its room-event path and breaks.
     await _open(service)
@@ -237,7 +248,7 @@ async def test_a_client_that_declared_no_revision_is_sent_none(
         answer=pick("allow"),
         answerer=PlatformPerson(people.owner),
     )
-    stream = _open_stream(approvals, speaks=None)
+    stream = _open_stream(approvals, db_buffer, speaks=None)
     try:
         await anext(stream)
         await _no_frame_within(stream, 0.3)

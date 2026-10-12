@@ -104,7 +104,9 @@ def _protocol(
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(sequence_base=0),
+        # Connecting hands the room's count over in memory and never reaches
+        # the buffer's tables, so the buffer needs no database here.
+        event_buffer=EventBuffer(object(), sequence_base=0),  # type: ignore[arg-type]
         agent_session_store=store,
         session_factory=session_factory,
         agent_store=SimpleNamespace(get=_returning(agent)),

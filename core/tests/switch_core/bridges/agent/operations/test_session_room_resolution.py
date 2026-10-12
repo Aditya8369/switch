@@ -14,13 +14,12 @@ every room-scoped call into "several rooms, pick one".
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.operations.callctx import (
@@ -40,6 +39,8 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
+from tests.db_buffer import seed_agent
 
 AGENT = "agent-1"
 CONNECTION = "connection-1"
@@ -260,7 +261,10 @@ async def test_displacing_a_sibling_names_it_in_the_warning(
 
 @pytest.mark.asyncio
 async def test_connecting_takes_the_rooms_unread_count(
-    registry, monkeypatch: pytest.MonkeyPatch
+    registry,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+    db_buffer: EventBuffer,
 ) -> None:
     """Whose reading clears a room follows who is in it.
 
@@ -271,7 +275,8 @@ async def test_connecting_takes_the_rooms_unread_count(
     _open(registry)
     registry.place_session(AGENT, "session-b", "room-c", CONNECTION)
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
-    protocol = _protocol_for(registry, "room-c")
+    await seed_agent(session_factory, AGENT)
+    protocol = _protocol_for(registry, "room-c", event_buffer=db_buffer)
     init_operations_protocol(protocol)
     buffer = protocol.event_buffer
     buffer.hand_counting_to(AGENT, Reader(id="session-b", is_session=True), "room-c")
@@ -382,7 +387,18 @@ async def test_evicting_another_connection_still_names_the_connection(
     assert "connection connection-old" in result["warning"]
 
 
-def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
+def _protocol_for(
+    registry: AgentConnectionRegistry,
+    room_id: str,
+    *,
+    event_buffer: EventBuffer | None = None,
+) -> Any:
+    """Just enough protocol to connect to `room_id`.
+
+    Connecting only hands the room's count over, which is bookkeeping held in
+    this process, so the buffer's tables are reached only by a test that
+    queues events and passes a db-buffer for them.
+    """
     room = SimpleNamespace(id=room_id, name="Room C", description="A room")
     profile = {
         "connection_model": "session_addressable",
@@ -408,7 +424,7 @@ def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=event_buffer or EventBuffer(object(), sequence_base=0),  # type: ignore[arg-type]
         agent_session_store=_AbsentSessionStore(),
         session_factory=session_factory,
         agent_store=SimpleNamespace(

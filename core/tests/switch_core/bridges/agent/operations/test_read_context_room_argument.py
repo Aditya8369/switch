@@ -13,12 +13,11 @@ reach and not privilege.
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations.callctx import (
@@ -39,6 +38,8 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     Reader,
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
+from tests.db_buffer import seed_agent
 
 AGENT = "agent-1"
 CONN = "conn-1"
@@ -49,12 +50,12 @@ OTHER_ROOM = "room-elsewhere"
 class _Protocol:
     """Just enough protocol to answer a read: a registry and a recorder."""
 
-    def __init__(self, registry: AgentConnectionRegistry) -> None:
+    def __init__(self, registry: AgentConnectionRegistry, buffer: EventBuffer) -> None:
         self.connections = registry
-        self.event_buffer = EventBuffer(sequence_base=0)
+        self.event_buffer = buffer
         self.calls: list[tuple[str, str]] = []
         self.members: set[str] = {CONNECTED_ROOM, OTHER_ROOM}
-        self.while_in_flight: list[Callable[[], None]] = []
+        self.while_in_flight: list[Callable[[], Awaitable[None]]] = []
 
     async def read_context(
         self, agent_id: str, room_id: str, **kwargs: Any
@@ -63,14 +64,19 @@ class _Protocol:
             raise PermissionError("Agent is not a member of this room")
         self.calls.append((agent_id, room_id))
         for during in self.while_in_flight:
-            during()
+            await during()
         return {"threads": [], "truncated": False, "oldest_timestamp": None}
 
 
 @pytest.fixture
-def protocol(monkeypatch: pytest.MonkeyPatch) -> _Protocol:
+async def protocol(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+    db_buffer: EventBuffer,
+) -> _Protocol:
+    await seed_agent(session_factory, AGENT)
     registry = AgentConnectionRegistry()
-    service = _Protocol(registry)
+    service = _Protocol(registry, db_buffer)
     monkeypatch.setattr(op_context, "_protocol", service)
     return service
 
@@ -183,7 +189,7 @@ async def test_the_room_is_advertised_as_an_argument() -> None:
     assert "room_id" not in schema.get("required", [])
 
 
-def _chatter(protocol: _Protocol, room_id: str) -> None:
+async def _chatter(protocol: _Protocol, room_id: str) -> None:
     await protocol.event_buffer.enqueue(
         TENANT_ZERO_ID,
         AGENT,
@@ -203,7 +209,7 @@ def _chatter(protocol: _Protocol, room_id: str) -> None:
     )
 
 
-def _unread(protocol: _Protocol, room_id: str) -> int | None:
+async def _unread(protocol: _Protocol, room_id: str) -> int | None:
     buffer = protocol.event_buffer
     return (
         await buffer.unread(
@@ -219,12 +225,12 @@ async def test_reading_here_is_what_clears_this_room_s_unread_count(
     """Reading is the act of catching up; being delivered an event is not."""
     buffer = protocol.event_buffer
     buffer.ensure_counting(AGENT, CONN, CONNECTED_ROOM, 0)
-    _chatter(protocol, CONNECTED_ROOM)
-    assert _unread(protocol, CONNECTED_ROOM) == 1
+    await _chatter(protocol, CONNECTED_ROOM)
+    assert await _unread(protocol, CONNECTED_ROOM) == 1
 
     await read_context()
 
-    assert _unread(protocol, CONNECTED_ROOM) == 0
+    assert await _unread(protocol, CONNECTED_ROOM) == 0
 
 
 @pytest.mark.asyncio
@@ -235,15 +241,15 @@ async def test_reading_elsewhere_clears_nothing(
     buffer = protocol.event_buffer
     buffer.ensure_counting(AGENT, CONN, CONNECTED_ROOM, 0)
     buffer.ensure_counting(AGENT, CONN, OTHER_ROOM, 0)
-    _chatter(protocol, CONNECTED_ROOM)
-    _chatter(protocol, OTHER_ROOM)
+    await _chatter(protocol, CONNECTED_ROOM)
+    await _chatter(protocol, OTHER_ROOM)
 
     await read_context(room_id=OTHER_ROOM)
 
-    assert _unread(protocol, CONNECTED_ROOM) == 1
+    assert await _unread(protocol, CONNECTED_ROOM) == 1
     # The room that was read is not covered by this connection, so nothing
     # about it was being counted in the first place.
-    assert _unread(protocol, OTHER_ROOM) == 1
+    assert await _unread(protocol, OTHER_ROOM) == 1
 
 
 @pytest.mark.asyncio
@@ -261,7 +267,7 @@ async def test_chatter_arriving_while_the_read_is_in_flight_stays_unread(
 
     await read_context()
 
-    assert _unread(protocol, CONNECTED_ROOM) == 1
+    assert await _unread(protocol, CONNECTED_ROOM) == 1
 
 
 @pytest.mark.asyncio
@@ -279,12 +285,14 @@ async def test_a_read_that_lands_after_losing_the_room_clears_nothing(
         AGENT, Reader(id="session-a", is_session=True), CONNECTED_ROOM
     )
     for _ in range(3):
-        _chatter(protocol, CONNECTED_ROOM)
-    protocol.while_in_flight.append(
-        lambda: buffer.hand_counting_to(
+        await _chatter(protocol, CONNECTED_ROOM)
+
+    async def displace() -> None:
+        buffer.hand_counting_to(
             AGENT, Reader(id="session-b", is_session=True), CONNECTED_ROOM
         )
-    )
+
+    protocol.while_in_flight.append(displace)
 
     token = set_call_context(
         CallContext(
@@ -303,7 +311,7 @@ async def test_a_read_that_lands_after_losing_the_room_clears_nothing(
     finally:
         reset_call_context(token)
 
-    assert _unread(protocol, CONNECTED_ROOM) == 3
+    assert await _unread(protocol, CONNECTED_ROOM) == 3
 
 
 @pytest.mark.asyncio
@@ -320,7 +328,7 @@ async def test_a_session_reading_after_a_restart_repairs_its_rooms_count(
     buffer = protocol.event_buffer
     buffer.ensure_counting(AGENT, CONN, CONNECTED_ROOM, 0)
     buffer.mark_restarted(AGENT)
-    _chatter(protocol, CONNECTED_ROOM)
+    await _chatter(protocol, CONNECTED_ROOM)
     assert (
         await buffer.unread(
             TENANT_ZERO_ID,
@@ -347,8 +355,8 @@ async def test_a_session_reading_after_a_restart_repairs_its_rooms_count(
     finally:
         reset_call_context(token)
 
-    _chatter(protocol, CONNECTED_ROOM)
-    assert _unread(protocol, CONNECTED_ROOM) == 1
+    await _chatter(protocol, CONNECTED_ROOM)
+    assert await _unread(protocol, CONNECTED_ROOM) == 1
 
 
 @pytest.mark.asyncio
@@ -357,15 +365,15 @@ async def test_a_failed_read_catches_up_on_nothing(
 ) -> None:
     """An agent that was handed an error has read nothing."""
 
-    def boom() -> None:
+    async def boom() -> None:
         raise RuntimeError("homeserver said no")
 
     buffer = protocol.event_buffer
     buffer.ensure_counting(AGENT, CONN, CONNECTED_ROOM, 0)
-    _chatter(protocol, CONNECTED_ROOM)
+    await _chatter(protocol, CONNECTED_ROOM)
     protocol.while_in_flight.append(boom)
 
     with pytest.raises(RuntimeError, match="homeserver said no"):
         await read_context()
 
-    assert _unread(protocol, CONNECTED_ROOM) == 1
+    assert await _unread(protocol, CONNECTED_ROOM) == 1
