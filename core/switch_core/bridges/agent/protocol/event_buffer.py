@@ -268,12 +268,14 @@ class EventBuffer:
         rooms: set[str] | None = None,
         notifiable_only: bool = False,
         limit: int | None = None,
+        through_seq: int | None = None,
     ) -> list[BufferedEvent]:
         """Return retained events after `after_seq`, oldest first.
 
         `rooms=None` means every room the agent has events for; otherwise only
-        the given rooms. Raises `CursorExpiredError` if `after_seq` predates
-        what is still retained.
+        the given rooms. `through_seq` stops the read at a bound the caller
+        took beforehand, so it can confirm exactly what it was handed. Raises
+        `CursorExpiredError` if `after_seq` predates what is still retained.
         """
         started = time.perf_counter()
         await self._check_cursor(tenant_id, agent_id, after_seq)
@@ -286,6 +288,8 @@ class EventBuffer:
             query = query.where(AgentEventRow.room_id.in_(rooms))
         if notifiable_only:
             query = query.where(AgentEventRow.notifiable.is_(True))
+        if through_seq is not None:
+            query = query.where(AgentEventRow.seq <= through_seq)
         if limit is not None:
             query = query.limit(limit)
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -812,13 +816,16 @@ class EventBuffer:
         `rooms_are_membership`.
         """
         cursor = await self._legacy_cursor(tenant_id, agent_id, reader_id)
-        events = await self._legacy_read(
-            tenant_id, agent_id, reader_id, cursor, rooms, notifiable_only
-        )
+        # The bound is taken before the read and the read stops at it, so the
+        # cursor is confirmed through exactly what was handed over. Taken after,
+        # an event committed in between would be confirmed without being sent.
         if rooms_are_membership:
             through = await self._last_seq_in_rooms(tenant_id, agent_id, cursor, rooms)
         else:
             through = await self.head(tenant_id, agent_id)
+        events = await self._legacy_read(
+            tenant_id, agent_id, reader_id, cursor, rooms, notifiable_only, through
+        )
         self.confirm(agent_id, reader_id, through)
         return [item.event for item in events]
 
@@ -863,6 +870,7 @@ class EventBuffer:
         cursor: int,
         rooms: set[str],
         notifiable_only: bool,
+        through_seq: int,
     ) -> list[BufferedEvent]:
         try:
             return await self.read_from(
@@ -871,6 +879,7 @@ class EventBuffer:
                 cursor,
                 rooms=rooms,
                 notifiable_only=notifiable_only,
+                through_seq=through_seq,
             )
         except CursorExpiredError as exc:
             # A polling client cannot be told about a gap — it has no protocol
@@ -892,6 +901,7 @@ class EventBuffer:
                 resumed,
                 rooms=rooms,
                 notifiable_only=notifiable_only,
+                through_seq=through_seq,
             )
 
     # ------------------------------------------------------------------
