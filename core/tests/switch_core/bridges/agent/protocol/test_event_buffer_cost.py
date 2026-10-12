@@ -1,35 +1,38 @@
-"""What the agent event buffer costs per delivered event, and what it logs.
+"""What the agent event buffer records about its reads and what it drops.
 
-An agent past the cap drops an event on every enqueue, and used to log a
-warning on every one: a line per delivered message for an agent that had read
-everything. The warning is now at most once per interval per agent, while the
-drop counter and the gap a reader is told about stay exact.
+Events used to sit in a capped in-memory deque, and an agent past the cap lost
+one on every enqueue, with a warning rate-limited per agent. The cap and the
+warning are gone: rows are deleted only by `expire`, and each deletion is
+counted exactly and leaves a gap a reader is told about.
 
-The buffer answers reads by walking the agent's retained events, so the walk is
-measured: how many events, and how long, per call.
+Reads are indexed queries now rather than walks of the deque, so what is
+measured is how many events each call returned, and how long it took.
 """
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
-import logging
 from collections.abc import Iterator
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol import event_buffer as buffer_module
 from switch_core.bridges.agent.protocol.event_buffer import (
-    OVERFLOW_WARNING_INTERVAL_SECONDS,
     CursorExpiredError,
     EventBuffer,
     Reader,
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.observability.otlp import HistogramPoint
+from tests.db_buffer import age_events, seed_agent
 
-_LOGGER = "switch_core.bridges.agent.protocol.event_buffer"
+
+@pytest.fixture(autouse=True)
+async def _agent_rows(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agents events are queued for here, so their rows have one to belong to."""
+    await seed_agent(session_factory, "agent-1")
+    await seed_agent(session_factory, "agent-2")
 
 
 @pytest.fixture
@@ -38,21 +41,6 @@ def registry() -> Iterator[MetricsRegistry]:
     install(registry)
     yield registry
     uninstall()
-
-
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
-    clock = _Clock()
-    monkeypatch.setattr(buffer_module.time, "monotonic", clock)
-    return clock
 
 
 def _event(index: int, *, addressed: bool = True) -> AgentEvent:
@@ -68,14 +56,6 @@ def _event(index: int, *, addressed: bool = True) -> AgentEvent:
             timestamp=index,
         ),
     )
-
-
-def _overflow_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [
-        record
-        for record in caplog.records
-        if record.name == _LOGGER and "exceeded" in record.getMessage()
-    ]
 
 
 def _dropped(registry: MetricsRegistry) -> dict[tuple, float]:
@@ -97,71 +77,23 @@ def _histograms(registry: MetricsRegistry, name: str) -> dict[str, HistogramPoin
     return {point.attributes["operation"]: point for point in payload.histograms}
 
 
-def test_overflow_warns_once_per_interval_per_agent(clock, registry, caplog):
-    caplog.set_level(logging.WARNING, logger=_LOGGER)
-    buffer = EventBuffer(
-        max_events_per_agent=3, retention_seconds=3600, sequence_base=0
-    )
-
-    for index in range(50):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
-        clock.now += 0.1
-
-    # 47 drops inside five seconds: one line, not 47.
-    assert len(_overflow_warnings(caplog)) == 1
-    assert _dropped(registry) == {(("reason", "overflow"),): 47.0}
-
-
-def test_overflow_warning_resumes_after_the_interval_with_a_count(
-    clock, registry, caplog
+async def test_expiry_counts_every_drop_and_leaves_the_gap_for_readers(
+    registry, db_buffer: EventBuffer, session_factory
 ):
-    caplog.set_level(logging.WARNING, logger=_LOGGER)
-    buffer = EventBuffer(
-        max_events_per_agent=3, retention_seconds=3600, sequence_base=0
-    )
-
-    for index in range(4):
+    buffer = db_buffer
+    for index in range(17):
         await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
-    for index in range(4, 14):
-        clock.now += 1
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
-    clock.now += OVERFLOW_WARNING_INTERVAL_SECONDS
-    await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(14))
+    await buffer.enqueue(TENANT_ZERO_ID, "agent-2", "room-1", _event(0))
+    await age_events(session_factory, "agent-1", seconds=2 * 3600)
+    await age_events(session_factory, "agent-2", seconds=2 * 3600)
 
-    warnings = _overflow_warnings(caplog)
-    assert len(warnings) == 2
-    # The ten drops between the two lines are counted into the second.
-    assert "plus 10 dropped since the last warning" in warnings[1].getMessage()
-    assert _dropped(registry) == {(("reason", "overflow"),): 12.0}
-
-
-def test_overflow_warning_is_per_agent(clock, caplog):
-    caplog.set_level(logging.WARNING, logger=_LOGGER)
-    buffer = EventBuffer(
-        max_events_per_agent=1, retention_seconds=3600, sequence_base=0
-    )
-
-    for index in range(5):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-2", "room-1", _event(index))
-
-    warned = sorted(
-        record.getMessage().split()[1] for record in _overflow_warnings(caplog)
-    )
-    assert warned == ["agent=agent-1", "agent=agent-2"]
-
-
-def test_a_quiet_warning_still_leaves_the_gap_for_readers(clock, caplog):
-    caplog.set_level(logging.WARNING, logger=_LOGGER)
-    buffer = EventBuffer(
-        max_events_per_agent=3, retention_seconds=3600, sequence_base=0
-    )
-
-    for index in range(20):
+    assert await buffer.expire(TENANT_ZERO_ID) == 18
+    for index in range(17, 20):
         await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
 
-    assert len(_overflow_warnings(caplog)) == 1
-    # A reader from the start is told about every drop, logged or not.
+    # Every deleted row is counted, across agents, under the retention reason.
+    assert _dropped(registry) == {(("reason", "retention"),): 18.0}
+    # A reader from the start is told about every drop.
     with pytest.raises(CursorExpiredError) as exc:
         await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
     assert exc.value.oldest == 18
@@ -171,30 +103,27 @@ def test_a_quiet_warning_still_leaves_the_gap_for_readers(clock, caplog):
     ] == [18, 19, 20]
 
 
-def test_removing_an_agent_forgets_its_warning_state(clock, caplog):
-    caplog.set_level(logging.WARNING, logger=_LOGGER)
-    buffer = EventBuffer(
-        max_events_per_agent=1, retention_seconds=3600, sequence_base=0
-    )
+async def test_an_expiry_with_nothing_old_enough_drops_and_counts_nothing(
+    registry, db_buffer: EventBuffer
+):
+    buffer = db_buffer
+    await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(0))
 
-    for index in range(3):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
-    buffer.remove("agent-1")
-    for index in range(3):
-        await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
+    assert await buffer.expire(TENANT_ZERO_ID) == 0
 
-    assert len(_overflow_warnings(caplog)) == 2
+    assert _dropped(registry) == {}
+    assert await buffer.rooms_dropped_after(TENANT_ZERO_ID, "agent-1", 0) == ()
 
 
-def test_a_read_records_how_many_events_it_walked(registry):
-    buffer = EventBuffer(
-        max_events_per_agent=100, retention_seconds=3600, sequence_base=0
-    )
+async def test_a_read_records_how_many_events_it_returned(
+    registry, db_buffer: EventBuffer
+):
+    buffer = db_buffer
     for index in range(10):
         await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(index))
 
     await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0)
-    # Stopping at the limit walks only as far as the limit was reached.
+    # A limited read is bounded by its limit, not by what is retained.
     await buffer.read_from(TENANT_ZERO_ID, "agent-1", 0, limit=3)
 
     scanned = _histograms(registry, "switch.agent.buffer.scanned")["read"]
@@ -202,10 +131,10 @@ def test_a_read_records_how_many_events_it_walked(registry):
     assert scanned.total == 13.0
 
 
-def test_a_read_and_an_unread_count_record_their_duration(registry):
-    buffer = EventBuffer(
-        max_events_per_agent=100, retention_seconds=3600, sequence_base=0
-    )
+async def test_a_read_and_an_unread_count_record_their_duration(
+    registry, db_buffer: EventBuffer
+):
+    buffer = db_buffer
     reader = Reader(id="session-1", is_session=True)
     buffer.caught_up("agent-1", reader, "room-1", 0, arrived_on=None)
     for index in range(4):
@@ -226,17 +155,21 @@ def test_a_read_and_an_unread_count_record_their_duration(registry):
         "unread": 1,
     }
     assert all(p.total >= 0 for p in durations.histograms)
+    # A read records the rows it returned; an unread count is one query, and
+    # records what it counted (the addressed fourth event is not unread).
     assert {p.attributes["operation"]: p.total for p in scanned.histograms} == {
         "read": 4.0,
-        "unread": 4.0,
+        "unread": 3.0,
     }
 
 
-def test_an_unread_count_with_nothing_to_count_records_no_scan(registry):
-    buffer = EventBuffer(sequence_base=0)
+async def test_an_unread_count_with_nothing_to_count_records_no_scan(
+    registry, db_buffer: EventBuffer
+):
+    buffer = db_buffer
     await buffer.enqueue(TENANT_ZERO_ID, "agent-1", "room-1", _event(0))
 
-    # No baseline: answered without walking the buffer.
+    # No baseline: answered without querying the events.
     assert (await buffer.unread(TENANT_ZERO_ID, "agent-1", "room-1", 1)).count is None
 
     names = {p.name for p in registry.collect()}

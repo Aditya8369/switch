@@ -7,19 +7,26 @@ fallen off the end of the buffer is told rather than quietly fast-forwarded.
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
+from tests.db_buffer import age_events, db_buffer_on, seed_agent
 
 AGENT = "agent-1"
 ROOM_A = "room-a"
 ROOM_B = "room-b"
+
+
+@pytest.fixture(autouse=True)
+async def _agent_rows(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent every event here is queued for, so its rows have one to belong to."""
+    await seed_agent(session_factory, AGENT)
 
 
 def _message(body: str, *, addressed: bool = False, room: str = ROOM_A) -> AgentEvent:
@@ -41,8 +48,8 @@ def _bodies(items: list) -> list[str]:
     return [item.event.payload.body for item in items]
 
 
-def test_sequence_numbers_are_monotonic_per_agent() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_sequence_numbers_are_monotonic_per_agent(db_buffer: EventBuffer) -> None:
+    buf = db_buffer
     assert await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one")) == 1
     assert (
         await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_B, _message("two", room=ROOM_B))
@@ -52,8 +59,8 @@ def test_sequence_numbers_are_monotonic_per_agent() -> None:
     assert await buf.head(TENANT_ZERO_ID, AGENT) == 3
 
 
-def test_reading_does_not_consume() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_reading_does_not_consume(db_buffer: EventBuffer) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
 
     assert _bodies(await buf.read_from(TENANT_ZERO_ID, AGENT, 0)) == ["one"]
@@ -62,8 +69,10 @@ def test_reading_does_not_consume() -> None:
     assert _bodies(await buf.read_from(TENANT_ZERO_ID, AGENT, 0)) == ["one"]
 
 
-def test_resume_returns_only_events_after_the_cursor() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_resume_returns_only_events_after_the_cursor(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     for body in ("one", "two", "three"):
         await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message(body))
 
@@ -71,8 +80,10 @@ def test_resume_returns_only_events_after_the_cursor() -> None:
     assert _bodies(await buf.read_from(TENANT_ZERO_ID, AGENT, 3)) == []
 
 
-def test_events_missed_while_disconnected_are_replayed_on_resume() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_events_missed_while_disconnected_are_replayed_on_resume(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("before"))
     seen = await buf.read_from(TENANT_ZERO_ID, AGENT, 0)
     cursor = seen[-1].seq
@@ -87,8 +98,10 @@ def test_events_missed_while_disconnected_are_replayed_on_resume() -> None:
     ]
 
 
-def test_room_and_notifiable_filters_are_independent() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_room_and_notifiable_filters_are_independent(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("a-chatter"))
     await buf.enqueue(
         TENANT_ZERO_ID, AGENT, ROOM_A, _message("a-addressed", addressed=True)
@@ -120,9 +133,14 @@ def test_room_and_notifiable_filters_are_independent() -> None:
     ) == ["b-addressed"]
 
 
-def test_overflow_drops_oldest_and_flags_a_gap() -> None:
-    buf = EventBuffer(max_events_per_agent=3, sequence_base=0)
-    for body in ("one", "two", "three", "four"):
+async def test_expiry_drops_the_oldest_and_flags_a_gap(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    buf = db_buffer
+    await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
+    await age_events(session_factory, AGENT, seconds=2 * 3600)
+    await buf.expire(TENANT_ZERO_ID)
+    for body in ("two", "three", "four"):
         await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message(body))
 
     assert _bodies(await buf.read_from(TENANT_ZERO_ID, AGENT, 1)) == [
@@ -130,13 +148,18 @@ def test_overflow_drops_oldest_and_flags_a_gap() -> None:
         "three",
         "four",
     ]
-    assert buf.has_gap_before(AGENT, 0)
-    assert not buf.has_gap_before(AGENT, 1)
+    assert await buf.rooms_dropped_after(TENANT_ZERO_ID, AGENT, 0) == (ROOM_A,)
+    assert await buf.rooms_dropped_after(TENANT_ZERO_ID, AGENT, 1) == ()
 
 
-def test_resuming_from_an_expired_cursor_raises_rather_than_skipping() -> None:
-    buf = EventBuffer(max_events_per_agent=2, sequence_base=0)
-    for body in ("one", "two", "three"):
+async def test_resuming_from_an_expired_cursor_raises_rather_than_skipping(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    buf = db_buffer
+    await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
+    await age_events(session_factory, AGENT, seconds=2 * 3600)
+    await buf.expire(TENANT_ZERO_ID)
+    for body in ("two", "three"):
         await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message(body))
 
     with pytest.raises(CursorExpiredError) as excinfo:
@@ -144,69 +167,67 @@ def test_resuming_from_an_expired_cursor_raises_rather_than_skipping() -> None:
 
     assert excinfo.value.requested == 0
     assert excinfo.value.oldest == 2
+    assert excinfo.value.rooms == (ROOM_A,)
 
 
-def test_retention_window_expires_events_and_flags_a_gap(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_retention_window_expires_events_and_flags_a_gap(
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.protocol.event_buffer.time.monotonic",
-        lambda: clock["now"],
-    )
-
-    buf = EventBuffer(retention_seconds=60, sequence_base=0)
+    """Only what is older than the window goes: an event inside it survives
+    the same sweep."""
+    buf = db_buffer_on(session_factory, retention_seconds=60)
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("old"))
-
-    clock["now"] += 61
+    await age_events(session_factory, AGENT, seconds=61)
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("new"))
+
+    assert await buf.expire(TENANT_ZERO_ID) == 1
 
     assert _bodies(await buf.read_from(TENANT_ZERO_ID, AGENT, 1)) == ["new"]
     with pytest.raises(CursorExpiredError):
         await buf.read_from(TENANT_ZERO_ID, AGENT, 0)
 
 
-def test_a_quiet_agent_stops_serving_an_event_when_its_window_ends(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_quiet_agent_stops_serving_an_event_when_its_window_ends(
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Nothing else appends for this agent, so nothing else can expire it."""
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.protocol.event_buffer.time.monotonic",
-        lambda: clock["now"],
-    )
-
-    buf = EventBuffer(retention_seconds=60, sequence_base=0)
+    """Expiry sweeps the tenant rather than riding on an append, so an agent
+    nothing else is queued for loses its old events all the same."""
+    buf = db_buffer_on(session_factory, retention_seconds=60)
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("only"))
+    await age_events(session_factory, AGENT, seconds=61)
 
-    clock["now"] += 61
+    await buf.expire(TENANT_ZERO_ID)
 
     assert await buf.read_from(TENANT_ZERO_ID, AGENT, 1) == []
     with pytest.raises(CursorExpiredError):
         await buf.read_from(TENANT_ZERO_ID, AGENT, 0)
 
 
-def test_confirming_does_not_discard_events_for_other_readers() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_confirming_does_not_discard_events_for_other_readers(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
 
     buf.confirm(AGENT, "reader-a", 1)
 
-    # A reader that arrives afterwards still sees it: retention is by age and
-    # cap, not by what someone else has consumed.
+    # A reader that arrives afterwards still sees it: retention is by age,
+    # not by what someone else has consumed.
     assert _bodies(await buf.read_from(TENANT_ZERO_ID, AGENT, 0)) == ["one"]
 
 
-def test_confirm_never_rewinds() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_confirm_never_rewinds(db_buffer: EventBuffer) -> None:
+    buf = db_buffer
     buf.register_reader(AGENT, "reader-a", 0)
     buf.confirm(AGENT, "reader-a", 5)
     buf.confirm(AGENT, "reader-a", 2)
     assert buf._cursors[AGENT]["reader-a"] == 5
 
 
-async def test_legacy_pollers_no_longer_steal_from_each_other() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_legacy_pollers_no_longer_steal_from_each_other(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("hello", addressed=True))
 
     room = await buf.poll_room(TENANT_ZERO_ID, AGENT, ROOM_A, timeout=0)
@@ -220,8 +241,10 @@ async def test_legacy_pollers_no_longer_steal_from_each_other() -> None:
     assert [e.payload.body for e in every] == ["hello"]
 
 
-async def test_legacy_poller_does_not_see_the_same_event_twice() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_legacy_poller_does_not_see_the_same_event_twice(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("one"))
 
     assert len(await buf.poll_room(TENANT_ZERO_ID, AGENT, ROOM_A, timeout=0)) == 1
@@ -232,8 +255,10 @@ async def test_legacy_poller_does_not_see_the_same_event_twice() -> None:
     assert [e.payload.body for e in second] == ["two"]
 
 
-async def test_legacy_poller_receives_events_queued_before_it_polled() -> None:
-    buf = EventBuffer(sequence_base=0)
+async def test_legacy_poller_receives_events_queued_before_it_polled(
+    db_buffer: EventBuffer,
+) -> None:
+    buf = db_buffer
     await buf.enqueue(TENANT_ZERO_ID, AGENT, ROOM_A, _message("queued-while-away"))
 
     events = await buf.poll_room(TENANT_ZERO_ID, AGENT, ROOM_A, timeout=0)

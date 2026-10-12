@@ -400,20 +400,18 @@ AGENT_EVENTS_DROPPED = _spec(
     "switch.agent.events_dropped",
     "sum",
     "{event}",
-    "Buffered events discarded before an agent read them. `reason` separates "
-    "an agent that cannot keep up (overflow) from one away too long "
-    "(retention).",
+    "Queued agent events deleted after the retention window. `reason` is "
+    '"retention"; a reader resuming from before them is told it missed them.',
     "reason",
 )
-# The buffer answers a read and an unread count by walking the agent's retained
-# events from the oldest. These say what that walk costs, so whether to index
-# the buffer is decided from data. `operation` is "read" or "unread".
+# What one read of an agent's queued events, or one unread count, returned and
+# cost. `operation` is "read" or "unread".
 AGENT_BUFFER_SCANNED = _spec(
     "switch.agent.buffer.scanned",
     "histogram",
     "{event}",
-    "Retained events walked to answer one buffer read or unread count. Bounded "
-    "by the per-agent cap, so a p95 near it means every read walks a full buffer.",
+    "Events one read returned, or unaddressed messages one unread count found. "
+    "A read is bounded by its limit.",
     "operation",
     bounds=(0.0, 10.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 1500.0, 2000.0),
 )

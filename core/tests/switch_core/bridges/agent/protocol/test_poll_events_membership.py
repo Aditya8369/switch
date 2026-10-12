@@ -8,13 +8,11 @@ that have no room in them — the all-rooms poll and the notification stream.
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.db.models import Room
+from switch_core.db.models import TENANT_ZERO_ID, Room
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.room_store import RoomStore
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
@@ -53,11 +51,12 @@ async def _room(
 
 async def test_events_from_a_room_the_agent_was_removed_from_are_not_returned(
     session_factory: async_sessionmaker[AsyncSession],
+    db_buffer: EventBuffer,
 ) -> None:
     svc = make_service(session_factory)
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
-    svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
+    svc.event_buffer = db_buffer  # type: ignore[attr-defined]
 
     owner = await make_owner(session_factory)
     agent_id = await register(svc, "poller", owner)
@@ -82,6 +81,7 @@ async def test_events_from_a_room_the_agent_was_removed_from_are_not_returned(
 
 async def test_notifications_from_a_room_the_agent_was_removed_from_are_not_returned(
     session_factory: async_sessionmaker[AsyncSession],
+    db_buffer: EventBuffer,
 ) -> None:
     """The stream that carries what was said *to* the agent, under the same rule.
 
@@ -92,7 +92,7 @@ async def test_notifications_from_a_room_the_agent_was_removed_from_are_not_retu
     svc = make_service(session_factory)
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
-    svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
+    svc.event_buffer = db_buffer  # type: ignore[attr-defined]
 
     owner = await make_owner(session_factory)
     agent_id = await register(svc, "watcher", owner)
