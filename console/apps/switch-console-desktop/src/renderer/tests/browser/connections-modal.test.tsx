@@ -22,7 +22,6 @@ const switchServers = vi.hoisted(() => ({
   cloudMachines: vi.fn(),
   getConnectionCatalog: vi.fn(),
   getGitHubConnection: vi.fn(),
-  servesServiceConnections: vi.fn(),
   startServiceConnection: vi.fn(),
   getServiceFlow: vi.fn(),
   confirmServiceConnection: vi.fn(),
@@ -31,9 +30,14 @@ const switchServers = vi.hoisted(() => ({
 }));
 const openExternalUrl = vi.hoisted(() => vi.fn());
 
+const serverFlags = vi.hoisted(() => ({ service_connections: false }));
+const featureFlags = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ success: true, data: { flags: { ...serverFlags } } })),
+}));
+
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers },
+  rpc: { switchServers, featureFlags },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
@@ -130,8 +134,7 @@ beforeEach(() => {
   switchServers.cloudMachines.mockReset();
   switchServers.getConnectionCatalog.mockReset();
   switchServers.getGitHubConnection.mockReset();
-  switchServers.servesServiceConnections.mockReset();
-  switchServers.servesServiceConnections.mockResolvedValue(false);
+  serverFlags.service_connections = false;
   switchServers.connectServiceWithKey.mockReset();
   switchServers.disconnectService.mockReset();
   openExternalUrl.mockReset().mockResolvedValue(true);
@@ -184,25 +187,25 @@ it('offers Connections on a server with cloud machines', async () => {
 
 it('offers Connections on a server with service connections and no cloud machine', async () => {
   switchServers.cloudMachines.mockResolvedValue(null);
-  switchServers.servesServiceConnections.mockResolvedValue(true);
+  serverFlags.service_connections = true;
   await render();
 
   await vi.waitFor(() => expect(button(/^connections$/i, container!)).toBeDefined());
-  expect(switchServers.servesServiceConnections).toHaveBeenCalledWith('server');
+  expect(featureFlags.get).toHaveBeenCalledWith('server');
 });
 
-it('offers no Connections on an older server without cloud machines', async () => {
+it('offers no Connections without service connections or cloud machines', async () => {
   switchServers.cloudMachines.mockResolvedValue(null);
   await render();
 
   await vi.waitFor(() => expect(switchServers.cloudMachines).toHaveBeenCalled());
-  await vi.waitFor(() => expect(switchServers.servesServiceConnections).toHaveBeenCalled());
+  await vi.waitFor(() => expect(featureFlags.get).toHaveBeenCalled());
   await act(async () => {});
   expect(button(/^connections$/i, container!)).toBeUndefined();
 });
 
 it('disables a service the server cannot connect, saying why', async () => {
-  switchServers.servesServiceConnections.mockResolvedValue(true);
+  serverFlags.service_connections = true;
   switchServers.cloudMachines.mockResolvedValue(null);
   switchServers.getConnectionCatalog.mockResolvedValue([
     {

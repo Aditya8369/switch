@@ -11,13 +11,17 @@ import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 const switchServers = vi.hoisted(() => ({
   cloudMachines: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
-  servesServiceConnections: vi.fn(async () => true),
 }));
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers },
+  rpc: {
+    switchServers,
+    featureFlags: {
+      get: async () => ({ success: true, data: { flags: { service_connections: true } } }),
+    },
+  },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({

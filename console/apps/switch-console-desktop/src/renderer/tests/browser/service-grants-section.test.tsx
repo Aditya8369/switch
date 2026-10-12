@@ -22,9 +22,14 @@ const workspaces = vi.hoisted(() => ({
   updateAddressingPolicy: vi.fn(),
 }));
 
+const serverFlags = vi.hoisted(() => ({ service_connections: true }));
+const featureFlags = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ success: true, data: { flags: { ...serverFlags } } })),
+}));
+
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { agents, workspaces },
+  rpc: { agents, workspaces, featureFlags },
 }));
 
 import {
@@ -66,6 +71,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   for (const mock of [agents.getAgents, ...Object.values(workspaces)]) mock.mockReset();
+  serverFlags.service_connections = true;
   agents.getAgents.mockResolvedValue([
     {
       id: 'local-agent',
@@ -201,6 +207,20 @@ it('draws nothing for someone who does not own the agent', async () => {
   expect(el.textContent).toBe('');
 });
 
+it('draws nothing, and asks nothing, where the server has service connections off', async () => {
+  serverFlags.service_connections = false;
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [],
+    addressing_open: false,
+  });
+  const el = await render();
+
+  await vi.waitFor(() => expect(featureFlags.get).toHaveBeenCalledWith('server'));
+  await act(async () => {});
+  expect(el.textContent).toBe('');
+  expect(workspaces.getServiceGrants).not.toHaveBeenCalled();
+});
+
 it('says so when the grants could not be loaded', async () => {
   workspaces.getServiceGrants.mockRejectedValue(new Error('Switch gateway returned 500'));
   const el = await render();
@@ -224,7 +244,13 @@ it("says only what applies to a cloud agent's GitHub grant", async () => {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <ServiceGrantsRow workspaceId="workspace" agentId="agent" agentName="reviewer" cloud />
+        <ServiceGrantsRow
+          serverId="server"
+          workspaceId="workspace"
+          agentId="agent"
+          agentName="reviewer"
+          cloud
+        />
       </QueryClientProvider>
     )
   );

@@ -43,7 +43,6 @@ import { type LoginError, oidcLogin, passwordLogin, type SignupError, signup } f
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   getConnectionCatalog,
-  servesServiceConnections,
   getGitHubConnection,
   fetchAgentIconChoices,
   cloudMachineLifecycle,
@@ -306,8 +305,6 @@ export const switchServersController = createRPCController({
 
   getConnectionCatalog: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => getConnectionCatalog(server)),
-  servesServiceConnections: (serverId: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) => servesServiceConnections(server)),
   getGitHubConnection: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => getGitHubConnection(server)),
   startGitHubConnection: (serverId: string) =>

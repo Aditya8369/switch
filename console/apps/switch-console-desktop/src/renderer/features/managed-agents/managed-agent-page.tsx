@@ -276,6 +276,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 showName={false}
               />
               <ServiceGrantsRow
+                serverId={agent.serverId}
                 workspaceId={agent.workspaceId}
                 agentId={agent.agentId}
                 agentName={managedAgentLabel(agent)}

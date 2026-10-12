@@ -2815,20 +2815,6 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
 }
 
 /**
- * Whether the server has service connections, which any of its agents can be
- * granted: an older one had connections for its cloud agents alone.
- */
-export async function servesServiceConnections(server: SwitchServer): Promise<boolean> {
-  try {
-    await gatewayFetch(server, '/service-connections', { authenticated: true });
-    return true;
-  } catch (error) {
-    if (error instanceof GatewayError && error.status === 404) return false;
-    throw error;
-  }
-}
-
-/**
  * An agent's service grants, or null when the gateway answers that it is not
  * the signed-in person's agent (a 404): only its owner sees them. Any other
  * failure is thrown, for the caller to show.

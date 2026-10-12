@@ -50,7 +50,6 @@ const {
   cloudMachineLifecycle,
   listCloudMachines,
   getConnectionCatalog,
-  servesServiceConnections,
   fetchServiceGrants,
   removeServiceGrant,
   setServiceGrant,
@@ -1193,14 +1192,6 @@ describe('GitHub connection transport', () => {
         new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
       );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
-  });
-  it('tells a server with service connections from one without', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [] })));
-    expect(await servesServiceConnections(SERVER)).toBe(true);
-    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
-    expect(await servesServiceConnections(SERVER)).toBe(false);
-    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
-    await expect(servesServiceConnections(SERVER)).rejects.toThrow();
   });
   it("reads someone else's agent's grants as none, and any other failure as one", async () => {
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"Agent not found."}', { status: 404 }));

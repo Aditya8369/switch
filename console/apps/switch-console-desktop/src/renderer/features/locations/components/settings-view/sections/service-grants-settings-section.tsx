@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -60,6 +61,7 @@ export function ServiceGrantsSettingsSection({
   if (!agent) return null;
   return (
     <ServiceGrantsRow
+      serverId={agent.serverId}
       workspaceId={agent.workspaceId as string}
       agentId={agent.switchAgentId as string}
       agentName={agent.name}
@@ -73,11 +75,14 @@ export function ServiceGrantsSettingsSection({
  * have no GitHub sign-in of their own and run on no machine of the owner's.
  */
 export function ServiceGrantsRow({
+  serverId,
   workspaceId,
   agentId,
   agentName,
   cloud,
 }: {
+  /** Its server, whose `service_connections` flag shows the row at all. */
+  serverId: string | null;
   workspaceId: string;
   /** The agent's id in Switch. */
   agentId: string;
@@ -87,21 +92,25 @@ export function ServiceGrantsRow({
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const shown = useFeatureFlags(serverId).service_connections;
   const grantsKey = ['agent-service-grants', workspaceId, agentId];
   const grants = useQuery({
     queryKey: grantsKey,
     queryFn: () => rpc.workspaces.getServiceGrants({ workspaceId, agentId }),
+    enabled: shown,
     retry: false,
   });
   // The agent's workspace, not whichever one is active on its server.
   const github = useQuery({
     queryKey: ['workspace-github', workspaceId],
     queryFn: () => rpc.workspaces.getGitHubConnection(workspaceId),
+    enabled: shown,
     retry: false,
   });
   const services = useQuery({
     queryKey: ['workspace-service-connections', workspaceId],
     queryFn: () => rpc.workspaces.getServiceConnections(workspaceId),
+    enabled: shown,
     retry: false,
   });
 
@@ -123,6 +132,7 @@ export function ServiceGrantsRow({
       return [warning, cloud ? null : REMOVED_GRANT_NOTE].filter(Boolean).join(' ') || null;
     });
 
+  if (!shown) return null;
   if (grants.isPending)
     return (
       <p className="flex items-center gap-2 text-sm">

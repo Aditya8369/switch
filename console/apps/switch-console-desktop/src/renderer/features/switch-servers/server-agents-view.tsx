@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query';
 import { Bot, ExternalLink, MoreVertical, Plug, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
@@ -22,6 +21,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -65,11 +65,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 
   // Connections are offered on a server with service connections, which any
   // agent can be granted, or with cloud machines.
-  const serviceConnections = useQuery({
-    queryKey: ['server-service-connections', serverId],
-    queryFn: () => rpc.switchServers.servesServiceConnections(serverId),
-    retry: false,
-  });
+  const serviceConnections = useFeatureFlags(serverId).service_connections;
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
   const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
@@ -80,7 +76,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
       action={
-        (machines.data || serviceConnections.data) && (
+        (machines.data || serviceConnections) && (
           <Button variant="outline" size="sm" onClick={() => showConnectionsModal({ serverId })}>
             <Plug className="size-4" />
             Connections
