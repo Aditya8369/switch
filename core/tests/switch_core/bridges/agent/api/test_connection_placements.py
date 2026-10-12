@@ -25,9 +25,9 @@ FOREIGN_ROOM = "room-foreign"
 
 
 class _Protocol:
-    def __init__(self) -> None:
+    def __init__(self, event_buffer: EventBuffer) -> None:
         self.connections = AgentConnectionRegistry()
-        self.event_buffer = EventBuffer(sequence_base=0)
+        self.event_buffer = event_buffer
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         if room_id == FOREIGN_ROOM:
@@ -77,8 +77,10 @@ async def _place(
 
 
 @pytest.mark.asyncio
-async def test_placements_replace_what_the_connection_had() -> None:
-    protocol = _Protocol()
+async def test_placements_replace_what_the_connection_had(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
     await _place(protocol, conn, {"session-1": ROOM_A, "session-2": ROOM_B})
 
@@ -94,8 +96,8 @@ async def test_placements_replace_what_the_connection_had() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_empty_set_unplaces_every_session() -> None:
-    protocol = _Protocol()
+async def test_an_empty_set_unplaces_every_session(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
     await _place(protocol, conn, {"session-1": ROOM_A})
 
@@ -107,8 +109,10 @@ async def test_an_empty_set_unplaces_every_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_room_another_connection_holds_is_taken_over() -> None:
-    protocol = _Protocol()
+async def test_a_room_another_connection_holds_is_taken_over(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     theirs = _open(protocol, "theirs")
     mine = _open(protocol, "mine")
     await _place(protocol, theirs, {"session-t": ROOM_A})
@@ -124,8 +128,10 @@ async def test_a_room_another_connection_holds_is_taken_over() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_room_the_agent_is_not_in_refuses_the_whole_request() -> None:
-    protocol = _Protocol()
+async def test_a_room_the_agent_is_not_in_refuses_the_whole_request(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
     await _place(protocol, conn, {"session-1": ROOM_A})
 
@@ -139,8 +145,8 @@ async def test_a_room_the_agent_is_not_in_refuses_the_whole_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_sessions_in_one_room_are_refused() -> None:
-    protocol = _Protocol()
+async def test_two_sessions_in_one_room_are_refused(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
 
     with pytest.raises(HTTPException) as refused:
@@ -151,8 +157,8 @@ async def test_two_sessions_in_one_room_are_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_another_agents_connection_is_refused() -> None:
-    protocol = _Protocol()
+async def test_another_agents_connection_is_refused(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     foreign = _open(protocol, "foreign", agent_id=OTHER_AGENT_ID)
 
     with pytest.raises(HTTPException) as refused:
@@ -164,8 +170,8 @@ async def test_another_agents_connection_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_path_naming_another_agent_is_refused() -> None:
-    protocol = _Protocol()
+async def test_a_path_naming_another_agent_is_refused(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
 
     with pytest.raises(HTTPException) as refused:
@@ -176,8 +182,10 @@ async def test_a_path_naming_another_agent_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_displaced_client_cannot_rewrite_the_holders_placements() -> None:
-    protocol = _Protocol()
+async def test_a_displaced_client_cannot_rewrite_the_holders_placements(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
     stale = conn.stream_generation
     _open(protocol, "watcher")

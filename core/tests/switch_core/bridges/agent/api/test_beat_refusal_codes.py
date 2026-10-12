@@ -33,8 +33,8 @@ CONN_ID = "conn-1"
 
 
 class _Protocol:
-    def __init__(self) -> None:
-        self.event_buffer = EventBuffer(sequence_base=0)
+    def __init__(self, event_buffer: EventBuffer) -> None:
+        self.event_buffer = event_buffer
         self.connections = AgentConnectionRegistry()
 
 
@@ -51,17 +51,19 @@ def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:
     )
 
 
-def _beat(protocol: _Protocol, generation: int | None) -> Any:
-    return _record_beat(protocol, AGENT_ID, CONN_ID, 0, generation)  # type: ignore[arg-type]
+async def _beat(protocol: _Protocol, generation: int | None) -> Any:
+    return await _record_beat(protocol, AGENT_ID, CONN_ID, 0, generation)  # type: ignore[arg-type]
 
 
-def test_a_superseded_tick_is_refused_as_a_takeover() -> None:
-    protocol = _Protocol()
+async def test_a_superseded_tick_is_refused_as_a_takeover(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     displaced = _open(protocol).stream_generation
     _open(protocol)  # the winner attaches; the incarnation bumps
 
     with pytest.raises(SupersededConnectionError) as caught:
-        _beat(protocol, displaced)
+        await _beat(protocol, displaced)
 
     # The same code the displaced stream is evicted with: one ending reaching
     # the client by whichever door is still open to it.
@@ -71,13 +73,15 @@ def test_a_superseded_tick_is_refused_as_a_takeover() -> None:
     assert str(displaced + 1) in str(caught.value)
 
 
-def test_a_tick_with_no_stream_is_refused_as_something_to_reopen() -> None:
-    protocol = _Protocol()
+async def test_a_tick_with_no_stream_is_refused_as_something_to_reopen(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol)
     protocol.connections.detach_stream(conn, conn.stream_generation)
 
     with pytest.raises(NoStreamAttachedError) as caught:
-        _beat(protocol, conn.stream_generation)
+        await _beat(protocol, conn.stream_generation)
 
     # Recoverable, and distinct from the takeover: this client still holds the
     # connection and only has to reconnect.
@@ -100,8 +104,10 @@ async def _post_beat(protocol: _Protocol, generation: int | None) -> Any:
     )
 
 
-async def test_a_superseded_beat_is_answered_409_taken_over() -> None:
-    protocol = _Protocol()
+async def test_a_superseded_beat_is_answered_409_taken_over(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     displaced = _open(protocol).stream_generation
     _open(protocol)
 
@@ -114,8 +120,10 @@ async def test_a_superseded_beat_is_answered_409_taken_over() -> None:
     assert str(displaced) in message and str(displaced + 1) in message
 
 
-async def test_a_beat_with_no_stream_is_answered_409_no_stream() -> None:
-    protocol = _Protocol()
+async def test_a_beat_with_no_stream_is_answered_409_no_stream(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _open(protocol)
     protocol.connections.detach_stream(conn, conn.stream_generation)
 
@@ -126,10 +134,10 @@ async def test_a_beat_with_no_stream_is_answered_409_no_stream() -> None:
     assert caught.value.detail["code"] == "no_stream"  # type: ignore[index]
 
 
-async def test_an_unfenced_beat_from_a_fenced_holder_is_refused_on_its_own_code() -> (
-    None
-):
-    protocol = _Protocol()
+async def test_an_unfenced_beat_from_a_fenced_holder_is_refused_on_its_own_code(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     _open(protocol)
 
     with pytest.raises(HTTPException) as caught:
@@ -139,8 +147,10 @@ async def test_an_unfenced_beat_from_a_fenced_holder_is_refused_on_its_own_code(
     assert caught.value.detail["code"] == "unfenced"  # type: ignore[index]
 
 
-async def test_a_beat_for_an_unknown_connection_is_answered_404() -> None:
-    protocol = _Protocol()
+async def test_a_beat_for_an_unknown_connection_is_answered_404(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
 
     with pytest.raises(HTTPException) as caught:
         await _post_beat(protocol, None)
@@ -148,8 +158,10 @@ async def test_a_beat_for_an_unknown_connection_is_answered_404() -> None:
     assert caught.value.status_code == 404
 
 
-async def test_a_client_that_cannot_be_fenced_still_beats() -> None:
-    protocol = _Protocol()
+async def test_a_client_that_cannot_be_fenced_still_beats(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     _open(protocol, speaks=None)
 
     assert (await _post_beat(protocol, None))["ok"] is True

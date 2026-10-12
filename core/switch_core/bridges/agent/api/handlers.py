@@ -1230,6 +1230,9 @@ async def connection_socket(
         pump.cancel()
         pongs.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
+        # Waited for, so the stream has detached before this returns: its
+        # cleanup can be in the middle of a database read when it is cancelled.
+        await asyncio.gather(pump, pongs, return_exceptions=True)
         if failure is not None:
             logger.error(
                 "[STREAM] agent=%s connection=%s delivery failed, closing its socket",

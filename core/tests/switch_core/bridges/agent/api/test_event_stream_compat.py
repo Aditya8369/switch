@@ -12,8 +12,6 @@ loop, so the rules themselves are tested once, on the frames.
 
 from __future__ import annotations
 
-from switch_core.db.models import TENANT_ZERO_ID
-
 import asyncio
 import json
 import time
@@ -23,6 +21,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import StreamingResponse
 
 from switch_core.artifacts import contract_range
@@ -36,7 +35,9 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from tests.db_buffer import seed_agent
 
 AGENT_ID = "agent-1"
 ROOM = "room-a"
@@ -49,9 +50,15 @@ OLD_RUNTIME = {
 }
 
 
+@pytest.fixture(autouse=True)
+async def _agent_row(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent these streams are for, so its events have a row to belong to."""
+    await seed_agent(session_factory, AGENT_ID)
+
+
 class _Protocol:
-    def __init__(self) -> None:
-        self.event_buffer = EventBuffer(sequence_base=0)
+    def __init__(self, event_buffer: EventBuffer) -> None:
+        self.event_buffer = event_buffer
         self.connections = AgentConnectionRegistry()
         self.approval_outcomes = None
         self.sessions = SessionReporter(None)
@@ -66,7 +73,11 @@ class _Protocol:
 
 
 def _agent() -> Any:
-    return SimpleNamespace(id=AGENT_ID, metadata_={"known_agent_type": "claude-code"})
+    return SimpleNamespace(
+        id=AGENT_ID,
+        tenant_id=TENANT_ZERO_ID,
+        metadata_={"known_agent_type": "claude-code"},
+    )
 
 
 def _message(body: str) -> AgentEvent:
@@ -142,8 +153,10 @@ async def _beat(protocol: _Protocol, cursor: int, generation: int | None) -> Any
     )
 
 
-async def test_an_old_client_connects_receives_beats_and_lapses() -> None:
-    protocol = _Protocol()
+async def test_an_old_client_connects_receives_beats_and_lapses(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     stream = _Reader((await _open(protocol)).body_iterator)
 
     event, _, state = await stream.frame()
@@ -179,8 +192,8 @@ async def test_an_old_client_connects_receives_beats_and_lapses() -> None:
     assert caught.value.status_code == 404
 
 
-async def test_an_old_client_resumes_from_last_event_id() -> None:
-    protocol = _Protocol()
+async def test_an_old_client_resumes_from_last_event_id(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     first = await protocol.event_buffer.enqueue(
         TENANT_ZERO_ID, AGENT_ID, ROOM, _message("seen")
     )
@@ -202,8 +215,10 @@ async def test_an_old_client_resumes_from_last_event_id() -> None:
     assert data["payload"]["body"] == "missed"
 
 
-async def test_closing_the_stream_detaches_it_and_keeps_the_connection() -> None:
-    protocol = _Protocol()
+async def test_closing_the_stream_detaches_it_and_keeps_the_connection(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     stream = _Reader((await _open(protocol)).body_iterator)
     await stream.frame()
 
@@ -217,8 +232,10 @@ async def test_closing_the_stream_detaches_it_and_keeps_the_connection() -> None
     }
 
 
-async def test_a_stream_attached_over_sse_is_reported_as_sse() -> None:
-    protocol = _Protocol()
+async def test_a_stream_attached_over_sse_is_reported_as_sse(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     stream = _Reader((await _open(protocol)).body_iterator)
     await stream.frame()
 
@@ -228,10 +245,12 @@ async def test_a_stream_attached_over_sse_is_reported_as_sse() -> None:
     await stream.close()
 
 
-async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket() -> None:
+async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket(
+    db_buffer: EventBuffer,
+) -> None:
     """The transport is the last attach's: an upgraded Console reattaching the
     same connection over the socket stops counting as an old client."""
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     stream = _Reader((await _open(protocol)).body_iterator)
     await stream.frame()
 
@@ -253,12 +272,14 @@ async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket() -> 
     await stream.close()
 
 
-async def test_a_refused_stream_is_counted_like_a_refused_socket() -> None:
+async def test_a_refused_stream_is_counted_like_a_refused_socket(
+    db_buffer: EventBuffer,
+) -> None:
     registry = MetricsRegistry()
     install(registry)
     try:
         with pytest.raises(HTTPException) as caught:
-            await _open(_Protocol(), protocol_version=99, protocol_accepts=99)
+            await _open(_Protocol(db_buffer), protocol_version=99, protocol_accepts=99)
     finally:
         uninstall()
 
