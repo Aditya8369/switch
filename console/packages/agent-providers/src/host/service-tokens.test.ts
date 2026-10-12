@@ -21,6 +21,7 @@ function grant(service: string, revision: number): ServiceGrant {
     revision,
     skill: null,
     mcp_servers: [],
+    cli_tools: [],
   };
 }
 

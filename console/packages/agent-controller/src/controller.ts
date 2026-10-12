@@ -78,7 +78,7 @@ export type ControllerDeps = {
    */
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
   locator: ProviderLocator;
-  /** `git` and `gh`, as sessions here would be set up with them (`toolStatuses`). */
+  /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
   tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
   /** Opens the controller's connection to Switch. */

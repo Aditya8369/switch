@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { generateSealingKeyPair } from '@switch-console/agent-providers';
+import { cliToolsBase, generateSealingKeyPair } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -454,7 +454,7 @@ async function runCommand(args: string[]): Promise<number> {
                 new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
               ),
         locator: new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe')),
-        tools: () => toolStatuses(process.env.PATH, process.platform),
+        tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,
         log,
