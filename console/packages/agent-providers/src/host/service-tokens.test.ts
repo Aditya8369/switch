@@ -20,6 +20,7 @@ function grant(service: string, revision: number): ServiceGrant {
     resources: {},
     revision,
     skill: null,
+    mcp_servers: [],
   };
 }
 
@@ -59,8 +60,18 @@ afterEach(() => vi.restoreAllMocks());
 describe('AgentServiceTokens', () => {
   it('hands out one token until five minutes before it expires, then asks again', async () => {
     const t = tokens([]);
-    const first = { token: 'synthetic-one', expiresAt: t.at() + HOUR, grantRevision: null };
-    const second = { token: 'synthetic-two', expiresAt: t.at() + 2 * HOUR, grantRevision: null };
+    const first = {
+      token: 'synthetic-one',
+      expiresAt: t.at() + HOUR,
+      useUntil: t.at() + HOUR,
+      grantRevision: null,
+    };
+    const second = {
+      token: 'synthetic-two',
+      expiresAt: t.at() + 2 * HOUR,
+      useUntil: t.at() + 2 * HOUR,
+      grantRevision: null,
+    };
     t.issue.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
     t.advance(HOUR - REFRESH_BEFORE_MS - 1);
@@ -72,12 +83,60 @@ describe('AgentServiceTokens', () => {
     expect(t.redactions.text('synthetic-one synthetic-two')).toBe('[REDACTED] [REDACTED]');
   });
 
+  it('asks again by use_until, an hour at most, however long the token lives', async () => {
+    const t = tokens([]);
+    t.issue
+      .mockResolvedValueOnce({
+        token: 'synthetic-day-long',
+        expiresAt: t.at() + 24 * HOUR,
+        useUntil: t.at() + HOUR,
+        grantRevision: null,
+      })
+      .mockResolvedValueOnce({
+        token: 'synthetic-day-long',
+        expiresAt: t.at() + 24 * HOUR,
+        useUntil: t.at() + 2 * HOUR,
+        grantRevision: null,
+      });
+    await t.service.answer('example', null);
+    t.advance(HOUR - REFRESH_BEFORE_MS - 1);
+    await t.service.answer('example', null);
+    expect(t.issue).toHaveBeenCalledTimes(1);
+    t.advance(2);
+    await t.service.answer('example', null);
+    expect(t.issue).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops handing out a token past use_until while Switch cannot be reached', async () => {
+    const t = tokens([]);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    t.issue
+      .mockResolvedValueOnce({
+        token: 'synthetic-day-long',
+        expiresAt: t.at() + 24 * HOUR,
+        useUntil: t.at() + HOUR,
+        grantRevision: null,
+      })
+      .mockRejectedValue(new Error('Switch could not be reached for an example token: offline'));
+    await t.service.answer('example', null);
+    t.advance(HOUR - 30_000);
+    expect(await t.service.answer('example', null)).toMatchObject({
+      kind: 'refused',
+      code: 'unreachable',
+    });
+  });
+
   it('asks Switch once for sessions asking at the same time', async () => {
     const t = tokens([]);
     let release!: (value: IssuedServiceToken) => void;
     t.issue.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
     const asks = [t.service.answer('github', null), t.service.answer('github', null)];
-    release({ token: 'synthetic-shared', expiresAt: t.at() + HOUR, grantRevision: null });
+    release({
+      token: 'synthetic-shared',
+      expiresAt: t.at() + HOUR,
+      useUntil: t.at() + HOUR,
+      grantRevision: null,
+    });
     expect(await Promise.all(asks)).toEqual([
       expect.objectContaining({ token: 'synthetic-shared' }),
       expect.objectContaining({ token: 'synthetic-shared' }),
@@ -91,16 +150,19 @@ describe('AgentServiceTokens', () => {
       .mockResolvedValueOnce({
         token: 'synthetic-revoked',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: null,
       })
       .mockResolvedValueOnce({
         token: 'synthetic-fresh',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: null,
       })
       .mockResolvedValueOnce({
         token: 'synthetic-later',
         expiresAt: t.at() + 2 * HOUR,
+        useUntil: t.at() + 2 * HOUR,
         grantRevision: null,
       });
     await t.service.answer('github', null);
@@ -127,6 +189,7 @@ describe('AgentServiceTokens', () => {
       .mockResolvedValueOnce({
         token: 'synthetic-one',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: null,
       })
       .mockResolvedValueOnce({
@@ -137,6 +200,7 @@ describe('AgentServiceTokens', () => {
       .mockResolvedValueOnce({
         token: 'synthetic-regranted',
         expiresAt: t.at() + 2 * HOUR,
+        useUntil: t.at() + 2 * HOUR,
         grantRevision: null,
       });
     await t.service.answer('github', null);
@@ -157,6 +221,7 @@ describe('AgentServiceTokens', () => {
       .mockResolvedValueOnce({
         token: 'synthetic-one',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: null,
       })
       .mockResolvedValueOnce({ code: 'internal', message: 'GitHub is down.', retryable: true })
@@ -181,11 +246,13 @@ describe('AgentServiceTokens', () => {
         .mockResolvedValueOnce({
           token: 'synthetic-read',
           expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
           grantRevision: 1,
         })
         .mockResolvedValueOnce({
           token: 'synthetic-write',
           expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
           grantRevision: 2,
         });
       t.readGrants.mockResolvedValue([grant('github', 2)]);
@@ -204,6 +271,7 @@ describe('AgentServiceTokens', () => {
       t.issue.mockResolvedValueOnce({
         token: 'synthetic-one',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: 3,
       });
       t.readGrants.mockResolvedValue([grant('github', 3)]);
@@ -227,6 +295,7 @@ describe('AgentServiceTokens', () => {
         .mockResolvedValueOnce({
           token: 'synthetic-one',
           expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
           grantRevision: 1,
         })
         .mockResolvedValueOnce({
@@ -250,6 +319,7 @@ describe('AgentServiceTokens', () => {
       t.issue.mockResolvedValueOnce({
         token: 'synthetic-one',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: 1,
       });
       t.readGrants.mockRejectedValue(new Error('offline'));
@@ -265,6 +335,7 @@ describe('AgentServiceTokens', () => {
       t.issue.mockResolvedValueOnce({
         token: 'synthetic-one',
         expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
         grantRevision: null,
       });
       await t.service.answer('github', null);

@@ -24,6 +24,14 @@ export const serviceGrantSchema = z.object({
   /** Moves on every change to the grant. Absent from a Switch from before it. */
   revision: z.number().int().optional(),
   skill: z.object({ name: z.string().regex(SLUG), content: z.string() }).nullable(),
+  /**
+   * The vendor's MCP servers a session calls for this service, each under its
+   * own name. Empty for a service whose tools are not MCP (GitHub's are git
+   * and gh), and from a Switch that predates them.
+   */
+  mcp_servers: z
+    .array(z.object({ name: z.string().regex(SLUG), url: z.string().url() }))
+    .default([]),
 });
 export type ServiceGrant = z.infer<typeof serviceGrantSchema>;
 
@@ -107,15 +115,27 @@ export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
 export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
 
 /**
- * `grantRevision` is the grant's revision the token was issued under, or null
- * from a Switch from before it, whose tokens are kept until they expire.
+ * A token as this machine holds it, both times on this machine's clock:
+ * `expiresAt` when the vendor stops taking it, and `useUntil` when Switch
+ * must be asked again (at most an hour after the issue, so its checks run
+ * at least hourly whatever the vendor's lifetime). `grantRevision` is the
+ * grant's revision it was issued under, or null from a Switch from before it,
+ * whose tokens are kept until `useUntil`.
  */
-export type IssuedServiceToken = { token: string; expiresAt: number; grantRevision: number | null };
+export type IssuedServiceToken = {
+  token: string;
+  expiresAt: number;
+  useUntil: number;
+  grantRevision: number | null;
+};
 export type ServiceRefusal = { code: string; message: string; retryable: boolean };
 
 const issuedSchema = z.object({
   token: z.string(),
   expires_at: z.string(),
+  // Additive in contract §5; absent from a Switch that predates them.
+  expires_in: z.number().int().nonnegative().optional(),
+  use_until: z.string().optional(),
   grant_revision: z.number().int().optional(),
 });
 const refusalSchema = z.object({
@@ -159,11 +179,28 @@ export async function issueServiceToken(
   }
   const issued = issuedSchema.safeParse(await response.json().catch(() => null));
   const expiresAt = issued.success ? Date.parse(issued.data.expires_at) : Number.NaN;
-  if (!issued.success || !validServiceToken(issued.data.token) || !Number.isFinite(expiresAt))
+  const useUntil =
+    issued.success && issued.data.use_until !== undefined
+      ? Date.parse(issued.data.use_until)
+      : expiresAt;
+  if (
+    !issued.success ||
+    !validServiceToken(issued.data.token) ||
+    !Number.isFinite(expiresAt) ||
+    !Number.isFinite(useUntil) ||
+    useUntil > expiresAt
+  )
     throw new Error(`Switch answered a ${service} token request with something that is not one.`);
+  // Timed from when the answer arrived, by Switch's own count, so this
+  // machine's clock is never compared with Switch's.
+  const localExpiry =
+    issued.data.expires_in !== undefined
+      ? Date.now() + issued.data.expires_in * 1000 - 1000
+      : onLocalClock(expiresAt, response);
   return {
     token: issued.data.token,
-    expiresAt: onLocalClock(expiresAt, response),
+    expiresAt: localExpiry,
+    useUntil: localExpiry - (expiresAt - useUntil),
     grantRevision: issued.data.grant_revision ?? null,
   };
 }

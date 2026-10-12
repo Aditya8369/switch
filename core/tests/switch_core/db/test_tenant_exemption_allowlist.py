@@ -189,6 +189,14 @@ _RAW_SESSION_FACTORY_MODULES = {
     # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
     # so its lease belongs to none. It touches only that table.
     "switch_core.management.process_lease",
+    #
+    # ── The OAuth client Core registers for itself at a vendor that offers
+    # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
+    # vendor sees one Switch, so the client is the deployment's, not a
+    # tenant's: read and written in a session bound to none, and re-encrypted
+    # once at boot beside the per-tenant pass.
+    "switch_core.connections.oauth_clients",
+    "switch_core.db.key_rotation",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

@@ -112,6 +112,10 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # sockets for every tenant at once, and the row says only that it
             # is alive.
             "switch_core_processes",
+            # The OAuth client Core registered for itself at a vendor: the
+            # vendor sees one Switch, so one client per deployment and
+            # service, holding no person's account.
+            "service_oauth_clients",
         }
 
     async def test_scoped_is_everything_else(self) -> None:

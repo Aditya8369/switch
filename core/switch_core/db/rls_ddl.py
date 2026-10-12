@@ -137,6 +137,11 @@ POLICY_NAME = "tenant_isolation"
 # workspace is that workspace's `machine_workspaces` row, which is scoped, and
 # `tenants_of_cloud_machine` (`db/tenant_lookup.py`) is how the cloud
 # controller, which acts for no tenant, finds which workspaces those are.
+#
+# `service_oauth_clients` holds the OAuth client Core registered for itself at
+# a vendor that offers no other way to have one. The vendor sees one Switch,
+# so there is one client per deployment and service, shared by every tenant's
+# sign-ins; it holds no person's account, only the deployment's own client.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
@@ -146,6 +151,7 @@ GLOBAL_TABLES = frozenset(
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
         "switch_core_processes",
+        "service_oauth_clients",
     }
 )
 
