@@ -69,7 +69,6 @@ from switch_core.gateway.cloud_controllers import (
 from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
-from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
@@ -91,6 +90,7 @@ from switch_core.management.schemas import (
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
+from switch_core.management.signals import ControllerSignals
 from switch_core.providers.registry import provider_ids
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ class ManagementService:
         self,
         *,
         settings: ManagementSettings,
-        notifier: ControllerNotifier,
+        signals: ControllerSignals,
         controllers: AgentControllerStore,
         definitions: AgentDefinitionStore,
         operations: AgentControllerOperationStore,
@@ -140,7 +140,8 @@ class ManagementService:
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
-        self.notifier = notifier
+        self.signals = signals
+        self.notifier = signals.notifier
         self.presence = presence
         self.controllers = controllers
         self.definitions = definitions
@@ -787,8 +788,7 @@ class ManagementService:
         return moved
 
     def _announce_revoked(self, controller_id: str) -> None:
-        self.notifier.credential_revoked(controller_id)
-        self.presence.revoke_controller(controller_id)
+        self.signals.revoked(controller_id)
 
     # ── Provider logins sealed to a controller ────────────────────────────────
 
@@ -854,7 +854,7 @@ class ManagementService:
             provider,
             row.revision,
         )
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id,
             operation_id=operation.id,
             kind="provider.login",
@@ -892,7 +892,7 @@ class ManagementService:
         logger.info(
             "Withdrew agent controller %s's sealed %s login", controller_id, provider
         )
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id,
             operation_id=operation.id,
             kind="provider.recheck",
@@ -1059,7 +1059,7 @@ class ManagementService:
 
     def _nudge(self, revisions: dict[str, int]) -> None:
         for controller_id, revision in revisions.items():
-            self.notifier.assignment_changed(controller_id, revision)
+            self.signals.assignment_changed(controller_id, revision)
 
     async def _bind(
         self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
@@ -1408,7 +1408,7 @@ class ManagementService:
         )
         view = operation_view(operation)
         await session.commit()
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id, operation_id=operation.id, kind=kind, agent_id=agent_id
         )
         return view

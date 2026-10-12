@@ -279,7 +279,9 @@ class TestTheFlagOff:
             agent_management_enabled = False
 
         assert (
-            create_management(_Off(), object(), AgentConnectionRegistry().controllers)  # type: ignore[arg-type]
+            create_management(
+                _Off(), object(), AgentConnectionRegistry().controllers, object()
+            )  # type: ignore[arg-type]
             is None
         )
 

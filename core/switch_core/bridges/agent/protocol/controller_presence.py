@@ -545,6 +545,10 @@ class ControllerPresence:
         if current is None or cursor > current:
             conn.resume_cursors[agent_id] = cursor
 
+    def held_connections(self) -> list[ControllerConnection]:
+        """Every controller connection this process holds."""
+        return list(self._connections.values())
+
     def current_connection(self, controller_id: str) -> ControllerConnection | None:
         """The controller's open connection, live or not yet swept."""
         return self._connections.get(controller_id)
