@@ -191,7 +191,8 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.management.process_lease",
     # The boot-time re-encryption sweep's per-tenant pass binds a tenant
     # (`tenant_session`); this raw call is its separate pass over
-    # `trust_settings`'s encrypted key, a table with no tenant and no policy
+    # the global tables' encrypted values (`trust_settings`'s key,
+    # `service_oauth_clients`' secrets), tables with no tenant and no policy
     # (`rls_ddl.GLOBAL_TABLES`) that a per-tenant loop would otherwise sweep
     # once per tenant for no reason.
     "switch_core.db.key_rotation",
@@ -201,6 +202,13 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
     # deployment, so there is no tenant for a policy to narrow on.
     "switch_core.trust.client",
+    #
+    # ── The OAuth client Core registers for itself at a vendor that offers
+    # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
+    # vendor sees one Switch, so the client is the deployment's, not a
+    # tenant's: read and written in a session bound to none, and re-encrypted
+    # once at boot by the global pass above.
+    "switch_core.connections.oauth_clients",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a
