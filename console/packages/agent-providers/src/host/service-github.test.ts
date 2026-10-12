@@ -103,6 +103,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
       notices,
       fallback: !isolate,
       repositoryVisible: async (_token, repository) => repository === 'org/granted',
+      now: Date.now,
       ask: async (ask) => {
         asks.push(ask);
         if (refuse)

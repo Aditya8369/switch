@@ -982,6 +982,7 @@ export async function hostSessionProcess(input: {
           notices: serviceNotices,
           fallback,
           repositoryVisible: githubRepositoryVisible,
+          now: Date.now,
         });
     }
     const prepared = await prepareSharedConfig(
