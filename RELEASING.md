@@ -77,10 +77,15 @@ peer still on it, and it can never be raised past what is running in the field.
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
      `gateway`, and `setup` and pushes them to the container registry tagged
      `<version>` and `latest`;
+   - builds, tests and packs the agents controller at the same version and
+     publishes it as the `switch-agent-controller-v<version>` GitHub release
+     (see "The controller a Switch release names" below);
    - once the images are pushed, writes each image's digest into the chart's
-     `values.yaml`, packages the chart at the same version, checks the packaged
-     chart renders every first-party image by digest, and pushes it as an OCI
-     artifact to the same registry (see [Pinned by digest](#pinned-by-digest)).
+     `values.yaml` and that controller package's version, URL and SHA-256 into
+     `switchCore.controllerRelease`, packages the chart at the same version,
+     checks the packaged chart renders every first-party image by digest, and
+     pushes it as an OCI artifact to the same registry (see
+     [Pinned by digest](#pinned-by-digest)).
    `workflow_dispatch` runs the build without pushing, for verification. It
    pins placeholder digests, so the pin and the check run too.
 
@@ -103,6 +108,11 @@ git push origin switch-v0.30.0-rc.1
   `core/pyproject.toml` and not already released as `switch-v0.30.0`.
 - **Never `latest`.** Images, chart and compose are pushed under `0.30.0-rc.1` only.
   `helm install` skips the chart unless given `--devel` or that exact `--version`.
+- **No controller release.** The controller's package script takes only a plain
+  `x.y.z` version, so an RC publishes no controller package and its chart leaves
+  `switchCore.controllerRelease` empty: controllers talking to an RC keep the
+  version they have. Set the three values yourself to point an RC at a released
+  controller.
 - **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
   into `core/pyproject.toml` on the runner, so the running server's version says
   which candidate it is. Nothing is committed.
@@ -279,6 +289,37 @@ git push origin switch-agent-controller-v0.2.0
   installs the package and runs it once before releasing.
 
 `workflow_dispatch` runs everything except the release, for verification.
+
+### The controller a Switch release names
+
+A Switch release (`switch-v<version>`, not an RC) also publishes the controller,
+built from the same commit, as `switch-agent-controller-v<version>`: the same
+GitHub release this workflow makes (package and `install.sh`, never Latest), so
+`install.sh` and `switch-agent-controller update` find it as they find any other.
+Its tag is created by the release with the workflow token, which starts no
+workflow, so this workflow does not publish it again. If that release already
+exists (a re-run), the switch-release workflow checks that its package is the
+one it just built and fails otherwise.
+
+The chart from that release names the package in `switchCore.controllerRelease`
+(`version`, `url`, `sha256`), which switch-core gets as
+`CONTROLLER_RELEASE_VERSION`, `_URL` and `_SHA256` and hands every controller in
+its status answer (except Switch Console's own, which updates with Console). A
+controller running another version downloads the package,
+refuses it unless its SHA-256 matches, and installs it and restarts once none of
+its agents has a session running. The owner's controller list
+(`GET /gateway/management/controllers`, `release.current`) shows which are not yet
+on it.
+
+- **Rollback:** point the three values at the previous release's package (its
+  version, its `.../switch-agent-controller-v<old>/switch-agent-controller-<old>.tgz`
+  URL, and the SHA-256 in its release notes) and upgrade the chart. Setting none of
+  them stops telling controllers anything; they keep the version they have.
+- **Versions now follow Switch.** Controllers released this way carry the Switch
+  version, which is well above the controller's own earlier `0.1.x` line. A
+  controller release tagged by hand still works, but take its version from the
+  Switch version it ships beside, or it is either overtaken by the next Switch
+  release or ahead of the one Core names.
 
 ## Where artifacts are published
 
