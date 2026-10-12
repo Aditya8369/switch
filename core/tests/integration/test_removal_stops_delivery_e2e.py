@@ -67,7 +67,7 @@ async def _wait_buffered(
     raise AssertionError(f"{body!r} never reached the buffer for room {room_id}")
 
 
-def _rooms_in_buffer(harness: Harness, agent_id: str) -> set[str]:
+async def _rooms_in_buffer(harness: Harness, agent_id: str) -> set[str]:
     return {
         item.room_id
         for item in await harness.event_buffer.read_from(TENANT_ZERO_ID, agent_id, 0)
@@ -105,7 +105,7 @@ async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> 
 
     # Both rooms are in the buffer and addressed, so every assertion after the
     # removal is about the removal rather than about nothing being there.
-    assert _rooms_in_buffer(harness, watcher.agent_id) == {
+    assert await _rooms_in_buffer(harness, watcher.agent_id) == {
         rooms["left"].id,
         rooms["kept"].id,
     }
@@ -118,10 +118,10 @@ async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> 
     # own to apply — this is the whole of its defence.
     deadline = asyncio.get_event_loop().time() + 15
     while asyncio.get_event_loop().time() < deadline:
-        if rooms["left"].id not in _rooms_in_buffer(harness, watcher.agent_id):
+        if rooms["left"].id not in await _rooms_in_buffer(harness, watcher.agent_id):
             break
         await asyncio.sleep(0.25)
-    assert _rooms_in_buffer(harness, watcher.agent_id) == {rooms["kept"].id}, (
+    assert await _rooms_in_buffer(harness, watcher.agent_id) == {rooms["kept"].id}, (
         "the removed room's events are still retained for the agent, so an SSE "
         "reader resuming from an older cursor would be handed them"
     )
