@@ -38,6 +38,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
 )
+from switch_core.template_v2 import compile_v2, is_v2
 
 TemplateKind = Literal["room", "group", "agent"]
 
@@ -63,6 +64,16 @@ def template_kind(text: str) -> TemplateKind:
     (``kindOf``): a ``group:`` or ``rooms:`` makes a group, then several
     agents a group, one agent an agent template, anything else a room."""
     data = _load(text)
+    if is_v2(data):
+        resources = data.get("resources")
+        kinds = [
+            spec.get("type")
+            for spec in (resources.values() if isinstance(resources, dict) else [])
+            if isinstance(spec, dict)
+        ]
+        if "group" in kinds or kinds.count("room") > 1 or kinds.count("agent") > 1:
+            return "group"
+        return "agent" if "agent" in kinds else "room"
     if "group" in data or isinstance(data.get("rooms"), list):
         return "group"
     agents = _agents(data)
@@ -108,6 +119,9 @@ class AgentSlot:
     name: str
     description: str | None
     allow_existing: bool
+    # A version 2 resource's key, and the condition it is created under.
+    key: str | None
+    condition: str | None
     provider: str | None
     machine: str | None
     location: str | None
@@ -141,6 +155,32 @@ def _slot_connections(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _v2_slots(data: dict[str, Any]) -> list[AgentSlot]:
+    resources = data.get("resources")
+    slots = []
+    for key, spec in resources.items() if isinstance(resources, dict) else []:
+        if not isinstance(spec, dict) or spec.get("type") != "agent":
+            continue
+        slots.append(
+            AgentSlot(
+                name=_written_name(spec),
+                description=str(spec["description"])
+                if spec.get("description")
+                else None,
+                allow_existing=spec.get("allow_existing") is True,
+                key=str(key),
+                condition=_written(spec, "if"),
+                provider=_written(spec, "provider"),
+                machine=_written(spec, "machine"),
+                location=_written(spec, "location"),
+                model=_written(spec, "model"),
+                directory=_written(spec, "directory"),
+                connections=_slot_connections(spec),
+            )
+        )
+    return slots
+
+
 def repo_note(repo: str) -> str:
     """What an agent created from a template with a ``repo`` is told: to
     clone it into its directory. Access to a private one comes from a
@@ -153,6 +193,8 @@ def repo_note(repo: str) -> str:
 
 def agent_slots(text: str) -> list[AgentSlot]:
     data = _load(text)
+    if is_v2(data):
+        return _v2_slots(data)
     planner = _Planner(data, {}, None)
 
     def said(entry: dict[str, Any], key: str) -> str | None:
@@ -166,6 +208,8 @@ def agent_slots(text: str) -> list[AgentSlot]:
             name=_written_name(a),
             description=str(a["description"]) if a.get("description") else None,
             allow_existing=a.get("allow_existing") is True,
+            key=None,
+            condition=None,
             provider=said(a, "provider"),
             machine=said(a, "machine"),
             location=said(a, "location"),
@@ -364,6 +408,9 @@ class TemplatePlan:
     existing: dict[str, str]
     document: str | None
     inputs: dict[str, Any]
+    # Per agent created, the rooms (by name) whose members may address it
+    # beyond its owner: a version 2 `addressing: {anyone_in: [...]}`.
+    room_addressing: dict[str, list[str]]
 
 
 def _machine_ready(machine: dict[str, Any], provider: str | None) -> bool:
@@ -682,18 +729,10 @@ class _Planner:
             directory = str(self.text(slot, directory_field, values, "directory"))
 
         join = [
-            j
+            str(j)
             for j in interpolate(entry.get("join") or [], values)
-            if isinstance(j, str) and j.strip()
+            if isinstance(j, str) and j.strip() and not PLACEHOLDER_RE.search(j)
         ]
-        if join:
-            self.problem(
-                slot,
-                "join_console_only",
-                f"it joins {', '.join(join)}, and adding a new agent to rooms "
-                "that already exist happens in Switch Console. Run the "
-                "template there, or leave out join.",
-            )
 
         addressing = str(entry.get("addressing") or "owner")
         if addressing not in _AGENT_ADDRESSING:
@@ -763,6 +802,7 @@ class _Planner:
             directory=directory,
             addressing=addressing,
             connections=connections,
+            joins=join,
         )
 
     def connections(
@@ -823,6 +863,17 @@ def plan_template(
     anything is created.
     """
     data = _load(text)
+    room_addressing: dict[str, list[str]] = {}
+    if is_v2(data):
+        compiled = compile_v2(text, inputs, builtins)
+        text, inputs, room_addressing = (
+            compiled.document,
+            compiled.inputs,
+            compiled.room_addressing,
+        )
+        # A version 2 slot is filled by its resource's key.
+        filled = {compiled.names.get(k, k): v for k, v in filled.items()}
+        data = _load(text)
     values = {**builtins, **_known_values(data, inputs)}
     values.pop(AGENTS_DIR[1:-1], None)
     planner = _Planner(data, values, machines)
@@ -866,6 +917,6 @@ def plan_template(
     if planner.problems:
         raise AgentsNotCreated(planner.problems)
     if _room_part(data) is None:
-        return TemplatePlan(new_agents, existing, None, {})
+        return TemplatePlan(new_agents, existing, None, {}, room_addressing)
     document, run_inputs = room_document(text, names, inputs)
-    return TemplatePlan(new_agents, existing, document, run_inputs)
+    return TemplatePlan(new_agents, existing, document, run_inputs, room_addressing)

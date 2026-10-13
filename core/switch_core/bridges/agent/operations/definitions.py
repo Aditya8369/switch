@@ -59,6 +59,7 @@ from switch_core.template_runs import (
     Problem,
     TemplateAgents,
     pending_addressing,
+    room_ids_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -1744,7 +1745,7 @@ async def create_room_from_yaml(
     """
     async with _refusals_reported("create_room_from_yaml"):
         return await _provision_as_agent(
-            yaml, inputs, template_name=None, new_agents=[]
+            yaml, inputs, template_name=None, new_agents=[], room_addressing={}
         )
 
 
@@ -1792,6 +1793,7 @@ async def _provision_as_agent(
     *,
     template_name: str | None,
     new_agents: Sequence[NewAgentPlan],
+    room_addressing: dict[str, list[str]],
 ) -> dict[str, Any]:
     """Create the agents and rooms a document describes, as the calling
     agent: the one path for a document an agent writes and a template it
@@ -1863,7 +1865,7 @@ async def _provision_as_agent(
         owner_name=owner.name,
         from_room_id=await connected_room(),
         kickoffs=kickoffs,
-        pending=pending_addressing(new_agents, owner.id),
+        pending=pending_addressing(new_agents, owner.id, room_addressing),
     ) as origin:
         created = (
             []
@@ -1892,6 +1894,10 @@ async def _provision_as_agent(
                     template_name=template_name,
                 )
                 result = room_result.model_dump()
+            if creator is not None and room_addressing:
+                await creator.open_to_rooms(
+                    tenant_id, created, room_addressing, room_ids_of(result)
+                )
         except Exception as error:
             if creator is None or not created:
                 raise
@@ -2086,6 +2092,7 @@ async def run_template(
             plan.inputs or None,
             template_name=name,
             new_agents=plan.new_agents,
+            room_addressing=plan.room_addressing,
         )
 
 

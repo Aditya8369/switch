@@ -1294,3 +1294,77 @@ class TestTheConsoleRunsATemplateWithAgents:
             ("Bad Name", "invalid_name"),
         }
         assert await _agent_row(harness, "solo") is None
+
+
+DOCUMENT_TEMPLATE = """\
+version: 2
+params:
+  name: { type: string, default: Helper }
+  machine: { type: machine, default: [$first] }
+resources:
+  helper:
+    type: agent
+    display_name: "{name}"
+    instructions: Help.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{helper.name}"
+    addressing: anyone
+"""
+
+
+@pytest.mark.usefixtures("_short_listen")
+class TestTheConsoleRunsAVersion2Template:
+    """`POST /gateway/rooms/from-template-document`: the server works the
+    agents out of the document and the inputs, on the person's machines."""
+
+    @pytest.fixture(autouse=True)
+    def _rooms(self, harness: Harness) -> None:
+        harness.gateway_app.include_router(rooms_router, prefix="/rooms")
+        harness.gateway_app.dependency_overrides[gw_deps.get_room_yaml_service] = (
+            lambda: _NoRooms()
+        )
+
+    async def test_creates_the_agent_on_the_first_machine_that_can_run_it(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+
+        response = await client.post(
+            "/gateway/rooms/from-template-document",
+            json={
+                "template": DOCUMENT_TEMPLATE,
+                "inputs": {"name": "Ada helper"},
+                "template_name": "helper",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 201, response.text
+        (created,) = response.json()["created_agents"]
+        assert created["name"] == "ada-helper"
+        assert created["machine"]["name"] == "laptop"
+        agent = await _agent_row(harness, "ada-helper")
+        assert agent is not None and agent.addressing_policy is None
+
+    async def test_no_machine_that_can_run_it_is_refused_with_the_reason(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(
+            client, controller, providers=[provider("claude", auth="expired")]
+        )
+
+        response = await client.post(
+            "/gateway/rooms/from-template-document",
+            json={"template": DOCUMENT_TEMPLATE, "template_name": "helper"},
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 409, response.text
+        body = response.json()
+        assert {p["code"] for p in body["problems"]} == {"machine_unresolved"}
+        assert "claude is not signed in on laptop" in body["detail"]

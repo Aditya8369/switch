@@ -8,6 +8,7 @@ what management refuses, and an agent it creates is a real agent row.
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 from typing import Any
 
@@ -200,7 +201,7 @@ async def _stored(env: dict[str, Any], content: str, kind: str = "group") -> str
     async with env["session_factory"]() as session:
         template = Template(
             owner_id=env["user_id"],
-            name="team",
+            name=f"team-{uuid.uuid4().hex[:8]}",
             description="team description",
             kind=kind,
             content=content,
@@ -502,12 +503,53 @@ def test_a_location_names_a_machine_only_when_it_is_one():
     assert placed("box", provider="codex") == "m-box"
 
 
-def test_joining_existing_rooms_is_the_consoles():
+def test_join_names_the_existing_rooms_to_add_the_agent_to():
     template = (
         "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
         "  machine: laptop\n  directory: /x\n  join: [lobby]\n"
     )
-    assert _codes(template) == {"join_console_only"}
+    (agent,) = _plan(template).new_agents
+    assert agent.joins == ["lobby"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_agent_joins_an_existing_room_or_the_run_is_refused(managed):
+    added: list[tuple[str, list[str]]] = []
+
+    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
+        added.append((room_id, agent_ids))
+
+    managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
+    async with managed["session_factory"]() as session:
+        lobby = Room(
+            transport_room_id="!lobby:test.local",
+            name="lobby",
+            description="d",
+            channel_type="channel_public",
+            owner_id=managed["user_id"],
+        )
+        session.add(lobby)
+        await session.commit()
+        lobby_id = lobby.id
+    template = """\
+agent:
+  name: joiner
+  instructions: Join.
+  provider: claude
+  machine: laptop
+  directory: /srv/joiner
+  join: [JOIN]
+"""
+    unknown = await _stored(managed, template.replace("JOIN", "nowhere"), kind="agent")
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=unknown)
+    assert {p.code for p in e.value.problems} == {"join_unknown_room"}
+    assert managed["management"].created == []
+
+    known = await _stored(managed, template.replace("JOIN", "lobby"), kind="agent")
+    result = await _as(managed["agent_id"], run_template, template_id=known)
+    (created,) = result["created_agents"]
+    assert added == [(lobby_id, [created["agent_id"]])]
 
 
 def test_a_provider_chain_takes_the_first_ready_on_the_machine():
@@ -651,3 +693,67 @@ def test_slots_show_what_a_shared_param_says_and_each_connection():
     assert lead.connections == [
         {"service": "github", "access": "write", "repos": ["acme/a"]}
     ]
+
+
+V2_EXPERT = """\
+version: 2
+params:
+  start_in: { type: enum, enum: [nowhere, new_room], default: new_room }
+  machine: { type: machine, default: [$first] }
+resources:
+  expert:
+    type: agent
+    display_name: Switch expert
+    instructions: Answer questions about Switch.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{expert.name}"
+    addressing:
+      - if: "{start_in} == new_room"
+        value: { anyone_in: [expert_room] }
+      - value: anyone
+  expert_room:
+    type: room
+    if: "{start_in} == new_room"
+    name: "Ask {expert.name}"
+    description: Where you ask about Switch.
+    agents: [expert]
+    kickoff: "@{expert.name} hi."
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_v2_template_runs_and_opens_its_agent_to_its_room(managed):
+    template_id = await _stored(managed, V2_EXPERT, kind="agent")
+
+    result = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert result["room_name"] == "Ask switch-expert"
+    assert [a["name"] for a in result["created_agents"]] == ["switch-expert"]
+    async with managed["session_factory"]() as session:
+        agent = (
+            await session.execute(select(Agent).where(Agent.name == "switch-expert"))
+        ).scalar_one()
+    rules = agent.addressing_policy["rules"]
+    assert any(rule.get("rooms") == [result["room_id"]] for rule in rules)
+    assert managed["admin"].sent[-1]["body"].startswith("@switch-expert hi.")
+
+
+@pytest.mark.asyncio
+async def test_a_v2_template_with_its_room_off_creates_the_agent_alone(managed):
+    template_id = await _stored(managed, V2_EXPERT, kind="agent")
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"start_in": "nowhere"},
+    )
+
+    assert "room_id" not in result
+    async with managed["session_factory"]() as session:
+        agent = (
+            await session.execute(select(Agent).where(Agent.name == "switch-expert"))
+        ).scalar_one()
+    assert agent.addressing_policy is None
+    assert await _rooms(managed) == []

@@ -23,7 +23,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from switch_core.addressing import AddressingRule, owner_only_policy
 from switch_core.agent_refusals import AgentRefused
+from switch_core.authz import Principal, can
 from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
@@ -93,6 +95,8 @@ class NewAgentPlan:
     directory: str | None
     addressing: str
     connections: list[ConnectionPlan] = field(default_factory=list)
+    # Rooms that already exist, by name, the agent is added to once created.
+    joins: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -135,6 +139,7 @@ class CheckedAgent:
     directory: str | None
     addressing_policy: dict[str, Any] | None
     grants: list[CheckedGrant]
+    join_room_ids: list[str]
 
 
 @dataclass(frozen=True)
@@ -170,19 +175,33 @@ def _directory(
 
 
 def pending_addressing(
-    plans: Sequence[NewAgentPlan], owner_id: str
+    plans: Sequence[NewAgentPlan],
+    owner_id: str,
+    room_addressing: dict[str, list[str]],
 ) -> dict[str, tuple[dict[str, Any] | None, str]]:
     """Each agent the run would create, by name, with the addressing policy
     it would have and its owner: what the kickoff check reads for an agent
-    that does not exist yet."""
+    that does not exist yet. An agent opened to the rooms the run creates is
+    read as open: its kickoff is posted in one of them, and those rooms have
+    no id yet to scope a rule to."""
     return {
         plan.name: (
-            addressing_policy_for(TEMPLATE_ADDRESSING[plan.addressing]),
+            None
+            if room_addressing.get(plan.name)
+            else addressing_policy_for(TEMPLATE_ADDRESSING[plan.addressing]),
             owner_id,
         )
         for plan in plans
         if plan.addressing in TEMPLATE_ADDRESSING
     }
+
+
+def room_ids_of(result: dict[str, Any]) -> dict[str, str]:
+    """The rooms a provisioning made, by name: one room's result or a
+    group's."""
+    if "rooms" in result:
+        return {r["room_name"]: r["room_id"] for r in result["rooms"]}
+    return {result["room_name"]: result["room_id"]}
 
 
 class TemplateAgents:
@@ -289,6 +308,10 @@ class TemplateAgents:
                 continue
             grants, grant_problems = await self._check_grants(tenant_id, owner_id, plan)
             problems.extend(grant_problems)
+            join_room_ids, join_problems = await self._check_joins(
+                tenant_id, owner_id, plan
+            )
+            problems.extend(join_problems)
             checked.append(
                 CheckedAgent(
                     plan=plan,
@@ -298,11 +321,55 @@ class TemplateAgents:
                         TEMPLATE_ADDRESSING[plan.addressing]
                     ),
                     grants=grants,
+                    join_room_ids=join_room_ids,
                 )
             )
         if problems:
             raise AgentsNotCreated(problems)
         return checked
+
+    async def _check_joins(
+        self, tenant_id: str, owner_id: str, plan: NewAgentPlan
+    ) -> tuple[list[str], list[Problem]]:
+        """The rooms the agent joins, by id: each must exist, be one the owner
+        sees, and one the owner may add agents to."""
+        if not plan.joins:
+            return [], []
+        async with tenant_session(self._protocol.session_factory, tenant_id) as session:
+            readable = await self._protocol.room_store.list_readable(
+                session, owner_id, is_admin=False
+            )
+        ids: list[str] = []
+        problems: list[Problem] = []
+        for name in plan.joins:
+            matches = [room for room in readable if room.name == name]
+            if not matches:
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "join_unknown_room",
+                        f"it joins {name}, and no room of that name is one you can see.",
+                    )
+                )
+            elif len(matches) > 1:
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "join_ambiguous_room",
+                        f"it joins {name}, and {len(matches)} rooms have that name.",
+                    )
+                )
+            elif not can(Principal(owner_id, False), "write", matches[0]):
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "join_not_allowed",
+                        f"it joins {name}, and you may not add agents to that room.",
+                    )
+                )
+            else:
+                ids.append(matches[0].id)
+        return ids, problems
 
     async def _check_grants(
         self, tenant_id: str, owner_id: str, plan: NewAgentPlan
@@ -412,6 +479,10 @@ class TemplateAgents:
                     )
                 )
                 await self._finish(tenant_id, owner_id, result["agent_id"], agent)
+                for room_id in agent.join_room_ids:
+                    await self._protocol.room_service.add_agents_to_room(
+                        room_id, agent_ids=[result["agent_id"]]
+                    )
             except Exception as error:
                 raise await self.undone(
                     created, f"creating {plan.name} failed: {_reason(error)}"
@@ -482,6 +553,35 @@ class TemplateAgents:
                         agent_id,
                         warning,
                     )
+
+    async def open_to_rooms(
+        self,
+        tenant_id: str,
+        created: Sequence[CreatedAgent],
+        room_addressing: dict[str, list[str]],
+        room_ids: dict[str, str],
+    ) -> None:
+        """Let anyone in the named rooms address the agents opened to them,
+        once those rooms exist, on top of their owner."""
+        for agent in created:
+            rooms = room_addressing.get(agent.name)
+            if not rooms:
+                continue
+            missing = [r for r in rooms if r not in room_ids]
+            if missing:
+                raise RuntimeError(
+                    f"{agent.name} is opened to {', '.join(missing)}, which "
+                    "the run did not create"
+                )
+            policy = owner_only_policy([])
+            policy.rules.append(AddressingRule(rooms=[room_ids[r] for r in rooms]))
+            async with tenant_session(
+                self._protocol.session_factory, tenant_id
+            ) as session:
+                await self._protocol.agent_store.update(
+                    session, agent.agent_id, addressing_policy=policy.model_dump()
+                )
+                await session.commit()
 
     async def undone(self, created: Sequence[CreatedAgent], what: str) -> RunUndone:
         """Delete the agents a run created, and the refusal saying so. An

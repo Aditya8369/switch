@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.agent_templates import plan_template
 from switch_core.authz import Action, Principal, can, require, require_manage
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -71,6 +72,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     RunUndone,
     TemplateAgents,
+    room_ids_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -575,8 +577,95 @@ async def run_template_with_agents(
     half. ``listening`` is false for an agent that was not taking events
     before the rooms were made: the kickoff may not have reached it.
     """
+    return await _run_as_person(
+        rooms_yaml,
+        protocol,
+        user,
+        is_admin,
+        plans=[agent.plan() for agent in body.agents],
+        document=body.yaml,
+        inputs=body.inputs,
+        template_name=body.template_name,
+        room_addressing={},
+    )
+
+
+class TemplateDocumentRunBody(BaseModel):
+    """A whole template run from its document: the server works out the
+    agents and rooms from the document and the inputs."""
+
+    model_config = ConfigDict(extra="forbid")
+    template: str
+    inputs: dict[str, Any] | None = None
+    # Existing agents standing in for slots that allow it: {slot: agent name}.
+    filled: dict[str, str] = Field(default_factory=dict)
+    template_name: str
+
+
+@router.post("/from-template-document", status_code=201, response_model=None)
+async def run_template_document(
+    body: TemplateDocumentRunBody,
+    rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> dict[str, Any] | JSONResponse:
+    """Run a template from its document, the way ``run_template`` does for an
+    agent: the server resolves the agents (their machine and provider among
+    the caller's machines), checks everything, creates the agents, then the
+    rooms. For a ``version: 2`` document, whose conditions and references
+    only the server resolves. Answers as ``from-template``.
+    """
+    inputs = body.inputs or {}
+    try:
+        builtins = await rooms_yaml.builtins_for(
+            user_id=user.id,
+            name=user.name,
+            email=user.email,
+            text=body.template,
+            inputs=inputs,
+        )
+        port = management_port()
+        machines = (
+            await port.list_machines(require_tenant_id(), user.id)
+            if port is not None
+            else None
+        )
+        plan = plan_template(
+            body.template, body.filled, inputs, builtins=builtins, machines=machines
+        )
+    except AgentsNotCreated as error:
+        return _refused_run(error)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return await _run_as_person(
+        rooms_yaml,
+        protocol,
+        user,
+        is_admin,
+        plans=plan.new_agents,
+        document=plan.document,
+        inputs=plan.inputs or None,
+        template_name=body.template_name,
+        room_addressing=plan.room_addressing,
+    )
+
+
+async def _run_as_person(
+    rooms_yaml: RoomYamlService,
+    protocol: AgentCore,
+    user: User,
+    is_admin: bool,
+    *,
+    plans: list[NewAgentPlan],
+    document: str | None,
+    inputs: dict[str, Any] | None,
+    template_name: str,
+    room_addressing: dict[str, list[str]],
+) -> dict[str, Any] | JSONResponse:
+    """Check everything, create the agents, then the rooms, as `user`; undo
+    the agents when the rooms fail."""
     tenant_id = require_tenant_id()
-    plans = [agent.plan() for agent in body.agents]
     creator = TemplateAgents(
         protocol=protocol,
         management=management_port(),
@@ -586,17 +675,17 @@ async def run_template_with_agents(
     try:
         parsed = None
         builtins: dict[str, str] = {}
-        if body.yaml is not None:
-            inputs = await rooms_yaml.resolve_defaults(body.yaml, body.inputs)
+        if document is not None:
+            inputs = await rooms_yaml.resolve_defaults(document, inputs)
             builtins = await rooms_yaml.builtins_for(
                 user_id=user.id,
                 name=user.name,
                 email=user.email,
-                text=body.yaml,
+                text=document,
                 inputs=inputs,
             )
             parsed = rooms_yaml.parse_template(
-                body.yaml, inputs=inputs, builtins=builtins
+                document, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed)
             await rooms_yaml.check_bridges(parsed)
@@ -611,7 +700,7 @@ async def run_template_with_agents(
                         user_id=user.id,
                         is_admin=is_admin,
                         creator_name=builtins["$creator"],
-                        template_name=body.template_name,
+                        template_name=template_name,
                     )
                 else:
                     room = await rooms_yaml.provision(
@@ -620,7 +709,14 @@ async def run_template_with_agents(
                         user_id=user.id,
                         is_admin=is_admin,
                         creator_name=builtins["$creator"],
-                        template_name=body.template_name,
+                        template_name=template_name,
+                    )
+                if room_addressing:
+                    await creator.open_to_rooms(
+                        tenant_id,
+                        created,
+                        room_addressing,
+                        room_ids_of(room.model_dump()),
                     )
             except Exception as error:
                 if not created:
