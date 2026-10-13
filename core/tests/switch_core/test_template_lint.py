@@ -562,3 +562,32 @@ class TestAgentRuntime:
         )
         assert "unused_param" not in _codes(result.warnings)
         assert "agent_runtime_unsaid" not in _codes(result.warnings)
+
+
+def test_agent_inside_an_agents_entry_is_that_entrys_name():
+    text = """\
+agents:
+  - name: lead
+    instructions: Lead.
+    provider: claude
+    machine: laptop
+    directory: "{$agents_dir}/{agent}"
+room:
+  name: team
+  agents: [lead]
+"""
+    result = lint_template(text)
+    assert not [w for w in result.warnings if "'{agent}'" in w.message]
+
+
+def test_agent_in_a_team_room_is_still_undeclared():
+    text = """\
+agents:
+  - name: lead
+    instructions: Lead.
+room:
+  name: "{agent} room"
+  agents: [lead]
+"""
+    result = lint_template(text)
+    assert [w for w in result.warnings if "'{agent}'" in w.message]

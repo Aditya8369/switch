@@ -384,6 +384,16 @@ def lint_template(text: str) -> LintResult:
     # Whether `$creator` also came back from PLACEHOLDER_RE depends on this
     # server's version of it; either way it is a builtin, not a missing param.
     used -= builtins_used
+    # Inside an entry of `agents:`, `{agent}` is that entry's own name, filled
+    # in when it is created (`directory: "{$agents_dir}/{agent}"`). Only a use
+    # outside the entries needs the single `agent:` form to mean something.
+    if isinstance(document.get("agents"), list) and "agent" not in declared:
+        outside = {k: v for k, v in body.items() if k != "agents"}
+        if not any(
+            "agent" in re.findall(PLACEHOLDER_RE, text_node)
+            for text_node in _walk_strings(outside)
+        ):
+            used.discard("agent")
 
     # `{$...}` is the server's to fill, not the template's to declare, so it is
     # held to a different question: is it one the server actually knows?
