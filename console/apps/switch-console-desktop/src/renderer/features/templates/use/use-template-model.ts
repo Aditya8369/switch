@@ -12,14 +12,31 @@ export type Values = Record<string, string | number | boolean>;
 
 /** Fill `{param}` and `{$builtin}` placeholders from `values`. A placeholder with no value yet is left as written. */
 export function interpolate(template: string, values: Values): string {
-  return template.replace(/\{(\$?\w+)\}/g, (match, key: string) => {
+  return template.replace(/\{(\$?[\w.]+)\}/g, (match, key: string) => {
     const val = values[key];
     return val !== undefined && val !== '' ? String(val) : match;
   });
 }
 
 export function hasPlaceholder(text: string): boolean {
-  return /\{\$?\w+\}/.test(text);
+  return /\{\$?[\w.]+\}/.test(text);
+}
+
+/**
+ * Whether a version 2 condition holds with these values: `"{param}"` (true
+ * when the value is), `"{param} == value"` or `"{param} != value"`. Mirrors
+ * `holds` in core's template_v2. Something that is not a condition never holds.
+ */
+export function holds(condition: string | null | undefined, values: Values): boolean {
+  if (condition === null || condition === undefined) return true;
+  const match = /^\s*\{([A-Za-z_]\w*)\}\s*(?:(==|!=)\s*(.*?))?\s*$/.exec(condition);
+  if (!match) return false;
+  const [, name, op, literal] = match;
+  const value = values[name!];
+  if (!op) return value !== undefined && value !== '' && value !== false && value !== 0;
+  const equal =
+    value !== undefined && String(value) === (literal ?? '').trim().replace(/^['"]|['"]$/g, '');
+  return op === '==' ? equal : !equal;
 }
 
 /** Every `{name}` placeholder written in `text`, without the braces. */

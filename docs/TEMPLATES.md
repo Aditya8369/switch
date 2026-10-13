@@ -23,9 +23,10 @@ root is the worked example, and `examples/` holds more.
 8. [Kickoff](#kickoff)
 9. [Where an agent works](#where-an-agent-works)
 10. [The form block](#the-form-block)
-11. [Agents and saved templates](#agents-and-saved-templates)
-12. [Validation](#validation)
-13. [Versioning](#versioning)
+11. [Version 2](#version-2)
+12. [Agents and saved templates](#agents-and-saved-templates)
+13. [Validation](#validation)
+14. [Versioning](#versioning)
 
 ## A first template
 
@@ -553,6 +554,81 @@ whether it starts open. Folded, it shows its values on one line with a Change
 button, and it opens by itself when something inside it is empty or wrong.
 The block is the Console's; the server ignores it.
 
+## Version 2
+
+`version: 2` writes a template as resources, each with a key and a type,
+instead of blocks whose meaning comes from where they sit. Version 1
+documents keep working unchanged. A version 2 template creates managed
+agents, so it needs a server that runs agent management.
+`examples/agent-templates/switch-expert.v2.template.yaml` is a complete one.
+
+```yaml
+version: 2
+params:
+  start_in: { type: enum, enum: [nowhere, new_room, existing_room], default: nowhere }
+  existing_room: { type: room, if: "{start_in} == existing_room" }
+  machine: { type: machine, default: [$first], input: advanced }
+resources:
+  expert:
+    type: agent
+    display_name: Switch expert
+    instructions: Answer questions about Switch.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{expert.name}"
+    join: ["{existing_room}"]
+    addressing:
+      - if: "{start_in} == new_room"
+        value: { anyone_in: [expert_room] }
+      - value: anyone
+  expert_room:
+    type: room
+    if: "{start_in} == new_room"
+    name: "Ask {expert.name}"
+    agents: [expert]
+    kickoff: "@{expert.name} hi."
+```
+
+**Resources.** `resources:` maps each key (letters, digits, `_`) to a
+resource with a `type`: `agent` (the fields of [The agent block](#the-agent-block)),
+`room` (the fields of [The room block](#the-room-block), plus its own
+`kickoff:` and, inside a group, `group: <key>`), or `group` (`name`,
+`description`, `color`, and `links: [{from: room key, to: room key, label}]`).
+Several rooms go in one group.
+
+**References.** A resource names another by its key: a room's `agents:` and
+`aliases:` take agent keys (or names of agents that already exist), and
+`{key.name}` anywhere is the name that resource is created under: an agent's
+`name`, or the identifier derived from its `display_name`. A reference to a
+resource whose `if:` does not hold is refused.
+
+**`if:`.** The one conditional, and its only forms are `"{param}"` (true when
+the value is) and `"{param} == value"` / `"{param} != value"`:
+
+- On a resource: it is created only while the condition holds.
+- On a param: it is asked only while the condition holds. A param that is not
+  asked reads as empty, and drops out of the lists it was written in.
+- In a field's value, written as a list of `{if, value}`: the first whose
+  condition holds is taken; an entry with no `if` always holds.
+
+The form asks a param while its `if:` holds and while something that is made
+reads it, so the messaging app is not asked when the room it is for is off.
+
+**Addressing.** Besides `owner`, `owner-agents` and `anyone`, an agent's
+`addressing` may be `{anyone_in: [room keys]}`: its owner, and anyone in
+those rooms of the run, set once the rooms exist.
+
+**`join`.** Rooms that already exist, by name, the agent is added to once it
+is created. The server checks each exists and that the deployer may add
+agents to it, before creating anything.
+
+**Running.** The server works the run out from the document and the inputs:
+which resources the conditions make, each agent's machine and provider, and
+the rest as for any template. Switch Console sends the document whole
+(`POST /gateway/rooms/from-template-document`), and `run_template` takes it
+as any saved template; `agents: {resource key: existing agent}` fills a slot
+whose agent says `allow_existing: true`.
+
 ## Agents and saved templates
 
 Agents can use the templates saved on a workspace through their Switch
@@ -610,6 +686,6 @@ reading them.
 
 ## Versioning
 
-`version: 1` names the format described here. The key is accepted and
-checked as an integer; the server does not yet change how it reads a
-document by its version, and a document without one is read the same way.
+`version: 1` names the format described above; a document without a version
+is read the same way. `version: 2` (or a document with `resources:`) is read
+as described in [Version 2](#version-2).

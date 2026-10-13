@@ -83,6 +83,10 @@ export type ParsedAgentEntry = {
    * template says so.
    */
   allowExisting: boolean;
+  /** A version 2 resource's key; null in a version 1 document. */
+  key: string | null;
+  /** A version 2 resource's `if:`: created only while it holds. */
+  condition: string | null;
 };
 
 /**
@@ -147,8 +151,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** Whether a document is written in version 2 of the language: resources with a key and a type. */
+export function isVersion2(doc: Record<string, unknown>): boolean {
+  return doc.version === 2 || asRecord(doc.resources) !== null;
+}
+
+/** A version 2 document's resources of one type, with their keys. */
+function resourcesOf(
+  doc: Record<string, unknown>,
+  type: 'agent' | 'room' | 'group'
+): [string, Record<string, unknown>][] {
+  return Object.entries(asRecord(doc.resources) ?? {})
+    .map(([key, spec]) => [key, asRecord(spec)] as const)
+    .filter((e): e is [string, Record<string, unknown>] => e[1] !== null && e[1].type === type);
+}
+
 /** The agent entries as parsed YAML objects, from `agents:` (a list) or `agent:` (a single entry). */
 function rawAgents(doc: Record<string, unknown>): Record<string, unknown>[] {
+  if (isVersion2(doc)) return resourcesOf(doc, 'agent').map(([key, spec]) => ({ ...spec, key }));
   if (Array.isArray(doc.agents)) {
     return doc.agents.map((a) => asRecord(a)).filter((a): a is Record<string, unknown> => !!a);
   }
@@ -166,6 +186,12 @@ export function templateKind(yamlText: string): TemplateKind {
 }
 
 export function kindOf(doc: Record<string, unknown>): TemplateKind {
+  if (isVersion2(doc)) {
+    const rooms = resourcesOf(doc, 'room').length;
+    const agentCount = resourcesOf(doc, 'agent').length;
+    if (resourcesOf(doc, 'group').length > 0 || rooms > 1 || agentCount > 1) return 'group';
+    return agentCount === 1 ? 'agent' : 'room';
+  }
   const agents = rawAgents(doc);
   if (doc.group !== undefined || Array.isArray(doc.rooms)) return 'group';
   if (agents.length > 1) return 'group';
@@ -241,13 +267,15 @@ export function parseTemplateAgents(
       join: Array.isArray(agent.join)
         ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
         : [],
-      placeholders: [...placeholdersIn(agent)],
+      placeholders: [...placeholdersIn({ ...agent, key: undefined })],
       allowExisting: agent.allow_existing === true,
+      key: typeof agent.key === 'string' ? agent.key : null,
+      condition: typeof agent.if === 'string' ? agent.if : null,
     };
   });
   return {
     agents,
-    singular: !Array.isArray(doc.agents) && agents.length === 1,
+    singular: !isVersion2(doc) && !Array.isArray(doc.agents) && agents.length === 1,
     warnings,
     unsaid: unsaidRuntime(doc, agents),
   };
@@ -526,7 +554,10 @@ export function substituteAgentSlots(
  */
 export function composeTemplateDocument(yamlText: string, instructions: string): string {
   const doc = parseYaml(yamlText);
-  const entries = rawAgents(doc);
+  // The resources themselves, so the brief is written into the document.
+  const entries = isVersion2(doc)
+    ? resourcesOf(doc, 'agent').map(([, spec]) => spec)
+    : rawAgents(doc);
   if (entries.length === 0) throw new Error('Template must have an "agent:" block.');
   for (const agent of entries) {
     if (typeof agent.instructions !== 'string' || agent.instructions.trim().length === 0) {
@@ -534,4 +565,44 @@ export function composeTemplateDocument(yamlText: string, instructions: string):
     }
   }
   return dump(doc, { lineWidth: -1 });
+}
+
+/** A version 2 document's rooms and group, as the Use page shows them. */
+export type Version2Rooms = {
+  rooms: {
+    key: string;
+    condition: string | null;
+    name: string | null;
+    description: string | null;
+    agents: string[];
+    users: string[];
+    bridge: string | null;
+    kickoff: string | null;
+    placeholders: string[];
+  }[];
+  groupName: string | null;
+  usesCreator: boolean;
+};
+
+export function version2Rooms(yamlText: string): Version2Rooms {
+  const doc = parseYaml(yamlText);
+  const strings = (value: unknown) =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  const rooms = resourcesOf(doc, 'room').map(([key, spec]) => ({
+    key,
+    condition: typeof spec.if === 'string' ? spec.if : null,
+    name: optionalString(spec.name),
+    description: optionalString(spec.description),
+    agents: strings(spec.agents),
+    users: strings(spec.users),
+    bridge: optionalString(spec.bridge),
+    kickoff: optionalString(spec.kickoff),
+    placeholders: [...placeholdersIn(spec)],
+  }));
+  const [group] = resourcesOf(doc, 'group');
+  return {
+    rooms,
+    groupName: group ? optionalString(group[1].name) : null,
+    usesCreator: yamlText.includes('{$creator}'),
+  };
 }

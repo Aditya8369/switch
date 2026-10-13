@@ -5,6 +5,7 @@ import {
   bridgeCandidates,
   unsaidMessage,
   paramLabel,
+  holds,
   resolveChain,
   roomOnlyParams,
   serverInputs,
@@ -25,6 +26,7 @@ function param(overrides: Partial<ParamSpec>): ParamSpec {
     pattern: null,
     min: null,
     max: null,
+    condition: null,
     ...overrides,
   };
 }
@@ -174,5 +176,17 @@ describe('agentCreateSteps', () => {
     expect(
       agentCreateSteps(0, { ...base, setsPolicy: false, status: 'idle', step: null })
     ).toHaveLength(2);
+  });
+});
+
+describe('holds', () => {
+  it('reads a param, or compares it', () => {
+    expect(holds(null, {})).toBe(true);
+    expect(holds('{on}', { on: true })).toBe(true);
+    expect(holds('{on}', { on: false })).toBe(false);
+    expect(holds('{start} == new_room', { start: 'new_room' })).toBe(true);
+    expect(holds('{start} != new_room', { start: 'nowhere' })).toBe(true);
+    expect(holds('{start} == new_room', {})).toBe(false);
+    expect(holds('not a condition', {})).toBe(false);
   });
 });

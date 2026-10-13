@@ -8,6 +8,7 @@ import {
   parseTemplateAgents,
   substituteAgentSlots,
   templateKind,
+  version2Rooms,
 } from './template-document';
 
 const TRIAGE_PAIR = `
@@ -375,5 +376,60 @@ agents:
     instructions: Fix.
 `);
     expect(agents.map((a) => a.allowExisting)).toEqual([true, false]);
+  });
+});
+
+describe('version 2 documents', () => {
+  const V2 = `
+version: 2
+params:
+  start_in: { type: enum, enum: [nowhere, new_room], default: nowhere }
+  room_name: { type: string, if: "{start_in} == new_room" }
+resources:
+  expert:
+    type: agent
+    display_name: Switch expert
+    instructions: Help.
+    provider: claude
+    machine: laptop
+    directory: "{$agents_dir}/{expert.name}"
+  expert_room:
+    type: room
+    if: "{start_in} == new_room"
+    name: "{room_name}"
+    agents: [expert]
+    kickoff: "@{expert.name} hi"
+`;
+
+  it('reads agents from resources, with their key and condition', () => {
+    const { agents, singular, unsaid } = parseTemplateAgents(V2);
+    expect(agents.map((a) => [a.key, a.displayName, a.condition])).toEqual([
+      ['expert', 'Switch expert', null],
+    ]);
+    expect(singular).toBe(false);
+    expect(unsaid).toEqual([]);
+    expect(templateKind(V2)).toBe('agent');
+  });
+
+  it('reads rooms with their key, condition and the params they read', () => {
+    const { rooms } = version2Rooms(V2);
+    expect(rooms).toMatchObject([
+      {
+        key: 'expert_room',
+        condition: '{start_in} == new_room',
+        agents: ['expert'],
+        kickoff: '@{expert.name} hi',
+      },
+    ]);
+    expect(rooms[0]!.placeholders).toContain('room_name');
+  });
+
+  it('writes a bundled brief into the agent resource', () => {
+    const doc = load(
+      composeTemplateDocument(V2.replace('    instructions: Help.\n', ''), 'Brief')
+    ) as {
+      resources: { expert: { instructions: string } };
+    };
+    expect(doc.resources.expert.instructions).toBe('Brief');
   });
 });

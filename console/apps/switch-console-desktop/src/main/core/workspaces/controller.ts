@@ -13,6 +13,7 @@ import {
   beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
+  runTemplateDocument,
   runTemplateWithAgents,
   type TemplateRunAgent,
   type TemplateRunResult,
@@ -549,6 +550,18 @@ export const workspacesController = createRPCController({
     }
   ): Promise<TemplateRunResult> =>
     withWorkspaceSession(workspaceId, (server) => runTemplateWithAgents(server, body)),
+
+  /** Run a template from its document: the server works the agents and rooms out of it. */
+  runTemplateDocument: (
+    workspaceId: string,
+    body: {
+      template: string;
+      inputs: Record<string, string | number | boolean>;
+      filled: Record<string, string>;
+      templateName: string;
+    }
+  ): Promise<TemplateRunResult> =>
+    withWorkspaceSession(workspaceId, (server) => runTemplateDocument(server, body)),
 
   /** The runs the user may see, or null when the server does not record runs. */
   listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>

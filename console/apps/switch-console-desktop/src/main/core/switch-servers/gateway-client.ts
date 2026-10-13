@@ -2266,33 +2266,61 @@ export async function runTemplateWithAgents(
     templateName: string;
   }
 ): Promise<TemplateRunResult> {
+  return postTemplateRun(server, '/rooms/from-template', {
+    agents: body.agents.map((a) => ({
+      slot: a.slot,
+      name: a.name,
+      description: a.description,
+      display_name: a.displayName,
+      instructions: a.instructions,
+      provider: a.provider,
+      machine: a.machine,
+      model: a.model,
+      advanced_config: a.advancedConfig,
+      isolation: a.isolation,
+      auto_approve: a.autoApprove,
+      directory: a.directory,
+      addressing: a.addressing,
+      connections: a.connections,
+    })),
+    yaml: body.yamlText,
+    inputs: body.inputs,
+    template_name: body.templateName,
+  });
+}
+
+/**
+ * Run a template from its document, in one request: the server works the
+ * agents and rooms out of the document and the inputs (a version 2
+ * document's conditions and references are the server's to resolve), checks
+ * everything, and keeps nothing when the run fails.
+ */
+export async function runTemplateDocument(
+  server: SwitchServer,
+  body: {
+    template: string;
+    inputs: Record<string, string | number | boolean>;
+    /** Existing agents standing in for slots that allow it, by resource key. */
+    filled: Record<string, string>;
+    templateName: string;
+  }
+): Promise<TemplateRunResult> {
+  return postTemplateRun(server, '/rooms/from-template-document', {
+    template: body.template,
+    inputs: body.inputs,
+    filled: body.filled,
+    template_name: body.templateName,
+  });
+}
+
+async function postTemplateRun(
+  server: SwitchServer,
+  path: string,
+  body: Record<string, unknown>
+): Promise<TemplateRunResult> {
   let res: Response;
   try {
-    res = await gatewayFetch(server, '/rooms/from-template', {
-      authenticated: true,
-      method: 'POST',
-      body: {
-        agents: body.agents.map((a) => ({
-          slot: a.slot,
-          name: a.name,
-          description: a.description,
-          display_name: a.displayName,
-          instructions: a.instructions,
-          provider: a.provider,
-          machine: a.machine,
-          model: a.model,
-          advanced_config: a.advancedConfig,
-          isolation: a.isolation,
-          auto_approve: a.autoApprove,
-          directory: a.directory,
-          addressing: a.addressing,
-          connections: a.connections,
-        })),
-        yaml: body.yamlText,
-        inputs: body.inputs,
-        template_name: body.templateName,
-      },
-    });
+    res = await gatewayFetch(server, path, { authenticated: true, method: 'POST', body });
   } catch (error) {
     if (error instanceof GatewayError && error.status === 409 && error.body) {
       const parsed = templateRunRefusalSchema.safeParse(JSON.parse(error.body));

@@ -158,6 +158,29 @@ anything is created. The kickoff also carries the run so far. Asking again
 for a room with the same kickoff you already used further up the same path
 pauses the run until your owner lets it continue.
 
+## Version 2
+
+version: 2 writes the template as resources with a key and a type; version 1
+documents keep working. It creates managed agents, so it needs agent
+management on the server.
+
+resources:
+  <key>:                         # letters, digits, _
+    type: agent | room | group
+    if: "{param}" | "{param} == value" | "{param} != value"   # optional
+    ...the fields of an agent, a room (plus kickoff, group: <key>), or a
+       group (name, description, links: [{from: room key, to: room key}])
+
+- A room's agents: and aliases: take agent keys; {key.name} anywhere is the
+  name a resource is created under.
+- if: on a resource creates it only while it holds; on a param, asks it only
+  while it holds (an unasked param reads as empty); in a field's value, as
+  [{if: ..., value: ...}, {value: ...}], the first that holds is taken.
+- addressing may be {anyone_in: [room keys]}: anyone in those rooms of the run.
+- join: [existing room names] adds the agent to rooms that already exist.
+- run_template(agents={resource key: existing agent}) fills a slot whose
+  agent says allow_existing: true.
+
 ## Example
 
 version: 1

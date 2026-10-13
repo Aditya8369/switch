@@ -50,6 +50,8 @@ function entry(overrides: Partial<ParsedAgentEntry>): ParsedAgentEntry {
     join: [],
     placeholders: [],
     allowExisting: false,
+    key: null,
+    condition: null,
     ...overrides,
   };
 }

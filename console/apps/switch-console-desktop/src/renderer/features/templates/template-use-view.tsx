@@ -11,7 +11,10 @@ import type {
 } from '@main/core/agent-templates/template-document';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
-import type { TemplateRunResult } from '@main/core/switch-servers/gateway-client';
+import type {
+  ProvisionFromTemplateResult,
+  TemplateRunResult,
+} from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -88,6 +91,7 @@ import {
   createStepStatus,
   defaultsFor,
   hasPlaceholder,
+  holds,
   interpolate,
   isChain,
   isEmpty,
@@ -137,6 +141,8 @@ type UsePageTemplate = {
   warnings: string[];
   /** The provider, location and directory the document never gives an agent. */
   unsaid: UnsaidRuntime[];
+  /** 2 for a document of resources with a key and a type, whose run the server works out. */
+  version: 1 | 2;
 };
 
 async function loadUsePageTemplate(workspaceId: string, params: Params): Promise<UsePageTemplate> {
@@ -178,6 +184,44 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
     yamlText,
     instructions,
   });
+  const v2 = await rpc.agentTemplates.version2Rooms({ yamlText });
+  if (v2) {
+    // The server works out a version 2 run from the document itself; the page
+    // only reads what it shows: the params, the agents and the rooms.
+    const v2Params = await rpc.roomTemplates.params({ yamlText });
+    const first = v2.rooms[0] ?? null;
+    return {
+      name,
+      yamlText,
+      instructions,
+      origin,
+      kind,
+      agents,
+      singular: false,
+      params: v2Params,
+      serverParamNames: new Set(v2Params.map((p) => p.name)),
+      form: await rpc.agentTemplates.form({ yamlText }),
+      parsed: {
+        params: v2Params,
+        rooms: v2.rooms,
+        groupName: v2.groupName,
+        roomName: first?.name ?? null,
+        roomDescription: first?.description ?? null,
+        agents: [...new Set(v2.rooms.flatMap((r) => r.agents))],
+        hardcodedAgents: [],
+        hardcodedUsers: [],
+        users: [...new Set(v2.rooms.flatMap((r) => r.users))],
+        bridge: first?.bridge && !first.bridge.includes('{') ? first.bridge : null,
+        kickoff: first?.kickoff ?? null,
+        usesCreator: v2.usesCreator,
+        warnings: [],
+      },
+      coreYaml: null,
+      warnings,
+      unsaid,
+      version: 2,
+    };
+  }
   // Two versions of the room document: one that keeps every param, for
   // building the form, and one with only what the server understands.
   const forForm = await rpc.agentTemplates.serverDocument({ yamlText, keepConsoleParams: true });
@@ -208,6 +252,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
     coreYaml,
     warnings: [...warnings, ...(parsed?.warnings ?? [])],
     unsaid,
+    version: 1,
   };
 }
 
@@ -267,6 +312,8 @@ type SlotSetup = {
   joins: string[];
   /** Whether the run creates the template's room for it. */
   makesRoom: boolean;
+  /** False for a version 2 agent whose `if:` does not hold: the run does not create it. */
+  on: boolean;
 };
 
 const TemplateUsePanel = observer(function TemplateUsePanel() {
@@ -350,14 +397,36 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const parsed = loaded?.parsed ?? null;
   // In the singular `agent:` form the room refers to the agent as `{agent}`.
   // The page fills that in with the agent's name, so it is not an input.
-  const templateParams = useMemo(
-    () => (loaded?.params ?? []).filter((p) => !(loaded?.singular && p.name === 'agent')),
-    [loaded]
+  const isV2 = loaded?.version === 2;
+  // A version 2 room is made only while its `if:` holds.
+  const roomsOn = useMemo(
+    () => (isV2 ? (parsed?.rooms ?? []).filter((r) => holds(r.condition, values)) : []),
+    [isV2, parsed, values]
   );
+  const templateParams = useMemo(() => {
+    const base = (loaded?.params ?? []).filter((p) => !(loaded?.singular && p.name === 'agent'));
+    if (!isV2 || !loaded) return base;
+    // A version 2 param is asked while its `if:` holds, and while something
+    // that is made reads it: one only an unmade room reads asks nothing.
+    return base.filter((p) => {
+      if (!holds(p.condition, values)) return false;
+      const rooms = (parsed?.rooms ?? []).filter((r) => r.placeholders?.includes(p.name));
+      const agents = loaded.agents.filter((a) => a.placeholders.includes(p.name));
+      if (rooms.length + agents.length === 0) return true;
+      return (
+        rooms.some((r) => holds(r.condition, values)) ||
+        agents.some((a) => holds(a.condition, values))
+      );
+    });
+  }, [loaded, isV2, parsed, values]);
   const createsAgents = (loaded?.agents.length ?? 0) > 0;
-  const hasRoomPart = loaded?.coreYaml !== null && parsed !== null && !intoRoomId;
-  const isGroupDoc = (parsed?.rooms.length ?? 0) > 1 || (parsed?.groupName ?? null) !== null;
-  const templateRoom = parsed?.rooms[0] ?? null;
+  const hasRoomPart = isV2
+    ? roomsOn.length > 0 && !intoRoomId
+    : loaded?.coreYaml !== null && parsed !== null && !intoRoomId;
+  const isGroupDoc = isV2
+    ? roomsOn.length > 1 || (parsed?.groupName ?? null) !== null
+    : (parsed?.rooms.length ?? 0) > 1 || (parsed?.groupName ?? null) !== null;
+  const templateRoom = isV2 ? (roomsOn[0] ?? null) : (parsed?.rooms[0] ?? null);
 
   // The params only the room reads. They do nothing, and are not shown, when the room is not made.
   const roomText = loaded?.coreYaml ?? '';
@@ -378,9 +447,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   );
   // The `room` param an agent joins, when the template leaves the room to the deployer.
   const joinParam =
-    templateParams.find(
-      (p) => p.type === 'room' && (loaded?.agents ?? []).some((a) => a.join.includes(`{${p.name}}`))
-    ) ?? null;
+    (!isV2 &&
+      templateParams.find(
+        (p) =>
+          p.type === 'room' && (loaded?.agents ?? []).some((a) => a.join.includes(`{${p.name}}`))
+      )) ||
+    null;
   const joinValue = joinParam ? String(values[joinParam.name] ?? '') : '';
   // A chain that resolved to a room switches the room on.
   useEffect(() => {
@@ -500,7 +572,25 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   );
 
   // ── The agents: what each is made of, from the inputs ───────────────────
+  // A version 2 template names each agent by its key: `{expert.name}` is the
+  // name the `expert` resource is created under.
+  const namedValues = useMemo((): Values => {
+    if (!isV2) return values;
+    const named: Values = { ...values };
+    for (const slot of slots) {
+      const entry = slot.entry;
+      if (!entry.key) continue;
+      const existing = entry.allowExisting && slot.mode === 'existing' ? slot.existingName : null;
+      named[`${entry.key}.name`] =
+        existing ||
+        (entry.name
+          ? interpolate(entry.name, values)
+          : slugifyAgentNamePart(interpolate(entry.displayName ?? '', values)));
+    }
+    return named;
+  }, [isV2, values, slots]);
   const setups: SlotSetup[] = useMemo(() => {
+    const vals = namedValues;
     const roomJoinParam = (entry: ParsedAgentEntry) =>
       templateParams.find((p) => p.type === 'room' && entry.join.includes(`{${p.name}}`)) ?? null;
     return slots.map((slot) => {
@@ -509,45 +599,46 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       const name =
         existing ??
         (entry.name
-          ? interpolate(entry.name, values)
-          : slugifyAgentNamePart(interpolate(entry.displayName ?? '', values)));
-      const displayName = entry.displayName ? interpolate(entry.displayName, values) : null;
+          ? interpolate(entry.name, vals)
+          : slugifyAgentNamePart(interpolate(entry.displayName ?? '', vals)));
+      const displayName = entry.displayName ? interpolate(entry.displayName, vals) : null;
       // What runs it, where, and in which folder come from the template alone:
       // its own field, else a param of that type that applies to every agent.
       const providerText = entry.provider
-        ? interpolate(entry.provider, values)
+        ? interpolate(entry.provider, vals)
         : providerParam
-          ? String(values[providerParam.name] ?? '')
+          ? String(vals[providerParam.name] ?? '')
           : '';
       const provider: AgentProviderId | null = isValidProviderId(providerText)
         ? providerText
         : null;
       const locationText = entry.location
-        ? interpolate(entry.location, values)
+        ? interpolate(entry.location, vals)
         : locationParam
-          ? String(values[locationParam.name] ?? '')
+          ? String(vals[locationParam.name] ?? '')
           : '';
       const location = locationText === '' || hasPlaceholder(locationText) ? null : locationText;
       const agentsDir = location !== null ? (agentsDirs[location] ?? '') : '';
-      const dirValues: Values = { ...values, agent: name, $agents_dir: agentsDir };
+      const dirValues: Values = { ...vals, agent: name, $agents_dir: agentsDir };
       // A directory read from a param is interpolated twice: once to reach
       // the param's value, once for the `{$agents_dir}` and `{agent}` inside it.
       const directoryText = entry.directory
         ? interpolate(interpolate(entry.directory, dirValues), dirValues)
         : directoryParam
-          ? interpolate(String(values[directoryParam.name] ?? ''), dirValues)
+          ? interpolate(String(vals[directoryParam.name] ?? ''), dirValues)
           : '';
       const directory = hasPlaceholder(directoryText) ? '' : directoryText;
       const joinParam = roomJoinParam(entry);
       const joins = entry.join
-        .map((j) => interpolate(j, values))
+        .map((j) => interpolate(j, vals))
         .filter((j) => j !== '' && j !== NEW && !hasPlaceholder(j));
-      const makesRoom =
-        hasRoomPart && (joinParam === null ? true : String(values[joinParam.name] ?? '') === NEW);
+      const makesRoom = isV2
+        ? hasRoomPart
+        : hasRoomPart && (joinParam === null ? true : String(vals[joinParam.name] ?? '') === NEW);
       const machineRaw = entry.machine
-        ? interpolate(entry.machine, values)
+        ? interpolate(entry.machine, vals)
         : machineParam
-          ? String(values[machineParam.name] ?? '')
+          ? String(vals[machineParam.name] ?? '')
           : '';
       const machineText = machineRaw === '' || hasPlaceholder(machineRaw) ? null : machineRaw;
       // On a server with agent management, where an agent runs is one of the
@@ -563,7 +654,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       const directorySource = entry.directory
         ? entry.directory
         : directoryParam
-          ? String(values[directoryParam.name] ?? '')
+          ? String(vals[directoryParam.name] ?? '')
           : '';
       return {
         name,
@@ -574,15 +665,17 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         directory,
         machine,
         machineText,
-        managedDirectory: managedDirectory(directorySource, values, name),
-        connections: connectionsFor(entry, values),
+        managedDirectory: managedDirectory(directorySource, vals, name),
+        connections: connectionsFor(entry, vals),
         joins,
         makesRoom,
+        on: !isV2 || holds(entry.condition, vals),
       };
     });
   }, [
     slots,
-    values,
+    namedValues,
+    isV2,
     templateParams,
     providerParam,
     locationParam,
@@ -742,6 +835,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const seenNames = new Set<string>();
   slots.forEach((slot, i) => {
     const setup = setups[i];
+    if (!setup.on) return;
     if (setup.existing !== null) {
       if (setup.existing === '')
         slotProblems.push(
@@ -826,7 +920,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   });
   if (joinParam && roomOn && joinValue === '')
     slotProblems.push('Pick the room, or switch it off.');
-  const newSlots = slots.filter((_, i) => setups[i]?.existing === null);
+  const newSlots = slots.filter((_, i) => setups[i]?.existing === null && setups[i]?.on);
   const remoteLabel = firstRemote ? runLocationLabel(firstRemote, allowedHosts) : '';
   const blockedReason: string | null =
     phase !== 'form'
@@ -837,28 +931,30 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? `Fill in ${missing.map(paramLabel).join(', ')}`
           : invalid.length > 0
             ? `${paramLabel(invalid[0].p)}: ${invalid[0].problem}`
-            : newSlots.length > 0 && machinesQuery.isError
-              ? failureText(
-                  machinesQuery.error,
-                  'Your machines on this server could not be listed.'
-                )
-              : newSlots.length > 0 && machinesQuery.data === undefined
-                ? 'Checking your machines on this server…'
-                : slotProblems.length > 0
-                  ? slotProblems[0]
-                  : newSlots.length > 0 && !hostReachable
-                    ? `${remoteLabel} cannot be reached right now.`
-                    : newSlots.length > 0 && !hostReady
-                      ? hostReadiness.checking
-                        ? `Checking what ${remoteLabel} has installed…`
-                        : `${remoteLabel} is missing setup the agents need.`
-                      : !makesRoom
-                        ? null // no room is made, so nothing below applies
-                        : creatorBlocked
-                          ? 'Link your messaging account first.'
-                          : parsed !== null && noMessagingApp && parsed.usesCreator
-                            ? 'This server has no messaging app, so the room would have no chat.'
-                            : null;
+            : isV2 && newSlots.length > 0 && machinesQuery.data === null
+              ? 'This template creates managed agents, and this server does not run agent management.'
+              : newSlots.length > 0 && machinesQuery.isError
+                ? failureText(
+                    machinesQuery.error,
+                    'Your machines on this server could not be listed.'
+                  )
+                : newSlots.length > 0 && machinesQuery.data === undefined
+                  ? 'Checking your machines on this server…'
+                  : slotProblems.length > 0
+                    ? slotProblems[0]
+                    : newSlots.length > 0 && !hostReachable
+                      ? `${remoteLabel} cannot be reached right now.`
+                      : newSlots.length > 0 && !hostReady
+                        ? hostReadiness.checking
+                          ? `Checking what ${remoteLabel} has installed…`
+                          : `${remoteLabel} is missing setup the agents need.`
+                        : !makesRoom
+                          ? null // no room is made, so nothing below applies
+                          : creatorBlocked
+                            ? 'Link your messaging account first.'
+                            : parsed !== null && noMessagingApp && parsed.usesCreator
+                              ? 'This server has no messaging app, so the room would have no chat.'
+                              : null;
   // Existing agents in the room whose addressing policy blocks messages from
   // another member. New agents get the template's addressing at creation.
   const handoffBlocked = useMemo(() => {
@@ -1069,6 +1165,168 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     return true;
   };
 
+  /** Say how the rooms came out, and open the first. */
+  const showRoomResult = (result: ProvisionFromTemplateResult) => {
+    if (result.kind === 'room') {
+      if (result.failedAttachments.length > 0) {
+        const kickoff = result.failedAttachments.find((f) => f.kind === 'kickoff');
+        const others = result.failedAttachments.filter((f) => f.kind !== 'kickoff');
+        toast({
+          title: kickoff
+            ? `"${result.roomName}" exists, but nobody has spoken in it yet`
+            : `"${result.roomName}" was created with gaps`,
+          description: [
+            kickoff ? `The first message could not be posted: ${kickoff.error}` : null,
+            others.length > 0
+              ? `Could not add: ${others.map((f) => `${f.id} (${f.error})`).join(', ')}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' '),
+          variant: 'destructive',
+        });
+      }
+      // Open the room. The kickoff and the agents' answers appear there, and the
+      // agents' sessions appear in the sidebar.
+      finish(`Opening ${result.roomName}…`, () => navigate('room', { roomId: result.roomId }));
+    } else {
+      const gaps = [
+        ...result.errors.map((e) => e.error),
+        ...result.rooms.flatMap((r) =>
+          r.failedAttachments.map((f) => `${r.roomName}: ${f.id} (${f.error})`)
+        ),
+      ];
+      if (gaps.length > 0) {
+        toast({
+          title: `"${result.groupName}" was created with gaps`,
+          description: gaps.join('; '),
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: `"${result.groupName}" is ready`,
+          description: `${result.rooms.length} room${result.rooms.length === 1 ? '' : 's'} created.`,
+        });
+      }
+      const first = result.rooms[0];
+      finish(first ? `Opening ${first.roomName}…` : 'Opening Your Rooms…', () =>
+        first ? navigate('room', { roomId: first.roomId }) : navigate('serverRooms', { serverId })
+      );
+    }
+  };
+
+  /**
+   * A version 2 template: the whole run in one request, from the document and
+   * the inputs. The server works out which agents and rooms the conditions
+   * make, their machines and providers, and checks it whole; nothing is kept
+   * when it refuses, and each reason shows on its agent.
+   */
+  const createFromDocument = async () => {
+    if (!loaded || workspaceId === null) return;
+    const pending = slots
+      .map((slot, i) => ({ slot, i, setup: setups[i]! }))
+      .filter(({ setup }) => setup.on && setup.existing === null);
+    const filled = Object.fromEntries(
+      slots.flatMap((slot, i) =>
+        setups[i]?.on && setups[i]?.existing && slot.entry.key
+          ? [[slot.entry.key, setups[i]!.existing!]]
+          : []
+      )
+    );
+    const inputs: Record<string, string | number | boolean> = {};
+    for (const param of templateParams) {
+      const value = values[param.name];
+      if (isEmpty(value)) continue;
+      inputs[param.name] = param.type === 'number' ? Number(value) : (value as string | boolean);
+    }
+    setNothingKept(false);
+    setRefusedPerAgent(false);
+    for (const { i } of pending) setSlot(i, { status: 'creating', error: null, step: 'create' });
+    if (makesRoom) setRoomStatus('creating');
+    let result: TemplateRunResult;
+    try {
+      const template = loaded.instructions
+        ? await rpc.agentTemplates.compose({
+            yamlText: loaded.yamlText,
+            instructions: loaded.instructions,
+          })
+        : loaded.yamlText;
+      result = await rpc.workspaces.runTemplateDocument(workspaceId, {
+        template,
+        inputs,
+        filled,
+        templateName: loaded.name,
+      });
+    } catch (e) {
+      for (const { i } of pending) setSlot(i, { status: 'failed', step: null });
+      if (makesRoom) setRoomStatus('failed');
+      const serverDetail =
+        e instanceof RpcError && e.code === 'GatewayError' ? e.stringField('detail') : undefined;
+      setCreateError(serverDetail ?? failureText(e, 'Could not create from this template.'));
+      setPhase('failed');
+      return;
+    }
+    if (result.kind === 'refused') {
+      const bySlot = new Map<string, string[]>();
+      for (const p of result.problems)
+        bySlot.set(p.slot, [...(bySlot.get(p.slot) ?? []), p.message]);
+      const unmatched = result.problems.filter(
+        (p) => !pending.some(({ setup }) => setup.name === p.slot)
+      );
+      for (const { i, setup } of pending) {
+        const mine = bySlot.get(setup.name);
+        setSlot(i, {
+          status: mine ? 'failed' : 'idle',
+          step: mine ? 'create' : null,
+          error: mine ? mine.join(' ') : null,
+        });
+      }
+      if (makesRoom) setRoomStatus(result.problems.length > 0 ? 'idle' : 'failed');
+      setNothingKept(true);
+      setRefusedPerAgent(
+        result.problems.length > 0 && unmatched.length === 0 && result.leftBehind.length === 0
+      );
+      setCreateError(
+        unmatched.length > 0 || result.problems.length === 0
+          ? result.message
+          : 'Nothing was created. Each agent says what stopped it.'
+      );
+      setPhase('failed');
+      return;
+    }
+    for (const agent of result.createdAgents) {
+      const match = pending.find(({ setup }) => setup.name === agent.name);
+      if (match)
+        setSlot(match.i, {
+          status: 'created',
+          step: null,
+          createdName: agent.name,
+          createdSwitchAgentId: agent.agentId,
+        });
+    }
+    await agentsStore.load().catch(() => {});
+    await queryClient
+      .invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) })
+      .catch(() => {});
+    void rpc.roomTemplates
+      .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
+      .catch(() => {});
+    const deaf = result.createdAgents.filter((a) => !a.listening).map((a) => a.name);
+    if (deaf.length > 0 && result.room)
+      toast({
+        title: `${deaf.join(', ')} may not have seen the first message`,
+        description: 'Mention it in the room to start work.',
+        variant: 'destructive',
+      });
+    if (result.room) {
+      setRoomStatus('created');
+      await refreshSidebarRoomState(true).catch(() => {});
+      showRoomResult(result.room);
+      return;
+    }
+    finish('Opening Your Agents…', () => navigate('serverAgents', { serverId }));
+  };
+
   const createAll = async () => {
     if (!loaded || workspaceId === null || blockedReason !== null) return;
     setPhase('creating');
@@ -1076,6 +1334,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setFieldErrors({});
     const created: { slotIndex: number; name: string; switchAgentId: string | null }[] = [];
 
+    if (isV2) {
+      await createFromDocument();
+      return;
+    }
     if (management && newSlots.length > 0) {
       if (!(await createManaged(created))) return;
     }
@@ -1283,52 +1545,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       setRoomStatus('created');
       // The room exists whether or not the sidebar refreshes.
       await refreshSidebarRoomState(true).catch(() => {});
-      if (result.kind === 'room') {
-        if (result.failedAttachments.length > 0) {
-          const kickoff = result.failedAttachments.find((f) => f.kind === 'kickoff');
-          const others = result.failedAttachments.filter((f) => f.kind !== 'kickoff');
-          toast({
-            title: kickoff
-              ? `"${result.roomName}" exists, but nobody has spoken in it yet`
-              : `"${result.roomName}" was created with gaps`,
-            description: [
-              kickoff ? `The first message could not be posted: ${kickoff.error}` : null,
-              others.length > 0
-                ? `Could not add: ${others.map((f) => `${f.id} (${f.error})`).join(', ')}`
-                : null,
-            ]
-              .filter(Boolean)
-              .join(' '),
-            variant: 'destructive',
-          });
-        }
-        // Open the room. The kickoff and the agents' answers appear there, and the
-        // agents' sessions appear in the sidebar.
-        finish(`Opening ${result.roomName}…`, () => navigate('room', { roomId: result.roomId }));
-      } else {
-        const gaps = [
-          ...result.errors.map((e) => e.error),
-          ...result.rooms.flatMap((r) =>
-            r.failedAttachments.map((f) => `${r.roomName}: ${f.id} (${f.error})`)
-          ),
-        ];
-        if (gaps.length > 0) {
-          toast({
-            title: `"${result.groupName}" was created with gaps`,
-            description: gaps.join('; '),
-            variant: 'destructive',
-          });
-        } else {
-          toast({
-            title: `"${result.groupName}" is ready`,
-            description: `${result.rooms.length} room${result.rooms.length === 1 ? '' : 's'} created.`,
-          });
-        }
-        const first = result.rooms[0];
-        finish(first ? `Opening ${first.roomName}…` : 'Opening Your Rooms…', () =>
-          first ? navigate('room', { roomId: first.roomId }) : navigate('serverRooms', { serverId })
-        );
-      }
+      showRoomResult(result);
     } catch (e) {
       setRoomStatus('failed');
       const serverDetail =
@@ -1361,11 +1578,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // Values for the preview cards: the inputs, `{agent}` for a single-agent
   // template, and every agent's final name.
   const railValues: Values =
-    loaded?.singular && setups[0] ? { ...values, agent: setups[0].name || '{agent}' } : values;
+    loaded?.singular && setups[0] ? { ...values, agent: setups[0].name || '{agent}' } : namedValues;
   const railRenames = useMemo(() => {
     const out: Record<string, string> = {};
     slots.forEach((slot, i) => {
-      const expression = slot.entry.name ?? '';
+      const expression = slot.entry.key ?? slot.entry.name ?? '';
       const actual = setups[i]?.existing ?? slot.createdName ?? setups[i]?.name;
       if (expression && actual && expression !== actual) out[expression] = actual;
     });
@@ -1417,7 +1634,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 
   // The rows of the creating screen: one per call the run makes.
   const createSteps: CreateStep[] = slots.flatMap((slot, i) =>
-    setups[i]?.existing === null
+    setups[i]?.existing === null && setups[i]?.on
       ? agentCreateSteps(i, {
           name: slot.createdName ?? setups[i]?.name ?? 'the agent',
           status: slot.status,
@@ -1841,7 +2058,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 <div className="flex flex-col gap-2">
                   {slots.map((slot, i) => {
                     const setup = setups[i];
-                    if (!setup) return null;
+                    if (!setup || !setup.on) return null;
                     return (
                       <AgentSlotCard
                         key={i}
@@ -1918,13 +2135,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                       </p>
                     ))}
                   {makesRoom &&
-                    parsed?.rooms.map((room, i) => (
+                    (isV2 ? roomsOn : (parsed?.rooms ?? [])).map((room, i) => (
                       <RoomCard
                         key={i}
                         room={room}
                         values={railValues}
                         renames={railRenames}
-                        bridgeName={templateBridge?.displayName ?? parsed.bridge}
+                        bridgeName={templateBridge?.displayName ?? parsed?.bridge ?? null}
                         creatorIdentity={creatorIdentity}
                         status={roomStatus}
                         toggle={null}
