@@ -406,7 +406,7 @@ class AgentConsumer(Consumer[AgentActor]):
     # ── Event hooks ───────────────────────────────────────────────────────────
 
     async def on_self_join(self, room: RoomRef, event: InboundMembership) -> None:
-        is_direct = await self._is_direct_room(room.room_id)
+        auto_addressed = await self._auto_addressed_room(room.room_id)
         name = self.agent.name
         # The per-agent self-join greeting can be switched off per bridge
         # — e.g. on Mattermost, whose native "X joined the
@@ -422,7 +422,7 @@ class AgentConsumer(Consumer[AgentActor]):
                 room.room_id,
             )
             return
-        if is_direct:
+        if auto_addressed:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
@@ -962,8 +962,8 @@ class AgentConsumer(Consumer[AgentActor]):
     # ── Command handling ──────────────────────────────────────────────────────
 
     async def _handle_command(self, room: RoomRef, event: CommandEvent) -> bool:
-        is_direct = await self._is_direct_room(room.room_id)
-        return await dispatch_command(self, room, event, is_direct)
+        auto_addressed = await self._auto_addressed_room(room.room_id)
+        return await dispatch_command(self, room, event, auto_addressed)
 
     async def reply_command(
         self,
@@ -1367,9 +1367,14 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         return self.agent.id in live
 
-    async def _is_direct_room(self, transport_room_id: str) -> bool:
+    async def _auto_addressed_room(self, transport_room_id: str) -> bool:
         meta = await self._resolve_room_meta(transport_room_id)
-        return meta is not None and meta.channel_type == "direct"
+        if meta is None:
+            return False
+        async with self.session_factory() as session:
+            return await self._addressing.auto_addressed_room(
+                session, room_id=meta.room_id, channel_type=meta.channel_type
+            )
 
     # ── Task event forwarding ────────────────────────────────────────────────
 

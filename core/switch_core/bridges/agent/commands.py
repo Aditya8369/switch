@@ -388,7 +388,7 @@ async def _reply(
 
 
 async def _cmd_help(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _auto_addressed: bool
 ) -> None:
     lines = ["**Available commands:**"]
     for cmd in COMMANDS:
@@ -540,7 +540,7 @@ async def _dispatch_control_command(
 
 
 async def _cmd_reset(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _auto_addressed: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -561,7 +561,7 @@ async def _cmd_reset(
 
 
 async def _cmd_compact(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _auto_addressed: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -581,7 +581,7 @@ async def _cmd_compact(
 
 
 async def _cmd_interrupt(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _auto_addressed: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -604,7 +604,7 @@ async def _cmd_list_room_agents(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -632,7 +632,7 @@ async def _cmd_list_aliases(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -664,7 +664,7 @@ async def _cmd_set_alias(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -734,7 +734,7 @@ async def _cmd_remove_alias(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -786,7 +786,7 @@ async def _cmd_invite(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -905,7 +905,7 @@ async def _cmd_status(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -947,7 +947,7 @@ async def _cmd_roles(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -985,7 +985,7 @@ async def _cmd_list_documents(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -1031,7 +1031,7 @@ async def _cmd_list_references(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -1067,7 +1067,7 @@ async def _cmd_room_url(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -1094,7 +1094,7 @@ async def _cmd_list_all_agents(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     async with client.session_factory() as session:
         agents = await client._agent_store.get_all(session)
@@ -1126,7 +1126,7 @@ async def _cmd_run_cmd(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    _is_direct: bool,
+    _auto_addressed: bool,
 ) -> None:
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -1187,11 +1187,11 @@ async def _cmd_agents_greet(
     client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
-    is_direct: bool,
+    auto_addressed: bool,
 ) -> None:
     async with client.session_factory() as session:
         agent = await client._fresh_agent(session)
-    if is_direct:
+    if auto_addressed:
         label = agent_label(agent.display_name, agent.name)
         await _reply(client, room, event, f"Hi! I'm {label} — how can I help?")
     else:
@@ -1392,7 +1392,7 @@ COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
 
 
 async def dispatch_command(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, auto_addressed: bool
 ) -> bool:
     """Runs a command.
 
@@ -1411,7 +1411,7 @@ async def dispatch_command(
         return True
 
     if cmd.handler is not None:
-        await cmd.handler(client, room, event, is_direct)
+        await cmd.handler(client, room, event, auto_addressed)
 
     return not cmd.forward_to_agent
 
@@ -1439,7 +1439,7 @@ async def dispatch_admin_command(
             await cmd.admin_check(host, room, event, meta)
     if not cmd.admin_owned or cmd.handler is None:
         return
-    is_direct = await host._is_direct_room(room.room_id)
+    auto_addressed = await host._auto_addressed_room(room.room_id)
     # Admin-owned handlers use only the store/reply surface both clients share
     # (never `.agent`), so the admin host satisfies the handler's contract.
-    await cmd.handler(cast("AgentConsumer", host), room, event, is_direct)
+    await cmd.handler(cast("AgentConsumer", host), room, event, auto_addressed)

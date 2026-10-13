@@ -21,11 +21,11 @@ class _Recorder:
 def _fake_self(
     send_message: _Recorder,
     *,
-    is_direct: bool = False,
+    auto_addressed: bool = False,
     agent_greetings_enabled: bool = True,
 ) -> SimpleNamespace:
-    async def _is_direct_room(_transport_room_id: str) -> bool:
-        return is_direct
+    async def _auto_addressed_room(_transport_room_id: str) -> bool:
+        return auto_addressed
 
     async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return SimpleNamespace(
@@ -41,7 +41,7 @@ def _fake_self(
         _connections=SimpleNamespace(
             controllers=SimpleNamespace(room_joined=lambda _agent, _room: None)
         ),
-        _is_direct_room=_is_direct_room,
+        _auto_addressed_room=_auto_addressed_room,
         _resolve_room_meta=_resolve_room_meta,
         actor=SimpleNamespace(send_message=send_message),
     )
@@ -77,7 +77,7 @@ async def test_direct_greeting_suppressed_when_disabled() -> None:
     # greeting too.
     send_message = _Recorder()
     await AgentConsumer.on_self_join(
-        _fake_self(send_message, is_direct=True, agent_greetings_enabled=False),
+        _fake_self(send_message, auto_addressed=True, agent_greetings_enabled=False),
         _ROOM,
         _EVENT,
     )
@@ -88,7 +88,7 @@ async def test_direct_greeting_suppressed_when_disabled() -> None:
 async def test_direct_greeting_sent_when_enabled() -> None:
     send_message = _Recorder()
     await AgentConsumer.on_self_join(
-        _fake_self(send_message, is_direct=True, agent_greetings_enabled=True),
+        _fake_self(send_message, auto_addressed=True, agent_greetings_enabled=True),
         _ROOM,
         _EVENT,
     )

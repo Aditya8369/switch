@@ -26,6 +26,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery.addressing import auto_addressed_room
 from switch_core.events import CommandEvent
 from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.transport import InboundMessage, RoomRef
@@ -259,6 +260,14 @@ class CommandConsumer(Consumer[SystemActor]):
         self._room_meta_cache[transport_room_id] = meta
         return meta
 
-    async def _is_direct_room(self, transport_room_id: str) -> bool:
+    async def _auto_addressed_room(self, transport_room_id: str) -> bool:
         meta = await self._resolve_room_meta(transport_room_id)
-        return meta is not None and meta.channel_type == "direct"
+        if meta is None:
+            return False
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            return await auto_addressed_room(
+                session,
+                self._room_store,
+                room_id=meta.room_id,
+                channel_type=meta.channel_type,
+            )

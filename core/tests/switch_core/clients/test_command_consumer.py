@@ -387,12 +387,12 @@ def _command_host() -> tuple[SimpleNamespace, list[dict[str, object]]]:
     ):
         sent.append({"body": body, "thread_root_id": thread_root_id})
 
-    async def _is_direct_room(_transport_room_id: str) -> bool:
+    async def _auto_addressed_room(_transport_room_id: str) -> bool:
         return False
 
     host = SimpleNamespace(
         reply_command=_reply_command,
-        _is_direct_room=_is_direct_room,
+        _auto_addressed_room=_auto_addressed_room,
     )
     return host, sent
 
