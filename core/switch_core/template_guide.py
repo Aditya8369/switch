@@ -44,7 +44,7 @@ agent:                           # or agents: [ ...the same block... ]
   instructions: text             # REQUIRED. The agent's brief.
   provider: claude | codex | opencode | "{param}"   # REQUIRED (see below)
   machine: machine name or id | "{param}"           # where it runs (see below)
-  location: local | ssh host | "{param}"            #   ...or this, Console only
+  location: local | ssh host | "{param}"            #   ...or this (see below)
   directory: path | "{param}"                       # REQUIRED (see below)
   name: identifier               # optional; derived from display_name.
                                  # Lowercase letters, digits, . - _
@@ -59,8 +59,9 @@ agent:                           # or agents: [ ...the same block... ]
       access: read | write       #   optional; read by default
       repos: [owner/name]        #   GitHub only: the repositories it reaches
     - atlassian                  #   or just the service's name
-  repo: https://github.com/owner/name   # optional; a GitHub connection to it,
-                                 # and the agent clones it into its directory
+  repo: URL                      # optional; the agent clones it into its
+                                 # directory. Grants nothing: list a github
+                                 # connection for a private one
   sources: [{label, url} or url] # optional; pages it should read
   addressing: owner | owner-agents | anyone   # optional; default owner
   join: [room name or "{param}"] # optional; Console only, rooms it is added to
@@ -80,10 +81,12 @@ field reads, which then applies to every agent. A param can offer a choice
 with a default: machine default [$first] is the first online machine that
 can run the agents' providers; provider default [claude, codex] takes the
 first ready on the agent's machine; directory "{$agents_dir}/{agent}" is
-the agent's own folder on its machine. Where it runs is a machine, or a
-location (this computer or an SSH host), which only Switch Console can
-resolve: run_template refuses a location, and join. A template missing one
-is refused by save_template unless you pass bypass_warnings=true.
+the agent's own folder on its machine. Where it runs is one of the
+deployer's machines on the server. A location (this computer or an SSH
+host) is a Console's idea: it names a machine only when it is one of theirs
+by name or id, and otherwise the first online machine that can run the
+agent stands in. run_template refuses join. A template missing one is
+refused by save_template unless you pass bypass_warnings=true.
 
 connections are the deployer's own (GitHub, Atlassian, ...), granted to the
 new agent: the deployer must have connected each, with write access to

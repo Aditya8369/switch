@@ -486,12 +486,20 @@ def test_an_agent_must_say_how_it_runs():
     assert _codes(bare) == {"machine_unsaid", "provider_unsaid", "directory_unsaid"}
 
 
-def test_a_location_is_the_consoles_to_resolve():
-    template = (
-        "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
-        "  location: local\n  directory: /x\n"
-    )
-    assert _codes(template) == {"location_console_only"}
+def test_a_location_names_a_machine_only_when_it_is_one():
+    def placed(location: str, provider: str = "claude") -> str:
+        template = (
+            f"agent:\n  name: a\n  instructions: Hi.\n  provider: {provider}\n"
+            f"  location: {location}\n  directory: /x\n"
+        )
+        (agent,) = _plan(template).new_agents
+        return agent.machine
+
+    # A Console's "this computer" or SSH host means nothing to the server:
+    # the first online machine that can run the agent stands in.
+    assert placed("local") == "m-laptop"
+    assert placed("dev-vm", provider="codex") == "m-server"
+    assert placed("box", provider="codex") == "m-box"
 
 
 def test_joining_existing_rooms_is_the_consoles():
@@ -518,7 +526,7 @@ agent:
     assert agent.provider == "codex"
 
 
-def test_a_github_repo_becomes_a_connection_and_a_note():
+def test_a_repo_is_cloned_by_the_agent_and_grants_nothing():
     template = """\
 agent:
   name: a
@@ -526,9 +534,9 @@ agent:
   provider: claude
   machine: laptop
   directory: /x
-  repo: https://github.com/acme/widgets.git
+  repo: https://gitlab.com/acme/widgets.git
   connections:
-    - { service: github, access: write }
+    - { service: github, access: write, repos: [acme/tools] }
     - atlassian
 """
     (agent,) = _plan(template).new_agents
@@ -536,18 +544,10 @@ agent:
     assert (github.service, github.access, github.repositories) == (
         "github",
         "write",
-        ["acme/widgets"],
+        ["acme/tools"],
     )
     assert (atlassian.service, atlassian.repositories) == ("atlassian", [])
-    assert "clone https://github.com/acme/widgets.git" in agent.instructions
-
-
-def test_a_repo_that_is_not_on_github_is_refused():
-    template = (
-        "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
-        "  machine: laptop\n  directory: /x\n  repo: https://gitlab.com/a/b\n"
-    )
-    assert _codes(template) == {"repo_not_github"}
+    assert "clone https://gitlab.com/acme/widgets.git" in agent.instructions
 
 
 @pytest.mark.asyncio
@@ -649,5 +649,5 @@ def test_slots_show_what_a_shared_param_says_and_each_connection():
     )
     assert (lead.machine, helper.machine) == ("{where}", "{where}")
     assert lead.connections == [
-        {"service": "github", "access": "write", "repos": ["acme/a", "acme/b"]}
+        {"service": "github", "access": "write", "repos": ["acme/a"]}
     ]

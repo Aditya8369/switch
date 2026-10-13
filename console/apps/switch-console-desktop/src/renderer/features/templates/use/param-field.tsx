@@ -27,6 +27,7 @@ export function ParamField({
   sshHost,
   hosts,
   machines,
+  locationAsMachine,
   newRoom,
   disabled,
   onNavigateAway,
@@ -42,6 +43,8 @@ export function ParamField({
   hosts: readonly { sshHost: string; name: string }[];
   /** The owner's machines a `machine` param may name; null without agent management. */
   machines: readonly OwnedMachine[] | null;
+  /** On a server with agent management, a `location` is one of the deployer's machines there. */
+  locationAsMachine: boolean;
   /** For a `room` param: the room the template creates, offered as `$new`. */
   newRoom: { name: string; bridgeType: string | null } | null;
   disabled?: boolean;
@@ -71,6 +74,10 @@ export function ParamField({
         sshHost={sshHost ?? undefined}
         onNavigateAway={onNavigateAway}
       />
+    );
+  } else if (param.type === 'location' && locationAsMachine) {
+    control = (
+      <MachineSelect value={strVal} onChange={onChange} machines={machines} disabled={disabled} />
     );
   } else if (param.type === 'location') {
     control = (

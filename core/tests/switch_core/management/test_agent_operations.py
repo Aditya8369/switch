@@ -1046,6 +1046,8 @@ agent:
   isolation: isolated
   addressing: owner-agents
   repo: https://github.com/acme/widgets
+  connections:
+    - { service: github, repos: [acme/widgets] }
 """
 
 
@@ -1133,7 +1135,7 @@ class TestRunTemplateCreatesManagedAgents:
         assert row.definition["isolation"] == "isolated"
         assert row.definition["directory"] == f"{WORKSPACES_DIR}/solo"
         assert (
-            "clone https://github.com/acme/widgets.git"
+            "clone https://github.com/acme/widgets into it"
             in row.definition["instructions"]
         )
         assert (grant.service, grant.resources) == (
@@ -1153,7 +1155,9 @@ class TestRunTemplateCreatesManagedAgents:
         template_id = await _template(
             harness,
             owner,
-            SOLO_TEMPLATE.replace("  repo: https://github.com/acme/widgets\n", ""),
+            SOLO_TEMPLATE.replace(
+                "  connections:\n    - { service: github, repos: [acme/widgets] }\n", ""
+            ),
         )
 
         response = await _call(

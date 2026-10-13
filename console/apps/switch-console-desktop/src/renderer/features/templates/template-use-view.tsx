@@ -67,7 +67,6 @@ import {
   type SlotStatus,
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
-import { LocationMachineNotice } from './use/location-machine-notice';
 import {
   connectionStates,
   connectionsFor,
@@ -551,8 +550,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? String(values[machineParam.name] ?? '')
           : '';
       const machineText = machineRaw === '' || hasPlaceholder(machineRaw) ? null : machineRaw;
+      // On a server with agent management, where an agent runs is one of the
+      // deployer's machines there. A `location` (this computer, an SSH host)
+      // is this Console's idea, so it names a machine only when it is one;
+      // otherwise the first online machine that can run the agent stands in.
       const machine =
-        existing === null && machines !== null ? machineFor(machines, machineText, location) : null;
+        existing === null && machines !== null
+          ? machineText !== null
+            ? machineFor(machines, machineText, provider, false)
+            : machineFor(machines, location, provider, location !== null)
+          : null;
       const directorySource = entry.directory
         ? entry.directory
         : directoryParam
@@ -636,9 +643,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         candidates = agents.data?.map((a) => a.name).sort();
       } else if (param.type === 'room') {
         candidates = roomsQuery.data?.map((r) => r.name).sort();
-      } else if (param.type === 'location') {
+      } else if (param.type === 'location' && !management) {
         candidates = [LOCAL_RUN_LOCATION, ...allowedHosts.map((h) => h.sshHost)];
-      } else if (param.type === 'machine') {
+      } else if (param.type === 'machine' || param.type === 'location') {
         // Online machines first: `$first` is the first that can take an agent now.
         candidates = machinesQuery.data
           ? [...machinesQuery.data]
@@ -681,6 +688,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     availability.data,
     localAvailability.data,
     machinesQuery.data,
+    management,
   ]);
 
   // ── Names: taken, invalid, or still unresolved ──────────────────────────
@@ -776,7 +784,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           setup.machineText !== null
             ? `${setup.machineText} is not one of your machines on this server.`
             : setup.location !== null
-              ? `${runLocationLabel(setup.location, allowedHosts)} is not a machine on this server yet.`
+              ? `None of your machines on this server can run ${name} now. ${
+                  (machines ?? [])
+                    .map((m) => machineProblem(m, setup.provider, name) ?? '')
+                    .join(' ') || 'You have no machine there yet.'
+                }`
               : `Choose which machine ${name} runs on.`
         );
       else if (setup.machine !== null) {
@@ -1464,11 +1476,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       param.type === 'directory' ? (setups[agentIndexOf(param)]?.directory ?? '') : '';
     return param.type === 'provider'
       ? (providerDisplayName(String(value)) ?? String(value))
-      : param.type === 'location'
+      : param.type === 'location' && !management
         ? value === ''
           ? ''
           : runLocationLabel(String(value), allowedHosts)
-        : param.type === 'machine'
+        : param.type === 'machine' || param.type === 'location'
           ? (machines?.find((m) => m.id === value || m.name === value)?.name ?? String(value))
           : param.type === 'room' && value === NEW
             ? (newRoomForPick?.name ?? 'New room')
@@ -1501,6 +1513,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         sshHost={sshHostOf(param)}
         hosts={allowedHosts}
         machines={machines}
+        locationAsMachine={management}
         newRoom={newRoomForPick}
         disabled={busy}
         onNavigateAway={() =>
@@ -1664,31 +1677,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const hostNotices = (setup: SlotSetup) => {
     const sshHost =
       setup.location === null || setup.location === LOCAL_RUN_LOCATION ? null : setup.location;
-    if (management) {
-      // A location that is not one of the deployer's machines yet: offer to make it one.
-      if (setup.machine !== null || setup.machineText !== null || setup.location === null)
-        return null;
-      if (workspaceId === null) return null;
-      // One notice per location: each sets the machine up, and a second would
-      // only report that the first is already doing it.
-      const first = setups.find(
-        (s) =>
-          s.existing === null &&
-          s.machine === null &&
-          s.machineText === null &&
-          s.location === setup.location
-      );
-      if (first !== setup) return null;
-      return (
-        <LocationMachineNotice
-          serverId={serverId}
-          workspaceId={workspaceId}
-          sshHost={sshHost}
-          label={runLocationLabel(setup.location, allowedHosts)}
-          onEnabled={() => void machinesQuery.refetch()}
-        />
-      );
-    }
+    if (management) return null;
     if (sshHost === null) return null;
     return (
       <>
@@ -1869,12 +1858,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                                   location: setup.machine
                                     ? setup.machine.state === 'online'
                                       ? setup.machine.name
-                                      : setup.location !== null
-                                        ? `${runLocationLabel(setup.location, allowedHosts)} (${setup.machine.name}, ${setup.machine.state})`
-                                        : `${setup.machine.name} (${setup.machine.state})`
-                                    : setup.location !== null
-                                      ? `${runLocationLabel(setup.location, allowedHosts)} (not a machine on this server yet)`
-                                      : (setup.machineText ?? null),
+                                      : `${setup.machine.name} (${setup.machine.state})`
+                                    : (setup.machineText ?? null),
                                   directory:
                                     setup.managedDirectory === ''
                                       ? null

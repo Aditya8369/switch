@@ -347,10 +347,13 @@ among their machines; `default: [$first]` is the first online machine that
 can run the agents' providers.
 
 **`location`**. Where it runs, as Switch Console knows it: `local` is this
-computer, otherwise an SSH host the Console knows. On a server with agent
-management the Console places the agent on the machine behind that
-location, which must be enrolled there. Only Switch Console can resolve a
-location: `run_template` refuses one, and asks for a `machine`.
+computer, otherwise an SSH host the Console knows. That is the Console's
+idea, not the server's: on a server with agent management a location names
+a machine only when it is the name or id of one of the deployer's machines
+there, and otherwise the first online machine that can run the agent stands
+in, as `$first` would. The form shows a `location` param as a choice among
+the deployer's machines there. Without agent management, the Console runs
+the agent on this computer or the SSH host, as before.
 
 **`directory`**. Its working directory on that machine. `{$agents_dir}` and
 `{agent}` are useful here: `"{$agents_dir}/{agent}"` gives the agent a
@@ -380,13 +383,12 @@ service, with write access to grant write, and connections must be on for
 the server. The form shows each connection on the agent's card, and whether
 the deployer has it.
 
-**`repo`**. A repository the agent works from. For a managed agent it must
-be on GitHub: the agent is granted a GitHub connection to it (folded into
-the entry's `github` connection when there is one), and its instructions
-tell it to clone the repository into its directory. On a server without
-agent management, the Console clones it (shallow) into the directory before
-the agent first runs; if that fails the agent is still created and clones
-it itself.
+**`repo`**. A repository the agent works from. A managed agent's
+instructions tell it to clone the repository into its directory; it grants
+nothing, so a private repository needs a `github` connection listing it, or
+credentials on the machine. On a server without agent management, the
+Console clones it (shallow) into the directory before the agent first runs;
+if that fails the agent is still created and clones it itself.
 
 **`sources`**. Pages the agent should read. Shown to the deployer; the agent
 fetches them itself.

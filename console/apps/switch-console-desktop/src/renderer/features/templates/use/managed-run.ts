@@ -14,10 +14,7 @@ import { hasPlaceholder, interpolate, type Values } from './use-template-model';
  * which checks it whole and keeps nothing when it fails.
  */
 
-const LOCAL = 'local';
 const AGENTS_DIR = '{$agents_dir}';
-const GITHUB_REPO =
-  /^(?:https:\/\/github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
 
 /**
  * The texts of an entry's runtime fields, for telling whether a param is read
@@ -31,30 +28,43 @@ export function runtimeFieldTexts(
 }
 
 /**
- * The machine a new agent runs on: the one its `machine` names (by id or
- * name), else the one behind its `location` (this computer or an SSH host),
- * or null when none of the deployer's machines is it.
+ * The machine a new agent runs on, among the deployer's machines on the
+ * server. `machineText` names one by id or name, from the template's
+ * `machine` (or, on a server with agent management, its `location`). A
+ * `location` this Console knows (this computer, an SSH host) means nothing to
+ * the server, so when it names no machine the first online machine that can
+ * run the provider stands in, as `$first`. An explicit `machine` that names
+ * none is not replaced: null.
  */
 export function machineFor(
   machines: readonly OwnedMachine[],
   machineText: string | null,
-  location: string | null
+  provider: string | null,
+  fallBackToFirst: boolean
 ): OwnedMachine | null {
   if (machineText !== null && machineText !== '') {
-    return (
-      machines.find((m) => m.id === machineText) ??
-      (machines.filter((m) => m.name === machineText).length === 1
-        ? (machines.find((m) => m.name === machineText) ?? null)
-        : null)
-    );
+    const byId = machines.find((m) => m.id === machineText);
+    if (byId) return byId;
+    const named = machines.filter((m) => m.name === machineText);
+    if (named.length === 1) return named[0]!;
+    if (!fallBackToFirst) return null;
   }
-  if (location === null) return null;
+  return fallBackToFirst ? firstReady(machines, provider) : null;
+}
+
+/** `$first` among the deployer's machines: the first online one, by name, that can run `provider`. */
+export function firstReady(
+  machines: readonly OwnedMachine[],
+  provider: string | null
+): OwnedMachine | null {
   return (
-    machines.find((m) =>
-      location === LOCAL
-        ? m.local?.kind === 'this-computer'
-        : m.local?.kind === 'ssh-host' && m.local.sshHost === location
-    ) ?? null
+    [...machines]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .find(
+        (m) =>
+          m.state === 'online' &&
+          (provider === null || m.providers.some((p) => p.provider === provider && p.ready))
+      ) ?? null
   );
 }
 
@@ -74,28 +84,17 @@ export function machineProblem(
   return null;
 }
 
-/** The connections an entry grants, its `repo` folded in as a GitHub connection to it. */
+/**
+ * The connections an entry grants, as its `connections:` lists them. A
+ * `repo` grants nothing: the agent clones it itself, with a connection the
+ * template lists or the machine's own credentials.
+ */
 export function connectionsFor(entry: ParsedAgentEntry, values: Values): TemplateConnection[] {
-  const out = entry.connections.map((c) => ({
+  return entry.connections.map((c) => ({
     service: interpolate(c.service, values),
     access: c.access,
     repos: c.repos.map((r) => interpolate(r, values)),
   }));
-  const repo = entry.repoUrl ? GITHUB_REPO.exec(interpolate(entry.repoUrl, values)) : null;
-  if (repo) {
-    const fullName = repo[1];
-    const github = out.find((c) => c.service === 'github');
-    if (!github) out.push({ service: 'github', access: null, repos: [fullName] });
-    else if (!github.repos.some((r) => r.toLowerCase() === fullName.toLowerCase()))
-      github.repos.push(fullName);
-  }
-  return out;
-}
-
-/** The GitHub repository an entry's `repo` names, as `owner/name`, or null when it names none. */
-export function githubRepo(entry: ParsedAgentEntry, values: Values): string | null {
-  if (!entry.repoUrl) return null;
-  return GITHUB_REPO.exec(interpolate(entry.repoUrl, values))?.[1] ?? null;
 }
 
 /** How a connection the template grants stands for the deployer. */
@@ -151,9 +150,9 @@ export function runAgent(params: {
     typeof entry.autoApprove === 'string'
       ? values[entry.autoApprove.replace(/^\{|\}$/g, '')] === true
       : entry.autoApprove === true;
-  const repo = githubRepo(entry, values);
+  const repo = entry.repoUrl ? interpolate(entry.repoUrl, values) : null;
   const instructions = repo
-    ? `${entry.instructions}\n\nYou work on the GitHub repository ${repo}. If your working directory is not a clone of it yet, clone https://github.com/${repo}.git into it first.`
+    ? `${entry.instructions}\n\nYou work on the repository ${repo}. If your working directory is not a clone of it yet, clone ${repo} into it first.`
     : entry.instructions;
   const directory = params.directoryText.trim();
   return {

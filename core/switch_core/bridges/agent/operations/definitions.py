@@ -1994,8 +1994,9 @@ async def get_template(template_id: str) -> dict[str, Any]:
     or team template would create, as managed agents of your owner: each
     slot's ``machine`` (or a ``machine`` param) says where it runs, and
     ``provider``, ``model``, ``directory`` and ``connections`` what it is.
-    A slot with only a ``location`` (this computer or an SSH host) is one
-    only Switch Console can create. ``allow_existing`` says whether an
+    A slot with only a ``location`` (this computer or an SSH host) runs on
+    the machine of that name, or else the first online machine of your
+    owner's that can run it. ``allow_existing`` says whether an
     existing agent may stand in for it instead (``run_template``'s
     ``agents``).
 

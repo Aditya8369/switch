@@ -64,18 +64,25 @@ const BOX = machine({
 
 describe('machineFor', () => {
   it('finds a machine by id or by name', () => {
-    expect(machineFor([LAPTOP, BOX], 'm2', null)).toBe(BOX);
-    expect(machineFor([LAPTOP, BOX], 'laptop', null)).toBe(LAPTOP);
+    expect(machineFor([LAPTOP, BOX], 'm2', null, false)).toBe(BOX);
+    expect(machineFor([LAPTOP, BOX], 'laptop', null, false)).toBe(LAPTOP);
   });
 
-  it('turns a location into the machine behind it', () => {
-    expect(machineFor([LAPTOP, BOX], null, 'local')).toBe(LAPTOP);
-    expect(machineFor([LAPTOP, BOX], null, 'box.lan')).toBe(BOX);
-    expect(machineFor([BOX], null, 'local')).toBeNull();
+  it('puts a location that is no machine on the first online one that can run it', () => {
+    const coder = machine({
+      id: 'm4',
+      name: 'cluster',
+      providers: [{ provider: 'codex', ready: true, problem: null }],
+    });
+    // "local" or an SSH host is this Console's idea: the server's $first stands in.
+    expect(machineFor([BOX, coder, LAPTOP], 'local', 'claude', true)).toBe(LAPTOP);
+    expect(machineFor([BOX, coder, LAPTOP], 'dev-vm', 'codex', true)).toBe(coder);
+    expect(machineFor([BOX], 'local', 'claude', true)).toBeNull();
   });
 
-  it('does not guess between machines that share a name', () => {
-    expect(machineFor([LAPTOP, machine({ id: 'm3' })], 'laptop', null)).toBeNull();
+  it('does not replace a machine the template names', () => {
+    expect(machineFor([LAPTOP], 'nowhere', 'claude', false)).toBeNull();
+    expect(machineFor([LAPTOP, machine({ id: 'm3' })], 'laptop', null, false)).toBeNull();
   });
 });
 
@@ -95,19 +102,17 @@ describe('machineProblem', () => {
 });
 
 describe('connectionsFor', () => {
-  it('folds a GitHub repo into the GitHub connection', () => {
+  it('grants what the template lists, and nothing for a repo', () => {
     expect(
       connectionsFor(
         entry({
-          repoUrl: 'https://github.com/acme/{repo}.git',
-          connections: [{ service: 'github', access: 'write', repos: [] }],
+          repoUrl: 'https://github.com/acme/widgets.git',
+          connections: [{ service: 'github', access: 'write', repos: ['acme/{repo}'] }],
         }),
-        { repo: 'widgets' }
+        { repo: 'tools' }
       )
-    ).toEqual([{ service: 'github', access: 'write', repos: ['acme/widgets'] }]);
-    expect(connectionsFor(entry({ repoUrl: 'https://github.com/acme/widgets' }), {})).toEqual([
-      { service: 'github', access: null, repos: ['acme/widgets'] },
-    ]);
+    ).toEqual([{ service: 'github', access: 'write', repos: ['acme/tools'] }]);
+    expect(connectionsFor(entry({ repoUrl: 'https://github.com/acme/widgets' }), {})).toEqual([]);
   });
 });
 
@@ -173,8 +178,8 @@ describe('runAgent', () => {
       autoApprove: true,
       directory: null,
       addressing: 'owner-agents',
-      connections: [{ service: 'github', access: null, repos: ['acme/widgets'] }],
+      connections: [],
     });
-    expect(agent.instructions).toContain('clone https://github.com/acme/widgets.git');
+    expect(agent.instructions).toContain('clone https://github.com/acme/widgets into it');
   });
 });

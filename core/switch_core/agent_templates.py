@@ -138,15 +138,17 @@ def _slot_connections(entry: dict[str, Any]) -> list[dict[str, Any]]:
             )
         else:
             out.append({"service": str(item), "access": None, "repos": []})
-    repo = entry.get("repo")
-    match = _GITHUB_REPO.match(str(repo)) if repo else None
-    if match:
-        github = next((c for c in out if c["service"] == "github"), None)
-        if github is None:
-            out.append({"service": "github", "access": None, "repos": [match.group(1)]})
-        elif match.group(1) not in github["repos"]:
-            github["repos"].append(match.group(1))
     return out
+
+
+def repo_note(repo: str) -> str:
+    """What an agent created from a template with a ``repo`` is told: to
+    clone it into its directory. Access to a private one comes from a
+    connection the template lists, or the machine's own credentials."""
+    return (
+        f"\n\nYou work on the repository {repo}. If your working directory is "
+        f"not a clone of it yet, clone {repo} into it first."
+    )
 
 
 def agent_slots(text: str) -> list[AgentSlot]:
@@ -349,9 +351,6 @@ def room_document(
 # ── Planning a run on the server ──────────────────────────────────────────
 
 _AGENT_ADDRESSING = ("owner", "owner-agents", "anyone")
-_GITHUB_REPO = re.compile(
-    r"\A(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?\Z"
-)
 
 
 @dataclass(frozen=True)
@@ -512,6 +511,28 @@ class _Planner:
                 return str(found["id"])
         return None
 
+    def first_machine(self, entry: dict[str, Any]) -> str | None:
+        """``$first`` for one entry: the first online machine, by name, that
+        can run the provider it says outright."""
+        if self.machines is None:
+            return None
+        provider = entry.get("provider")
+        text = str(interpolate(provider, self.values)) if provider is not None else ""
+        wanted = {text} if text and not PLACEHOLDER_RE.search(text) else set()
+        ordered = sorted(self.machines, key=lambda m: str(m.get("name")))
+        ready = next(
+            (
+                m
+                for m in ordered
+                if _machine_ready(m, None) and all(_machine_ready(m, p) for p in wanted)
+            ),
+            None,
+        )
+        if ready is None:
+            self.unready = [_why_not_ready(m, wanted) for m in ordered]
+            return None
+        return str(ready["id"])
+
     def resolve_provider_param(self, name: str, machine_ref: str | None) -> str | None:
         """A provider param's value: as given, else the first candidate of its
         default ready on the agent's machine (``$first``: the first ready)."""
@@ -592,14 +613,27 @@ class _Planner:
                     "give a machine in inputs.",
                 )
         elif entry.get("location") is not None or self.for_all("location"):
-            self.problem(
-                slot,
-                "location_console_only",
-                "it says where it runs as a location (this computer or an SSH "
-                "host), which only Switch Console can turn into a machine. Run "
-                "the template from Switch Console, or give the agent a "
-                "'machine:'.",
+            # A location (this computer, an SSH host) is something a Console
+            # knows, not the server: it names a machine only when it is one
+            # of the owner's machines, and otherwise stands for `$first`.
+            field_ = entry.get("location")
+            if field_ is None:
+                field_ = f"{{{self.for_all('location')}}}"
+            written = str(interpolate(field_, values))
+            found = (
+                _find_machine(self.machines, written)
+                if self.machines is not None and not PLACEHOLDER_RE.search(written)
+                else None
             )
+            machine = (
+                str(found["id"]) if found is not None else self.first_machine(entry)
+            )
+            if machine is None:
+                self.problem(
+                    slot,
+                    "machine_unresolved",
+                    f"none of your owner's machines can take it{self.unready_text()}.",
+                )
         else:
             self.problem(
                 slot,
@@ -680,28 +714,7 @@ class _Planner:
         repo = entry.get("repo")
         if repo:
             repo_text = str(self.text(slot, repo, values, "repo"))
-            match = _GITHUB_REPO.match(repo_text)
-            if match is None:
-                self.problem(
-                    slot,
-                    "repo_not_github",
-                    f"its repo {repo_text} is not a GitHub repository; a "
-                    "machine reaches a repository through a GitHub connection.",
-                )
-            else:
-                full_name = match.group(1)
-                github = next((c for c in connections if c.service == "github"), None)
-                if github is None:
-                    connections.append(ConnectionPlan("github", None, [full_name]))
-                elif full_name.lower() not in {r.lower() for r in github.repositories}:
-                    connections[connections.index(github)] = ConnectionPlan(
-                        "github", github.access, [*github.repositories, full_name]
-                    )
-                instructions += (
-                    f"\n\nYou work on the GitHub repository {full_name}. If "
-                    "your working directory is not a clone of it yet, clone "
-                    f"https://github.com/{full_name}.git into it first."
-                )
+            instructions += repo_note(repo_text)
 
         isolation = str(interpolate(entry.get("isolation") or "shared", values))
         if isolation not in ("shared", "isolated"):
