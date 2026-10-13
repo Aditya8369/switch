@@ -148,3 +148,23 @@ export function requestIdOfClientTxn(clientTxn: string | null): string | null {
   const at = clientTxn.lastIndexOf(':');
   return at > 0 ? clientTxn.slice(0, at) : null;
 }
+
+/** The notice an agent posts to a room while a session starts to answer it. */
+export const SESSION_STARTING_MESSAGE = 'Starting a session to handle this — one moment.';
+
+export function isSessionStartingNotice(message: ChatMessage): boolean {
+  return message.sender.kind === 'agent' && message.body.trim() === SESSION_STARTING_MESSAGE;
+}
+
+/** The session-starting notices still current: each is its agent's latest message. */
+export function liveSessionStartingNotices(messages: readonly ChatMessage[]): Set<string> {
+  const live = new Set<string>();
+  const seen = new Set<string>();
+  for (let at = messages.length - 1; at >= 0; at--) {
+    const message = messages[at];
+    if (message.sender.kind !== 'agent' || seen.has(message.sender.clientId)) continue;
+    seen.add(message.sender.clientId);
+    if (isSessionStartingNotice(message)) live.add(message.messageId);
+  }
+  return live;
+}
