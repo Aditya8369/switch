@@ -12,6 +12,7 @@ import {
   type TemplateAccess,
   visibilityOf,
 } from '@renderer/features/templates/template-visibility';
+import { unsaidMessage } from '@renderer/features/templates/use/use-template-model';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -40,6 +41,7 @@ function SourceStep({
   yamlText,
   onYamlChange,
   parseError,
+  warnings,
   onNext,
   canAdvance,
   onFileSelect,
@@ -50,6 +52,8 @@ function SourceStep({
   yamlText: string;
   onYamlChange: (text: string) => void;
   parseError: string | null;
+  /** What the document leaves unsaid. Advice only: saving goes ahead regardless. */
+  warnings: string[];
   onNext: () => void;
   /** Whether there is a document to go on with. Decided by the page, so the
    * Next button and the pager's arrow cannot come to different answers. */
@@ -164,6 +168,23 @@ function SourceStep({
         </Alert>
       )}
 
+      {warnings.length > 0 && (
+        <Alert>
+          <AlertDescription>
+            <div className="flex flex-col gap-1.5">
+              <span>
+                This template can be saved, but nothing can be created from it until it says:
+              </span>
+              <ul className="list-disc pl-4">
+                {warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {editing ? (
         <div className="flex items-center justify-end gap-2 pt-2">
           <Button variant="outline" disabled={saving} onClick={editing.onCancel}>
@@ -237,6 +258,28 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [name, setName] = useState(editingTemplate?.name ?? '');
   const [description, setDescription] = useState(editingTemplate?.description ?? '');
   const [access, setAccess] = useState<TemplateAccess>(editingTemplate?.access ?? 'shared');
+  const [warnings, setWarnings] = useState<string[]>([]);
+
+  // What the document leaves unsaid, checked as it is typed. A document that
+  // does not parse yet has nothing to say here; its error is shown when it is
+  // saved or used.
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      rpc.agentTemplates
+        .parseAgents({ yamlText })
+        .then(({ unsaid }) => {
+          if (!cancelled) setWarnings(unsaid.map(unsaidMessage));
+        })
+        .catch(() => {
+          if (!cancelled) setWarnings([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [yamlText]);
 
   // Parse before navigating so a syntax error is shown next to the editor,
   // where it can be fixed, rather than on the Use page.
@@ -388,6 +431,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             yamlText={yamlText}
             onYamlChange={setYamlText}
             parseError={parseError}
+            warnings={warnings}
             onNext={handleParseAndAdvance}
             canAdvance={canAdvance}
             onFileSelect={setSourceName}
@@ -425,6 +469,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         yamlText={yamlText}
         onYamlChange={setYamlText}
         parseError={parseError}
+        warnings={warnings}
         onNext={handleParseAndAdvance}
         canAdvance={canAdvance}
         onFileSelect={setSourceName}
