@@ -1058,6 +1058,11 @@ class _NoRooms:
     async def builtins_for(self, **kwargs: Any) -> dict[str, str]:
         return {"$creator": kwargs["name"], "$creator_email": kwargs["email"]}
 
+    async def resolve_defaults(
+        self, text: str, inputs: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return inputs
+
 
 async def _template(harness: Harness, owner: User, content: str) -> str:
     harness.protocol.config.template_max_bytes = 64 * 1024  # type: ignore[attr-defined]

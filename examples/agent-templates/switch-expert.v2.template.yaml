@@ -76,7 +76,12 @@ resources:
     channel_type: channel_private
     bridge: "{bridge}"
     agents: [expert]
-    users: ["{$creator}"]
+    # You join the room on its messaging app; a server with none has nobody
+    # to invite.
+    users:
+      - if: "{bridge}"
+        value: ["{$creator}"]
+      - value: []
     instructions: |
       This room is for asking {expert.name} about Switch. Answer here, briefly
       and concretely. When you do not know, say so and say where the answer

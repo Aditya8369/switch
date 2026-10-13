@@ -952,7 +952,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                           ? null // no room is made, so nothing below applies
                           : creatorBlocked
                             ? 'Link your messaging account first.'
-                            : parsed !== null && noMessagingApp && parsed.usesCreator
+                            : !isV2 && parsed !== null && noMessagingApp && parsed.usesCreator
                               ? 'This server has no messaging app, so the room would have no chat.'
                               : null;
   // Existing agents in the room whose addressing policy blocks messages from

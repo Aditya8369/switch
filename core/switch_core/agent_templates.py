@@ -480,6 +480,7 @@ class _Planner:
         }
         self.entries = _agents(data)
         self.problems: list[Problem] = []
+        self.room_inputs: dict[str, str] = {}
         # Why `$first` found no machine, one line per machine the owner has.
         self.unready: list[str] = []
 
@@ -728,11 +729,23 @@ class _Planner:
         else:
             directory = str(self.text(slot, directory_field, values, "directory"))
 
-        join = [
-            str(j)
-            for j in interpolate(entry.get("join") or [], values)
-            if isinstance(j, str) and j.strip() and not PLACEHOLDER_RE.search(j)
-        ]
+        # A room param is the server's to check, so it is not among the known
+        # values; for a join it is the name the deployer gave.
+        join_values = {**values, **self.room_inputs}
+        join = []
+        for j in interpolate(entry.get("join") or [], join_values):
+            if not isinstance(j, str) or not j.strip():
+                continue
+            left = [n for n in PLACEHOLDER_RE.findall(j) if n in self.params]
+            if left:
+                self.problem(
+                    slot,
+                    "input_missing",
+                    f"it joins the room {', '.join(left)} names, which has no "
+                    "value; give it in inputs.",
+                )
+                continue
+            join.append(j)
 
         addressing = str(entry.get("addressing") or "owner")
         if addressing not in _AGENT_ADDRESSING:
@@ -877,6 +890,12 @@ def plan_template(
     values = {**builtins, **_known_values(data, inputs)}
     values.pop(AGENTS_DIR[1:-1], None)
     planner = _Planner(data, values, machines)
+    planner.room_inputs = {
+        name: str(value)
+        for name, value in inputs.items()
+        if planner.params.get(name, {}).get("type") == "room"
+        and value not in (None, "")
+    }
     known = set(filled)
     names: dict[str, str] = {}
     existing: dict[str, str] = {}

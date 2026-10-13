@@ -68,6 +68,16 @@ def is_v2(data: dict[str, Any]) -> bool:
     return data.get("version") == 2 or "resources" in data
 
 
+def is_v2_text(text: str) -> bool:
+    """Whether a document's text is version 2; false for one that does not
+    parse, which the version 1 path reports."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return isinstance(data, dict) and is_v2(data)
+
+
 def _slug(value: str) -> str:
     if len(value) > _MAX_SLUG_INPUT:
         return ""

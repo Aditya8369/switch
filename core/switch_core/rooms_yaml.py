@@ -822,8 +822,13 @@ class RoomYamlService:
         """
         try:
             data = yaml.safe_load(text)
+            # A version 2 param's `if:` is the template engine's, not the spec's.
             declared = {
-                name: ParamSpec.model_validate(spec)
+                name: ParamSpec.model_validate(
+                    {k: v for k, v in spec.items() if k != "if"}
+                    if isinstance(spec, dict)
+                    else spec
+                )
                 for name, spec in ((data or {}).get("params") or {}).items()
             }
         except (yaml.YAMLError, ValidationError, AttributeError, TypeError):
@@ -1161,7 +1166,13 @@ class RoomYamlService:
             else [parsed.spec]
         )
         for spec in specs:
-            await self._resolve_bridge_id(spec.bridge)
+            bridge_id = await self._resolve_bridge_id(spec.bridge)
+            if spec.users and bridge_id is None:
+                raise ValueError(
+                    f"Room {spec.name!r} names users ({', '.join(spec.users)}), and "
+                    "it is on no messaging app: this server has none set up. Leave "
+                    "users out, or make them depend on a bridge."
+                )
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:

@@ -181,3 +181,28 @@ def test_an_input_that_refers_to_a_resource_is_resolved():
     )
     (agent,) = plan.new_agents
     assert agent.directory == "{$agents_dir}/expert-n1"
+
+
+def test_an_existing_room_to_join_comes_from_the_input():
+    plan = plan_template(
+        EXPERT,
+        {},
+        {"start_in": "existing_room", "existing_room": "gamma-room"},
+        builtins={"$creator": "ada"},
+        machines=MACHINES,
+    )
+    assert plan.new_agents[0].joins == ["gamma-room"]
+
+
+def test_an_existing_room_left_out_is_refused():
+    from switch_core.template_runs import AgentsNotCreated
+
+    with pytest.raises(AgentsNotCreated) as e:
+        plan_template(
+            EXPERT,
+            {},
+            {"start_in": "existing_room"},
+            builtins={"$creator": "ada"},
+            machines=MACHINES,
+        )
+    assert {p.code for p in e.value.problems} == {"input_missing"}

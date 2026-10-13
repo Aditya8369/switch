@@ -74,6 +74,7 @@ from switch_core.template_runs import (
     TemplateAgents,
     room_ids_of,
 )
+from switch_core.template_v2 import is_v2_text
 
 logger = logging.getLogger(__name__)
 
@@ -618,6 +619,8 @@ async def run_template_document(
     """
     inputs = body.inputs or {}
     try:
+        if is_v2_text(body.template):
+            inputs = await rooms_yaml.resolve_defaults(body.template, inputs) or {}
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id,
             name=user.name,

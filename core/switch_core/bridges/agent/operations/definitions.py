@@ -61,6 +61,7 @@ from switch_core.template_runs import (
     pending_addressing,
     room_ids_of,
 )
+from switch_core.template_v2 import is_v2_text
 
 logger = logging.getLogger(__name__)
 
@@ -2011,7 +2012,7 @@ async def get_template(template_id: str) -> dict[str, Any]:
 
     Returns:
         ``{id, name, description, kind, visibility, saved_by, can_edit,
-        params: [{name, type, description, default, required}],
+        params: [{name, type, description, default, required, if}],
         agent_slots: [{name, description, allow_existing, provider, machine,
         location, model, directory, connections: [{service, access,
         repos}]}], content}``. Slot fields are as the template writes them,
@@ -2073,7 +2074,12 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        builtins = await protocol.room_yaml_service().builtins_for(
+        rooms_yaml = protocol.room_yaml_service()
+        if is_v2_text(content):
+            # A version 2 condition may read a messaging app or room param
+            # whose value is the first candidate the server has.
+            inputs = await rooms_yaml.resolve_defaults(content, inputs)
+        builtins = await rooms_yaml.builtins_for(
             user_id=acting.owner.id,
             name=acting.owner.name,
             email=acting.owner.email,

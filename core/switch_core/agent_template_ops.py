@@ -82,6 +82,7 @@ def _params(content: str) -> list[dict[str, Any]]:
             "description": spec.get("description"),
             "default": spec.get("default"),
             "required": spec.get("required"),
+            "if": spec.get("if"),
         }
         for name, spec in raw.items()
         if isinstance(spec, dict)
