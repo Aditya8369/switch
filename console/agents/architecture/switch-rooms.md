@@ -44,33 +44,11 @@ through native provider adapters. Room controls use server-authorized commands
 with receipts and recovery epochs. Unknown outcomes are never resent
 implicitly. Local and SSH execution follow the same contract.
 
-## The inline bridge pane (CHOO-1674)
+## A room's conversation
 
-A room's conversation can be rendered **inside** Switch Console in a `<webview>`, rather than
-sending the user out to a browser. `src/shared/core/switch-rooms/room-embed.ts` resolves
-one of two answers:
-
-- `kind: 'inline'` — a `<webview>` on a partition that already has the Mattermost session
-  cookie installed, with `chromeless` asking the guest preload
-  (`src/preload/mattermost-guest.ts`) to hide the global header and sidebars.
-- **Deeplink** — the room is bridged somewhere we cannot embed (Slack, or a Mattermost we
-  hold no credentials for). The app offers the deeplink **instead of pretending** it can
-  show the conversation.
-
-Two things not to rediscover:
-
-- **Only managed servers can be embedded.** Mattermost embedding needs a port we chose and
-  credentials we hold; an external server's Mattermost is somebody else's deployment.
-- **Mattermost's `/_popout/` route does not work for this.** It looks like the supported
-  way to embed a single channel, but it requires the desktop app's `window.opener` token
-  handshake — under an Electron user agent the web app ignores our session cookie and
-  bounces to a login page. The ordinary channel URL is loaded and the surrounding chrome
-  hidden instead. The decision sits behind one resolved value so swapping strategies later
-  touches that module and nothing else.
-
-`room-embed-layer.tsx` keeps at most `MAX_LIVE_EMBEDS` (4) live webviews once visited —
-each is a real renderer process, so this trades memory for instant switching and drops the
-oldest beyond a handful.
+A room's Chat tab renders the conversation in Switch Console with `ChatPanel`
+(`src/renderer/features/chats/`), read and written through the gateway's `/chats`
+routes. It does not embed the bridged platform's web app.
 
 ## When editing here
 

@@ -27,7 +27,9 @@ import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
+import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -105,6 +107,10 @@ export class HostedSession {
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
+  /** Recent reasoning, in memory only: never published, journaled or replayed. */
+  private readonly reasoningBuffer = new ReasoningBuffer();
+  /** Recent tool input and output, in memory only, under the same rules as reasoning. */
+  private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -178,6 +184,8 @@ export class HostedSession {
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
+      this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
+      this.toolDetails.ingest(event, this.config.session.epoch);
       // Process cleanup leaves this conversation available for recovery.
       // An explicit session.stop is handled before shutdown and remains terminal.
       if (
@@ -504,6 +512,17 @@ export class HostedSession {
 
   snapshot(): Snapshot {
     return this.replica.snapshot();
+  }
+  /**
+   * The reasoning and tool details still held for `turnIds` (all buffered
+   * turns when null), for this epoch.
+   */
+  reasoning(turnIds: string[] | null): HostReasoningList {
+    const epoch = this.config.session.epoch;
+    return {
+      ...this.reasoningBuffer.list(epoch, turnIds),
+      tools: this.toolDetails.list(epoch, turnIds),
+    };
   }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
     return {
