@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { controllerAgentKey } from '@shared/core/managed-agents/controller-agent-key';
 import { type ActivityDeps, resolveChatActivity } from './activity';
 
 function deps(overrides: Partial<ActivityDeps>): ActivityDeps {
   return {
     localAgents: async () => [],
     placements: async () => ({}),
+    controllerPlacements: async () => null,
     ownedManagedAgents: async () => [],
     ownsAgent: async () => false,
     ...overrides,
@@ -59,7 +61,30 @@ describe('resolveChatActivity', () => {
     });
   });
 
-  it('shows messages only for a managed agent, and says when its controller is offline', async () => {
+  it('reaches a managed agent’s session on its online controller through the relay', async () => {
+    const d = deps({
+      ownedManagedAgents: async () => [
+        { agentId: 'agent-c', controllerId: 'ctl-1', controllerOnline: true },
+      ],
+      controllerPlacements: async (_server, agentId) =>
+        agentId === 'agent-c' ? { 'session-c': 'room-1' } : null,
+    });
+    expect(
+      await resolveChatActivity(d, { serverId: 's', agentId: 'agent-c', roomId: 'room-1' })
+    ).toEqual({
+      kind: 'session',
+      target: 'controller',
+      hostAgentKey: controllerAgentKey('s', 'agent-c'),
+      sessionId: 'session-c',
+      controllerId: 'ctl-1',
+      generation: null,
+    });
+    expect(
+      await resolveChatActivity(d, { serverId: 's', agentId: 'agent-c', roomId: 'room-2' })
+    ).toMatchObject({ kind: 'unavailable', reason: 'not-placed' });
+  });
+
+  it('shows messages only when the relay fails, and says when the controller is offline', async () => {
     const managed = (online: boolean) => async () => [
       { agentId: 'agent-c', controllerId: 'ctl-1', controllerOnline: online },
     ];

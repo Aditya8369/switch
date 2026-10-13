@@ -3,10 +3,10 @@
  * chat can show what the agent is doing (tool cards, thinking, Stop, model,
  * approvals) beside the room messages.
  *
- * Found per agent, never from Switch: from the local room watcher's
- * placements or an SSH sidecar's. A managed agent on a controller shows
- * messages only, and says so. Online is not placed, and placed is not
- * running: each is reported for what it is.
+ * Found per agent from its own room watcher's placements: the local one, an
+ * SSH sidecar's, or a controller's through the Switch relay. Reasoning is
+ * never relayed, so a controller's session shows none. Online is not placed,
+ * and placed is not running: each is reported for what it is.
  */
 
 export type ChatActivityHostTarget = 'local' | 'ssh' | 'controller';
@@ -22,7 +22,7 @@ export type ChatActivityUnavailableReason =
   | 'watcher-unreachable'
   /** The agent's controller is offline. */
   | 'controller-offline'
-  /** The agent runs on a controller, whose sessions Console cannot reach. */
+  /** The agent runs on a controller, which the Switch relay could not reach. */
   | 'on-controller';
 
 export type ChatActivityTarget =
@@ -54,7 +54,7 @@ export const ACTIVITY_UNAVAILABLE_TEXT: Record<ChatActivityUnavailableReason, st
   'controller-offline':
     "The agent's controller is offline. Messages are kept and delivered when it reconnects.",
   'on-controller':
-    'Live activity is not available for an agent on a controller. This chat shows its messages only.',
+    "The agent's controller could not be reached for live activity. This chat shows its messages only.",
 };
 
 /**
