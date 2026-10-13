@@ -954,6 +954,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
    */
   /** The last run was refused whole, or undone: nothing it made is left, so there is nothing to retry from. */
   const [nothingKept, setNothingKept] = useState(false);
+  // That refusal named each agent's reason, which its step shows.
+  const [refusedPerAgent, setRefusedPerAgent] = useState(false);
 
   const createManaged = async (
     created: { slotIndex: number; name: string; switchAgentId: string | null }[]
@@ -980,6 +982,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       });
     });
     setNothingKept(false);
+    setRefusedPerAgent(false);
     for (const { i } of pending) setSlot(i, { status: 'creating', error: null, step: 'create' });
     const room =
       makesRoom && loaded.coreYaml && parsed && !createdRoom.current
@@ -1019,6 +1022,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       // after the agents were made: the room is where it failed.
       if (room) setRoomStatus(result.problems.length > 0 ? 'idle' : 'failed');
       setNothingKept(true);
+      setRefusedPerAgent(result.problems.length > 0 && result.leftBehind.length === 0);
       const leftBehind =
         result.leftBehind.length > 0
           ? ` ${result.leftBehind.join(', ')} could not be deleted again; delete ${result.leftBehind.length === 1 ? 'it' : 'them'} from Your Agents.`
@@ -1751,7 +1755,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               templateName={loaded.name}
               phase={phase}
               steps={createSteps}
-              error={runError ?? null}
+              error={refusedPerAgent ? null : (runError ?? null)}
               doneDetail={doneDetail}
               onRetry={nothingKept ? null : () => void createAll()}
               onBack={() => setPhase('form')}
