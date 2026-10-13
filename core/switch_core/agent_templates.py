@@ -99,22 +99,51 @@ def _resolved_name(agent: dict[str, Any], values: dict[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class AgentSlot:
-    """An agent a template would create, which a run fills with an agent
-    that already exists. ``name`` is as the template writes it, placeholders
-    and all."""
+    """An agent a template describes: created by a run, or, where
+    ``allow_existing`` is true, filled with one that already exists. Fields
+    are as the template writes them, placeholders and all; None where it says
+    nothing."""
 
     name: str
     description: str | None
+    allow_existing: bool
+    provider: str | None
+    machine: str | None
+    location: str | None
+    model: str | None
+    directory: str | None
+    connections: list[str]
+
+
+def _written(entry: dict[str, Any], key: str) -> str | None:
+    value = entry.get(key)
+    return None if value is None else str(value)
 
 
 def agent_slots(text: str) -> list[AgentSlot]:
-    return [
-        AgentSlot(
-            name=_written_name(a),
-            description=str(a["description"]) if a.get("description") else None,
+    slots = []
+    for a in _agents(_load(text)):
+        raw = a.get("connections")
+        connections = [
+            str(c.get("service") if isinstance(c, dict) else c)
+            for c in (raw if isinstance(raw, list) else [])
+        ]
+        if a.get("repo") and "github" not in connections:
+            connections.append("github")
+        slots.append(
+            AgentSlot(
+                name=_written_name(a),
+                description=str(a["description"]) if a.get("description") else None,
+                allow_existing=a.get("allow_existing") is True,
+                provider=_written(a, "provider"),
+                machine=_written(a, "machine"),
+                location=_written(a, "location"),
+                model=_written(a, "model"),
+                directory=_written(a, "directory"),
+                connections=connections,
+            )
         )
-        for a in _agents(_load(text))
-    ]
+    return slots
 
 
 def _known_values(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
@@ -385,23 +414,52 @@ class _Planner:
             return [str(c) for c in default]
         return [] if default is None else [str(default)]
 
-    def resolve_machine_param(self, name: str, provider: str | None) -> str | None:
-        """A machine param's value: as given, else the first candidate of its
-        default the owner has (``$first``: the first online machine that can
-        run the provider)."""
+    def providers_on(self, name: str) -> set[str]:
+        """The providers the agents a machine param places say outright:
+        what the machine it resolves to must be able to run."""
+        shared = self.for_all("machine") == name
+        wanted: set[str] = set()
+        for entry in self.entries:
+            field_ = entry.get("machine")
+            if field_ == f"{{{name}}}" or (field_ is None and shared):
+                provider = entry.get("provider")
+                text = (
+                    str(interpolate(provider, self.values))
+                    if provider is not None
+                    else ""
+                )
+                if text and not PLACEHOLDER_RE.search(text):
+                    wanted.add(text)
+        return wanted
+
+    def resolve_machine_param(self, name: str) -> str | None:
+        """A machine param's value, one for every agent it places: as given,
+        else the first candidate of its default the owner has (``$first``:
+        the first online machine that can run all their providers)."""
         if name in self.values:
             return str(self.values[name])
         if self.machines is None:
             return None
         ordered = sorted(self.machines, key=lambda m: str(m.get("name")))
+        providers = self.providers_on(name)
         for candidate in self.chain(name):
             if candidate == FIRST:
-                ready = next((m for m in ordered if _machine_ready(m, provider)), None)
+                ready = next(
+                    (
+                        m
+                        for m in ordered
+                        if _machine_ready(m, None)
+                        and all(_machine_ready(m, p) for p in providers)
+                    ),
+                    None,
+                )
                 if ready is not None:
+                    self.values[name] = str(ready["id"])
                     return str(ready["id"])
                 continue
             found = _find_machine(self.machines, candidate)
             if found is not None:
+                self.values[name] = str(found["id"])
                 return str(found["id"])
         return None
 
@@ -453,20 +511,12 @@ class _Planner:
         values["agent"] = name
 
         provider_field = entry.get("provider")
-        provider_hint = (
-            str(interpolate(provider_field, values))
-            if provider_field is not None
-            else None
-        )
-        if provider_hint is not None and PLACEHOLDER_RE.search(provider_hint):
-            provider_hint = None
-
         machine: str | None = None
         machine_field = entry.get("machine")
         if machine_field is not None:
             ref = PLACEHOLDER_RE.fullmatch(str(machine_field))
             if ref and self.params.get(ref.group(1), {}).get("type") == "machine":
-                machine = self.resolve_machine_param(ref.group(1), provider_hint)
+                machine = self.resolve_machine_param(ref.group(1))
                 if machine is None:
                     self.problem(
                         slot,
@@ -478,7 +528,7 @@ class _Planner:
             else:
                 machine = str(self.text(slot, machine_field, values, "machine"))
         elif (shared := self.for_all("machine")) is not None:
-            machine = self.resolve_machine_param(shared, provider_hint)
+            machine = self.resolve_machine_param(shared)
             if machine is None:
                 self.problem(
                     slot,

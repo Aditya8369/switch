@@ -78,9 +78,16 @@ _BLOCKING_CODES = frozenset({"empty", "invalid_yaml", "not_a_mapping"})
 
 # What runs an agent, where, and in which folder. Switch Console supplies none
 # of these itself, so a template that creates an agent must say all three.
-# Only ever a warning here: the Console refuses to create an agent the template
-# leaves one unsaid for, and that is where the refusal belongs.
-_RUNTIME_FIELDS = ("provider", "location", "directory")
+# Where it runs is said with `location` (this computer or an SSH host, which
+# the Console resolves) or `machine` (one of the owner's machines on the
+# server). Only ever a warning here: the run refuses to create an agent the
+# template leaves one unsaid for, and that is where the refusal belongs.
+_RUNTIME_SETTINGS: dict[str, tuple[str, ...]] = {
+    "provider": ("provider",),
+    "location": ("location", "machine"),
+    "directory": ("directory",),
+}
+_RUNTIME_FIELDS = ("provider", "location", "machine", "directory")
 
 
 @dataclass(frozen=True)
@@ -255,29 +262,32 @@ def _check_agent_runtime(document: dict[str, Any], warnings: list[Finding]) -> N
         if entry.get(setting) is not None
     ]
 
-    def applies_to_all(setting: str) -> bool:
+    def applies_to_all(kinds: tuple[str, ...]) -> bool:
         return any(
             isinstance(spec, dict)
-            and spec.get("type") == setting
+            and spec.get("type") in kinds
             and not any(f"{{{name}}}" in text for text in field_texts)
             for name, spec in params.items()
         )
 
     for index, entry in enumerate(entries):
         label = entry.get("name") or entry.get("display_name") or f"agent {index + 1}"
-        for setting in _RUNTIME_FIELDS:
-            if entry.get(setting) is None and not applies_to_all(setting):
+        for setting, kinds in _RUNTIME_SETTINGS.items():
+            said = any(entry.get(kind) is not None for kind in kinds)
+            if not said and not applies_to_all(kinds):
                 what = {
                     "provider": f"which coding agent runs {label}",
                     "location": f"which machine {label} runs on",
                     "directory": f"which directory {label} works in",
                 }[setting]
+                ways = " or ".join(f"'{kind}:'" for kind in kinds)
+                params_ = " or ".join(f"'{kind}'" for kind in kinds)
                 warnings.append(
                     Finding(
                         "agent_runtime_unsaid",
-                        f"The template never says {what}. Give it a '{setting}:' or "
-                        f"declare a '{setting}' param. Switch Console will not create "
-                        "the agent until it does.",
+                        f"The template never says {what}. Give it {ways} or "
+                        f"declare a {params_} param. The agent will not be created "
+                        "until it does.",
                         setting,
                     )
                 )

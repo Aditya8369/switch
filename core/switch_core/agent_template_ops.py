@@ -14,7 +14,7 @@ operation layer reports (see ``agent_refusals``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
@@ -138,10 +138,7 @@ class AgentTemplates:
     ) -> dict[str, Any]:
         template = await self.load(session, acting, template_id)
         try:
-            slots = [
-                {"name": s.name, "description": s.description}
-                for s in agent_slots(template.content)
-            ]
+            slots = [asdict(s) for s in agent_slots(template.content)]
         except ValueError:
             slots = []
         return {

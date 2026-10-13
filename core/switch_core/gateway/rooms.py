@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated, cast
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Action, Principal, can, require, require_manage
+from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelType,
 )
-from switch_core.db.models import Room, RoomGroup, User
+from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
@@ -61,6 +64,13 @@ from switch_core.rooms_yaml import (
     template_json_schema,
 )
 from switch_core.telemetry import emit_safely
+from switch_core.template_runs import (
+    AgentsNotCreated,
+    ConnectionPlan,
+    NewAgentPlan,
+    RunUndone,
+    TemplateAgents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +480,169 @@ async def create_room_from_yaml(
         raise HTTPException(status_code=403, detail=str(e)) from e
     except BridgeOperationError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+class TemplateConnectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    service: str
+    access: Literal["read", "write"] | None = None
+    repos: list[str] = Field(default_factory=list)
+
+
+class TemplateAgentBody(BaseModel):
+    """One agent a template run creates, resolved by the client."""
+
+    model_config = ConfigDict(extra="forbid")
+    slot: str
+    name: str
+    description: str
+    display_name: str | None
+    instructions: str
+    provider: str
+    machine: str
+    model: str | None
+    advanced_config: dict[str, Any]
+    isolation: Literal["shared", "isolated"]
+    auto_approve: bool
+    directory: str | None
+    addressing: Literal["owner", "owner-agents", "anyone"]
+    connections: list[TemplateConnectionBody]
+
+    def plan(self) -> NewAgentPlan:
+        return NewAgentPlan(
+            slot=self.slot,
+            name=self.name,
+            description=self.description,
+            display_name=self.display_name,
+            instructions=self.instructions,
+            provider=self.provider,
+            machine=self.machine,
+            model=self.model,
+            advanced_config=self.advanced_config,
+            isolation=self.isolation,
+            auto_approve=self.auto_approve,
+            directory=self.directory,
+            addressing=self.addressing,
+            connections=[
+                ConnectionPlan(c.service, c.access, list(c.repos))
+                for c in self.connections
+            ],
+        )
+
+
+class TemplateRunBody(BaseModel):
+    """A template run: the agents it creates, then the room half (``yaml``,
+    naming them by name; null for a template with no room)."""
+
+    model_config = ConfigDict(extra="forbid")
+    agents: list[TemplateAgentBody]
+    yaml: str | None
+    inputs: dict[str, Any] | None = None
+    template_name: str
+
+
+def _refused_run(error: AgentsNotCreated | RunUndone) -> JSONResponse:
+    content: dict[str, Any] = {"detail": str(error), "code": error.reason}
+    if isinstance(error, AgentsNotCreated):
+        content["problems"] = [p.as_dict() for p in error.problems]
+    else:
+        content["left_behind"] = error.left_behind
+    return JSONResponse(status_code=409, content=content)
+
+
+@router.post("/from-template", status_code=201, response_model=None)
+async def run_template_with_agents(
+    body: TemplateRunBody,
+    rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> dict[str, Any] | JSONResponse:
+    """Run a template that creates agents: the agents first, as managed
+    agents of the caller on their own machines, then its rooms.
+
+    Everything is checked before anything is created: each machine can take
+    its agent now, each name is free, each connection is the caller's to
+    grant, and the room half parses. A refusal is 409 with ``code``
+    ``agents_not_created`` and ``problems``, each ``{slot, code, message}``.
+    When the rooms fail after the agents were created, the agents are deleted
+    again: 409 with ``code`` ``run_undone`` and ``left_behind`` naming any
+    that could not be. A room half that is wrong is 400, as from-yaml.
+
+    Returns ``{created_agents: [{slot, agent_id, name, machine}], room}``,
+    ``room`` being what from-yaml returns, or null with no room half.
+    """
+    tenant_id = require_tenant_id()
+    plans = [agent.plan() for agent in body.agents]
+    creator = TemplateAgents(
+        protocol=protocol,
+        management=management_port(),
+        broker=protocol.service_broker,
+    )
+    try:
+        parsed = None
+        builtins: dict[str, str] = {}
+        if body.yaml is not None:
+            inputs = await rooms_yaml.resolve_defaults(body.yaml, body.inputs)
+            builtins = await rooms_yaml.builtins_for(
+                user_id=user.id,
+                name=user.name,
+                email=user.email,
+                text=body.yaml,
+                inputs=inputs,
+            )
+            parsed = rooms_yaml.parse_template(
+                body.yaml, inputs=inputs, builtins=builtins
+            )
+            await rooms_yaml.check_entity_params(parsed)
+        checked = await creator.check(tenant_id, user.id, plans)
+        created = await creator.create(tenant_id, user.id, checked)
+        room: ProvisionResult | GroupProvisionResult | None = None
+        if parsed is not None:
+            try:
+                if isinstance(parsed.spec, GroupSpec):
+                    room = await rooms_yaml.provision_group(
+                        parsed.spec,
+                        user_id=user.id,
+                        is_admin=is_admin,
+                        creator_name=builtins["$creator"],
+                        template_name=body.template_name,
+                    )
+                else:
+                    room = await rooms_yaml.provision(
+                        parsed.spec,
+                        kickoff=parsed.kickoff,
+                        user_id=user.id,
+                        is_admin=is_admin,
+                        creator_name=builtins["$creator"],
+                        template_name=body.template_name,
+                    )
+            except Exception as error:
+                if not created:
+                    raise
+                raise await creator.undone(
+                    created, f"the rooms could not be created: {error}"
+                ) from error
+    except (AgentsNotCreated, RunUndone) as error:
+        return _refused_run(error)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except BridgeOperationError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {
+        "created_agents": [
+            {
+                "slot": agent.slot,
+                "agent_id": agent.agent_id,
+                "name": agent.name,
+                "machine": agent.machine,
+            }
+            for agent in created
+        ],
+        "room": None if room is None else room.model_dump(),
+    }
 
 
 @router.get("/template-schema")

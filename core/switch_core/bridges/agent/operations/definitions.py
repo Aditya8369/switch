@@ -1987,8 +1987,13 @@ async def get_template(template_id: str) -> dict[str, Any]:
     Use it before ``run_template`` to know what to fill in. ``params`` are
     the inputs (``required`` is as the template writes it; a param with no
     default usually needs a value). ``agent_slots`` lists the agents an agent
-    or team template would create: the server cannot create agents, so to run
-    one you fill each slot with an existing agent.
+    or team template would create, as managed agents of your owner: each
+    slot's ``machine`` (or a ``machine`` param) says where it runs, and
+    ``provider``, ``model``, ``directory`` and ``connections`` what it is.
+    A slot with only a ``location`` (this computer or an SSH host) is one
+    only Switch Console can create. ``allow_existing`` says whether an
+    existing agent may stand in for it instead (``run_template``'s
+    ``agents``).
 
     Args:
         template_id: The id from ``list_templates``.
@@ -1996,7 +2001,10 @@ async def get_template(template_id: str) -> dict[str, Any]:
     Returns:
         ``{id, name, description, kind, visibility, saved_by, can_edit,
         params: [{name, type, description, default, required}],
-        agent_slots: [{name, description}], content}``.
+        agent_slots: [{name, description, allow_existing, provider, machine,
+        location, model, directory, connections}], content}``. Slot fields
+        are as the template writes them, ``{param}`` placeholders included;
+        null where it says nothing.
     """
     protocol = get_protocol()
     async with _refusals_reported("get_template"):

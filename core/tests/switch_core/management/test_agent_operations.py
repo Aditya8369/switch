@@ -27,14 +27,21 @@ from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations.agent_management import (
     disable_agent_management,
 )
+from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.db.models import (
     Agent,
     AgentDefinition,
     ApiKey,
     Client,
+    ServiceGrant,
+    Template,
     User,
 )
+from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway.rooms import router as rooms_router
+from tests.switch_core.connections.github_seed import connect_github
 from tests.switch_core.management.harness import (
+    TEST_KEYRING,
     WORKSPACES_DIR,
     EnrolledController,
     Harness,
@@ -1024,3 +1031,252 @@ class TestGetAdvancedConfig:
         assert cursor.json()["result"] == []
         assert unknown.status_code == 400, unknown.text
         assert "unknown provider 'vim'" in unknown.json()["detail"]
+
+
+SOLO_TEMPLATE = """\
+params:
+  where: { type: machine, default: [$first] }
+agent:
+  name: solo
+  description: Works alone
+  instructions: Work alone.
+  provider: claude
+  directory: "{$agents_dir}/{agent}"
+  isolation: isolated
+  addressing: owner-agents
+  repo: https://github.com/acme/widgets
+"""
+
+
+class _NoRooms:
+    """The room half of the template engine, for templates with no room:
+    only the builtins an agent's fields may read."""
+
+    async def builtins_for(self, **kwargs: Any) -> dict[str, str]:
+        return {"$creator": kwargs["name"], "$creator_email": kwargs["email"]}
+
+
+async def _template(harness: Harness, owner: User, content: str) -> str:
+    harness.protocol.config.template_max_bytes = 64 * 1024  # type: ignore[attr-defined]
+    harness.protocol.room_yaml_service = _NoRooms  # type: ignore[assignment,method-assign]
+    async with harness.session_factory() as session:
+        template = Template(
+            owner_id=owner.id,
+            name="solo",
+            description="One agent",
+            kind="agent",
+            content=content,
+        )
+        session.add(template)
+        await session.commit()
+        return template.id
+
+
+class TestRunTemplateCreatesManagedAgents:
+    """A template run through the real management service and broker: the
+    agent is created on the owner's machine with its definition, addressing
+    and GitHub grant, or refused with management's reason and nothing made."""
+
+    async def test_creates_the_agent_with_its_definition_and_grant(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        harness.protocol.service_broker = harness.broker
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.session_factory() as session:
+            await connect_github(session, owner.id, TEST_KEYRING)
+            await session.commit()
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        template_id = await _template(harness, owner, SOLO_TEMPLATE)
+
+        response = await _call(
+            client,
+            agent_id,
+            "run_template",
+            bearer(key),
+            {"template_id": template_id},
+        )
+
+        assert response.status_code == 200, response.text
+        (created,) = response.json()["result"]["created_agents"]
+        assert created["name"] == "solo"
+        assert created["machine"] == {"id": controller.controller_id, "name": "laptop"}
+        agent = await _agent_row(harness, "solo")
+        assert agent is not None and agent.owner_id == owner.id
+        assert agent.addressing_policy == addressing_policy_for(
+            "owner_and_owner_agents"
+        )
+        async with harness.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(AgentDefinition).where(AgentDefinition.agent_id == agent.id)
+                )
+            ).scalar_one()
+            grant = (
+                await session.execute(
+                    select(ServiceGrant).where(ServiceGrant.agent_id == agent.id)
+                )
+            ).scalar_one()
+        assert row.controller_id == controller.controller_id
+        assert row.definition["isolation"] == "isolated"
+        assert row.definition["directory"] == f"{WORKSPACES_DIR}/solo"
+        assert (
+            "clone https://github.com/acme/widgets.git"
+            in row.definition["instructions"]
+        )
+        assert (grant.service, grant.resources) == (
+            "github",
+            {"installation_id": 123, "repository_ids": [456]},
+        )
+        assert harness.vendor.resolved == [["acme/widgets"]]
+
+    async def test_an_offline_machine_refuses_with_managements_reason(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        template_id = await _template(
+            harness,
+            owner,
+            SOLO_TEMPLATE.replace("  repo: https://github.com/acme/widgets\n", ""),
+        )
+
+        response = await _call(
+            client,
+            agent_id,
+            "run_template",
+            bearer(key),
+            {"template_id": template_id, "inputs": {"where": controller.controller_id}},
+        )
+
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        assert detail.startswith("Nothing was created.")
+        assert "(controller_offline)" in detail
+        assert await _agent_row(harness, "solo") is None
+
+    async def test_a_grant_the_owner_cannot_make_refuses_before_creating(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        harness.protocol.service_broker = harness.broker
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        template_id = await _template(harness, owner, SOLO_TEMPLATE)
+
+        response = await _call(
+            client, agent_id, "run_template", bearer(key), {"template_id": template_id}
+        )
+
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        # Never connected GitHub: the broker's reason, and no agent.
+        assert "solo: github: Connect GitHub" in detail
+        assert await _agent_row(harness, "solo") is None
+
+
+def _gateway_agent(machine: str, name: str = "solo", **overrides: Any) -> dict:
+    return {
+        "slot": name,
+        "name": name,
+        "description": "Works alone",
+        "display_name": None,
+        "instructions": "Work alone.",
+        "provider": "claude",
+        "machine": machine,
+        "model": None,
+        "advanced_config": {},
+        "isolation": "shared",
+        "auto_approve": False,
+        "directory": None,
+        "addressing": "owner",
+        "connections": [],
+        **overrides,
+    }
+
+
+class TestTheConsoleRunsATemplateWithAgents:
+    """`POST /gateway/rooms/from-template`, the Use page's one request: the
+    person's own machines, checked whole, refused with every problem."""
+
+    @pytest.fixture(autouse=True)
+    def _rooms(self, harness: Harness) -> None:
+        harness.gateway_app.include_router(rooms_router, prefix="/rooms")
+        harness.gateway_app.dependency_overrides[gw_deps.get_room_yaml_service] = (
+            lambda: _NoRooms()
+        )
+
+    async def test_creates_the_agents_on_the_persons_machine(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+
+        response = await client.post(
+            "/gateway/rooms/from-template",
+            json={
+                "agents": [
+                    _gateway_agent("laptop"),
+                    _gateway_agent(
+                        controller.controller_id,
+                        name="pair",
+                        isolation="isolated",
+                        addressing="anyone",
+                    ),
+                ],
+                "yaml": None,
+                "template_name": "duo",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert [a["name"] for a in body["created_agents"]] == ["solo", "pair"]
+        assert body["room"] is None
+        pair = await _agent_row(harness, "pair")
+        assert pair is not None and pair.owner_id == owner.id
+        assert pair.addressing_policy is None
+
+    async def test_refuses_with_every_problem_and_creates_nothing(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(
+            client, controller, providers=[provider("claude", auth="missing")]
+        )
+
+        response = await client.post(
+            "/gateway/rooms/from-template",
+            json={
+                "agents": [
+                    _gateway_agent("laptop"),
+                    _gateway_agent("nowhere", name="pair"),
+                    _gateway_agent("laptop", name="Bad Name"),
+                ],
+                "yaml": None,
+                "template_name": "trio",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 409, response.text
+        body = response.json()
+        assert body["code"] == "agents_not_created"
+        assert {(p["slot"], p["code"]) for p in body["problems"]} == {
+            ("solo", "provider_login_missing"),
+            ("pair", "not_found"),
+            ("Bad Name", "invalid_name"),
+        }
+        assert await _agent_row(harness, "solo") is None
