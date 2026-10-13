@@ -67,6 +67,7 @@ import {
   type SlotStatus,
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
+import { LocationMachineNotice } from './use/location-machine-notice';
 import {
   connectionStates,
   connectionsFor,
@@ -735,7 +736,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const setup = setups[i];
     if (setup.existing !== null) {
       if (setup.existing === '')
-        slotProblems.push(`Pick the existing agent for ${slot.entry.name ?? `agent ${i + 1}`}.`);
+        slotProblems.push(
+          `Pick the existing agent for ${slot.entry.name ? interpolate(slot.entry.name, values) : `agent ${i + 1}`}.`
+        );
       return;
     }
     const name = slot.createdName ?? setup.name;
@@ -1657,6 +1660,21 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const hostNotices = (setup: SlotSetup) => {
     const sshHost =
       setup.location === null || setup.location === LOCAL_RUN_LOCATION ? null : setup.location;
+    if (management) {
+      // A location that is not one of the deployer's machines yet: offer to make it one.
+      if (setup.machine !== null || setup.machineText !== null || setup.location === null)
+        return null;
+      if (workspaceId === null) return null;
+      return (
+        <LocationMachineNotice
+          serverId={serverId}
+          workspaceId={workspaceId}
+          sshHost={sshHost}
+          label={runLocationLabel(setup.location, allowedHosts)}
+          onEnabled={() => void machinesQuery.refetch()}
+        />
+      );
+    }
     if (sshHost === null) return null;
     return (
       <>
@@ -1836,7 +1854,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                                     : null,
                                   location: setup.machine
                                     ? `${setup.machine.name}${setup.machine.state === 'online' ? '' : ` (${setup.machine.state})`}`
-                                    : null,
+                                    : setup.location !== null
+                                      ? `${runLocationLabel(setup.location, allowedHosts)} (not a machine on this server yet)`
+                                      : (setup.machineText ?? null),
                                   directory:
                                     setup.managedDirectory === ''
                                       ? null
