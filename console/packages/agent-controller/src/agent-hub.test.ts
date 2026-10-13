@@ -130,7 +130,7 @@ describe('handing events to the watcher', () => {
     expect(seen.connected).toBe(1);
   });
 
-  it('hands a new agent\'s first watcher what arrived while it was starting', async () => {
+  it("hands a new agent's first watcher what arrived while it was starting", async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);
     // A template's kickoff, posted the moment the agent exists, before its
