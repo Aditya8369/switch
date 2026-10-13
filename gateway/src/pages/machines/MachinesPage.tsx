@@ -130,6 +130,61 @@ function providerChip(status: ProviderStatus, label: (provider: string) => strin
   );
 }
 
+/**
+ * The controller's version, and where it stands against the release Switch names: on it,
+ * waiting for its sessions to end, or stuck, with why.
+ */
+function controllerVersion(row: Controller) {
+  const running = row.version;
+  const release = row.release;
+  if (release === null || release.current)
+    return (
+      <Tooltip
+        title={
+          release === null
+            ? "Switch names no controller release for this machine."
+            : `Runs ${release.wanted}, the release Switch names.`
+        }
+      >
+        <span>{running ?? EM_DASH}</span>
+      </Tooltip>
+    );
+  const update = row.status?.update;
+  const from = running ?? "unknown";
+  if (row.state !== "online" || !update || update.target !== release.wanted)
+    return (
+      <Tooltip
+        title={
+          row.state === "online"
+            ? `Switch names ${release.wanted}; this controller has said nothing about moving to it. A controller older than self-update never does: update it by hand once.`
+            : `Switch names ${release.wanted}; it moves to it once it is connected again.`
+        }
+      >
+        <Chip size="small" variant="outlined" color="warning" label={`${from} → ${release.wanted}`} />
+      </Tooltip>
+    );
+  const label =
+    update.state === "waiting_idle"
+      ? `${from} → ${release.wanted} when idle`
+      : update.state === "restart_needed"
+        ? `${release.wanted} installed, restart needed`
+        : `update to ${release.wanted} failed`;
+  const title =
+    update.state === "waiting_idle"
+      ? `Moves to ${release.wanted} once no session is running on it.`
+      : (update.problem ?? (update.state === "failed" ? "It did not say why." : ""));
+  return (
+    <Tooltip title={title}>
+      <Chip
+        size="small"
+        variant="outlined"
+        color={update.state === "failed" ? "error" : "warning"}
+        label={label}
+      />
+    </Tooltip>
+  );
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -260,6 +315,13 @@ export default function MachinesPage() {
         width: 150,
         valueGetter: (_value, row) =>
           row.platform ? `${row.platform.os} ${row.platform.arch}` : EM_DASH,
+      },
+      {
+        field: "version",
+        headerName: "Controller",
+        width: 170,
+        valueGetter: (_value, row) => row.version,
+        renderCell: ({ row }) => controllerVersion(row),
       },
       {
         field: "providers",
