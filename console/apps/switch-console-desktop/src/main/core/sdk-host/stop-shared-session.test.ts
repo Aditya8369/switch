@@ -36,6 +36,7 @@ vi.mock('@main/core/sessions/operations/hydrateSession', () => ({
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
 vi.mock('./sidecar-control', () => ({ withSidecar: mocks.withSidecar }));
+vi.mock('./controller-control', () => ({ isControllerAgent: () => false }));
 vi.mock('./session-activity', () => ({ syncSdkSessionActivity: vi.fn(async () => {}) }));
 vi.mock('./host-journal', () => ({
   JournalUnavailableError: class extends Error {},

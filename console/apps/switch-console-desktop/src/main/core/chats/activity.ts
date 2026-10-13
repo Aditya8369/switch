@@ -3,14 +3,15 @@ import {
   type ChatActivityTarget,
   type ChatActivityUnavailableReason,
 } from '@shared/core/chats/activity';
+import { controllerAgentKey } from '@shared/core/managed-agents/controller-agent-key';
 
 /**
  * Which session of an agent attends a chat, from where it runs.
  *
  * A Console agent on this machine or its SSH host is asked through its own
  * room watcher's placements. A managed agent's sessions run on its
- * controller, which Console cannot reach, so its chat shows messages only.
- * Switch itself is never asked which session is placed where.
+ * controller, whose watcher is asked through the Switch relay; while that
+ * cannot be asked its chat shows messages only, and says so.
  */
 
 export type LocalChatAgent = { id: string; switchAgentId: string; ssh: boolean };
@@ -25,6 +26,11 @@ export type ActivityDeps = {
   localAgents: (serverId: string) => Promise<LocalChatAgent[]>;
   /** A local agent's placements (session → room), or null while its watcher cannot be asked. */
   placements: (serverId: string, consoleAgentId: string) => Promise<Record<string, string> | null>;
+  /** A managed agent's placements on its controller, through the relay; null when the relay fails. */
+  controllerPlacements: (
+    serverId: string,
+    agentId: string
+  ) => Promise<Record<string, string> | null>;
   /** The signed-in person's managed agents, or null where the server has no agent management. */
   ownedManagedAgents: (serverId: string) => Promise<OwnedManagedAgent[] | null>;
   /** Whether the signed-in person owns the Switch agent. */
@@ -71,7 +77,17 @@ export async function resolveChatActivity(
       ? unavailable('not-on-this-machine')
       : unavailable('not-owner');
   if (managed.controllerId === null) return unavailable('not-on-this-machine');
-  return managed.controllerOnline
-    ? unavailable('on-controller')
-    : unavailable('controller-offline');
+  if (!managed.controllerOnline) return unavailable('controller-offline');
+  const placements = await deps.controllerPlacements(serverId, agentId);
+  if (placements === null) return unavailable('on-controller');
+  const sessionId = placedSession(placements, roomId);
+  if (sessionId === null) return unavailable('not-placed');
+  return {
+    kind: 'session',
+    target: 'controller',
+    hostAgentKey: controllerAgentKey(serverId, agentId),
+    sessionId,
+    controllerId: managed.controllerId,
+    generation: null,
+  };
 }

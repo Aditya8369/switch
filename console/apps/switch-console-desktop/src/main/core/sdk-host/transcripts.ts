@@ -14,6 +14,7 @@ import {
   sessionTranscriptEventChannel,
   sessionTranscriptResetChannel,
 } from '@shared/core/sessions/sessionEvents';
+import { controllerControl, isControllerAgent } from './controller-control';
 import { recordRemoteHostFailure } from './host-failures';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
@@ -29,7 +30,9 @@ import { withSidecar } from './sidecar-control';
  * event it records arrives on that pipe and is forwarded as it happens. A
  * session that is not running is read from its journal, and picks up live
  * again when its host starts, since the host goes on numbering the same
- * journal.
+ * journal. A managed agent's session on its controller is read the same way
+ * through the Switch relay, whose live view is reset whenever it cannot be
+ * trusted.
  */
 
 type Open = { viewers: number; close: () => void };
@@ -90,7 +93,7 @@ export async function currentSnapshot(agentId: string, sessionId: string): Promi
   }
 }
 
-type Place = 'local' | 'remote';
+type Place = 'local' | 'remote' | 'controller';
 
 /** The session as last recorded: from its host if it runs, else its journal. */
 async function recordedSnapshot(agentId: string, sessionId: string, place: Place) {
@@ -100,9 +103,31 @@ async function recordedSnapshot(agentId: string, sessionId: string, place: Place
     if (!(error instanceof JournalUnavailableError || error instanceof SessionHostFailedError))
       throw error;
   }
+  if (place === 'controller') return (await controllerControl(agentId)).journal(sessionId);
   return place === 'local'
     ? localJournalSnapshot(sharedSessionRoot(sessionId))
     : (await hostJournals.tail(agentId, sessionId)).snapshot();
+}
+
+/** Stop pushing a session whose live feed broke, and tell its windows to reload it. */
+function feedLost(sessionId: string, close: () => void, reason: string): void {
+  if (open.get(sessionId)?.close !== close) return;
+  open.delete(sessionId);
+  events.emit(sessionTranscriptResetChannel, { sessionId, reason }, sessionId);
+}
+
+/** A controller session's live events, relayed by its Switch server from the controller. */
+async function controllerFeed(agentId: string, sessionId: string): Promise<() => void> {
+  const client = await controllerControl(agentId);
+  let close: () => void = () => {};
+  const unsubscribe = await client.subscribe(
+    sessionId,
+    (event) => forward(sessionId, event),
+    (failure) => recordRemoteHostFailure(sessionId, failure),
+    (reason) => feedLost(sessionId, close, reason)
+  );
+  close = unsubscribe;
+  return close;
 }
 
 /**
@@ -111,37 +136,35 @@ async function recordedSnapshot(agentId: string, sessionId: string, place: Place
  * `sessionTranscriptEventChannel`.
  */
 export async function openTranscript(agentId: string, sessionId: string): Promise<Snapshot> {
-  const place: Place = (await isLocal(agentId)) ? 'local' : 'remote';
+  const place: Place = isControllerAgent(agentId)
+    ? 'controller'
+    : (await isLocal(agentId))
+      ? 'local'
+      : 'remote';
   let entry = open.get(sessionId);
   if (!entry) {
     const close =
-      place === 'local'
-        ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
-            forward(sessionId, event)
-          )
-        : await withSidecar(agentId, async (client) => {
-            const unsubscribe = await client.subscribe(
-              sessionId,
-              (event) => forward(sessionId, event),
-              (failure) => recordRemoteHostFailure(sessionId, failure)
-            );
-            // Events recorded while the connection is down never arrive, so the
-            // windows showing the session reload it rather than carry on with a gap.
-            const offClose = client.onClose((error) => {
-              if (open.get(sessionId)?.close !== close) return;
-              open.delete(sessionId);
-              events.emit(
-                sessionTranscriptResetChannel,
-                { sessionId, reason: error.message },
-                sessionId
+      place === 'controller'
+        ? await controllerFeed(agentId, sessionId)
+        : place === 'local'
+          ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
+              forward(sessionId, event)
+            )
+          : await withSidecar(agentId, async (client) => {
+              const unsubscribe = await client.subscribe(
+                sessionId,
+                (event) => forward(sessionId, event),
+                (failure) => recordRemoteHostFailure(sessionId, failure)
               );
+              // Events recorded while the connection is down never arrive, so the
+              // windows showing the session reload it rather than carry on with a gap.
+              const offClose = client.onClose((error) => feedLost(sessionId, close, error.message));
+              const close = () => {
+                offClose();
+                unsubscribe();
+              };
+              return close;
             });
-            const close = () => {
-              offClose();
-              unsubscribe();
-            };
-            return close;
-          });
     entry = { viewers: 0, close };
     open.set(sessionId, entry);
   }

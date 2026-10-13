@@ -2,6 +2,7 @@ import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agen
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { agentPlacements } from '@main/core/sdk-host/connection-health';
+import { controllerControl } from '@main/core/sdk-host/controller-control';
 import {
   AgentManagementUnavailableError,
   fetchAgents,
@@ -11,6 +12,7 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { log } from '@main/lib/logger';
 import type { ChatActivityTarget } from '@shared/core/chats/activity';
 import type {
   ChatMember,
@@ -21,6 +23,7 @@ import type {
   ChatUpload,
   ChatUploadInput,
 } from '@shared/core/chats/chats';
+import { controllerAgentKey } from '@shared/core/managed-agents/controller-agent-key';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type ActivityDeps, type OwnedManagedAgent, resolveChatActivity } from './activity';
 import {
@@ -81,6 +84,22 @@ const activityDeps: ActivityDeps = {
     );
   },
   placements: (serverId, consoleAgentId) => agentPlacements(serverId, consoleAgentId),
+  controllerPlacements: async (serverId, agentId) => {
+    try {
+      const client = await controllerControl(controllerAgentKey(serverId, agentId));
+      return (await client.health()).placements;
+    } catch (error) {
+      log.warn(
+        'Could not ask a managed agent’s controller for its placements; showing messages only',
+        {
+          serverId,
+          agentId,
+          error: String(error),
+        }
+      );
+      return null;
+    }
+  },
   ownedManagedAgents: (serverId) =>
     cached(`${serverId}:managed`, () =>
       onServer(serverId, async (server): Promise<OwnedManagedAgent[] | null> => {
