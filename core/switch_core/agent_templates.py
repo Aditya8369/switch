@@ -101,8 +101,9 @@ def _resolved_name(agent: dict[str, Any], values: dict[str, Any]) -> str:
 class AgentSlot:
     """An agent a template describes: created by a run, or, where
     ``allow_existing`` is true, filled with one that already exists. Fields
-    are as the template writes them, placeholders and all; None where it says
-    nothing."""
+    are as the template writes them, placeholders and all, a setting said for
+    every agent by a param no entry reads shown as that ``{param}``; None
+    where it says nothing."""
 
     name: str
     description: str | None
@@ -112,7 +113,7 @@ class AgentSlot:
     location: str | None
     model: str | None
     directory: str | None
-    connections: list[str]
+    connections: list[dict[str, Any]]
 
 
 def _written(entry: dict[str, Any], key: str) -> str | None:
@@ -120,30 +121,58 @@ def _written(entry: dict[str, Any], key: str) -> str | None:
     return None if value is None else str(value)
 
 
-def agent_slots(text: str) -> list[AgentSlot]:
-    slots = []
-    for a in _agents(_load(text)):
-        raw = a.get("connections")
-        connections = [
-            str(c.get("service") if isinstance(c, dict) else c)
-            for c in (raw if isinstance(raw, list) else [])
-        ]
-        if a.get("repo") and "github" not in connections:
-            connections.append("github")
-        slots.append(
-            AgentSlot(
-                name=_written_name(a),
-                description=str(a["description"]) if a.get("description") else None,
-                allow_existing=a.get("allow_existing") is True,
-                provider=_written(a, "provider"),
-                machine=_written(a, "machine"),
-                location=_written(a, "location"),
-                model=_written(a, "model"),
-                directory=_written(a, "directory"),
-                connections=connections,
+def _slot_connections(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = entry.get("connections")
+    out: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            repos = item.get("repos") or []
+            out.append(
+                {
+                    "service": str(item.get("service")),
+                    "access": item.get("access"),
+                    "repos": [
+                        str(r) for r in (repos if isinstance(repos, list) else [repos])
+                    ],
+                }
             )
+        else:
+            out.append({"service": str(item), "access": None, "repos": []})
+    repo = entry.get("repo")
+    match = _GITHUB_REPO.match(str(repo)) if repo else None
+    if match:
+        github = next((c for c in out if c["service"] == "github"), None)
+        if github is None:
+            out.append({"service": "github", "access": None, "repos": [match.group(1)]})
+        elif match.group(1) not in github["repos"]:
+            github["repos"].append(match.group(1))
+    return out
+
+
+def agent_slots(text: str) -> list[AgentSlot]:
+    data = _load(text)
+    planner = _Planner(data, {}, None)
+
+    def said(entry: dict[str, Any], key: str) -> str | None:
+        if entry.get(key) is not None:
+            return str(entry[key])
+        shared = planner.for_all(key)
+        return f"{{{shared}}}" if shared else None
+
+    return [
+        AgentSlot(
+            name=_written_name(a),
+            description=str(a["description"]) if a.get("description") else None,
+            allow_existing=a.get("allow_existing") is True,
+            provider=said(a, "provider"),
+            machine=said(a, "machine"),
+            location=said(a, "location"),
+            model=_written(a, "model"),
+            directory=said(a, "directory"),
+            connections=_slot_connections(a),
         )
-    return slots
+        for a in planner.entries
+    ]
 
 
 def _known_values(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
@@ -397,9 +426,11 @@ class _Planner:
         self.data = data
         self.values = values
         self.machines = machines
-        raw = data.get("params") or {}
+        raw = data.get("params")
         self.params: dict[str, dict[str, Any]] = {
-            k: v for k, v in raw.items() if isinstance(v, dict)
+            k: v
+            for k, v in (raw if isinstance(raw, dict) else {}).items()
+            if isinstance(v, dict)
         }
         self.entries = _agents(data)
         self.problems: list[Problem] = []

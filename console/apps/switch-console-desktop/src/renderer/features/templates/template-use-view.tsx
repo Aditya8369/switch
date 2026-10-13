@@ -1032,6 +1032,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       });
       created.push({ slotIndex: match.i, name: agent.name, switchAgentId: agent.agentId });
     }
+    const deaf = result.createdAgents.filter((a) => !a.listening).map((a) => a.name);
+    if (deaf.length > 0 && result.room)
+      toast({
+        title: `${deaf.join(', ')} may not have seen the first message`,
+        description: `${deaf.length === 1 ? 'It was' : 'They were'} still starting when the room was made. Mention ${deaf.length === 1 ? 'it' : 'them'} in the room to start work.`,
+        variant: 'destructive',
+      });
     if (result.room) createdRoom.current = result.room;
     return true;
   };

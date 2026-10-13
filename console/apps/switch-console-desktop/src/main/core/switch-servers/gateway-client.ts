@@ -2226,6 +2226,8 @@ export type TemplateRunResult =
         agentId: string;
         name: string;
         machine: { id: string; name: string };
+        /** False when it was not taking events before its rooms were made: the kickoff may not have reached it. */
+        listening: boolean;
       }[];
       room: ProvisionFromTemplateResult | null;
     }
@@ -2312,6 +2314,7 @@ export async function runTemplateWithAgents(
       agent_id: string;
       name: string;
       machine: { id: string; name: string };
+      listening: boolean;
     }[];
     room: ProvisionJson | null;
   };
@@ -2322,6 +2325,7 @@ export async function runTemplateWithAgents(
       agentId: a.agent_id,
       name: a.name,
       machine: a.machine,
+      listening: a.listening,
     })),
     room: json.room === null ? null : toProvisionResult(json.room),
   };

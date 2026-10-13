@@ -51,6 +51,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_runs import (
+    LISTEN_TIMEOUT_SECONDS,
     AgentsNotCreated,
     CheckedAgent,
     CreatedAgent,
@@ -1825,6 +1826,7 @@ async def _provision_as_agent(
             protocol=protocol,
             management=management_port(),
             broker=protocol.service_broker,
+            listen_timeout=LISTEN_TIMEOUT_SECONDS,
         )
         checked = await creator.check(tenant_id, owner.id, new_agents)
     created_names = {plan.name for plan in new_agents}
@@ -1908,6 +1910,7 @@ def _created_view(created: Sequence[CreatedAgent]) -> list[dict[str, Any]]:
             "agent_id": agent.agent_id,
             "name": agent.name,
             "machine": agent.machine,
+            "listening": agent.listening,
         }
         for agent in created
     ]
@@ -2003,9 +2006,10 @@ async def get_template(template_id: str) -> dict[str, Any]:
         ``{id, name, description, kind, visibility, saved_by, can_edit,
         params: [{name, type, description, default, required}],
         agent_slots: [{name, description, allow_existing, provider, machine,
-        location, model, directory, connections}], content}``. Slot fields
-        are as the template writes them, ``{param}`` placeholders included;
-        null where it says nothing.
+        location, model, directory, connections: [{service, access,
+        repos}]}], content}``. Slot fields are as the template writes them,
+        ``{param}`` placeholders included (a setting a param says for every
+        agent shows as that ``{param}``); null where it says nothing.
     """
     protocol = get_protocol()
     async with _refusals_reported("get_template"):
@@ -2050,7 +2054,9 @@ async def run_template(
         As ``create_room_from_yaml``: for a room ``{room_id, room_name, ...}``,
         for a group ``{group_id, group_name, rooms, errors}``; plus, when it
         created agents, ``created_agents``: each ``{slot, agent_id, name,
-        machine}``. Check them with ``list_managed_agents`` as after
+        machine, listening}``, ``listening`` false when the agent was not
+        taking events before its rooms were made, so the kickoff may not have
+        reached it. Check them with ``list_managed_agents`` as after
         ``create_agent``. A template with no room returns only
         ``created_agents``.
     """

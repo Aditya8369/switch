@@ -17,9 +17,10 @@ Console from its form, the server from the document (`agent_templates`).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from switch_core.agent_refusals import AgentRefused
@@ -41,6 +42,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AGENTS_DIR = "{$agents_dir}"
+
+# How long a run waits, in all, for the clients of the agents it created to
+# be taking events before it makes their rooms.
+LISTEN_TIMEOUT_SECONDS = 30.0
+_CLIENT_POLL_SECONDS = 0.1
 
 # How a template says who may address an agent, and the addressing choice
 # each stands for.
@@ -137,6 +143,9 @@ class CreatedAgent:
     agent_id: str
     name: str
     machine: dict[str, str]
+    # Its client was taking events before the rooms were made, so a kickoff
+    # posted into them reaches it. False when it had not started in time.
+    listening: bool
 
 
 def _directory(
@@ -186,10 +195,12 @@ class TemplateAgents:
         protocol: AgentCore,
         management: AgentManagementPort | None,
         broker: ServiceBroker | None,
+        listen_timeout: float,
     ) -> None:
         self._protocol = protocol
         self._management = management
         self._broker = broker
+        self._listen_timeout = listen_timeout
 
     async def check(
         self, tenant_id: str, owner_id: str, plans: Sequence[NewAgentPlan]
@@ -319,6 +330,16 @@ class TemplateAgents:
                 )
             )
         for connection in plan.connections:
+            unavailable = self._broker.availability(connection.service)
+            if unavailable is not None:
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "connection_unavailable",
+                        f"{connection.service}: {unavailable}",
+                    )
+                )
+                continue
             async with tenant_session(
                 self._protocol.session_factory, tenant_id
             ) as session:
@@ -387,6 +408,7 @@ class TemplateAgents:
                         agent_id=result["agent_id"],
                         name=result["name"],
                         machine=dict(result["machine"]),
+                        listening=False,
                     )
                 )
                 await self._finish(tenant_id, owner_id, result["agent_id"], agent)
@@ -394,7 +416,34 @@ class TemplateAgents:
                 raise await self.undone(
                     created, f"creating {plan.name} failed: {_reason(error)}"
                 ) from error
-        return created
+        return await self._listening(created)
+
+    async def _listening(self, created: list[CreatedAgent]) -> list[CreatedAgent]:
+        """Wait, up to the listen timeout in all, for each new agent's client
+        to be taking events. A client that starts after a room exists reads
+        it only from then on, so without this the kickoff posted the moment
+        the room is made never reaches an agent created a moment before."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._listen_timeout
+        out: list[CreatedAgent] = []
+        for agent in created:
+            actor = self._protocol.client_lifecycle.get_by_agent_id(agent.agent_id)
+            while actor is None and loop.time() < deadline:
+                await asyncio.sleep(_CLIENT_POLL_SECONDS)
+                actor = self._protocol.client_lifecycle.get_by_agent_id(agent.agent_id)
+            listening = actor is not None and await actor.wait_receiving(
+                max(0.0, deadline - loop.time())
+            )
+            if not listening:
+                logger.warning(
+                    "New agent %s (%s) was not taking events within %ss of being "
+                    "created; a kickoff posted now may not reach it",
+                    agent.name,
+                    agent.agent_id,
+                    self._listen_timeout,
+                )
+            out.append(replace(agent, listening=listening))
+        return out
 
     async def _finish(
         self, tenant_id: str, owner_id: str, agent_id: str, agent: CheckedAgent

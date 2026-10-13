@@ -17,6 +17,7 @@ from sqlalchemy import select, update
 
 from switch_core.agent_refusals import AgentRefused
 from switch_core.agent_templates import plan_template
+from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.operations.agent_management import (
     disable_agent_management,
     enable_agent_management,
@@ -139,8 +140,21 @@ class FakeManagement:
         }
 
 
+class ListeningActor:
+    """A new agent's client, taking events once it has started."""
+
+    def __init__(self, order: list[str], name: str) -> None:
+        self._order = order
+        self._name = name
+
+    async def wait_receiving(self, timeout: float) -> bool:
+        self._order.append(f"listening {self._name}")
+        return True
+
+
 @pytest_asyncio.fixture
-async def managed(env):
+async def managed(env, monkeypatch):
+    monkeypatch.setattr(definitions, "LISTEN_TIMEOUT_SECONDS", 0.2)
     env["protocol"].config = SimpleNamespace(template_max_bytes=64 * 1024)
     env["protocol"].telemetry = None
     env["protocol"].service_broker = None
@@ -575,3 +589,65 @@ async def test_an_unknown_messaging_app_is_refused_before_any_agent(managed):
             inputs={"team": "red"},
         )
     assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
+async def test_the_rooms_wait_until_the_new_agents_are_listening(managed):
+    order: list[str] = []
+    names: dict[str, str] = {}
+
+    async def create_room(config: Any) -> Any:
+        order.append(f"room {config.name}")
+        return await original(config)
+
+    original = managed["protocol"].room_service.create_room
+    managed["protocol"].room_service.create_room = create_room
+    lifecycle = managed["protocol"].client_lifecycle
+
+    def get_by_agent_id(agent_id: str) -> Any:
+        return ListeningActor(order, names.setdefault(agent_id, agent_id))
+
+    lifecycle.get_by_agent_id = get_by_agent_id
+    template_id = await _stored(managed, TEAM)
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "red"},
+    )
+
+    assert all(a["listening"] for a in result["created_agents"])
+    assert order[-1] == "room red-room"
+    assert len([o for o in order if o.startswith("listening")]) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_agent_whose_client_never_starts_is_reported(managed):
+    template_id = await _stored(managed, TEAM)
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "red"},
+    )
+
+    assert [a["listening"] for a in result["created_agents"]] == [False, False]
+
+
+def test_slots_show_what_a_shared_param_says_and_each_connection():
+    from switch_core.agent_templates import agent_slots
+
+    (lead, helper) = agent_slots(
+        TEAM.replace(
+            "    addressing: owner-agents\n",
+            "    addressing: owner-agents\n    connections:\n"
+            "      - { service: github, access: write, repos: [acme/a] }\n"
+            "    repo: https://github.com/acme/b\n",
+        )
+    )
+    assert (lead.machine, helper.machine) == ("{where}", "{where}")
+    assert lead.connections == [
+        {"service": "github", "access": "write", "repos": ["acme/a", "acme/b"]}
+    ]

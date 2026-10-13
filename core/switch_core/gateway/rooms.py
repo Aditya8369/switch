@@ -65,6 +65,7 @@ from switch_core.rooms_yaml import (
 )
 from switch_core.telemetry import emit_safely
 from switch_core.template_runs import (
+    LISTEN_TIMEOUT_SECONDS,
     AgentsNotCreated,
     ConnectionPlan,
     NewAgentPlan,
@@ -569,8 +570,10 @@ async def run_template_with_agents(
     again: 409 with ``code`` ``run_undone`` and ``left_behind`` naming any
     that could not be. A room half that is wrong is 400, as from-yaml.
 
-    Returns ``{created_agents: [{slot, agent_id, name, machine}], room}``,
-    ``room`` being what from-yaml returns, or null with no room half.
+    Returns ``{created_agents: [{slot, agent_id, name, machine, listening}],
+    room}``, ``room`` being what from-yaml returns, or null with no room
+    half. ``listening`` is false for an agent that was not taking events
+    before the rooms were made: the kickoff may not have reached it.
     """
     tenant_id = require_tenant_id()
     plans = [agent.plan() for agent in body.agents]
@@ -578,6 +581,7 @@ async def run_template_with_agents(
         protocol=protocol,
         management=management_port(),
         broker=protocol.service_broker,
+        listen_timeout=LISTEN_TIMEOUT_SECONDS,
     )
     try:
         parsed = None
@@ -639,6 +643,7 @@ async def run_template_with_agents(
                 "agent_id": agent.agent_id,
                 "name": agent.name,
                 "machine": agent.machine,
+                "listening": agent.listening,
             }
             for agent in created
         ],

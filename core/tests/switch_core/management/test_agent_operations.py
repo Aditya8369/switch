@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.mcp.server import mcp
-from switch_core.bridges.agent.operations import all_operations
+from switch_core.bridges.agent.operations import all_operations, definitions
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations.agent_management import (
     disable_agent_management,
@@ -38,6 +38,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway import rooms as gateway_rooms
 from switch_core.gateway.rooms import router as rooms_router
 from tests.switch_core.connections.github_seed import connect_github
 from tests.switch_core.management.harness import (
@@ -1072,6 +1073,14 @@ async def _template(harness: Harness, owner: User, content: str) -> str:
         return template.id
 
 
+@pytest.fixture
+def _short_listen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No agent client starts in these tests; do not wait long for one."""
+    monkeypatch.setattr(definitions, "LISTEN_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(gateway_rooms, "LISTEN_TIMEOUT_SECONDS", 0.1)
+
+
+@pytest.mark.usefixtures("_short_listen")
 class TestRunTemplateCreatesManagedAgents:
     """A template run through the real management service and broker: the
     agent is created on the owner's machine with its definition, addressing
@@ -1204,6 +1213,7 @@ def _gateway_agent(machine: str, name: str = "solo", **overrides: Any) -> dict:
     }
 
 
+@pytest.mark.usefixtures("_short_listen")
 class TestTheConsoleRunsATemplateWithAgents:
     """`POST /gateway/rooms/from-template`, the Use page's one request: the
     person's own machines, checked whole, refused with every problem."""
