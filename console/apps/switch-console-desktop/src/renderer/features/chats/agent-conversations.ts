@@ -5,20 +5,23 @@ import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers
 /**
  * An agent's conversations, in two lists that never share a room: its direct
  * chats made in Console (a direct room bridged to no messaging app), newest
- * first, and every other room it is in, by name — a messaging-app DM with the
- * agent included.
+ * first, and every other room it is in, by name — a messaging-app DM and a
+ * chat with several agents included, whether or not its membership lists it.
  */
 export function agentConversations(
   agentChats: readonly ChatSummary[],
   agentRooms: readonly RemoteAgentRoom[]
-): { direct: ChatSummary[]; rooms: RemoteAgentRoom[] } {
+): { direct: ChatSummary[]; rooms: Pick<RemoteAgentRoom, 'roomId' | 'roomName'>[] } {
   const direct = agentChats.filter(
     (chat) => chat.channelType === 'direct' && chat.bridgeType === null
   );
   const directIds = new Set(direct.map((chat) => chat.roomId));
-  const rooms = agentRooms
-    .filter((room) => !room.archived && !directIds.has(room.roomId))
-    .sort((a, b) => a.roomName.localeCompare(b.roomName));
+  const listed = agentRooms.filter((room) => !room.archived && !directIds.has(room.roomId));
+  const listedIds = new Set(agentRooms.map((room) => room.roomId));
+  const unlisted = agentChats
+    .filter((chat) => !directIds.has(chat.roomId) && !listedIds.has(chat.roomId))
+    .map((chat) => ({ roomId: chat.roomId, roomName: chat.name }));
+  const rooms = [...listed, ...unlisted].sort((a, b) => a.roomName.localeCompare(b.roomName));
   return { direct, rooms };
 }
 

@@ -44,6 +44,21 @@ describe('agentConversations', () => {
     expect(split.direct.map((chat) => chat.roomId)).toEqual(['dm']);
     expect(split.rooms.map((each) => each.roomId)).toEqual(['slack-dm', 'team']);
   });
+
+  it('puts a chat with several agents under Rooms when its membership does not list it', () => {
+    const group = summary({
+      roomId: 'group',
+      name: 'Try me',
+      channelType: 'channel_private',
+      agents: [agent('a', 'alpha'), agent('b', 'beta')],
+    });
+    const split = agentConversations([group], [room('team', 'team')]);
+    expect(split.direct).toEqual([]);
+    expect(split.rooms).toEqual([
+      { roomId: 'team', roomName: 'team', archived: false, status: 'live', roomRole: null },
+      { roomId: 'group', roomName: 'Try me' },
+    ]);
+  });
 });
 
 describe('chatRowLabel', () => {
