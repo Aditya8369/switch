@@ -6,7 +6,8 @@ How a team's on-call manual runs on Switch. The pieces:
 - a shared responder agent that triages every alert, pings on-call when one
   needs a person, declares incidents in PagerDuty in three defined cases, and
   builds a war room when a Sev0 is declared;
-- a registered room template that the agent runs;
+- three registered room templates that the agent runs: the war room, the RCA
+  room that takes over from it, and a drill room for rehearsals;
 - PagerDuty, reached the same way Jira already is.
 
 This is a design, not an implementation. Nothing here has been built. Where
@@ -17,8 +18,9 @@ rather than designed around. If you read only one section, read
 Written against `main` at `514d5ba4`, re-checked at `f4ada844` for how room
 events reach an agent, how Slack mentions are translated in each direction, how
 a role mention is routed, and the template format; and at `2aeeb80d` for the
-agent-facing template operations and inbound Slack reactions; and at `f9a295c1`
-for usage budgets. The hosting,
+agent-facing template operations and inbound Slack reactions; at `f9a295c1`
+for usage budgets; and at `b9e55c92` for the RCA-room and drill-room templates,
+`user` template inputs, agent templates and service connections. The hosting,
 ownership and credential claims were checked at `514d5ba4`. Every claim about
 how Switch behaves was checked against the code rather than recalled. Where a
 behaviour is surprising enough to be worth confirming, the file it lives in is
@@ -26,8 +28,8 @@ named.
 
 **The configuration is in a companion document,**
 [`incident-response-instructions.md`](incident-response-instructions.md): every
-block of instruction text, labelled with the field it goes in, the war-room
-template, and a step-by-step deploy guide. This document is the argument; that
+block of instruction text, labelled with the field it goes in, the three
+templates, and a step-by-step deploy guide. This document is the argument; that
 one is the configuration.
 
 - [Scope](#scope)
@@ -38,6 +40,7 @@ one is the configuration.
 - [Declaring in PagerDuty](#declaring-in-pagerduty)
 - [The incident-response agent](#the-incident-response-agent)
 - [The war-room template](#the-war-room-template)
+- [The template set](#the-template-set)
 - [Reaching PagerDuty](#reaching-pagerduty)
 - [Where the agent runs](#where-the-agent-runs)
 - [Making the agent user-agnostic](#making-the-agent-user-agnostic)
@@ -195,6 +198,12 @@ alert process changes it in these places:
 - **The war-room template is run from the registry.** Agents can now list,
   read and run registered templates, so the document copy of the YAML is
   gone.
+- **The RCA has a room of its own.** The previous version wrote the RCA in the
+  war room, to keep the analysis next to its evidence. At Sev0 an RCA room now
+  takes over at resolution; see [The template set](#the-template-set) for why
+  that reason did not hold.
+- **Drills have a template,** and start from the hub with one line, so a
+  rehearsal always runs on the current procedure.
 
 ### Where the manual and the live setup disagree
 
@@ -285,16 +294,19 @@ it, and the boundary has to be written down, because the agent the team chose
 is a general coding agent with a shell, and "while you're in there, promote
 staging" is exactly the request it will get.
 
-**In scope: five jobs.**
+**In scope: six jobs.**
 
 1. **Alert triage:** the agent's lane of the diagram.
 2. **Declaring incidents in PagerDuty,** in three cases: a person tells it to,
    a critical alert fires, or on-call has not responded within the window
    during on-call hours.
 3. **Incident support** after a declaration: the war room, the banner, the
-   update clock, drafts, the timeline, and the close-out.
+   update clock, drafts, the timeline, the close-out, and at Sev0 the RCA room.
 4. **Lookups** about the above.
 5. **Suggestions about noisy alerts,** in the alert's thread.
+6. **Drill rooms:** setting one up when asked, and playing itself in it,
+   against a test PagerDuty service only. Running the training stays a
+   person's job.
 
 **Out of scope, by name:** alert lifecycle (mute, resolve, snooze, edit a
 monitor); any PagerDuty write beyond declaring; the rota; releases and
@@ -330,7 +342,7 @@ of refusing to over-model.
 
 ### What is a room
 
-**Three, and only three.**
+**Four, plus one for practice.**
 
 **The alert hub.** Standing and long-lived, one per product. It is the existing
 alert channel, adopted into Switch rather than created. Every alert lands here.
@@ -344,23 +356,29 @@ several products.
 High-level status only, for people who need to know that something is wrong and
 not how. It already exists, and is adopted, not created.
 
-**Which of the three the agent posts in is worth stating once.** Its rights
-narrow as the audience widens.
-- **The war room:** it posts freely.
+**The war room.** One per declared Sev0, built by the responder agent from the
+template, archived at resolution. Public: a war room that stakeholders cannot
+read grows a second, worse war room in DMs.
+
+**The RCA room.** One per Sev0, built from the war room at resolution, from its
+own template, and archived once the write-up is published and the RCA meeting
+held. Private by default. Its people are the ones the process requires at the
+meeting, and the agent drafts the write-up there from the war room's history.
+Why it is a room of its own, and not the war room kept open, is argued under
+[The template set](#the-template-set).
+
+**Drill rooms** are private rehearsals of the alert hub, built from a template
+on request and archived when the drill ends. They are not part of the incident
+process; they test it.
+
+**Which of these the agent posts in is worth stating once.** Its rights narrow
+as the audience widens.
+- **The war room, the RCA room and a drill room:** it posts freely.
 - **The alert hub:** narrowly. Triage notes and pings in alerts' threads; the
   banner; and under the banner, the milestones.
 - **The stakeholder channel:** **never.** This is absolute, not a default: it
   is the widest audience, and the one where a wrong word costs most. The agent
   produces the text and a person sends it.
-
-**The war room.** One per declared Sev0, built by the responder agent from the
-template, dead after the RCA. Public: a war room that stakeholders cannot read
-grows a second, worse war room in DMs.
-
-**One room per incident, and the RCA is written in it.** The RCA's raw material
-is the war room's own timeline, so moving the write-up to a second room
-separates the evidence from the analysis at exactly the moment you want them
-together. The war room stays open until the write-up is done.
 
 ### What is a thread
 
@@ -388,9 +406,8 @@ it. The room carries the incident number in its name and a link to the record
 in its description, and that is the whole relationship.
 
 **The on-call rotation.** A rotation is a schedule. Switch has no schedule and
-no concept of duty, and it does not need one. The ping goes to a Slack group
-that a sync service keeps in step with PagerDuty, and the agent asks PagerDuty
-who is on call when it needs a name.
+no concept of duty, and it does not need one. The agent asks PagerDuty who is
+on call whenever it needs to know, and mentions each of them.
 
 **A per-service standing room.** What is actually needed ("who owns ingestion,
 and what is its Sev1 threshold") is a lookup, not a conversation. It belongs in
@@ -414,9 +431,10 @@ a document the agent reads.
 | Sev1 declared | No war room. The update clock and the one-hour escalation notice run in the banner's thread. |
 | Situation report due | The agent's poll notices the posted deadline has passed. It drafts, and a person posts the report to the hub and the stakeholder channel. |
 | **Mitigated** | A person says so. The update clock stops. The room stays open. |
-| Recovery confirmed, resolved | A person resolves in PagerDuty. The room stays open for the write-up. |
-| RCA written | The agent drafts each section of the team's template in the room, from the timeline. A person creates the page. |
-| Done | The agent archives the war room. The hub's session posts the close under the banner. |
+| Recovery confirmed, resolved | A person resolves in PagerDuty. At Sev0 the agent proposes the RCA room's people and the meeting deadline, and a person confirms. |
+| **RCA room** | The agent runs the RCA-room template, invites the war room's on-call engineers, and archives the war room. The hub's session posts the close under the banner, linking the RCA room. |
+| RCA written | In the RCA room, the agent drafts each section of the team's template from the war room's history and PagerDuty. A person creates the page. A person schedules the meeting, within five business days. |
+| Done | The page is published and the meeting held. The agent archives the RCA room. |
 
 Two properties of that table are the design:
 
@@ -424,8 +442,9 @@ Two properties of that table are the design:
   The common path, an alert that needs nobody, costs one message and nothing
   else. A design that provisions a room per alert gets switched off within a
   week.
-- **The room outlives the incident.** It closes when the RCA is written, not at
-  recovery.
+- **The incident's rooms outlive it.** The war room hands over at resolution,
+  and the RCA room closes when the write-up is published and the meeting held,
+  days later.
 
 ### Cadence, and the thing that nudges
 
@@ -914,12 +933,179 @@ create a correctly-shaped war room.
 
 Standing on-call up for a second product means:
 
-1. **The template:** unchanged.
+1. **The three templates:** unchanged.
 2. **The Responder procedure document:** unchanged.
 3. **The alert hub's instructions:** unchanged except the bindings block.
 4. **The On-call SOP document:** the second product's own.
 5. **The alert-side configuration:** the mention in that product's monitors,
    and the critical marker.
+
+## The template set
+
+A Switch template creates rooms, and through the Console, agents. So walking
+the incident process step by step, a template earns its place where a step
+produces a room, or where a person needs one with no agent to build it. There
+are five candidates, and three are written.
+
+| Process step | Template | Status |
+| --- | --- | --- |
+| Declare a Sev0: a dedicated channel, with on-call invited | War room | Written ([block 3](incident-response-instructions.md#3-the-war-room-template)) |
+| Resolve: the write-up, and at Sev0 the RCA meeting within five business days | RCA room | Written ([block 3a](incident-response-instructions.md#3a-the-rca-room-template)) |
+| Onboarding's "shadow an on-caller", and every change to the procedure | Drill room | Written ([block 3b](incident-response-instructions.md#3b-the-drill-room-template)) |
+| The responder itself | Responder agent | Not written: G33 |
+| A second product's hub and responder together | On-call desk | Not written: G32 |
+
+**Deliberately not templates:**
+
+- **Sev1.** The process gives a Sev1 no channel. It runs in its banner thread.
+- **Stakeholder updates and the situation report.** They are messages on a
+  clock, not rooms. Their shape is in the procedure.
+- **Declaring in PagerDuty, the Google Meet, scheduling the RCA meeting.**
+  These are actions. Service connections now let an agent create a calendar
+  event with a Meet link (Google Workspace) and a Confluence page (Atlassian),
+  but a connection acts as the agent's **owner**: a shared responder would
+  create them under one person's account. They stay a person's steps until the
+  responder has an owner that is not a person (G11). PagerDuty is not offered
+  as a connection at all.
+
+### The RCA-room template
+
+**Why the RCA has a room of its own.** The previous version kept the write-up
+in the war room, so the analysis would sit next to its evidence. That reason
+does not hold up:
+
+- **The evidence is a read away, archived or not.** The RCA room's session
+  reads the war room with `read_context(room_id=…)`, which checks membership
+  and nothing else, and archiving a room changes its metadata, not its members
+  (`bridges/agent/protocol/agent_core.py`, `read_context` and
+  `set_room_archived`).
+- **Different people.** The process requires the PM, the Support Engineer and
+  the service lead at the RCA meeting. Most of them were not in the war room,
+  and inviting them into it hands them hours of incident chatter.
+- **Different visibility.** The war room is public so stakeholders can read
+  along. A Sev0 can be a data or security incident, whose analysis should not
+  be public by default.
+- **Different lifetime.** A war room is busy for hours; the RCA runs for up to
+  five business days. A war room kept open for a week keeps the incident
+  looking open.
+
+The cost is one more room per Sev0, and a hand-off step. The banner in the hub
+closes when the war room is archived, so the hub's view of an incident ends at
+resolution; the RCA room is not relayed there.
+
+| Parameter | Type | Filled from |
+| --- | --- | --- |
+| `incident_id`, `service`, `summary`, `incident_url` | string, the first and last pattern-checked | the war room |
+| `resolved_at` | string | when a person confirmed recovery |
+| `meeting_due` | string, a date | five business days on, from the system clock |
+| `war_room` | **room**: checked | the war room's own name |
+| `rca_owner`, `pm`, `support_engineer`, `service_lead` | **user**: checked on the messaging app | proposed by the agent, confirmed by a person: the PM and Support Engineer from the bindings, the service lead from the SOP |
+| `product`, `prefix`, three reference names | string | the bindings |
+| `bridge` | **bridge**: checked | the bindings |
+| `responder_agent` | **agent**: checked | the bindings |
+| `procedure` | multiline string, with a default | the war room's copy |
+| `rca_outline` | multiline string, with a default | a generic outline; replace it with the team's own sections |
+| `visibility` | enum, default `channel_private` | fixed; folded away as advanced |
+
+**Choices in it that are not arbitrary:**
+
+- **The attendees are `user` inputs,** the first template in this design to
+  use them. The process names roles with one person each, so each is checked
+  on the messaging app before anything is created: known users first, then an
+  exact directory match on username or email (`resolve_bridge_users` in
+  `room_service.py`). A name Switch
+  cannot find fails the run and names the person, with no room half-built. One
+  person in two roles is fine; the invite collapses duplicates.
+- **No TPM input.** The TPM is optional, and a `user` input cannot be optional
+  without a default. The agent invites a TPM afterwards, if one is confirmed.
+- **The on-call engineers are invited afterwards,** as in the war room: a
+  parameter cannot hold a list (G4).
+- **The people are confirmed before the run.** The SOP names service owners by
+  name, sometimes two to a service, and an agent cannot turn a name into a
+  handle (G1). So the agent proposes, and a person confirms by mentioning each
+  of them, which gives it the handles.
+- **The meeting deadline is an input, not a clock.** Nothing keeps time for
+  days (G7). The deadline sits in the room's description, where people see it.
+- **Private, for reading and writing.** Write access governs references,
+  roles and archiving; nobody else's agent should be able to archive an RCA
+  mid-draft.
+- **The team's RCA template stays the source.** It is attached as a reference.
+  The outline is a fallback for when the agent cannot read it, and the draft
+  says when it was used.
+
+### The drill-room template
+
+The manual has two needs and Switch had nowhere to meet them: onboarding asks
+a new on-caller to shadow before they carry the pager, and the responder needs
+re-testing whenever its procedure changes. The first drill of this design was
+run by hand-editing a test room's settings, and its copy of the procedure was
+already stale by the time of the next run.
+
+- **Started from the hub with one line.** "@responder start a drill" runs the
+  template from the hub's session, which passes in the procedure and SOP as
+  they are now. A person can run it from the Console by pasting both.
+- **It reads the hub's instructions instead of copying them.**
+  `get_room_detail` returns a room's instructions, so the drill room's notice
+  points at the real hub and overrides only the bindings a drill must change.
+  There is no second copy of the bindings to drift.
+- **One hard rule: the test PagerDuty service.** The responder's PagerDuty
+  access is the same in a drill as anywhere (G19). The only things between a
+  drill and a real page are the notice's rule and the test service's
+  escalation policy, which pages only stand-ins. The responder refuses to
+  start a drill when the bindings name no test service. This is the
+  template's main risk, and one reason it is private.
+- **The drill lead types the test alerts,** marked `[test alert]`. A drill
+  room tests the responder, not the monitors. The deploy guide's second stage,
+  in the real hub with a test monitor, covers the alert path.
+- **The drill lead may move the clock.** It is the only binding a message may
+  change, so the outside-hours path can be tested without waiting for evening.
+- **War and RCA rooms built in a drill take the drill room as their hub,** so
+  their sessions read the drill notice and follow it.
+- **The drill script travels in the template,** so there is one copy, reviewed
+  with the template.
+
+| Parameter | Type | Filled from |
+| --- | --- | --- |
+| `drill_lead`, `trainee` | **user**: checked | mentions in the request |
+| `run` | number, default 1 | advanced: tells two drills on one day apart |
+| `pagerduty_service`, `schedule` | string | the bindings' drill values |
+| `response_window` | number, 1–30 minutes, default 3 | the bindings' drill values |
+| `product`, `prefix` | string | the bindings |
+| `bridge`, `responder_agent` | **bridge**, **agent**: checked | the bindings |
+| `alert_hub` | **room**: checked | the hub's own name |
+| `procedure`, `sop` | multiline string, required | the hub's two documents |
+
+### Not written yet
+
+**A responder agent template.** Only the Console creates agents from a
+template. An agent template carries the agent's name, description,
+instructions, addressing policy, provider, machine and directory, and the rooms
+it joins; the Console can join it to an existing room. That is enough to stand up a dedicated
+responder, which would also stop the reused agent's other work spending the
+responder's usage budget (G31). What it cannot carry is the rest of what the
+responder needs: its service-connection grants, PagerDuty access, which is a
+connector on the host, and an exemption from budgets. Those stay manual steps
+in the deploy guide (G33).
+
+**An on-call desk template,** the hub and the responder in one. A template
+configures only the rooms it creates. The Console can put an agent into an
+existing room, but the room's instructions, documents and alias are applied
+only to a room the template makes. Every product's alert channel already
+exists, so the desk would create a new channel that no monitor posts to (G32).
+
+### What was checked
+
+All three templates were run through the shipped parser (`parse_template`)
+and linter (`lint_template`) on `b9e55c92`:
+
+- The linter reports no errors and no warnings on any of them.
+- Every placeholder resolves, with none left over outside the text passed in,
+  and passed-in text arrives verbatim, braces included.
+- The RCA room refuses a `meeting_due` that is not a date, and falls back to
+  its default procedure when none is passed.
+- The rooms come out named `example rca 1287` and `example drill 2026-10-13 1`,
+  so their Slack channels are `example-rca-1287` and
+  `example-drill-2026-10-13-1`.
 
 ## Reaching PagerDuty
 
@@ -1247,7 +1433,7 @@ hole.
 
 ## Gaps
 
-Thirty-one, one of them now closed, grouped by what they block. Each says what is missing, why it matters
+Thirty-three, one of them now closed, grouped by what they block. Each says what is missing, why it matters
 here, and a ticket to file. Sizes are rough: **S** is days, **M** is a sprint,
 **L** is a project. The numbers are stable identifiers, not an ordering.
 
@@ -1310,6 +1496,31 @@ cover.
 > **Proposed ticket:** *Pass the remaining room fields through the template
 > provisioner.* **S**
 
+**G32 — A template configures only the rooms it creates.** A room template
+always provisions a new channel. The Console can put an agent template's agent
+into an existing room, but the room's instructions, documents, references and
+aliases reach only a room the template makes. Every product's alert hub is an
+existing channel, adopted, so the hub (the half of on-call most worth
+reusing) cannot be stood up from a template, and an on-call desk template would
+make a channel no monitor posts to.
+
+> **Proposed ticket:** *Apply a room template to an existing room* — a room
+> block that names an existing room (or adopts an existing platform channel)
+> and sets its instructions, documents, references, roles and aliases, refusing
+> loudly where a field would overwrite something already set. **M**
+
+**G33 — An agent template cannot carry what a shared agent needs to run.** It
+carries the agent's instructions, addressing and rooms, but not its
+service-connection grants, and not an exemption from usage budgets. For the
+responder, that leaves PagerDuty access, connections and the budget check as
+manual steps after the Console creates it, which is where a second product's
+deployment will go wrong.
+
+> **Proposed ticket:** *Grants and budget settings in agent templates* —
+> declare the connections an agent template's agent needs, prompting the
+> deployer to grant them when the template is used, and an optional budget
+> exemption, subject to G31. **S**
+
 **G10 — Omitting `bridge:` silently means "the default bridge".** The war-room
 template names its bridge explicitly, so it is not exposed, but a template
 author who trusts the field's comment publishes a room they meant to keep
@@ -1360,7 +1571,10 @@ situation reports to both channels.
 
 **G11 — There is no provisionable service account.** The recommendation rests
 on owning the responder with a non-person, non-admin user. **This is the gap the
-responder design depends on.**
+responder design depends on.** It now matters twice over: a service connection
+acts as the agent's owner, so until the owner is not a person, anything the
+responder creates through one (a calendar event, a Confluence page) is created
+in a person's name.
 
 > **Proposed ticket:** *Service accounts.* **M**
 
@@ -1508,16 +1722,16 @@ room and post a timeline as an attachment, which is good enough.
 
 The on-call manual runs on Switch today with no change to Switch:
 
-- The war room is built from a registered template, by an agent calling
-  `run_template`.
+- The war room, the RCA room and drill rooms are built from registered
+  templates, by an agent calling `run_template`.
 - PagerDuty is reached the way Jira already is, with write access for declaring.
 - Every alert wakes the agent because every monitor mentions its group.
 - The agent reads who is on call from PagerDuty and mentions each of them,
   through a name map.
 - The response window and the update clock run on the agent host's scheduler.
 
-Standing it up is configuration: one template, two documents, and a few lines in
-the alerting tool. The deploy guide in the instruction set is the checklist.
+Standing it up is configuration: three templates, two documents, and a few
+lines in the alerting tool. The deploy guide in the instruction set is the checklist.
 
 Six compromises in that, worth naming out loud rather than discovering:
 
@@ -1559,7 +1773,9 @@ Six compromises in that, worth naming out loud rather than discovering:
 9. **G30 — wake a role's agent when no one holds it.** Gives the responder
    failover back.
 10. **G23 — detect a session that cannot receive events.** Small.
-11. **G9 — the remaining room fields in templates.**
+11. **G9 — the remaining room fields in templates,** with **G32** (apply a
+    template to an existing room) and **G33** (grants in agent templates).
+    Together they let a second product stand on-call up from templates alone.
 12. **G8 — mirror to a linked room.**
 13. **G29 — a rule for raw markup.** Off this design's path, but the
     `<!channel>` hole is every agent's.
