@@ -209,6 +209,8 @@ export type CreateStep = {
   status: CreateStepStatus;
   /** A problem that did not stop the run, such as a repository that could not be cloned. */
   warning?: string | null;
+  /** Why the step failed, when it says. */
+  error?: string | null;
 };
 
 export function createStepStatus(status: SlotStatus): CreateStepStatus {
@@ -235,8 +237,23 @@ export function agentCreateSteps(
     clones: boolean;
     setsPolicy: boolean;
     cloneWarning: string | null;
+    /** A managed agent: the server makes it, its directory and who may address it in one call, on `machine`. */
+    managed: { machine: string | null } | null;
+    error: string | null;
   }
 ): CreateStep[] {
+  if (agent.managed) {
+    return [
+      {
+        key: `${index}:create`,
+        label: agent.managed.machine
+          ? `Create ${agent.name} on ${agent.managed.machine}`
+          : `Create ${agent.name}`,
+        status: createStepStatus(agent.status),
+        error: agent.status === 'failed' ? agent.error : null,
+      },
+    ];
+  }
   const order: SlotStep[] = agent.setsPolicy
     ? ['prepare', 'create', 'policy']
     : ['prepare', 'create'];
@@ -260,5 +277,6 @@ export function agentCreateSteps(
             ? 'done'
             : createStepStatus(agent.status),
     warning: step === 'prepare' ? agent.cloneWarning : null,
+    error: k === at && agent.status === 'failed' ? agent.error : null,
   }));
 }

@@ -128,7 +128,14 @@ describe('paramLabel', () => {
 });
 
 describe('agentCreateSteps', () => {
-  const base = { name: 'a', clones: false, setsPolicy: true, cloneWarning: null } as const;
+  const base = {
+    name: 'a',
+    clones: false,
+    setsPolicy: true,
+    cloneWarning: null,
+    managed: null,
+    error: null,
+  } as const;
 
   it('marks the rows before the call in progress done, the one at it running', () => {
     const steps = agentCreateSteps(0, { ...base, status: 'creating', step: 'create' });
@@ -143,6 +150,24 @@ describe('agentCreateSteps', () => {
   it('marks the failed call failed and leaves the rest waiting', () => {
     const steps = agentCreateSteps(0, { ...base, status: 'failed', step: 'policy' });
     expect(steps.map((s) => s.status)).toEqual(['done', 'done', 'failed']);
+  });
+
+  it('shows a managed agent as one call, with the reason it was refused', () => {
+    const steps = agentCreateSteps(0, {
+      ...base,
+      managed: { machine: 'laptop' },
+      status: 'failed',
+      step: 'create',
+      error: "an agent named 'a' already exists",
+    });
+    expect(steps).toEqual([
+      {
+        key: '0:create',
+        label: 'Create a on laptop',
+        status: 'failed',
+        error: "an agent named 'a' already exists",
+      },
+    ]);
   });
 
   it('has no policy row when the template sets no addressing', () => {

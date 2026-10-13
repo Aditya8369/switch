@@ -949,6 +949,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
    * steps after it (joins, opening the room) run as for any run. False when
    * it was refused, each reason shown on its agent's card.
    */
+  /** The last run was refused whole, or undone: nothing it made is left, so there is nothing to retry from. */
+  const [nothingKept, setNothingKept] = useState(false);
+
   const createManaged = async (
     created: { slotIndex: number; name: string; switchAgentId: string | null }[]
   ): Promise<boolean> => {
@@ -973,6 +976,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         directoryText: setup.managedDirectory,
       });
     });
+    setNothingKept(false);
     for (const { i } of pending) setSlot(i, { status: 'creating', error: null, step: 'create' });
     const room =
       makesRoom && loaded.coreYaml && parsed && !createdRoom.current
@@ -1004,11 +1008,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         const mine = bySlot.get(setup.name);
         setSlot(i, {
           status: mine ? 'failed' : 'idle',
-          step: null,
+          step: mine ? 'create' : null,
           error: mine ? mine.join(' ') : null,
         });
       }
-      if (room) setRoomStatus('failed');
+      // Refused before anything existed: the room was never tried. Undone
+      // after the agents were made: the room is where it failed.
+      if (room) setRoomStatus(result.problems.length > 0 ? 'idle' : 'failed');
+      setNothingKept(true);
       const leftBehind =
         result.leftBehind.length > 0
           ? ` ${result.leftBehind.join(', ')} could not be deleted again; delete ${result.leftBehind.length === 1 ? 'it' : 'them'} from Your Agents.`
@@ -1347,8 +1354,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   }, [slots, setups]);
 
   // ── Render ──────────────────────────────────────────────────────────────
+  // A run refused whole kept nothing: the next Create is a fresh run, not a retry.
   const partlyDone =
-    slots.some((s) => s.status === 'created' || s.status === 'failed') || roomStatus === 'failed';
+    !nothingKept &&
+    (slots.some((s) => s.status === 'created' || s.status === 'failed') || roomStatus === 'failed');
   const roomCount = makesRoom ? (parsed?.rooms.length ?? 0) : 0;
   const primaryLabel = partlyDone
     ? 'Retry remaining steps'
@@ -1397,6 +1406,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           clones: slot.cloneRepo && !!slot.entry.repoUrl,
           setsPolicy: !!slot.entry.addressing,
           cloneWarning: slot.cloneWarning,
+          managed: management ? { machine: setups[i]?.machine?.name ?? null } : null,
+          error: slot.error,
         })
       : []
   );
@@ -1724,7 +1735,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               steps={createSteps}
               error={runError ?? null}
               doneDetail={doneDetail}
-              onRetry={() => void createAll()}
+              onRetry={nothingKept ? null : () => void createAll()}
               onBack={() => setPhase('form')}
             />
           )}
