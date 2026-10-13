@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, isSupervised, main } from './main';
+import { infoChange, installerFor, isSupervised, main } from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ControllerStore } from './store';
@@ -306,5 +306,16 @@ describe('isSupervised', () => {
     ).toBe(true);
     expect(isSupervised(null, true, {})).toBe(true);
     expect(isSupervised(null, false, { INVOCATION_ID: 'abc' })).toBe(true);
+  });
+});
+
+describe('installerFor', () => {
+  it('says a Windows controller does not update itself, whatever it runs from', async () => {
+    const installer = await installerFor(
+      null,
+      { run: vi.fn(), node: 'node', cacheDir: 'cache', env: {} },
+      'win32'
+    );
+    expect(installer.unavailable).toMatch(/Linux and macOS only/);
   });
 });

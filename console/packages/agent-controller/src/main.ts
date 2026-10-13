@@ -439,7 +439,7 @@ async function runCommand(args: string[]): Promise<number> {
       credential === null
         ? new SelfUpdater({
             version: VERSION,
-            installer: await installerFor(separateUsers, updateNpm(dataDir)),
+            installer: await installerFor(separateUsers, updateNpm(dataDir), process.platform),
             download: (release, signal) =>
               downloadVerified({
                 fetch,
@@ -666,10 +666,15 @@ export function isSupervised(
 }
 
 /** How this controller installs a release for itself, as it was installed. */
-async function installerFor(
+export async function installerFor(
   separateUsers: SeparateUsersConfig | null,
-  npm: NpmSetup
+  npm: NpmSetup,
+  platform: NodeJS.Platform
 ): Promise<ReleaseInstaller> {
+  if (platform === 'win32')
+    return unavailableInstaller(
+      'This controller updates itself on Linux and macOS only. On Windows, install the release Switch names by hand and start the controller again.'
+    );
   if (separateUsers)
     return separateUsers.releasesDir
       ? new ReleasesDirInstaller({ npm, releasesDir: separateUsers.releasesDir })
