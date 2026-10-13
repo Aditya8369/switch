@@ -25,9 +25,8 @@ import { chatFailure } from '../stores/chat-errors';
 import { chatsStore } from '../stores/chats';
 
 /**
- * Start a chat with one agent or several: a private room owned by the person,
- * direct with one agent, a channel naming whom each message is for with
- * several. One request id per opening of the dialog, so pressing Create again after a
+ * Start a chat with one agent: a private direct room owned by the person. One
+ * request id per opening of the dialog, so pressing Create again after a
  * failure that may have landed resumes that chat rather than making another.
  */
 export const NewChatModal = observer(function NewChatModal({
@@ -39,11 +38,7 @@ export const NewChatModal = observer(function NewChatModal({
   const [requestId] = useState(() => crypto.randomUUID());
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const agents = useWorkspaceAgents(workspaceId);
-  const [agentIds, setAgentIds] = useState<string[]>(initialAgentId ? [initialAgentId] : []);
-  const toggle = (agentId: string) =>
-    setAgentIds((current) =>
-      current.includes(agentId) ? current.filter((each) => each !== agentId) : [...current, agentId]
-    );
+  const [agentId, setAgentId] = useState<string | null>(initialAgentId);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,13 +53,13 @@ export const NewChatModal = observer(function NewChatModal({
     [agents.data, filter]
   );
   const create = async () => {
-    if (!agentIds.length || busy) return;
+    if (!agentId || busy) return;
     setBusy(true);
     setError(null);
     try {
       const chat = await rpc.chats.create({
         serverId,
-        agentIds,
+        agentIds: [agentId],
         name: name.trim() || null,
         requestId,
       });
@@ -88,7 +83,7 @@ export const NewChatModal = observer(function NewChatModal({
       <DialogContentArea className="pt-0">
         <FieldGroup>
           <Field>
-            <FieldLabel>Agents</FieldLabel>
+            <FieldLabel>Agent</FieldLabel>
             <Input
               placeholder="Find an agent"
               value={filter}
@@ -97,8 +92,7 @@ export const NewChatModal = observer(function NewChatModal({
             />
             <div
               role="listbox"
-              aria-label="Agents"
-              aria-multiselectable
+              aria-label="Agent"
               className="mt-2 max-h-60 overflow-y-auto rounded-md border border-border"
             >
               {agents.isLoading && (
@@ -116,16 +110,14 @@ export const NewChatModal = observer(function NewChatModal({
                   key={agent.id}
                   type="button"
                   role="option"
-                  aria-selected={agentIds.includes(agent.id)}
-                  onClick={() => toggle(agent.id)}
+                  aria-selected={agent.id === agentId}
+                  onClick={() => setAgentId(agent.id)}
                   className={cn(
                     'flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--sel-soft)]',
-                    agentIds.includes(agent.id) && 'bg-[var(--sel)] font-medium'
+                    agent.id === agentId && 'bg-[var(--sel)] font-medium'
                   )}
                 >
-                  <Check
-                    className={cn('size-3.5 shrink-0', !agentIds.includes(agent.id) && 'invisible')}
-                  />
+                  <Check className={cn('size-3.5 shrink-0', agent.id !== agentId && 'invisible')} />
                   <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={18} />
                   <span className="min-w-0 truncate">{agent.displayName ?? agent.name}</span>
                   {agent.ownerName && (
@@ -139,11 +131,6 @@ export const NewChatModal = observer(function NewChatModal({
                 <p className="p-3 text-sm text-foreground-muted">No agent matches.</p>
               )}
             </div>
-            <p className="mt-1 text-xs text-foreground-muted">
-              {agentIds.length > 1
-                ? `${agentIds.length} agents. In a chat with several, each message names the agent it is for.`
-                : 'Pick more than one to bring several agents into the chat.'}
-            </p>
           </Field>
           <Field>
             <FieldLabel>Name (optional)</FieldLabel>
@@ -167,7 +154,7 @@ export const NewChatModal = observer(function NewChatModal({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <ConfirmButton onClick={() => void create()} disabled={!agentIds.length || busy}>
+        <ConfirmButton onClick={() => void create()} disabled={!agentId || busy}>
           {busy ? 'Creating…' : 'Create'}
         </ConfirmButton>
       </DialogFooter>
