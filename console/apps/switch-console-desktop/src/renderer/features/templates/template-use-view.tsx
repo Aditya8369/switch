@@ -59,7 +59,7 @@ import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
-import { findBundledTemplate } from './bundled-templates';
+import { bundledYamlFor, findBundledTemplate } from './bundled-templates';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
   type AgentSlot,
@@ -154,7 +154,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
     const bundled = findBundledTemplate(params.templateId);
     if (bundled) {
       name = bundled.name;
-      yamlText = bundled.yamlText;
+      yamlText = await bundledYamlFor(bundled, params.serverId);
       instructions = bundled.instructions;
       origin = { id: bundled.id, name: bundled.name, source: 'bundled' };
     } else {

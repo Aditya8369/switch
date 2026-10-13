@@ -6,7 +6,12 @@ import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
-import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './bundled-templates';
+import {
+  type BundledTemplate,
+  bundledTemplates,
+  bundledYamlFor,
+  findBundledTemplate,
+} from './bundled-templates';
 
 /**
  * One agent as a template describes it, plus its room part already converted
@@ -72,7 +77,12 @@ export async function loadAgentTemplateByOrigin(
   if (origin.source === 'bundled') {
     const bundled = findBundledTemplate(origin.id);
     if (!bundled) throw new Error(`This Console no longer bundles "${origin.name}".`);
-    return agentTemplateFromContent(origin.name, bundled.yamlText, bundled.instructions, origin);
+    return agentTemplateFromContent(
+      origin.name,
+      await bundledYamlFor(bundled, origin.serverId ?? null),
+      bundled.instructions,
+      origin
+    );
   }
   const detail = await rpc.workspaces.getTemplateDetail({
     workspaceId: templateWorkspaceId(origin),
@@ -109,7 +119,11 @@ export async function loadAgentTemplate(
 ): Promise<AgentTemplate> {
   const bundled = findBundledTemplate(template.id);
   if (bundled) {
-    return agentTemplateFromContent(bundled.name, bundled.yamlText, bundled.instructions, {
+    const yamlText = await bundledYamlFor(
+      bundled,
+      workspacesStore.serverIdFor(workspaceId) ?? null
+    );
+    return agentTemplateFromContent(bundled.name, yamlText, bundled.instructions, {
       id: bundled.id,
       name: bundled.name,
       source: 'bundled',
@@ -175,12 +189,13 @@ export async function loadTemplateById(
       ) ?? null;
     name = bundled.name;
     description = bundled.description;
+    const yamlText = await bundledYamlFor(
+      bundled,
+      workspacesStore.serverIdFor(workspaceId) ?? null
+    );
     document = bundled.instructions
-      ? await rpc.agentTemplates.compose({
-          yamlText: bundled.yamlText,
-          instructions: bundled.instructions,
-        })
-      : bundled.yamlText;
+      ? await rpc.agentTemplates.compose({ yamlText, instructions: bundled.instructions })
+      : yamlText;
   } else {
     const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId });
     const { definition, ...summary } = detail;
