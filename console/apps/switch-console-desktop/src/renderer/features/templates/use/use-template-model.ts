@@ -51,6 +51,8 @@ export function paramLabel(param: ParamSpec): string {
       return 'Provider';
     case 'location':
       return 'Runs on';
+    case 'machine':
+      return 'Machine';
     case 'directory':
       return 'Directory';
     case 'room':
@@ -175,7 +177,10 @@ export function unsaidMessage(unsaid: UnsaidRuntime): string {
       : unsaid.field === 'location'
         ? `which machine ${unsaid.label} runs on`
         : `which directory ${unsaid.label} works in`;
-  return `The template never says ${what}. Give it a \`${unsaid.field}:\` or declare a \`${unsaid.field}\` param.`;
+  const fields = unsaid.field === 'location' ? ['location', 'machine'] : [unsaid.field];
+  const said = fields.map((f) => `\`${f}:\``).join(' or ');
+  const params = fields.map((f) => `\`${f}\``).join(' or ');
+  return `The template never says ${what}. Give it a ${said} or declare a ${params} param.`;
 }
 
 /**

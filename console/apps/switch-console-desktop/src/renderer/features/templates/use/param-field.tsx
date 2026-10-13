@@ -11,9 +11,10 @@ import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { RoomChoiceField } from './room-pick-field';
-import { RunLocationSelect } from './run-location-select';
+import { MachineSelect, RunLocationSelect } from './run-location-select';
 import { isChain, isRequired, paramLabel, typeLabel } from './use-template-model';
 
 /** One input of a template on the Use page, with the control its type calls for. */
@@ -25,6 +26,7 @@ export function ParamField({
   lists,
   sshHost,
   hosts,
+  machines,
   newRoom,
   disabled,
   onNavigateAway,
@@ -38,6 +40,8 @@ export function ParamField({
   sshHost: string | null;
   /** The SSH hosts a `location` param may name. */
   hosts: readonly { sshHost: string; name: string }[];
+  /** The owner's machines a `machine` param may name; null without agent management. */
+  machines: readonly OwnedMachine[] | null;
   /** For a `room` param: the room the template creates, offered as `$new`. */
   newRoom: { name: string; bridgeType: string | null } | null;
   disabled?: boolean;
@@ -76,6 +80,10 @@ export function ParamField({
         hosts={hosts}
         disabled={disabled}
       />
+    );
+  } else if (param.type === 'machine') {
+    control = (
+      <MachineSelect value={strVal} onChange={onChange} machines={machines} disabled={disabled} />
     );
   } else if (param.type === 'directory') {
     control = sshHost ? (

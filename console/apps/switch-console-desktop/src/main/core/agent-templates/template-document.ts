@@ -29,6 +29,15 @@ import {
  */
 export type TemplateKind = 'agent' | 'room' | 'group';
 
+/** A connection a template grants an agent: the deployer's own connection to `service`. */
+export type TemplateConnection = {
+  service: string;
+  /** Null for the level a new grant takes by default. */
+  access: 'read' | 'write' | null;
+  /** GitHub only: the repositories it reaches, `owner/name`. */
+  repos: string[];
+};
+
 export type ParsedAgentEntry = {
   /** The name as written in the template, with any `{param}` still unfilled. */
   name: string | null;
@@ -47,6 +56,21 @@ export type ParsedAgentEntry = {
   provider: string | null;
   /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */
   location: string | null;
+  /**
+   * Where it runs as one of the owner's machines on the server: a machine's
+   * name or id, or a `{param}`. Null when the template has no `machine` field.
+   */
+  machine: string | null;
+  /** The model to run, or a `{param}`; null for the provider's default. */
+  model: string | null;
+  /** The provider's advanced settings, as written; `{param}`s still unfilled. */
+  advancedConfig: Record<string, unknown>;
+  /** `shared` or `isolated`, or a `{param}`; null for shared. */
+  isolation: string | null;
+  /** Run tools without asking: `true`, `false`, or a `{param}`; null for false. */
+  autoApprove: boolean | string | null;
+  /** The deployer's connections it is granted, as written. */
+  connections: TemplateConnection[];
   /** Its working directory, or a `{param}`. Null when the template has no `directory` field. */
   directory: string | null;
   /** Rooms the agent is added to once it exists, by name or `{param}`. */
@@ -61,9 +85,20 @@ export type ParsedAgentEntry = {
   allowExisting: boolean;
 };
 
-/** What runs an agent, where, and in which folder: what a template must say for every agent it creates. */
+/**
+ * What runs an agent, where, and in which folder: what a template must say
+ * for every agent it creates. Where it runs is said with `location` or
+ * `machine`; `location` stands for both.
+ */
 export type RuntimeField = 'provider' | 'location' | 'directory';
 export const RUNTIME_FIELDS: readonly RuntimeField[] = ['provider', 'location', 'directory'];
+
+/** The fields, and param types, that say each runtime setting. */
+const RUNTIME_KINDS: Record<RuntimeField, readonly string[]> = {
+  provider: ['provider'],
+  location: ['location', 'machine'],
+  directory: ['directory'],
+};
 
 /** A runtime setting the document never gives one of its agents. */
 export type UnsaidRuntime = {
@@ -193,6 +228,15 @@ export function parseTemplateAgents(
         : null,
       provider: optionalString(agent.provider),
       location: optionalString(agent.location),
+      machine: optionalString(agent.machine),
+      model: optionalString(agent.model),
+      advancedConfig: asRecord(agent.advanced_config) ?? {},
+      isolation: optionalString(agent.isolation),
+      autoApprove:
+        typeof agent.auto_approve === 'boolean'
+          ? agent.auto_approve
+          : optionalString(agent.auto_approve),
+      connections: parseConnections(agent.connections, warnings, label),
       directory: optionalString(agent.directory),
       join: Array.isArray(agent.join)
         ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
@@ -218,19 +262,67 @@ export function parseTemplateAgents(
  */
 function unsaidRuntime(doc: Record<string, unknown>, agents: ParsedAgentEntry[]): UnsaidRuntime[] {
   const params = asRecord(doc.params) ?? {};
-  const fieldTexts = agents.flatMap((a) => [a.provider ?? '', a.location ?? '', a.directory ?? '']);
+  const fieldTexts = agents.flatMap((a) => runtimeFieldTexts(a));
   const appliesToAll = (field: RuntimeField) =>
     Object.entries(params).some(
       ([name, spec]) =>
-        asRecord(spec)?.type === field && !fieldTexts.some((t) => t.includes(`{${name}}`))
+        RUNTIME_KINDS[field].includes(String(asRecord(spec)?.type)) &&
+        !fieldTexts.some((t) => t.includes(`{${name}}`))
     );
+  const says = (agent: ParsedAgentEntry, field: RuntimeField) =>
+    RUNTIME_KINDS[field].some((kind) => agent[kind as keyof ParsedAgentEntry] !== null);
   const out: UnsaidRuntime[] = [];
   agents.forEach((agent, index) => {
     const label = agent.name ?? agent.displayName ?? `agent ${index + 1}`;
     for (const field of RUNTIME_FIELDS) {
-      if (agent[field] === null && !appliesToAll(field)) out.push({ index, label, field });
+      if (!says(agent, field) && !appliesToAll(field)) out.push({ index, label, field });
     }
   });
+  return out;
+}
+
+/** The texts of an entry's runtime fields, for telling whether a param is read by one. */
+export function runtimeFieldTexts(
+  agent: Pick<ParsedAgentEntry, 'provider' | 'location' | 'machine' | 'directory'>
+): string[] {
+  return [agent.provider ?? '', agent.location ?? '', agent.machine ?? '', agent.directory ?? ''];
+}
+
+const ACCESS_VALUES: ReadonlySet<string> = new Set(['read', 'write']);
+
+function parseConnections(raw: unknown, warnings: string[], label: string): TemplateConnection[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    warnings.push(`${label}: \`connections:\` is a list of services.`);
+    return [];
+  }
+  const out: TemplateConnection[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim() !== '') {
+      out.push({ service: item.trim(), access: null, repos: [] });
+      continue;
+    }
+    const record = asRecord(item);
+    const service = optionalString(record?.service);
+    if (!record || !service) {
+      warnings.push(`${label}: each connection is a service name or {service, access, repos}.`);
+      continue;
+    }
+    const access = optionalString(record.access);
+    if (access !== null && !ACCESS_VALUES.has(access)) {
+      warnings.push(`${label}: ${service} access '${access}' is not read or write.`);
+    }
+    const repos = Array.isArray(record.repos)
+      ? record.repos.filter((r): r is string => typeof r === 'string' && r.trim() !== '')
+      : typeof record.repos === 'string'
+        ? [record.repos]
+        : [];
+    out.push({
+      service,
+      access: access === 'read' || access === 'write' ? access : null,
+      repos,
+    });
+  }
   return out;
 }
 

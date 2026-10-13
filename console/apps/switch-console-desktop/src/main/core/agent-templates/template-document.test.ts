@@ -297,6 +297,73 @@ agent:
   });
 });
 
+describe('parseTemplateAgents: managed agents', () => {
+  it('counts a machine, or a machine param, as saying where an agent runs', () => {
+    const { unsaid } = parseTemplateAgents(`
+params:
+  box: { type: machine, default: [$first] }
+agents:
+  - name: a
+    provider: claude
+    machine: laptop
+    directory: /tmp/a
+    instructions: A.
+  - name: b
+    provider: claude
+    machine: "{box}"
+    directory: /tmp/b
+    instructions: B.
+`);
+    expect(unsaid).toEqual([]);
+  });
+
+  it('reads the settings a managed agent carries', () => {
+    const { agents, warnings } = parseTemplateAgents(`
+agent:
+  name: a
+  instructions: A.
+  model: claude-sonnet
+  advanced_config: { effort: high }
+  isolation: isolated
+  auto_approve: true
+  connections:
+    - { service: github, access: write, repos: [acme/widgets] }
+    - atlassian
+    - { service: linear, access: admin }
+`);
+    expect(agents[0]).toMatchObject({
+      model: 'claude-sonnet',
+      advancedConfig: { effort: 'high' },
+      isolation: 'isolated',
+      autoApprove: true,
+      connections: [
+        { service: 'github', access: 'write', repos: ['acme/widgets'] },
+        { service: 'atlassian', access: null, repos: [] },
+        { service: 'linear', access: null, repos: [] },
+      ],
+    });
+    expect(warnings).toEqual(["`agent:`: linear access 'admin' is not read or write."]);
+  });
+
+  it('leaves machine params out of the room document', () => {
+    const doc = load(
+      serverDocument(`
+params:
+  box: { type: machine, default: [$first] }
+  topic: { type: string }
+agent:
+  name: a
+  instructions: A.
+  machine: "{box}"
+room:
+  name: "{topic}"
+  agents: ["{agent}"]
+`) ?? ''
+    ) as { params: Record<string, unknown> };
+    expect(Object.keys(doc.params)).toEqual(['agent', 'topic']);
+  });
+});
+
 describe('parseTemplateAgents: allow_existing', () => {
   it('lets an entry be filled by an existing agent only when the template says so', () => {
     const { agents } = parseTemplateAgents(`

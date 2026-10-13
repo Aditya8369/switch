@@ -2,14 +2,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  FormOptions,
-  ParsedAgentEntry,
-  TemplateKind,
-  UnsaidRuntime,
+import {
+  type FormOptions,
+  type ParsedAgentEntry,
+  runtimeFieldTexts,
+  type TemplateConnection,
+  type TemplateKind,
+  type UnsaidRuntime,
 } from '@main/core/agent-templates/template-document';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
+import type { TemplateRunResult } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -44,6 +47,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
   isValidProviderId,
@@ -64,6 +68,16 @@ import {
   type SlotStatus,
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
+import {
+  connectionStates,
+  connectionsFor,
+  directoryUnresolved,
+  machineFor,
+  machineProblem,
+  managedDirectory,
+  runAgent,
+  shownDirectory,
+} from './use/managed-run';
 import { ParamField } from './use/param-field';
 import { RoomChoiceField } from './use/room-pick-field';
 import { LOCAL_RUN_LOCATION, runLocationLabel, useAllowedHosts } from './use/run-location-select';
@@ -236,6 +250,19 @@ type SlotSetup = {
   /** `local`, or an SSH host. Null when nothing in the template says. */
   location: string | null;
   directory: string;
+  /**
+   * On a server with agent management, every new agent is a managed agent on
+   * one of the deployer's machines: the one its `machine` names, or the one
+   * behind its `location`. Null when it names none of them, or for an
+   * existing agent, or without agent management.
+   */
+  machine: OwnedMachine | null;
+  /** The `machine` the template gives it, filled in; null when it gives none. */
+  machineText: string | null;
+  /** The directory sent for a managed agent, `{$agents_dir}` kept for the server. */
+  managedDirectory: string;
+  /** The deployer's connections it is granted, its `repo` folded in. */
+  connections: TemplateConnection[];
   /** Rooms the agent joins once it exists, by name. */
   joins: string[];
   /** Whether the run creates the template's room for it. */
@@ -360,17 +387,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     if (joinValue !== '' && !roomOn) setRoomOn(true);
   }, [joinValue, roomOn]);
   // A Console-type param no agent entry's field reads applies to every agent.
-  const fieldTexts = (loaded?.agents ?? []).flatMap((a) => [
-    a.provider ?? '',
-    a.location ?? '',
-    a.directory ?? '',
-  ]);
+  const fieldTexts = (loaded?.agents ?? []).flatMap((a) => runtimeFieldTexts(a));
   const unboundOfType = (type: ParamSpec['type']) =>
     templateParams.find(
       (p) => p.type === type && !fieldTexts.some((t) => t.includes(`{${p.name}}`))
     ) ?? null;
   const providerParam = unboundOfType('provider');
   const locationParam = unboundOfType('location');
+  const machineParam = unboundOfType('machine');
   const directoryParam = unboundOfType('directory');
 
   // ── Server lists (pickers, identities, bridges) ─────────────────────────
@@ -389,6 +413,24 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     queryKey: ['remote-external-users', workspaceId],
     queryFn: () => rpc.workspaces.listExternalUsers(workspaceId as string),
     enabled: workspaceId !== null,
+  });
+  // The deployer's machines; null when the server does not run agent
+  // management, which leaves agents to be created the way Console runs them.
+  const machinesQuery = useQuery({
+    queryKey: ['template-use-machines', serverId, workspaceId],
+    queryFn: () => rpc.managedAgents.machines(serverId),
+    enabled: workspaceId !== null && (loaded?.agents.length ?? 0) > 0,
+    refetchInterval: (query) => (query.state.data ? 5000 : false),
+  });
+  const machines = machinesQuery.data ?? null;
+  const management = machines !== null;
+  const wantsConnections = (loaded?.agents ?? []).some(
+    (a) => a.connections.length > 0 || a.repoUrl !== null
+  );
+  const connectionsQuery = useQuery({
+    queryKey: ['template-use-connections', workspaceId],
+    queryFn: () => rpc.workspaces.getServiceConnections(workspaceId as string),
+    enabled: workspaceId !== null && management && wantsConnections,
   });
   const { identities, refresh: refreshIdentities } = useMyIdentities(workspaceId);
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
@@ -502,7 +544,33 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         .filter((j) => j !== '' && j !== NEW && !hasPlaceholder(j));
       const makesRoom =
         hasRoomPart && (joinParam === null ? true : String(values[joinParam.name] ?? '') === NEW);
-      return { name, existing, displayName, provider, location, directory, joins, makesRoom };
+      const machineRaw = entry.machine
+        ? interpolate(entry.machine, values)
+        : machineParam
+          ? String(values[machineParam.name] ?? '')
+          : '';
+      const machineText = machineRaw === '' || hasPlaceholder(machineRaw) ? null : machineRaw;
+      const machine =
+        existing === null && machines !== null ? machineFor(machines, machineText, location) : null;
+      const directorySource = entry.directory
+        ? entry.directory
+        : directoryParam
+          ? String(values[directoryParam.name] ?? '')
+          : '';
+      return {
+        name,
+        existing,
+        displayName,
+        provider,
+        location,
+        directory,
+        machine,
+        machineText,
+        managedDirectory: managedDirectory(directorySource, values, name),
+        connections: connectionsFor(entry, values),
+        joins,
+        makesRoom,
+      };
     });
   }, [
     slots,
@@ -510,9 +578,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     templateParams,
     providerParam,
     locationParam,
+    machineParam,
     directoryParam,
     agentsDirs,
     hasRoomPart,
+    machines,
   ]);
   // A room template with no agents still makes its room.
   const makesRoom = hasRoomPart && (setups.length === 0 || setups.some((s) => s.makesRoom));
@@ -521,12 +591,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     () => [
       ...new Set(
         setups
-          .filter((s) => s.existing === null)
+          .filter((s) => s.existing === null && !management)
           .map((s) => s.location)
           .filter((l): l is string => l !== null)
       ),
     ],
-    [setups]
+    [setups, management]
   );
   const firstRemote = locations.find((l) => l !== LOCAL_RUN_LOCATION) ?? null;
   const hostReachable = locations.every(
@@ -541,7 +611,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // `{$agents_dir}` for every location in play, fetched once each.
   useEffect(() => {
     for (const location of locations) {
-      if (agentsDirs[location] !== undefined) continue;
+      if (management || agentsDirs[location] !== undefined) continue;
       const sshHost = location === LOCAL_RUN_LOCATION ? null : location;
       if (sshHost && hostReachabilityStore.isBlocked(sshHost)) continue;
       void rpc.agentTemplates
@@ -549,7 +619,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         .then((dir) => setAgentsDirs((prev) => ({ ...prev, [location]: dir })))
         .catch(() => {});
     }
-  }, [locations, agentsDirs]);
+  }, [locations, agentsDirs, management]);
 
   // ── Chains: each decided once its candidates are known ──────────────────
   const availability = useAgentTypeAvailability(firstRemote ?? undefined);
@@ -567,6 +637,19 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         candidates = roomsQuery.data?.map((r) => r.name).sort();
       } else if (param.type === 'location') {
         candidates = [LOCAL_RUN_LOCATION, ...allowedHosts.map((h) => h.sshHost)];
+      } else if (param.type === 'machine') {
+        // Online machines first: `$first` is the first that can take an agent now.
+        candidates = machinesQuery.data
+          ? [...machinesQuery.data]
+              .sort(
+                (a, b) =>
+                  Number(b.state === 'online') - Number(a.state === 'online') ||
+                  a.name.localeCompare(b.name)
+              )
+              .map((m) => m.id)
+          : machinesQuery.data === null
+            ? []
+            : undefined;
       } else if (param.type === 'provider') {
         // The providers installed where the agent reading this param runs.
         const at = setups[agentIndexOf(param)];
@@ -596,6 +679,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     allowedHosts,
     availability.data,
     localAvailability.data,
+    machinesQuery.data,
   ]);
 
   // ── Names: taken, invalid, or still unresolved ──────────────────────────
@@ -681,16 +765,45 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const says = (field: UnsaidRuntime['field']) => !unsaid.some((u) => u.field === field);
     if (says('provider') && !setup.provider)
       slotProblems.push(`Choose which coding agent runs ${name}.`);
-    if (says('location') && setup.location === null)
-      slotProblems.push(`Choose which machine ${name} runs on.`);
-    else if (
-      setup.location !== null &&
-      setup.location !== LOCAL_RUN_LOCATION &&
-      !allowedHosts.some((h) => h.sshHost === setup.location)
-    )
-      slotProblems.push(`${setup.location} is not a machine this Console can run agents on.`);
-    if (says('directory') && setup.directory.trim() === '')
-      slotProblems.push(`Choose a directory for ${name}.`);
+    if (management) {
+      // A managed agent: the server checks all of this again, whole, before
+      // creating anything; the form says it first.
+      if (says('location') && setup.machine === null)
+        slotProblems.push(
+          setup.machineText !== null
+            ? `${setup.machineText} is not one of your machines on this server.`
+            : setup.location !== null
+              ? `${runLocationLabel(setup.location, allowedHosts)} is not a machine on this server yet.`
+              : `Choose which machine ${name} runs on.`
+        );
+      else if (setup.machine !== null) {
+        const problem = machineProblem(setup.machine, setup.provider, name);
+        if (problem) slotProblems.push(problem);
+      }
+      if (
+        says('directory') &&
+        (setup.managedDirectory.trim() === '' || directoryUnresolved(setup.managedDirectory))
+      )
+        slotProblems.push(`Choose a directory for ${name}.`);
+      for (const c of connectionStates(setup.connections, connectionsQuery.data ?? null)) {
+        if (!c.ready && c.note) slotProblems.push(`${name}: ${c.note}`);
+      }
+    } else {
+      if (setup.machineText !== null || slot.entry.connections.length > 0)
+        slotProblems.push(
+          `This server does not run agent management, so ${name} cannot be placed on a machine${slot.entry.connections.length > 0 ? ' or granted connections' : ''}.`
+        );
+      if (says('location') && setup.location === null)
+        slotProblems.push(`Choose which machine ${name} runs on.`);
+      else if (
+        setup.location !== null &&
+        setup.location !== LOCAL_RUN_LOCATION &&
+        !allowedHosts.some((h) => h.sshHost === setup.location)
+      )
+        slotProblems.push(`${setup.location} is not a machine this Console can run agents on.`);
+      if (says('directory') && setup.directory.trim() === '')
+        slotProblems.push(`Choose a directory for ${name}.`);
+    }
     for (const room of setup.joins) {
       if (roomsQuery.data && !roomsQuery.data.some((r) => r.name === room))
         slotProblems.push(`There is no room called ${room} on this server.`);
@@ -709,21 +822,28 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? `Fill in ${missing.map(paramLabel).join(', ')}`
           : invalid.length > 0
             ? `${paramLabel(invalid[0].p)}: ${invalid[0].problem}`
-            : slotProblems.length > 0
-              ? slotProblems[0]
-              : newSlots.length > 0 && !hostReachable
-                ? `${remoteLabel} cannot be reached right now.`
-                : newSlots.length > 0 && !hostReady
-                  ? hostReadiness.checking
-                    ? `Checking what ${remoteLabel} has installed…`
-                    : `${remoteLabel} is missing setup the agents need.`
-                  : !makesRoom
-                    ? null // no room is made, so nothing below applies
-                    : creatorBlocked
-                      ? 'Link your messaging account first.'
-                      : parsed !== null && noMessagingApp && parsed.usesCreator
-                        ? 'This server has no messaging app, so the room would have no chat.'
-                        : null;
+            : newSlots.length > 0 && machinesQuery.isError
+              ? failureText(
+                  machinesQuery.error,
+                  'Your machines on this server could not be listed.'
+                )
+              : newSlots.length > 0 && machinesQuery.data === undefined
+                ? 'Checking your machines on this server…'
+                : slotProblems.length > 0
+                  ? slotProblems[0]
+                  : newSlots.length > 0 && !hostReachable
+                    ? `${remoteLabel} cannot be reached right now.`
+                    : newSlots.length > 0 && !hostReady
+                      ? hostReadiness.checking
+                        ? `Checking what ${remoteLabel} has installed…`
+                        : `${remoteLabel} is missing setup the agents need.`
+                      : !makesRoom
+                        ? null // no room is made, so nothing below applies
+                        : creatorBlocked
+                          ? 'Link your messaging account first.'
+                          : parsed !== null && noMessagingApp && parsed.usesCreator
+                            ? 'This server has no messaging app, so the room would have no chat.'
+                            : null;
   // Existing agents in the room whose addressing policy blocks messages from
   // another member. New agents get the template's addressing at creation.
   const handoffBlocked = useMemo(() => {
@@ -780,6 +900,142 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const setSlot = (i: number, patch: Partial<AgentSlot>) =>
     setSlots((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)));
 
+  /** The room half as the server provisions it: agent names swapped for the
+   * names the agents have, and the inputs it takes. */
+  const roomRequest = async (
+    templateCoreYaml: string,
+    template: ParsedTemplate
+  ): Promise<{ coreYaml: string; inputs: Record<string, string | number | boolean> }> => {
+    const replacements: Record<string, string> = {};
+    slots.forEach((slot, i) => {
+      const expression = slot.entry.name ?? '';
+      const actual = setups[i].existing ?? slot.createdName ?? setups[i].name;
+      if (expression && actual && expression !== actual) replacements[expression] = actual;
+    });
+    let coreYaml = await rpc.agentTemplates.substituteSlots({
+      coreYaml: templateCoreYaml,
+      replacements,
+    });
+    if (!isGroupDoc) {
+      // The member lists are rebuilt from the parsed template, so the renamed
+      // agents must be renamed here too, or the original names would come back.
+      const slotNamesSet = new Set(slots.map((s) => s.entry.name ?? ''));
+      const keep = (list: string[]) =>
+        list
+          .filter((a) => hasPlaceholder(a) || slotNamesSet.has(a))
+          .map((a) => replacements[a] ?? a);
+      coreYaml = await rpc.roomTemplates.rewriteYaml({
+        yamlText: coreYaml,
+        agents: [...new Set([...keep(template.agents), ...editedAgents])],
+        users: [...keep(template.users), ...editedUsers],
+      });
+    }
+    const inputs = serverInputs(
+      templateParams,
+      values,
+      loaded?.serverParamNames ?? new Set<string>()
+    );
+    if (loaded?.singular && slots.length === 1) {
+      // The singular `agent:` form: the server fills `{agent}` from this input.
+      inputs.agent = setups[0].existing ?? slots[0].createdName ?? setups[0].name;
+    }
+    return { coreYaml, inputs };
+  };
+
+  /**
+   * On a server with agent management: the new agents and the room in one
+   * request, which the server checks whole and keeps nothing of when it
+   * fails. Records what was created, and the room in `createdRoom`, so the
+   * steps after it (joins, opening the room) run as for any run. False when
+   * it was refused, each reason shown on its agent's card.
+   */
+  const createManaged = async (
+    created: { slotIndex: number; name: string; switchAgentId: string | null }[]
+  ): Promise<boolean> => {
+    if (!loaded || workspaceId === null) return false;
+    const pending = slots
+      .map((slot, i) => ({ slot, i, setup: setups[i] }))
+      .filter(({ slot, setup }) => setup.existing === null && slot.status !== 'created');
+    const agentsToCreate = pending.map(({ slot, setup }) => {
+      if (setup.machine === null || setup.provider === null)
+        throw new Error(`${setup.name} has no machine or provider.`);
+      return runAgent({
+        slot: setup.name,
+        name: setup.name,
+        entry: slot.entry,
+        values,
+        displayName:
+          setup.displayName && setup.displayName.trim() !== setup.name
+            ? setup.displayName.trim()
+            : null,
+        provider: setup.provider,
+        machine: setup.machine,
+        directoryText: setup.managedDirectory,
+      });
+    });
+    for (const { i } of pending) setSlot(i, { status: 'creating', error: null, step: 'create' });
+    const room =
+      makesRoom && loaded.coreYaml && parsed && !createdRoom.current
+        ? await roomRequest(loaded.coreYaml, parsed)
+        : null;
+    if (room) setRoomStatus('creating');
+    let result: TemplateRunResult;
+    try {
+      result = await rpc.workspaces.runTemplateWithAgents(workspaceId, {
+        agents: agentsToCreate,
+        yamlText: room?.coreYaml ?? null,
+        inputs: room?.inputs ?? {},
+        templateName: loaded.name,
+      });
+    } catch (e) {
+      for (const { i } of pending) setSlot(i, { status: 'failed', step: null });
+      if (room) setRoomStatus('failed');
+      const serverDetail =
+        e instanceof RpcError && e.code === 'GatewayError' ? e.stringField('detail') : undefined;
+      setCreateError(serverDetail ?? failureText(e, 'Could not create from this template.'));
+      setPhase('failed');
+      return false;
+    }
+    if (result.kind === 'refused') {
+      const bySlot = new Map<string, string[]>();
+      for (const p of result.problems)
+        bySlot.set(p.slot, [...(bySlot.get(p.slot) ?? []), p.message]);
+      for (const { i, setup } of pending) {
+        const mine = bySlot.get(setup.name);
+        setSlot(i, {
+          status: mine ? 'failed' : 'idle',
+          step: null,
+          error: mine ? mine.join(' ') : null,
+        });
+      }
+      if (room) setRoomStatus('failed');
+      const leftBehind =
+        result.leftBehind.length > 0
+          ? ` ${result.leftBehind.join(', ')} could not be deleted again; delete ${result.leftBehind.length === 1 ? 'it' : 'them'} from Your Agents.`
+          : '';
+      setCreateError(
+        (result.problems.length > 0
+          ? 'Nothing was created. Each agent says what stopped it.'
+          : result.message) + leftBehind
+      );
+      setPhase('failed');
+      return false;
+    }
+    for (const agent of result.createdAgents) {
+      const match = pending.find(({ setup }) => setup.name === agent.slot);
+      if (!match) continue;
+      setSlot(match.i, {
+        status: 'created',
+        step: null,
+        createdName: agent.name,
+        createdSwitchAgentId: agent.agentId,
+      });
+      created.push({ slotIndex: match.i, name: agent.name, switchAgentId: agent.agentId });
+    }
+    if (result.room) createdRoom.current = result.room;
+    return true;
+  };
+
   const createAll = async () => {
     if (!loaded || workspaceId === null || blockedReason !== null) return;
     setPhase('creating');
@@ -787,7 +1043,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setFieldErrors({});
     const created: { slotIndex: number; name: string; switchAgentId: string | null }[] = [];
 
-    for (let i = 0; i < slots.length; i++) {
+    if (management && newSlots.length > 0) {
+      if (!(await createManaged(created))) return;
+    }
+    for (let i = 0; i < (management ? 0 : slots.length); i++) {
       const slot = slots[i];
       const setup = setups[i];
       if (setup.existing !== null || slot.status === 'created') continue;
@@ -983,35 +1242,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     // the agents got, so the server finds them.
     setRoomStatus('creating');
     try {
-      const replacements: Record<string, string> = {};
-      slots.forEach((slot, i) => {
-        const expression = slot.entry.name ?? '';
-        const actual = setups[i].existing ?? slot.createdName ?? setups[i].name;
-        if (expression && actual && expression !== actual) replacements[expression] = actual;
-      });
-      let coreYaml = await rpc.agentTemplates.substituteSlots({
-        coreYaml: loaded.coreYaml,
-        replacements,
-      });
-      if (!isGroupDoc) {
-        // The member lists are rebuilt from the parsed template, so the renamed
-        // agents must be renamed here too, or the original names would come back.
-        const slotNamesSet = new Set(slots.map((s) => s.entry.name ?? ''));
-        const keep = (list: string[]) =>
-          list
-            .filter((a) => hasPlaceholder(a) || slotNamesSet.has(a))
-            .map((a) => replacements[a] ?? a);
-        coreYaml = await rpc.roomTemplates.rewriteYaml({
-          yamlText: coreYaml,
-          agents: [...new Set([...keep(parsed.agents), ...editedAgents])],
-          users: [...keep(parsed.users), ...editedUsers],
-        });
-      }
-      const inputs = serverInputs(templateParams, values, loaded.serverParamNames);
-      if (loaded.singular && slots.length === 1) {
-        // The singular `agent:` form: the server fills `{agent}` from this input.
-        inputs.agent = setups[0].existing ?? slots[0].createdName ?? setups[0].name;
-      }
+      const { coreYaml, inputs } = await roomRequest(loaded.coreYaml, parsed);
       const result =
         createdRoom.current ??
         (await rpc.workspaces.createRoomFromTemplate(workspaceId, coreYaml, inputs, loaded.name));
@@ -1212,11 +1443,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         ? value === ''
           ? ''
           : runLocationLabel(String(value), allowedHosts)
-        : param.type === 'room' && value === NEW
-          ? (newRoomForPick?.name ?? 'New room')
-          : param.type === 'directory'
-            ? (resolvedDirectory || String(value)).replace(/^\/(?:Users|home)\/[^/]+/, '~')
-            : String(value);
+        : param.type === 'machine'
+          ? (machines?.find((m) => m.id === value || m.name === value)?.name ?? String(value))
+          : param.type === 'room' && value === NEW
+            ? (newRoomForPick?.name ?? 'New room')
+            : param.type === 'directory'
+              ? (resolvedDirectory || String(value)).replace(/^\/(?:Users|home)\/[^/]+/, '~')
+              : String(value);
   };
 
   /** One param as the template says to show it: asked, folded, or fixed.
@@ -1242,6 +1475,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         lists={lists}
         sshHost={sshHostOf(param)}
         hosts={allowedHosts}
+        machines={machines}
         newRoom={newRoomForPick}
         disabled={busy}
         onNavigateAway={() =>
@@ -1577,19 +1811,43 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                         runtime={
                           setup.existing !== null
                             ? null
-                            : {
-                                provider: setup.provider
-                                  ? (providerDisplayName(setup.provider) ?? setup.provider)
-                                  : null,
-                                location:
-                                  setup.location === null
-                                    ? null
-                                    : runLocationLabel(setup.location, allowedHosts),
-                                directory:
-                                  setup.directory === ''
-                                    ? null
-                                    : setup.directory.replace(/^\/(?:Users|home)\/[^/]+/, '~'),
-                              }
+                            : management
+                              ? {
+                                  provider: setup.provider
+                                    ? (providerDisplayName(setup.provider) ?? setup.provider)
+                                    : null,
+                                  location: setup.machine
+                                    ? `${setup.machine.name}${setup.machine.state === 'online' ? '' : ` (${setup.machine.state})`}`
+                                    : null,
+                                  directory:
+                                    setup.managedDirectory === ''
+                                      ? null
+                                      : shownDirectory(setup.managedDirectory, setup.machine),
+                                  model: slot.entry.model
+                                    ? interpolate(slot.entry.model, values)
+                                    : null,
+                                  connections: connectionStates(
+                                    setup.connections,
+                                    connectionsQuery.data ?? null
+                                  ),
+                                  managed: true,
+                                }
+                              : {
+                                  provider: setup.provider
+                                    ? (providerDisplayName(setup.provider) ?? setup.provider)
+                                    : null,
+                                  location:
+                                    setup.location === null
+                                      ? null
+                                      : runLocationLabel(setup.location, allowedHosts),
+                                  directory:
+                                    setup.directory === ''
+                                      ? null
+                                      : setup.directory.replace(/^\/(?:Users|home)\/[^/]+/, '~'),
+                                  model: null,
+                                  connections: [],
+                                  managed: false,
+                                }
                         }
                         onChange={(next) =>
                           setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))

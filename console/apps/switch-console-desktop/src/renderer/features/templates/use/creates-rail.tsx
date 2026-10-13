@@ -7,6 +7,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
+import type { ConnectionState } from './managed-run';
 import { hasPlaceholder, interpolate, type Values } from './use-template-model';
 
 export type SlotStatus = 'idle' | 'creating' | 'created' | 'failed';
@@ -152,6 +153,12 @@ export type SlotRuntime = {
   provider: string | null;
   location: string | null;
   directory: string | null;
+  /** The model, when the template names one. */
+  model: string | null;
+  /** The deployer's connections it is granted, and whether each is ready to grant. */
+  connections: ConnectionState[];
+  /** A managed agent on one of the deployer's machines, rather than one this Console runs. */
+  managed: boolean;
 };
 
 function RuntimeRow({ label, value }: { label: string; value: string | null }) {
@@ -247,9 +254,35 @@ export function AgentSlotCard({
       {runtime && (
         <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">
           <RuntimeRow label="Provider" value={runtime.provider} />
-          <RuntimeRow label="Runs on" value={runtime.location} />
+          <RuntimeRow label={runtime.managed ? 'Machine' : 'Runs on'} value={runtime.location} />
           <RuntimeRow label="Directory" value={runtime.directory} />
-          {slot.entry.repoUrl && slot.createdName === null && (
+          {runtime.model && <RuntimeRow label="Model" value={runtime.model} />}
+          {runtime.connections.length > 0 && (
+            <div className="flex items-baseline gap-3 text-xs">
+              <span className="w-[72px] shrink-0 text-foreground-passive">Connections</span>
+              <ul className="flex min-w-0 flex-1 flex-col gap-1">
+                {runtime.connections.map((c) => (
+                  <li key={c.service} className="flex min-w-0 flex-col">
+                    <span className="flex items-center gap-1.5">
+                      {c.ready ? (
+                        <Check className="size-3 text-emerald-700 dark:text-emerald-400" />
+                      ) : (
+                        <TriangleAlert className="size-3 text-amber-600 dark:text-amber-400" />
+                      )}
+                      <span className="text-foreground-muted">{c.name}</span>
+                      {c.repos.length > 0 && (
+                        <span className="truncate font-mono text-foreground-passive">
+                          {c.repos.join(', ')}
+                        </span>
+                      )}
+                    </span>
+                    {c.note && <span className="text-amber-600 dark:text-amber-400">{c.note}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!runtime.managed && slot.entry.repoUrl && slot.createdName === null && (
             <label className="mt-1 flex w-max cursor-pointer items-center gap-2 text-xs text-foreground-muted">
               <Switch
                 size="sm"

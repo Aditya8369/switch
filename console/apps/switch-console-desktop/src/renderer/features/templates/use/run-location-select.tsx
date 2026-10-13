@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 export const LOCAL_RUN_LOCATION = 'local';
 
@@ -82,6 +83,48 @@ export function RunLocationSelect({
             <Server className="size-4 text-foreground-muted" />
             <span className="flex-1 truncate">{h.name}</span>
             <span className="text-xs text-foreground-muted">ssh</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** The value a `machine` param holds for one of the owner's machines: its id. */
+export function MachineSelect({
+  value,
+  onChange,
+  machines,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  /** The owner's machines on the server; null when it does not run agent management. */
+  machines: readonly OwnedMachine[] | null;
+  disabled?: boolean;
+}) {
+  if (machines === null) {
+    return (
+      <p className="text-xs text-foreground-muted">
+        This server does not run agent management, so there is no machine to choose.
+      </p>
+    );
+  }
+  const chosen = machines.find((m) => m.id === value || m.name === value) ?? null;
+  return (
+    <Select value={chosen?.id ?? ''} onValueChange={(v) => onChange(v ?? '')} disabled={disabled}>
+      <SelectTrigger className="w-full" aria-label="Machine">
+        <SelectValue>
+          <Server className="size-4 text-foreground-muted" />
+          <span className="truncate">{chosen ? chosen.name : value || 'Choose a machine'}</span>
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {machines.map((m) => (
+          <SelectItem key={m.id} value={m.id}>
+            <Server className="size-4 text-foreground-muted" />
+            <span className="flex-1 truncate">{m.name}</span>
+            <span className="text-xs text-foreground-muted">{m.state}</span>
           </SelectItem>
         ))}
       </SelectContent>
