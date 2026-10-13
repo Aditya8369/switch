@@ -17,6 +17,7 @@ import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
 import type { LocalRelay } from './relay';
+import { DEFAULT_RELAY_CONTROL_TIMING } from './relay-control';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { type ReleaseInstaller, SelfUpdater, type UpdateAttempt } from './self-update';
@@ -95,6 +96,7 @@ function deps(server = core.url): ControllerDeps {
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
       eventBufferLimit: 100,
+      control: DEFAULT_RELAY_CONTROL_TIMING,
     },
   };
 }

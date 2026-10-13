@@ -1,4 +1,5 @@
-import type { OpenAgentStream } from '@switch-console/agent-providers';
+import { join } from 'node:path';
+import { CONTROL_FILE, type OpenAgentStream } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -16,6 +17,11 @@ import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { LocalRelay, RELAY_TOKEN_PREFIX } from './relay';
+import {
+  DEFAULT_RELAY_CONTROL_TIMING,
+  RelayControl,
+  type RelayControlTiming,
+} from './relay-control';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentRuntime } from './runtime';
 import {
@@ -56,6 +62,7 @@ export type ControllerTiming = {
   streamMaxBackoffMs: number;
   /** The most events held per agent while its agent host is not taking them. */
   eventBufferLimit: number;
+  control: RelayControlTiming;
 };
 
 export const DEFAULT_TIMING: ControllerTiming = {
@@ -68,6 +75,7 @@ export const DEFAULT_TIMING: ControllerTiming = {
   streamInitialBackoffMs: 1_000,
   streamMaxBackoffMs: 8_000,
   eventBufferLimit: 5_000,
+  control: DEFAULT_RELAY_CONTROL_TIMING,
 };
 
 export type ControllerDeps = {
@@ -315,6 +323,24 @@ export async function runController(
     }
   };
   if (assignment) placeAgents(assignment);
+  const controlPath = `${identity.server}/v1/management/controllers/${encodeURIComponent(identity.controllerId)}`;
+  const relayControl = new RelayControl({
+    post: async (path, body) => {
+      try {
+        const response = await client.request(`${controlPath}${path}`, { method: 'POST', body });
+        const text = await response.text();
+        return text ? (JSON.parse(text) as unknown) : null;
+      } catch (error) {
+        if (isRevoked(error)) void revoke();
+        throw error;
+      }
+    },
+    assigned: (agentId) => assignment?.agents.some((entry) => entry.agent_id === agentId) ?? false,
+    controlFile: (agentId) => join(runtime.agentStateRoot(agentId), CONTROL_FILE),
+    log,
+    now: deps.now,
+    timing: timing.control,
+  });
   const port = await relay.start(store.relayPort());
   store.saveRelayPort(port);
   log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
@@ -331,6 +357,7 @@ export async function runController(
       for (const agentId of agentIds) {
         if (!isSafeSegment(agentId)) continue;
         relay.unregister(agentId);
+        relayControl.forget(agentId);
         try {
           await runtime.stop(agentId, { wait: false });
           hub.forget(agentId);
@@ -419,6 +446,7 @@ export async function runController(
     forgetAgent: (agentId) => {
       relay.unregister(agentId);
       hub.forget(agentId);
+      relayControl.forget(agentId);
     },
     binaryPath: (provider) => providers.binaryPath(provider),
     now: deps.now,
@@ -584,6 +612,12 @@ export async function runController(
       case 'operation.pending':
         void runOperations();
         return;
+      case 'agent.control':
+        relayControl.handle(frame.data);
+        return;
+      case 'agent.control_cancel':
+        relayControl.cancel(frame.data);
+        return;
       case 'credential.revoked':
         await revoke();
         return;
@@ -668,6 +702,7 @@ export async function runController(
       await reporter.idle();
       await deps.selfUpdate?.settled();
     } finally {
+      relayControl.close();
       await runtime.close();
       await relay.close();
     }

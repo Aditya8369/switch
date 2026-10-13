@@ -168,6 +168,14 @@ export {
 } from './providers/registry';
 export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/registry';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
+export {
+  type ControlContext,
+  type ControlMessage,
+  controlMessageSchema,
+  type ControlPush,
+  serveControl,
+} from './host/control';
+export { ControlError } from './host/attachment-transfers';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
