@@ -6,6 +6,7 @@ import { sealProviderLogin } from '@switch-console/agent-providers';
 import { afterAll, describe, expect, it } from 'vitest';
 import { type ControllerExit, runController } from './controller';
 import { silentLogger } from './log';
+import { DEFAULT_RELAY_CONTROL_TIMING } from './relay-control';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import {
@@ -153,6 +154,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
           streamInitialBackoffMs: 50,
           streamMaxBackoffMs: 500,
           eventBufferLimit: 100,
+          control: DEFAULT_RELAY_CONTROL_TIMING,
         },
       },
       stop.signal
