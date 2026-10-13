@@ -100,6 +100,9 @@ ROOM_RELEASED_PROTOCOL_REVISION = 6
 # every heartbeat. A client on an older revision is sent a single number.
 POSITIONS_PROTOCOL_REVISION = 9
 
+# How many recently sent tickets a connection remembers (`AgentConnection.issued`).
+ISSUED_TICKETS_KEPT = 256
+
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
@@ -438,6 +441,9 @@ class AgentConnection:
     # ticket is the id of a row in `agent_position_tickets` that stores a full
     # position, so the client can resume from it by sending back one number.
     ticket: int = 0
+    # The tickets most recently sent on this connection, and the position each
+    # stands for, so a beat that reports one is read without a database query.
+    issued_tickets: dict[int, Position] = field(default_factory=dict)
     # True when the client asked to resume from a ticket the server does not
     # have, because it expired or never existed. The stream then opens with a
     # gap frame, and `resume_requested` holds the number the client sent so the
@@ -447,6 +453,14 @@ class AgentConnection:
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
+
+    def issued(self, ticket: int, position: Position) -> None:
+        """Remember a ticket sent on this connection, keeping the most recent
+        `ISSUED_TICKETS_KEPT`. A client beats with the last ticket it received,
+        so older ones are only ever reported late."""
+        self.issued_tickets[ticket] = dict(position)
+        while len(self.issued_tickets) > ISSUED_TICKETS_KEPT:
+            del self.issued_tickets[next(iter(self.issued_tickets))]
 
     @property
     def reads_conversation(self) -> bool:

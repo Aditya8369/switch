@@ -221,8 +221,10 @@ async def test_first_frame_is_the_connection_state(db_buffer: EventBuffer) -> No
     # The client returns this on every heartbeat; without it the server cannot
     # tell the holder of a connection from a client displaced from it.
     assert data["generation"] == conn.stream_generation
-    # Where the stream starts, for a client that keeps a position.
-    assert data["position"] == {OWN_EVENTS: 0}
+    # Where the stream starts, for a client that keeps a position: in the
+    # agent's own events and, since it reads the room's conversation, at the
+    # room's newest message (none yet).
+    assert data["position"] == {OWN_EVENTS: 0, room_source(ROOM_A): 0}
 
 
 async def test_the_first_frame_declares_the_server(
@@ -399,6 +401,60 @@ async def test_the_chatter_before_a_mention_arrives_with_it_and_ahead_of_it(
     assert mention["payload"]["body"] == "for you"
 
 
+async def test_a_conversation_reader_starts_with_a_place_in_each_room(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """A client learns where it starts from `connection_state`, and one that
+    reconnects before any room message arrives resumes from there. Each room it
+    reads must already have its place in that position: missing, the room
+    would start at its newest message again on the reconnect, and what was
+    said in between would never arrive."""
+    registry = AgentConnectionRegistry()
+    buffer = db_buffer
+    said = await say(session_factory, ROOM_A, "before the client connected")
+    conn = _open(registry)
+    registry.claim_room(conn, ROOM_A)
+
+    stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
+    ((name, opening),) = await _take(stream, 1)
+    await stream.aclose()
+    await say(session_factory, ROOM_A, "while the client was away")
+    again = _open(registry, position=opening["position"])
+    registry.claim_room(again, ROOM_A)
+    stream = event_frames(conn=again, registry=registry, buffer=buffer, approvals=None)
+    _, (_, missed) = await _take(stream, 2)
+    await stream.aclose()
+
+    assert name == "connection_state"
+    assert opening["position"] == {OWN_EVENTS: 0, room_source(ROOM_A): said.seq}
+    assert missed["payload"]["body"] == "while the client was away"
+
+
+async def test_a_gap_for_own_events_all_deleted_is_sent_once(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """When retention has deleted every one of the agent's own events, the gap
+    moves the connection past all of them, so the next frame is the next
+    event rather than the same gap again."""
+    registry = AgentConnectionRegistry()
+    buffer = db_buffer
+    await _keep(buffer, _message("dropped"))
+    await age_events(session_factory, AGENT, seconds=2 * 3600)
+    await buffer.expire(TENANT_ZERO_ID)
+    conn = _open(registry, cursor=0)
+    registry.claim_room(conn, ROOM_A)
+
+    stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
+    _, (gap, _) = await _take(stream, 2)
+    await _keep(buffer, _message("after the gap"))
+    ((name, after),) = await _take(stream, 1)
+    await stream.aclose()
+
+    assert gap == "gap"
+    assert name == "message"
+    assert after["payload"]["body"] == "after the gap"
+
+
 async def test_sequence_number_is_carried_for_resume(db_buffer: EventBuffer) -> None:
     registry = AgentConnectionRegistry()
     buffer = db_buffer
@@ -451,6 +507,35 @@ async def test_a_client_that_keeps_one_number_is_handed_tickets(
         room_source(ROOM_A): said.seq,
     }
     assert conn.cursor == mine["sequence"]
+
+
+async def test_a_ticket_never_covers_an_event_still_to_come(
+    db_buffer: EventBuffer,
+) -> None:
+    """One of the agent's own events for a room this connection does not cover
+    is not sent, and the position moves past it. A ticket handed out for an
+    event before it must not include it: a client that reconnects with that
+    ticket would resume past the events in between and never receive them."""
+    registry = AgentConnectionRegistry()
+    buffer = db_buffer
+    first = await _keep(buffer, _message("first"))
+    second = await _keep(buffer, _message("second"))
+    await _keep(buffer, _message("elsewhere", room=ROOM_B))
+    conn = _open(
+        registry,
+        position={OWN_EVENTS: 0, room_source(ROOM_A): 0},
+        declaration=ClientDeclaration(speaks=POSITIONS_PROTOCOL_REVISION - 1),
+    )
+    registry.claim_room(conn, ROOM_A)
+
+    stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
+    _, (_, one), (_, two) = await _take(stream, 3)
+    await stream.aclose()
+    after_one = await buffer.ticket(TENANT_ZERO_ID, AGENT, one["sequence"])
+    after_two = await buffer.ticket(TENANT_ZERO_ID, AGENT, two["sequence"])
+
+    assert after_one is not None and after_one[OWN_EVENTS] == first
+    assert after_two is not None and after_two[OWN_EVENTS] == second
 
 
 async def test_resuming_from_a_cursor_skips_what_was_already_seen(
@@ -774,7 +859,10 @@ async def test_stream_reports_restart_below_floor(
     assert gap["resumed_at"] == buffer.sequence_floor - 1
     assert gap["resumed_at"] > old_cursor
     # The same place, for a client that keeps a position.
-    assert gap["resumed_position"] == {OWN_EVENTS: gap["resumed_at"]}
+    assert gap["resumed_position"] == {
+        OWN_EVENTS: gap["resumed_at"],
+        room_source(ROOM_A): 0,
+    }
     assert gap["all_rooms"] is True
     assert "restarted" in gap["reason"]
     assert frames[2][1]["sequence"] == first == buffer.sequence_floor
@@ -1335,9 +1423,15 @@ class TestAGapNamesTheRoomsThatLostEvents:
         registry.claim_room(conn, ROOM_B)
         await say(session_factory, ROOM_B, "chatter")
         await _addressed(session_factory, buffer, "for you", room=ROOM_B)
-        delivered = await _take(stream, 2)  # subscription_changed, then the message
+        # subscription_changed, the chatter (this connection reads the room's
+        # conversation from where it opened), then the message.
+        delivered = await _take(stream, 3)
         await stream.aclose()
 
+        assert [frame[1].get("payload", {}).get("body") for frame in delivered[1:]] == [
+            "chatter",
+            "for you",
+        ]
         assert delivered[-1][1]["missed"] == {"count": 2, "reason": None}
 
     async def test_a_place_past_the_end_of_a_room_names_that_room(

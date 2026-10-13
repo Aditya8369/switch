@@ -244,6 +244,13 @@ async def _event_stream(
     counted: set[str] = set()
     last_keepalive = time.monotonic()
     try:
+        if conn.reads_conversation:
+            # The client learns its starting position from `connection_state`.
+            # A client that reconnects before any room message arrives resumes
+            # from that position, so each room must already be in it. A room
+            # missing from it would start at the room's newest message on the
+            # reconnect, and the messages sent in between would never arrive.
+            await _place_in_conversation(conn, registry, buffer, tenant)
         yield _frame("connection_state", _connection_state(conn))
 
         for gap in await _opening_gaps(conn, buffer, tenant):
@@ -338,21 +345,9 @@ async def _event_stream(
 
             conversation_rooms: set[str] = set()
             if conn.reads_conversation:
-                conversation_rooms = await _conversation_rooms(
+                conversation_rooms = await _place_in_conversation(
                     conn, registry, buffer, tenant
                 )
-                # A room with no entry in the position has never been read by
-                # this connection, so it starts at the room's newest message.
-                # Earlier messages are history the agent can fetch with
-                # `read_context`; sending them all as new events would bury the
-                # agent in a backlog.
-                fresh = {
-                    room_id
-                    for room_id in conversation_rooms
-                    if room_source(room_id) not in conn.position
-                }
-                for room_id, head in (await buffer.room_heads(tenant, fresh)).items():
-                    conn.position[room_source(room_id)] = head
 
             try:
                 pending, looked = await buffer.read(
@@ -364,7 +359,7 @@ async def _event_stream(
                     limit=CATCH_UP_BATCH,
                 )
             except CursorExpiredError as exc:
-                conn.position[OWN_EVENTS] = max(exc.oldest - 1, 0)
+                conn.position[OWN_EVENTS] = exc.resume_after
                 yield _frame(
                     "gap",
                     await _gap(
@@ -383,20 +378,24 @@ async def _event_stream(
             # sibling claiming a room must take effect immediately, without
             # tearing the stream down. One of the agent's own events for a room
             # this connection does not cover is not sent, but the position
-            # still moves past it. Room messages need no check here, because
-            # `_conversation_rooms` only returned rooms this connection covers.
-            deliver: list[BufferedEvent] = []
-            for item in pending:
-                if item.source == OWN_EVENTS and not registry.covers(
-                    conn, item.room_id
-                ):
-                    conn.position[OWN_EVENTS] = item.seq
-                    continue
-                deliver.append(item)
-
-            tickets = await _tickets_for(conn, buffer, tenant, deliver)
+            # still moves past it, in order: only once every event before it
+            # has gone out, so the position never says the client was sent
+            # an event that is still to come. Room messages need no check
+            # here, because `_conversation_rooms` only returned rooms this
+            # connection covers.
+            covered = [
+                item.source != OWN_EVENTS or registry.covers(conn, item.room_id)
+                for item in pending
+            ]
+            tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
             delivered = False
-            for index, item in enumerate(deliver):
+            index = -1
+            for item, send in zip(pending, covered, strict=True):
+                if not send:
+                    if item.seq > conn.position.get(OWN_EVENTS, -1):
+                        conn.position[OWN_EVENTS] = item.seq
+                    continue
+                index += 1
                 payload = item.event.model_dump(mode="json")
                 frame_seq = _number_for(conn, item, tickets, index)
                 if frame_seq is not None:
@@ -511,6 +510,7 @@ async def _gap(
             tenant, conn.agent_id, [dict(conn.position)]
         )
         conn.ticket = resumed_at
+        conn.issued(resumed_at, conn.position)
     return {
         "from_sequence": from_sequence,
         "resumed_at": resumed_at,
@@ -641,26 +641,26 @@ async def _opening_gaps(
     # If retention has deleted any of the agent's own events after the client's
     # number, report a gap instead of quietly moving the client to the newest
     # event. The client recovers by re-reading room context.
-    lost = await buffer.rooms_dropped_after(tenant, agent_id, at)
-    if lost:
-        oldest = await buffer.oldest_retained(tenant, agent_id)
+    try:
+        await buffer.check_cursor(tenant, agent_id, at)
+    except CursorExpiredError as exc:
         logger.warning(
             "[STREAM] agent=%s connection=%s resumed from expired cursor %s "
             "(oldest retained %s, rooms %s)",
             agent_id,
             conn.id,
             at,
-            oldest,
-            ", ".join(lost),
+            exc.oldest,
+            ", ".join(exc.rooms),
         )
-        conn.position[OWN_EVENTS] = max(oldest - 1, 0)
+        conn.position[OWN_EVENTS] = exc.resume_after
         gaps.append(
             await _gap(
                 conn,
                 buffer,
                 tenant,
                 from_sequence=at,
-                rooms=list(lost),
+                rooms=list(exc.rooms),
                 all_rooms=False,
                 reason="events older than the retention window were "
                 "dropped; re-read room context",
@@ -687,28 +687,59 @@ async def _conversation_rooms(
     return {room_id for room_id in member if registry.covers(conn, room_id)}
 
 
+async def _place_in_conversation(
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
+    buffer: EventBuffer,
+    tenant: str,
+) -> set[str]:
+    """Return the rooms whose conversation this connection receives, after
+    giving each room it has no place in yet a place at the room's newest
+    message.
+
+    A room with no entry in the connection's position has never been read by
+    this connection. Its earlier messages are history the agent can fetch with
+    `read_context`; sending them all as new events would bury the agent in a
+    backlog.
+    """
+    rooms = await _conversation_rooms(conn, registry, buffer, tenant)
+    fresh = {room_id for room_id in rooms if room_source(room_id) not in conn.position}
+    for room_id, head in (await buffer.room_heads(tenant, fresh)).items():
+        conn.position[room_source(room_id)] = head
+    return rooms
+
+
 async def _tickets_for(
     conn: AgentConnection,
     buffer: EventBuffer,
     tenant: str,
-    deliver: list[BufferedEvent],
+    pending: list[BufferedEvent],
+    covered: list[bool],
 ) -> list[int]:
     """Mint a ticket for each event about to be sent, for a client that
     receives every room message but holds a single number.
 
-    Each ticket stands for the position just after its event, so when the
-    client reconnects with that number it resumes after that event. Every
-    other client gets an empty list.
+    `pending` is the batch in order and `covered` says which of its events
+    are sent. Each ticket stands for the position just after its event,
+    including the unsent events before it and none after it, so a client that
+    reconnects with that number resumes after that event and misses nothing
+    that comes later in the batch. Every other client gets an empty list.
     """
-    if conn.speaks_positions or not conn.reads_conversation or not deliver:
+    if conn.speaks_positions or not conn.reads_conversation:
         return []
     positions: list[Position] = []
     position = dict(conn.position)
-    for item in deliver:
+    for item, send in zip(pending, covered, strict=True):
         if item.seq > position.get(item.source, -1):
             position[item.source] = item.seq
-        positions.append(dict(position))
-    return await buffer.mint_tickets(tenant, conn.agent_id, positions)
+        if send:
+            positions.append(dict(position))
+    if not positions:
+        return []
+    tickets = await buffer.mint_tickets(tenant, conn.agent_id, positions)
+    for ticket, position in zip(tickets, positions, strict=True):
+        conn.issued(ticket, position)
+    return tickets
 
 
 def _number_for(

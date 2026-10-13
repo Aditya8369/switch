@@ -172,10 +172,19 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("agent_id", "reader_id"),
         _agent_fk("agent_poll_positions"),
     )
-    # Starts at 2**48, above the agent event numbers a client may also hold,
-    # so the server can tell a ticket id from an event number by size. It
-    # stays below 2**53, past which a JavaScript client loses precision.
-    op.execute("CREATE SEQUENCE agent_position_ticket START WITH 281474976710656")
+    # Ticket ids run from (2097150 + 1) << 32, above every agent event number
+    # (an agent's numbers start at its boot number, at most 2097150 by the
+    # `agent_event_boot` sequence, shifted left 32 bits), to 2**53 - 1, the
+    # largest integer a JavaScript client holds exactly. The server tells a
+    # ticket id from an event number by size. Values are written out because a
+    # migration must not change when the code's constants do.
+    op.execute(
+        "CREATE SEQUENCE agent_position_ticket"
+        " START WITH 9007194959773696"
+        " MINVALUE 9007194959773696"
+        " MAXVALUE 9007199254740991"
+        " CYCLE"
+    )
     op.create_table(
         "agent_position_tickets",
         _tenant("agent_position_tickets"),

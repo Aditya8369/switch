@@ -53,7 +53,7 @@ def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:
 
 
 async def _beat(protocol: _Protocol, generation: int | None) -> Any:
-    return await _record_beat(protocol, AGENT_ID, CONN_ID, 0, generation)  # type: ignore[arg-type]
+    return _record_beat(protocol, AGENT_ID, CONN_ID, 0, generation)  # type: ignore[arg-type]
 
 
 async def test_a_superseded_tick_is_refused_as_a_takeover(

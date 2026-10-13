@@ -12,10 +12,15 @@ the room's log, and the per-room and all-rooms polls read it from there.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
 from sqlalchemy import delete, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol import event_buffer
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position
 from switch_core.bridges.agent.protocol.types import (
@@ -25,7 +30,14 @@ from switch_core.bridges.agent.protocol.types import (
     RoomJoinPayload,
     TaskDelegatePayload,
 )
-from switch_core.db.models import TENANT_ZERO_ID, Agent, AgentPollPosition
+from switch_core.db.models import (
+    AGENT_EVENT_BOOT_MAX,
+    TENANT_ZERO_ID,
+    TICKET_CEILING,
+    TICKET_FLOOR,
+    Agent,
+    AgentPollPosition,
+)
 from switch_core.db.session_scope import tenant_session
 from tests.db_buffer import db_buffer_on, say, seed_agent, seed_member
 
@@ -400,3 +412,66 @@ async def test_removing_agent_does_not_reuse_event_sequences(
     second = await _keep(buffer, _message(True))
     assert second > first
     assert second < 2**53
+
+
+def test_ticket_ids_sit_above_every_own_event_number() -> None:
+    """A client that holds one number sends back either an own event number or
+    a ticket id, and the server tells them apart by size. The largest own event
+    number, four billion events into the numbering of an agent first seen at
+    the last boot the boot sequence allows, is below the first ticket id, and
+    the last ticket id is still an integer a JavaScript client holds exactly."""
+    largest_own_event = (AGENT_EVENT_BOOT_MAX << 32) + 2**32 - 1
+
+    assert largest_own_event < TICKET_FLOOR
+    assert TICKET_CEILING == 2**53 - 1
+
+
+async def test_overlapping_polls_never_move_a_reader_back(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Two polls of the same reader can overlap, and the one that finishes
+    last may have read less. Its save is merged with the stored position,
+    source by source, so the reader is never moved back to events it was
+    already sent."""
+    room = f"r:{ROOM}"
+    await db_buffer._save_poll_position(
+        TENANT_ZERO_ID, AGENT, "legacy:all", {OWN_EVENTS: 5, room: 7}
+    )
+    await db_buffer._save_poll_position(
+        TENANT_ZERO_ID, AGENT, "legacy:all", {OWN_EVENTS: 3, room: 9, "r:other": 1}
+    )
+
+    assert await _poll_position(session_factory, "legacy:all") == {
+        OWN_EVENTS: 5,
+        room: 9,
+        "r:other": 1,
+    }
+
+
+async def test_a_write_that_fails_on_the_connection_is_retried(
+    db_buffer: EventBuffer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The consumer has moved past the room row by the time it stores the
+    agent's own event, so a write lost to a dropped connection or a pool
+    timeout would never be made. It is retried, and stored once."""
+    real = event_buffer.tenant_session
+    failures = [OperationalError("INSERT", {}, ConnectionError("connection reset"))]
+
+    @asynccontextmanager
+    async def flaky(factory: object, tenant_id: str) -> AsyncIterator[AsyncSession]:
+        if failures:
+            raise failures.pop()
+        async with real(factory, tenant_id) as session:
+            yield session
+
+    monkeypatch.setattr(event_buffer, "tenant_session", flaky)
+    monkeypatch.setattr(event_buffer, "ENQUEUE_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    seq = await db_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT, ROOM, _message(True), room_seq=0, message_key=None
+    )
+    monkeypatch.undo()
+
+    assert not failures
+    assert [
+        item.seq for item in await db_buffer.read_from(TENANT_ZERO_ID, AGENT, 0)
+    ] == [seq]

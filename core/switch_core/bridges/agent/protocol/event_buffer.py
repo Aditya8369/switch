@@ -51,8 +51,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import delete, func, literal, select, text
+from sqlalchemy import BigInteger, delete, func, literal, select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.protocol.message_events import (
@@ -69,6 +71,7 @@ from switch_core.bridges.agent.protocol.positions import (
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.clients.admin_messages import platform_replies_in_channel
+from switch_core.db.models import TICKET_FLOOR as TICKET_FLOOR
 from switch_core.db.models import (
     Agent,
     AgentEventDrop,
@@ -126,14 +129,29 @@ CONVERSATION_GROUP_GRACE_SECONDS = 5.0
 
 # Some clients can store only one integer as their place in the stream. Such a
 # client is sent a ticket: the id of a row in `agent_position_tickets` that
-# holds the full position. Ticket ids start here (the `agent_position_ticket`
-# sequence starts at this value), which is above the own event numbers the server
-# issues, so the server can tell a ticket from an own event number when a client
-# sends one back.
-TICKET_FLOOR = 2**48
+# holds the full position. Ticket ids start at `TICKET_FLOOR`, above every own
+# event number the server issues (`db/models.py` derives both from the range of
+# `agent_event_boot`), so the server can tell a ticket from an own event number
+# when a client sends one back.
 
 _READ = {"operation": "read"}
 _UNREAD = {"operation": "unread"}
+
+# The stored poll position moved forward by the new one, source by source,
+# never back: `positions.merged`, written in SQL so that it happens inside the
+# upsert and two overlapping saves cannot undo each other.
+_MERGED_POLL_POSITION = text(
+    "(SELECT jsonb_object_agg(source, GREATEST("
+    "COALESCE((agent_poll_positions.position ->> source)::bigint, -1), "
+    "COALESCE((excluded.position ->> source)::bigint, -1))) "
+    "FROM (SELECT jsonb_object_keys(agent_poll_positions.position) AS source "
+    "UNION SELECT jsonb_object_keys(excluded.position)) AS sources)"
+)
+
+# How long `enqueue` waits before each retry of a write that failed because the
+# database connection or the connection pool did. After the last, the error is
+# raised.
+ENQUEUE_RETRY_DELAYS = (0.5, 2.0, 5.0)
 
 # The reason sent when no unread count can be given, because nothing in
 # `agent_room_reads` says how far the agent had read the room. The count is
@@ -157,7 +175,12 @@ class CursorExpiredError(Exception):
     """
 
     def __init__(
-        self, agent_id: str, requested: int, oldest: int, rooms: tuple[str, ...]
+        self,
+        agent_id: str,
+        requested: int,
+        oldest: int,
+        rooms: tuple[str, ...],
+        resume_after: int,
     ) -> None:
         super().__init__(
             f"cursor {requested} for agent {agent_id} is older than what is "
@@ -168,6 +191,12 @@ class CursorExpiredError(Exception):
         self.requested = requested
         self.oldest = oldest
         self.rooms = rooms
+        # The own-events number a reader resumes after once it has been told
+        # about the gap: past every number `expire` deleted. It is not
+        # `oldest - 1`, because when retention has deleted all of the agent's
+        # own events there is no oldest one, and a reader moved to 0 would hit
+        # the same deleted numbers on its next read and be told again, forever.
+        self.resume_after = resume_after
 
 
 def is_notifiable(event: AgentEvent) -> bool:
@@ -352,7 +381,50 @@ class EventBuffer:
         own events have been deleted. `room_seq` and `message_key` identify the
         `messages` row the event came from, so that conversation reads and
         unread counts can recognise that row as already delivered.
+
+        A write that fails because the database connection or the pool did is
+        retried after each of `ENQUEUE_RETRY_DELAYS`. The consumer has already
+        moved past the room row by the time it calls this, so an event not
+        stored here is never stored.
         """
+        for delay in (*ENQUEUE_RETRY_DELAYS, None):
+            try:
+                seq = await self._store_own_event(
+                    tenant_id, agent_id, room_id, event, room_seq, message_key
+                )
+                break
+            except Exception as exc:
+                if delay is None or not _transient(exc):
+                    raise
+                logger.warning(
+                    "[EVENT-BUF] storing an own event for agent %s in room %s "
+                    "failed (%s); retrying in %ss",
+                    agent_id,
+                    room_id,
+                    type(exc).__name__,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        logger.debug(
+            "[EVENT-BUF] append agent=%s room=%s type=%s seq=%s",
+            agent_id,
+            room_id,
+            event.type,
+            seq,
+        )
+        self.ring(agent_id)
+        return seq
+
+    async def _store_own_event(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        room_id: str,
+        event: AgentEvent,
+        room_seq: int,
+        message_key: str | None,
+    ) -> int:
+        """Number one own event and insert it, in one transaction."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             claim = (
                 insert(AgentEventHead)
@@ -383,14 +455,6 @@ class EventBuffer:
                 )
             )
             await session.commit()
-        logger.debug(
-            "[EVENT-BUF] append agent=%s room=%s type=%s seq=%s",
-            agent_id,
-            room_id,
-            event.type,
-            seq,
-        )
-        self.ring(agent_id)
         return seq
 
     # ------------------------------------------------------------------
@@ -418,7 +482,6 @@ class EventBuffer:
         after `after_seq`.
         """
         started = time.perf_counter()
-        await self._check_cursor(tenant_id, agent_id, after_seq)
         query = (
             select(AgentEventRow)
             .where(AgentEventRow.agent_id == agent_id, AgentEventRow.seq > after_seq)
@@ -434,6 +497,14 @@ class EventBuffer:
             query = query.limit(limit)
         async with tenant_session(self._session_factory, tenant_id) as session:
             rows = (await session.scalars(query)).all()
+        # Checked after the read, not before. `expire` deletes rows and records
+        # what it deleted in one transaction. A deletion that commits before
+        # the read above is recorded by the time of this check, so a reader is
+        # never handed the events after a deleted one as if nothing were
+        # missing. Checked first, a deletion landing between the check and the
+        # read would go unreported. One landing after the read is reported
+        # too, though the rows were read: a spare gap, never a silent one.
+        await self.check_cursor(tenant_id, agent_id, after_seq)
         out = [
             BufferedEvent(
                 seq=row.seq,
@@ -493,28 +564,33 @@ class EventBuffer:
             notify.set()
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
-        """The number of the agent's newest own event, or `sequence_floor - 1` if the
-        agent has never had one. This is the agent's head."""
+        """The number of the agent's newest own event, or the number just
+        before its first one if it has none yet. This is the agent's head."""
+        query = select(AgentEventHead.last_seq).where(
+            AgentEventHead.agent_id == agent_id
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
-            last = await session.scalar(
-                select(AgentEventHead.last_seq).where(
-                    AgentEventHead.agent_id == agent_id
-                )
-            )
+            last = await session.scalar(query)
+            if last is None:
+                await self._start_numbering(session, {agent_id})
+                last = await session.scalar(query)
         return self.sequence_floor - 1 if last is None else last
 
     async def heads(self, tenant_id: str, agent_ids: set[str]) -> dict[str, int]:
         """`head` for several agents in one query, for a connection that
         serves many agents."""
+
+        def query(ids: set[str]) -> Any:
+            return select(AgentEventHead.agent_id, AgentEventHead.last_seq).where(
+                AgentEventHead.agent_id.in_(ids)
+            )
+
         async with tenant_session(self._session_factory, tenant_id) as session:
-            rows = (
-                await session.execute(
-                    select(AgentEventHead.agent_id, AgentEventHead.last_seq).where(
-                        AgentEventHead.agent_id.in_(agent_ids)
-                    )
-                )
-            ).all()
-        found = {agent_id: last for agent_id, last in rows}
+            found = dict((await session.execute(query(agent_ids))).tuples().all())
+            missing = agent_ids - found.keys()
+            if missing:
+                await self._start_numbering(session, missing)
+                found.update((await session.execute(query(missing))).tuples().all())
         return {
             agent_id: found.get(agent_id, self.sequence_floor - 1)
             for agent_id in agent_ids
@@ -526,13 +602,50 @@ class EventBuffer:
         A number below it was handed out before the agent had any own events in
         `agent_events`, so nothing the server holds corresponds to it.
         """
+        query = select(AgentEventHead.first_seq).where(
+            AgentEventHead.agent_id == agent_id
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
-            first = await session.scalar(
-                select(AgentEventHead.first_seq).where(
-                    AgentEventHead.agent_id == agent_id
-                )
-            )
+            first = await session.scalar(query)
+            if first is None:
+                await self._start_numbering(session, {agent_id})
+                first = await session.scalar(query)
         return self.sequence_floor if first is None else first
+
+    async def _start_numbering(
+        self, session: AsyncSession, agent_ids: set[str]
+    ) -> None:
+        """Give each agent that has no row in `agent_event_heads` one, numbering
+        its own events from this process's `sequence_floor`.
+
+        Called the first time a process reads an agent's head, not only when
+        the first own event is written. Processes started at different boots
+        have different floors. If each answered from its own floor until the
+        first event was written, a reader placed at the head one process
+        reported could find the first event numbered below it by another
+        process, and never receive it. Once the row exists, every process
+        numbers the agent from it. The row is selected from `agents`, so an
+        agent deleted meanwhile gets none.
+        """
+        await session.execute(
+            insert(AgentEventHead)
+            .from_select(
+                [
+                    AgentEventHead.tenant_id,
+                    AgentEventHead.agent_id,
+                    AgentEventHead.first_seq,
+                    AgentEventHead.last_seq,
+                ],
+                select(
+                    Agent.tenant_id,
+                    Agent.id,
+                    literal(self.sequence_floor, BigInteger),
+                    literal(self.sequence_floor - 1, BigInteger),
+                ).where(Agent.id.in_(agent_ids)),
+            )
+            .on_conflict_do_nothing(index_elements=[AgentEventHead.agent_id])
+        )
+        await session.commit()
 
     async def oldest_retained(self, tenant_id: str, agent_id: str) -> int:
         """The number of the agent's oldest own event still in `agent_events`, or 0
@@ -841,7 +954,6 @@ class EventBuffer:
 
         events: list[BufferedEvent] = []
         through = 0
-        rendered_groups: set[str] = set()
         for row in rows:
             if held_from is not None and row.seq >= held_from:
                 break
@@ -871,9 +983,14 @@ class EventBuffer:
                     listening=False,
                 )
             elif isinstance(inbound, InboundMedia) and key in groups:
-                if key in rendered_groups:
+                # A multi-file message goes out once, at its last file, which is
+                # the room row its event is numbered by. A message posted
+                # between its files goes out before it, so a room's events go
+                # out in rising order. Were the group sent at its first file, a
+                # client that disconnected right after it would hold a place
+                # past the message in between and never receive that message.
+                if row.seq != max(part.seq for _, _, part in groups[key]):
                     continue
-                rendered_groups.add(key)
                 event, seq = self._grouped_media(
                     room, inbound, groups[key], attachments
                 )
@@ -1510,7 +1627,7 @@ class EventBuffer:
                 exc.requested,
                 exc.oldest,
             )
-            after = max(exc.oldest - 1, 0)
+            after = exc.resume_after
             own_events = await self.read_from(
                 tenant_id,
                 agent_id,
@@ -1557,8 +1674,7 @@ class EventBuffer:
             )
         position: Position = dict(stored) if stored is not None else {}
         if OWN_EVENTS not in position:
-            oldest = await self.oldest_retained(tenant_id, agent_id)
-            position[OWN_EVENTS] = max(oldest - 1, 0)
+            position[OWN_EVENTS] = await self.before_retained(tenant_id, agent_id)
         missing = {room_id for room_id in rooms if room_source(room_id) not in position}
         if missing:
             starts = await self.room_window_starts(tenant_id, missing)
@@ -1571,7 +1687,11 @@ class EventBuffer:
     ) -> None:
         # The row is inserted from a SELECT on `agents`, so if the agent was
         # deleted while the poll was in flight, nothing is saved and the insert
-        # does not fail on the foreign key.
+        # does not fail on the foreign key. An existing row is merged with the
+        # new position, source by source, rather than replaced: two polls of
+        # the same reader can overlap, and the one that finishes last may have
+        # read less, so replacing would move the reader back and deliver the
+        # same events again.
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
                 insert(AgentPollPosition)
@@ -1594,7 +1714,7 @@ class EventBuffer:
                         AgentPollPosition.agent_id,
                         AgentPollPosition.reader_id,
                     ],
-                    set_={"position": position},
+                    set_={"position": _MERGED_POLL_POSITION},
                 )
             )
             await session.commit()
@@ -1632,14 +1752,46 @@ class EventBuffer:
         )
         registry.observe(AGENT_BUFFER_SCANNED, operation, scanned)
 
-    async def _check_cursor(
-        self, tenant_id: str, agent_id: str, after_seq: int
-    ) -> None:
+    async def check_cursor(self, tenant_id: str, agent_id: str, after_seq: int) -> None:
+        """Raise `CursorExpiredError` if `expire` has deleted any of the agent's
+        own events numbered after `after_seq`, naming the rooms they were in
+        and the number to resume after."""
         rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
         if not rooms:
             return
         oldest = await self.oldest_retained(tenant_id, agent_id)
-        raise CursorExpiredError(agent_id, after_seq, oldest, rooms)
+        resume_after = await self.before_retained(tenant_id, agent_id)
+        raise CursorExpiredError(agent_id, after_seq, oldest, rooms, resume_after)
+
+    async def before_retained(self, tenant_id: str, agent_id: str) -> int:
+        """The own-events number just before the agent's oldest one still kept,
+        and past every number `expire` deleted.
+
+        `expire` deletes an agent's own events oldest first, so everything it
+        deleted is numbered below everything it kept. When it has deleted all
+        of them, this is the highest number it deleted rather than 0: a reader
+        placed at 0 would find the deleted numbers ahead of it on every read.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            oldest = await session.scalar(
+                select(func.min(AgentEventRow.seq)).where(
+                    AgentEventRow.agent_id == agent_id
+                )
+            )
+            dropped_through = await session.scalar(
+                select(func.max(AgentEventDrop.dropped_through)).where(
+                    AgentEventDrop.agent_id == agent_id
+                )
+            )
+        return max(dropped_through or 0, (oldest or 0) - 1, 0)
+
+
+def _transient(exc: BaseException) -> bool:
+    """Whether a failed database call is worth retrying: the connection or the
+    connection pool failed, not the statement itself."""
+    if isinstance(exc, OperationalError | InterfaceError | PoolTimeoutError):
+        return True
+    return isinstance(exc, DBAPIError) and exc.connection_invalidated
 
 
 def _counting(agent_id: str, room_id: str, *, baseline: Any, occupant: Reader) -> Any:

@@ -25,8 +25,9 @@ from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.agent.protocol.event_buffer import BufferedEvent, EventBuffer
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.db.models import TENANT_ZERO_ID, Agent
+from switch_core.db.models import TENANT_ZERO_ID, Agent, Message, MessageAttachment
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.message_store import MessageStore
 from tests.db_buffer import db_buffer_on, say, seed_member, seed_room
 
 AGENT = "agent-1"
@@ -137,6 +138,50 @@ async def test_a_file_that_arrives_after_its_group_was_delivered_is_still_read(
     read = await buffer.read_conversation(TENANT_ZERO_ID, AGENT, {ROOM: 0}, limit=100)
 
     assert _bodies(read.events) == ["late"]
+
+
+async def test_a_message_posted_between_the_files_of_a_group_goes_out_first(
+    db_buffer: EventBuffer, session_factory: SessionFactory
+) -> None:
+    """A multi-file message goes out once, at its last file. A message posted
+    between its files goes out before it, so the room's events go out in rising
+    order and a client that disconnects after the group has not been moved past
+    the message in between."""
+    buffer = db_buffer
+    long_ago = datetime.now(UTC) - timedelta(minutes=1)
+
+    async def file(index: int, name: str) -> Message:
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            row = await MessageStore().create(
+                session,
+                Message(
+                    room_id=ROOM,
+                    transport_event_id=f"$part{index}",
+                    sender_id="@alice:test",
+                    sender_name="Alice",
+                    event_type="m.room.message",
+                    msgtype="m.file",
+                    body=name,
+                    formatted_body=None,
+                    content={
+                        "body": name,
+                        ATTACHMENT_GROUP_KEY: {"id": "g1", "index": index, "total": 2},
+                    },
+                    sent_at=long_ago,
+                ),
+                [MessageAttachment(uri=f"mxc://s/{name}", filename=name)],
+            )
+            await session.commit()
+        return row
+
+    await file(0, "one.pdf")
+    between = await say(session_factory, ROOM, "in between", sent_at=long_ago)
+    last = await file(1, "two.pdf")
+
+    read = await buffer.read_conversation(TENANT_ZERO_ID, AGENT, {ROOM: 0}, limit=100)
+
+    assert [item.seq for item in read.events] == [between.seq, last.seq]
+    assert _bodies(read.events)[0] == "in between"
 
 
 async def test_a_place_past_the_end_of_a_room_is_brought_back_to_it(

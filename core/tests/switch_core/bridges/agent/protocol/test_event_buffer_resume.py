@@ -224,6 +224,59 @@ async def test_a_quiet_agent_stops_serving_an_event_when_its_window_ends(
         await buf.read_from(TENANT_ZERO_ID, AGENT, 0)
 
 
+async def test_a_reader_resumes_past_everything_expiry_deleted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """When retention has deleted all of the agent's own events, there is no
+    oldest one to resume before. The error names a place past every deleted
+    number, and a reader moved there reads nothing rather than being told
+    about the same deletion again."""
+    buf = db_buffer_on(session_factory, retention_seconds=60)
+    first = await _keep(buf, _message("one"))
+    last = await _keep(buf, _message("two"))
+    await age_events(session_factory, AGENT, seconds=61)
+    await buf.expire(TENANT_ZERO_ID)
+
+    with pytest.raises(CursorExpiredError) as excinfo:
+        await buf.read_from(TENANT_ZERO_ID, AGENT, first - 1)
+
+    assert excinfo.value.oldest == 0
+    assert excinfo.value.resume_after == last
+    assert await buf.read_from(TENANT_ZERO_ID, AGENT, excinfo.value.resume_after) == []
+
+
+async def test_a_long_poll_after_everything_expired_returns_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A long-polling client cannot be told about a gap. Once retention has
+    deleted everything after its place, its poll moves past what was deleted
+    and returns what is left, here nothing, instead of failing."""
+    buf = db_buffer_on(session_factory, retention_seconds=60)
+    assert await buf.poll(TENANT_ZERO_ID, AGENT, rooms={ROOM_A}, timeout=0) == []
+    await _keep(buf, _message("only"))
+    await age_events(session_factory, AGENT, seconds=61)
+    await buf.expire(TENANT_ZERO_ID)
+
+    assert await buf.poll(TENANT_ZERO_ID, AGENT, rooms={ROOM_A}, timeout=0) == []
+
+
+async def test_processes_of_different_boots_number_an_agent_alike(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A process reads the head of an agent that has no own events yet, and a
+    process started at an earlier boot then writes the agent's first one. The
+    event is numbered after the head the first process reported, so a reader
+    placed at that head still receives it."""
+    newer = db_buffer_on(session_factory, sequence_base=11 << 32)
+    older = db_buffer_on(session_factory, sequence_base=10 << 32)
+
+    head = await newer.head(TENANT_ZERO_ID, AGENT)
+    first = await _keep(older, _message("first"))
+
+    assert first == head + 1
+    assert _bodies(await newer.read_from(TENANT_ZERO_ID, AGENT, head)) == ["first"]
+
+
 async def test_consuming_does_not_discard_events_for_other_readers(
     db_buffer: EventBuffer,
 ) -> None:

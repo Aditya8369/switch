@@ -49,8 +49,22 @@ from switch_core.db.session_activity_notify_ddl import (
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
 
+#: The highest boot number `agent_event_boot` hands out. An agent's own event
+#: numbers start at the boot number shifted left 32 bits, so they stay below
+#: `(AGENT_EVENT_BOOT_MAX + 1) << 32`, the first ticket id (`TICKET_FLOOR`).
+AGENT_EVENT_BOOT_MAX = 2097150
+
+#: The first id of `agent_position_tickets`. Every own event number is below it
+#: (see `AGENT_EVENT_BOOT_MAX`), and every ticket id from here to
+#: `TICKET_CEILING` is an integer a JavaScript client holds exactly.
+TICKET_FLOOR = (AGENT_EVENT_BOOT_MAX + 1) << 32
+TICKET_CEILING = 2**53 - 1
+
 agent_event_boot_sequence = Sequence(
-    "agent_event_boot", metadata=Base.metadata, maxvalue=2097150, cycle=False
+    "agent_event_boot",
+    metadata=Base.metadata,
+    maxvalue=AGENT_EVENT_BOOT_MAX,
+    cycle=False,
 )
 
 
@@ -2414,10 +2428,14 @@ class AgentEventHead(TenantScoped, Base):
     receive it.
 
     `first_seq` is the number of the agent's first event. It is derived from
-    the boot number of the process that wrote that event (`agent_event_boot`,
-    shifted left 32 bits), which puts it above every number an earlier server
-    process could have given a client. A client resuming from such a number
-    is therefore below everything stored here and is told it has a gap.
+    the boot number (`agent_event_boot`, shifted left 32 bits) of the process
+    that first read the agent's head or wrote its first event, whichever came
+    first, which puts it above every number an earlier server process could
+    have given a client. A client resuming from such a number is therefore
+    below everything stored here and is told it has a gap. The row is written
+    on that first read so that every process numbers the agent alike: before
+    it exists, processes of different boots would each answer from their own
+    boot number.
     """
 
     __tablename__ = "agent_event_heads"
@@ -2543,13 +2561,17 @@ class AgentPollPosition(TenantScoped, Base):
 agent_position_ticket_sequence = Sequence(
     "agent_position_ticket",
     metadata=Base.metadata,
-    # Ticket ids start at 2**48 (`TICKET_FLOOR`), above the agent event numbers
-    # (`agent_events.seq`) a client may also hold. The server can therefore
-    # tell a ticket id from an event number by size alone, and a client that
-    # keeps the highest number it has seen never discards a ticket as older.
-    # 2**48 is also well below 2**53, past which a JavaScript client can no
-    # longer hold an integer exactly.
-    start=2**48,
+    # Ticket ids run from `TICKET_FLOOR` to `TICKET_CEILING`, above every own
+    # event number (`agent_events.seq`) a client may also hold. The server
+    # tells a ticket id from an own event number by size alone, and a client
+    # that keeps the highest number it has seen never discards a ticket as
+    # older. The range holds about four billion ids. The sequence starts again
+    # at the floor when it runs out, which reuses only ids whose tickets the
+    # retention loop deleted long before, since tickets last a day.
+    start=TICKET_FLOOR,
+    minvalue=TICKET_FLOOR,
+    maxvalue=TICKET_CEILING,
+    cycle=True,
 )
 
 

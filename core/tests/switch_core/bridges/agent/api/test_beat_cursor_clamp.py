@@ -1,5 +1,5 @@
-"""A heartbeat's place in the agent's own events is clamped to their head
-before anything adopts it.
+"""A heartbeat's place is lowered to what the server has sent on the
+connection before anything adopts it.
 
 A client can beat a number from some other history: a restored database, or
 another server, where the agent's sequence had reached further than it has
@@ -11,9 +11,10 @@ The result is silent. The connection is claimed, heartbeats succeed and posting
 works, so the session looks healthy while every event up to the stale number is
 skipped.
 
-The clamp is on the agent's own events (`s`), however a client reports how far
-it has read them: inside the position a client of revision 9 holds, or as the
-one number an older client reading only its own events sends.
+The bound is what this server has sent on the connection, which it keeps in
+memory, so a beat costs no database query. It applies however a client reports
+how far it has read: inside the position a client of revision 9 holds, as the
+one number an older client reading only its own events sends, or as a ticket.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import TICKET_FLOOR, EventBuffer
 from switch_core.bridges.agent.protocol.positions import (
     OWN_EVENTS,
     Position,
@@ -41,7 +42,7 @@ from switch_core.bridges.agent.protocol.positions import (
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
-from tests.db_buffer import db_buffer_on, say, seed_agent, seed_room
+from tests.db_buffer import db_buffer_on, seed_agent
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
@@ -119,7 +120,7 @@ async def _beat(
     cursor = seq
     if reports == POSITION:
         position, cursor = {OWN_EVENTS: seq}, 0
-    return await _record_beat(
+    return _record_beat(
         protocol,  # type: ignore[arg-type]
         AGENT_ID,
         CONN_ID,
@@ -130,10 +131,10 @@ async def _beat(
 
 
 @pytest.mark.parametrize("reports", [POSITION, ONE_NUMBER])
-async def test_a_number_past_the_head_is_pulled_back_to_it(
+async def test_a_number_past_what_was_sent_is_pulled_back_to_it(
     db_buffer: EventBuffer, reports: str
 ) -> None:
-    # The agent has no events here (head 0) and the client is beating a
+    # Nothing has been sent on this connection and the client is beating a
     # sequence it reached against some other history.
     protocol = _Protocol(db_buffer)
     conn = _connect(protocol, reports=reports)
@@ -165,17 +166,62 @@ async def test_the_next_event_after_a_foreign_number_is_still_delivered(
 
 
 @pytest.mark.parametrize("reports", [POSITION, ONE_NUMBER])
-async def test_a_number_within_the_buffer_is_left_alone(
+async def test_a_number_within_what_was_sent_never_moves_the_place_back(
     db_buffer: EventBuffer, reports: str
 ) -> None:
+    """A beat reports what the client has handled, which lags what the stream
+    has written out. The connection keeps the further of the two."""
     protocol = _Protocol(db_buffer)
     conn = _connect(protocol, reports=reports)
     for index in range(3):
         await _addressed(protocol.event_buffer, index)
+    conn.position[OWN_EVENTS] = 3  # as the stream records once it has sent all three
 
     await _beat(protocol, 2, reports)
 
-    assert conn.position[OWN_EVENTS] == 2
+    assert conn.position[OWN_EVENTS] == 3
+
+
+async def test_a_beat_reads_nothing_from_the_database() -> None:
+    """Beats arrive every few seconds from every client, and a burst of them
+    follows any restart. They are answered from memory."""
+    protocol = _Protocol(event_buffer=None)  # type: ignore[arg-type]
+    conn = _connect(protocol)
+    conn.position = {OWN_EVENTS: 4, room_source(ROOM_ID): 7}
+
+    beaten = await _beat(protocol, 9)
+
+    assert beaten.position == {OWN_EVENTS: 4, room_source(ROOM_ID): 7}
+
+
+async def test_a_ticket_is_read_from_what_was_sent_on_the_connection() -> None:
+    """A client that holds one number but reads the conversation beats with the
+    last ticket it was sent. The ticket is read from the connection, not from
+    `agent_position_tickets`, and one the connection never sent is ignored."""
+    protocol = _Protocol(event_buffer=None)  # type: ignore[arg-type]
+    conn = protocol.connections.open(
+        agent_id=AGENT_ID,
+        connection_id=CONN_ID,
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        position={OWN_EVENTS: 4, room_source(ROOM_ID): 7},
+        declaration=ClientDeclaration(speaks=POSITIONS_PROTOCOL_REVISION - 1),
+        expected_generation=None,
+    )
+    conn.stream_attached = True
+    conn.issued(TICKET_FLOOR + 1, {OWN_EVENTS: 4, room_source(ROOM_ID): 7})
+
+    for ticket in (TICKET_FLOOR + 1, TICKET_FLOOR + 99):
+        _record_beat(
+            protocol,  # type: ignore[arg-type]
+            AGENT_ID,
+            CONN_ID,
+            ticket,
+            conn.stream_generation,
+        )
+
+    assert conn.position == {OWN_EVENTS: 4, room_source(ROOM_ID): 7}
 
 
 async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position(
@@ -193,28 +239,27 @@ async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position(
     )[0].seq == sequence
 
 
-async def test_a_place_past_a_rooms_end_is_pulled_back_to_it(
-    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+async def test_a_room_place_past_what_was_sent_is_pulled_back_to_it(
+    db_buffer: EventBuffer,
 ) -> None:
-    """The same clamp, for a client reading a room's conversation: a place the
-    room's log does not reach would pass over that many of its next messages."""
+    """The same bound, for a client reading a room's conversation: a place
+    beyond what the connection was sent in that room would pass over that many
+    of the room's next messages, and a room the connection has no place in is
+    not added by a beat."""
     protocol = _Protocol(db_buffer)
-    await seed_room(session_factory, ROOM_ID)
-    await say(session_factory, ROOM_ID, "one")
-    await say(session_factory, ROOM_ID, "two")
     conn = _connect(protocol)
-    current = conn.stream_generation
+    conn.position[room_source(ROOM_ID)] = 2
 
-    await _record_beat(
+    _record_beat(
         protocol,  # type: ignore[arg-type]
         AGENT_ID,
         CONN_ID,
         0,
-        current,
-        {OWN_EVENTS: 0, room_source(ROOM_ID): 9},
+        conn.stream_generation,
+        {OWN_EVENTS: 0, room_source(ROOM_ID): 9, room_source("elsewhere"): 5},
     )
 
-    assert conn.position[room_source(ROOM_ID)] == 2
+    assert conn.position == {OWN_EVENTS: 0, room_source(ROOM_ID): 2}
 
 
 async def test_a_heartbeat_with_something_that_is_not_a_position_is_refused(

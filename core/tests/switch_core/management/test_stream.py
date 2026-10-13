@@ -515,8 +515,9 @@ class TestTheConnection:
         assert beaten.status_code == 200, beaten.text
         assert beaten.json() == {"agents": [agent_id]}
         assert live
-        # Confirmed where a reattached stream resumes: clamped to the agent's
-        # head, and nothing for an agent that is not this controller's.
+        # Confirmed where a reattached stream resumes: lowered to what this
+        # connection has sent the agent, and nothing for an agent that is not
+        # this controller's.
         assert conn is not None
         assert conn.resume_cursors == {agent_id: 1}
         assert not presence.is_live(agent_id)

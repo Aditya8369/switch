@@ -257,6 +257,7 @@ class _ControllerStream:
             # Bound here again later, it starts at its head: what it missed in
             # between was never this controller's.
             conn.resume_cursors.pop(agent_id, None)
+            conn.sent_cursors.pop(agent_id, None)
             if attached.unsubscribe is not None:
                 attached.unsubscribe()
             frames.append(
@@ -307,25 +308,23 @@ class _ControllerStream:
                         "the restart are gone in every room — re-read room context",
                     }
                 )
-            lost = await self._buffer.rooms_dropped_after(
-                self._tenant, agent_id, cursor
-            )
-            if lost:
-                oldest = await self._buffer.oldest_retained(self._tenant, agent_id)
-                resumed_at = max(oldest - 1, 0)
+            try:
+                await self._buffer.check_cursor(self._tenant, agent_id, cursor)
+            except CursorExpiredError as exc:
                 gaps.append(
                     {
                         "agent_id": agent_id,
                         "from_sequence": cursor,
-                        "resumed_at": resumed_at,
-                        "rooms": list(lost),
+                        "resumed_at": exc.resume_after,
+                        "rooms": list(exc.rooms),
                         "all_rooms": False,
                         "reason": "events older than the retention window were "
                         "dropped; re-read room context",
                     }
                 )
-                cursor = resumed_at
+                cursor = exc.resume_after
             conn.resume_cursors[agent_id] = cursor
+            conn.sent_cursors[agent_id] = cursor
             attached = _Attached(
                 agent_id=agent_id,
                 reader_id=self._presence.holder_id(binding),
@@ -408,8 +407,9 @@ class _ControllerStream:
                 through_seq=bound,
             )
         except CursorExpiredError as exc:
-            resumed_at = max(exc.oldest - 1, 0)
+            resumed_at = exc.resume_after
             attached.cursor = resumed_at
+            self._conn.sent_cursors[agent_id] = resumed_at
             return [
                 frame(
                     "agent.gap",
@@ -428,6 +428,7 @@ class _ControllerStream:
             # agent left takes its events with it — are passed, or every pass
             # would find work it can never read and spin.
             attached.cursor = max(attached.cursor, bound)
+            self._conn.sent_cursors[agent_id] = attached.cursor
             return []
         frames: list[ControllerFrame] = []
         for item in pending:
@@ -439,6 +440,7 @@ class _ControllerStream:
                 )
                 data["missed"] = {"count": unread.count, "reason": unread.reason}
             attached.cursor = item.seq
+            self._conn.sent_cursors[agent_id] = item.seq
             frames.append(
                 frame(
                     "agent.event",

@@ -454,16 +454,16 @@ async def record_beat(
         binding = presence.binding(agent_id)
         if agent_id not in agents or binding is None:
             continue
+        sent = conn.sent_cursors.get(agent_id)
+        if sent is None:
+            continue
         # The controller reports how far it has read each agent's own events.
-        # A number past the agent's newest own event can only come from a
-        # database that has since been restored from a backup, or from another
-        # server. Keeping it would make the next read start past events the
-        # agent never received, so it is lowered to the newest one, as an
-        # agent's own beat is.
-        confirmed = min(
-            cursor, await protocol.event_buffer.head(principal.tenant_id, agent_id)
-        )
-        presence.resume_from(conn, agent_id, confirmed)
+        # It cannot have read further than this connection has sent it. A
+        # larger number comes from another history, a database restored from a
+        # backup or another server, and keeping it would make the next stream
+        # on this connection resume past events the agent never received. The
+        # bound is kept in memory, so a beat costs no database query.
+        presence.resume_from(conn, agent_id, min(cursor, sent))
     return sorted(agents)
 
 

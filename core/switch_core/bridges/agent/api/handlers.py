@@ -121,7 +121,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Agent, Task, require_tenant_id
+from switch_core.db.models import Agent, Task
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
@@ -1101,7 +1101,7 @@ async def _open_event_stream(
     )
 
 
-async def _record_beat(
+def _record_beat(
     protocol: AgentCore,
     agent_id: str,
     connection_id: str,
@@ -1115,38 +1115,39 @@ async def _record_beat(
     event-stream client. A client on agent-protocol revision 9 reports its
     position. An older client reports one integer, `cursor`. On a connection
     that reads only the agent's own events, the integer is their `seq`. On a
-    connection that also reads the room conversation, it is a ticket id, and
-    the position is looked up in `agent_position_tickets`; a smaller number
-    there cannot be mapped to a position and is ignored.
+    connection that also reads the room conversation, it is a ticket id, read
+    from the tickets recently sent on this connection; an older one, or a
+    smaller number, cannot be mapped to a position and is ignored.
 
-    Each entry of the reported position is lowered to the newest row that
-    exists: `s` to the end of the agent's own events, and each `r:<room_id>` to
-    the newest `messages.seq` in that room. A client can report a number from
-    another history, such as a database restored from backup or a different
-    server. `beat()` never moves a position backwards, so keeping the larger
-    number would make the server skip every event up to it without telling the
-    client.
+    Each entry of the reported position is lowered to what this server has
+    sent on the connection (`conn.position`), and an entry for a source the
+    connection has no place in is dropped. A client cannot have read further
+    than it was sent. A larger number comes from another history, such as a
+    database restored from backup or a different server, and `beat()` never
+    moves a position backwards, so keeping it would make the server skip
+    every event up to it without telling the client. The bound is kept in
+    memory, so a beat costs no database query.
 
     Raises the registry's refusal when the connection is no longer this
     client's to beat for: another socket took it over (`taken_over`), or it
     has no stream attached (`no_stream`), or it is gone.
     """
-    tenant_id = require_tenant_id()
     conn = protocol.connections.require(agent_id, connection_id)
     if position is not None:
         reported = dict(position)
     elif conn.reads_conversation and cursor >= TICKET_FLOOR:
-        reported = await protocol.event_buffer.ticket(tenant_id, agent_id, cursor) or {}
+        reported = dict(conn.issued_tickets.get(cursor, {}))
     elif conn.reads_conversation:
         reported = {}
     else:
         reported = {OWN_EVENTS: cursor}
-    if OWN_EVENTS in reported:
-        reported[OWN_EVENTS] = min(
-            reported[OWN_EVENTS], await protocol.event_buffer.head(tenant_id, agent_id)
-        )
-    reported, _ = await protocol.event_buffer.within_rooms(tenant_id, reported)
-    return protocol.connections.beat(agent_id, connection_id, reported, generation)
+    sent = conn.position
+    within = {
+        source: min(seq, sent[source])
+        for source, seq in reported.items()
+        if source in sent
+    }
+    return protocol.connections.beat(agent_id, connection_id, within, generation)
 
 
 @router.post("/{agent_id}/connection/beat")
@@ -1171,7 +1172,7 @@ async def connection_beat(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        conn = await _record_beat(
+        conn = _record_beat(
             protocol,
             agent.id,
             req.connection_id,
@@ -1390,7 +1391,7 @@ async def _receive_pongs(
                 # the 422 that `POST /connection/beat` returns.
                 position = {}
         try:
-            await _record_beat(
+            _record_beat(
                 protocol, agent_id, connection_id, cursor, generation, position
             )
         except ConnectionError_ as refusal:
