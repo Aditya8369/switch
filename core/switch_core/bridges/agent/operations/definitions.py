@@ -1714,7 +1714,8 @@ async def create_room_from_yaml(
     yaml: str,
     inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Provision a room, or a group of rooms, from a YAML template.
+    """Provision a room, or a group of rooms, from a YAML template; a
+    ``version: 2`` document creates its agents too, as ``run_template`` does.
 
     The agent-side mirror of the gateway's ``POST /rooms/from-yaml``: the
     document is parsed, its ``params:`` resolved from ``inputs``, and the
@@ -1745,6 +1746,8 @@ async def create_room_from_yaml(
         rooms: [...], errors: [...]}``.
     """
     async with _refusals_reported("create_room_from_yaml"):
+        if is_v2_text(yaml):
+            return await _run_document(yaml, inputs, {}, template_name=None)
         return await _provision_as_agent(
             yaml, inputs, template_name=None, new_agents=[], room_addressing={}
         )
@@ -2074,32 +2077,46 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        rooms_yaml = protocol.room_yaml_service()
-        if is_v2_text(content):
-            # A version 2 condition may read a messaging app or room param
-            # whose value is the first candidate the server has.
-            inputs = await rooms_yaml.resolve_defaults(content, inputs)
-        builtins = await rooms_yaml.builtins_for(
-            user_id=acting.owner.id,
-            name=acting.owner.name,
-            email=acting.owner.email,
-            text=content,
-            inputs=inputs,
-        )
-        plan = plan_template(
-            content,
-            agents or {},
-            inputs or {},
-            builtins=builtins,
-            machines=await _owners_machines(),
-        )
-        return await _provision_as_agent(
-            plan.document,
-            plan.inputs or None,
-            template_name=name,
-            new_agents=plan.new_agents,
-            room_addressing=plan.room_addressing,
-        )
+        return await _run_document(content, inputs, agents or {}, template_name=name)
+
+
+async def _run_document(
+    content: str,
+    inputs: dict[str, Any] | None,
+    filled: dict[str, str],
+    *,
+    template_name: str | None,
+) -> dict[str, Any]:
+    """Work a template's agents and rooms out of its document and create
+    them, as the calling agent."""
+    protocol = get_protocol()
+    acting = await _acting_for()
+    rooms_yaml = protocol.room_yaml_service()
+    if is_v2_text(content):
+        # A version 2 condition may read a messaging app or room param
+        # whose value is the first candidate the server has.
+        inputs = await rooms_yaml.resolve_defaults(content, inputs)
+    builtins = await rooms_yaml.builtins_for(
+        user_id=acting.owner.id,
+        name=acting.owner.name,
+        email=acting.owner.email,
+        text=content,
+        inputs=inputs,
+    )
+    plan = plan_template(
+        content,
+        filled,
+        inputs or {},
+        builtins=builtins,
+        machines=await _owners_machines(),
+    )
+    return await _provision_as_agent(
+        plan.document,
+        plan.inputs or None,
+        template_name=template_name,
+        new_agents=plan.new_agents,
+        room_addressing=plan.room_addressing,
+    )
 
 
 async def _owners_machines() -> list[dict[str, Any]] | None:

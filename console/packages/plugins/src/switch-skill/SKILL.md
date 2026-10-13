@@ -470,7 +470,9 @@ carrying a display name addresses no one.
 
 Templates saved on the workspace can be found, read, run and saved by you.
 Before writing one, call **`get_template_guide`**: the template language and
-the schema the server checks documents against.
+the schema the server checks documents against. Write new templates in its
+version 2: every resource under `resources:` with a key and a `type`,
+resources naming each other by key, and `if:` as the one conditional.
 
 - **`list_templates`**: what you can use, every shared template plus your
   owner's private ones. Each row says who saved it and `can_edit`.
