@@ -7,13 +7,18 @@ import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
 import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
-import { chatAgentLabel } from '@shared/core/chats/chats';
+import {
+  chatAgentLabel,
+  isSessionStartingNotice,
+  liveSessionStartingNotices,
+} from '@shared/core/chats/chats';
 import type { TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
+import { WorkLogRow } from '../ui/work-log';
 import { ChatActivityBlock } from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
 
@@ -122,6 +127,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   const agentOf = (agentId: string | null) => agents.find((agent) => agent.id === agentId) ?? null;
   const find = (messageId: string) => timeline.byId(messageId);
   const myUserId = chatsStore.userId;
+  const liveNotices = liveSessionStartingNotices(timeline.messages);
   let previous: Date | null = null;
   return (
     <div className="flex flex-col gap-5">
@@ -138,6 +144,8 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         </div>
       )}
       {timeline.messages.map((message) => {
+        const notice = isSessionStartingNotice(message);
+        if (notice && !liveNotices.has(message.messageId)) return null;
         const sentAt = new Date(message.sentAt);
         const separator =
           previous === null || sentAt.getTime() - previous.getTime() > GROUP_GAP_MS ? (
@@ -151,7 +159,27 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         return (
           <Fragment key={message.messageId}>
             {separator}
-            {message.sender.kind === 'human' && mine ? (
+            {notice ? (
+              <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
+                <AgentAvatar
+                  name={agent ? chatAgentLabel(agent) : message.sender.name}
+                  iconUrl={agent?.iconUrl ?? null}
+                  size={28}
+                  className="mt-0.5"
+                />
+                <div className="flex min-w-0 flex-1 flex-col pt-0.5">
+                  <WorkLogRow
+                    icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
+                    label={
+                      agents.length > 1
+                        ? `${message.sender.name} is starting a session…`
+                        : 'Starting a session…'
+                    }
+                    active
+                  />
+                </div>
+              </div>
+            ) : message.sender.kind === 'human' && mine ? (
               <div
                 id={messageAnchorId(message.messageId)}
                 className="group/row flex flex-col items-end gap-1"
