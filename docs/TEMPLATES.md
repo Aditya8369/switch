@@ -560,7 +560,9 @@ The block is the Console's; the server ignores it.
 instead of blocks whose meaning comes from where they sit. Version 1
 documents keep working unchanged. A version 2 template creates managed
 agents, so it needs a server that runs agent management.
-`examples/agent-templates/switch-expert.v2.template.yaml` is a complete one.
+The bundled Switch expert, `switch-expert/template.yaml`, is a complete one;
+`examples/agent-templates/switch-expert.v2.template.yaml` is the same with its
+instructions inline, to paste into the Use page.
 
 ```yaml
 version: 2

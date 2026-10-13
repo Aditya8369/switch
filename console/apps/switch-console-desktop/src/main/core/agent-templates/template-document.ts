@@ -385,6 +385,28 @@ export function parseAgentTemplate(
   fallbackInstructions: string | null = null
 ): ParsedAgentTemplate {
   const doc = parseYaml(yamlText);
+  if (isVersion2(doc)) {
+    const { agents, warnings } = parseTemplateAgents(yamlText, fallbackInstructions);
+    if (agents.length !== 1)
+      throw new Error(
+        'This template creates several agents, so it has no single set of instructions to offer.'
+      );
+    const [agent] = agents;
+    const [first] = resourcesOf(doc, 'room');
+    return {
+      name: agent!.name,
+      addressing: agent!.addressing,
+      description: agent!.description,
+      instructions: agent!.instructions,
+      repoUrl: agent!.repoUrl,
+      sources: agent!.sources,
+      room: first
+        ? { name: optionalString(first[1].name), kickoff: optionalString(first[1].kickoff) }
+        : null,
+      provider: agent!.provider,
+      warnings,
+    };
+  }
   if (asRecord(doc.agent) === null) {
     throw new Error(
       Array.isArray(doc.agents)
