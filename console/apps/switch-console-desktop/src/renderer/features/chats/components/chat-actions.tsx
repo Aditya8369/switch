@@ -30,11 +30,13 @@ async function attempt(run: () => Promise<void>, failure: string): Promise<void>
   }
 }
 
-/** Leave the chat view if it shows this room. */
+/** Leave the chat view if it shows this room, and close it on an agent's Chats tab. */
 function leaveIfOpen(roomId: string): void {
   const navigation = appState.navigation;
   if (navigation.currentViewId === 'chat' && navigation.viewParamsStore.chat?.roomId === roomId)
     navigation.navigate('home');
+  if (navigation.viewParamsStore.managedAgent?.roomId === roomId)
+    navigation.updateViewParams('managedAgent', { roomId: undefined });
 }
 
 /**
