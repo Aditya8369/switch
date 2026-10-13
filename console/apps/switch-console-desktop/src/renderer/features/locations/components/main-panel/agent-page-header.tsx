@@ -1,10 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -54,6 +57,11 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const switchAgentId = agent?.switchAgentId ?? null;
+  // The Chats tab is on a managed agent's page only.
+  const managedAgents = useManagedAgents(agent?.serverId ?? null);
+  const chatsTab =
+    useFeatureFlags(agent?.serverId).agent_chats &&
+    (managedAgents.data ?? []).some((managed) => managed.agentId === switchAgentId);
 
   /** The icon is stored on the Switch server, not locally, so a change is a
    * request that can fail. It is reported rather than swallowed: a picture
@@ -109,6 +117,11 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               onClick={() => {
                 const serverId = agent.serverId as string;
                 const switchAgentId = agent.switchAgentId as string;
+                if (chatsTab) {
+                  agentTabStore.setTab(switchAgentId, 'chats');
+                  navigate('managedAgent', { serverId, agentId: switchAgentId, name: title });
+                  return;
+                }
                 showNewChat({
                   serverId,
                   agentId: switchAgentId,
