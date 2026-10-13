@@ -1614,6 +1614,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.39.1] - 2026-10-13
+
 #### Fixed
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
