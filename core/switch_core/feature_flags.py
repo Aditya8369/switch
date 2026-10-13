@@ -43,6 +43,11 @@ AGENT_MANAGEMENT = "agent_management"
 # connect routes stay.
 SERVICE_CONNECTIONS = "service_connections"
 
+# Agent chats in Switch Console: an agent's page opens on its chats (its
+# direct chats and the rooms it is in) beside the conversation. Core has
+# nothing of its own behind it; Console reads it.
+AGENT_CHATS = "agent_chats"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -51,5 +56,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         HOSTED_AGENTS,
         AGENT_MANAGEMENT,
         SERVICE_CONNECTIONS,
+        AGENT_CHATS,
     }
 )
