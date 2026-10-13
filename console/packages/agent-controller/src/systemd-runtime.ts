@@ -245,6 +245,10 @@ export class SystemdRuntime implements AgentRuntime {
     return join(unitAgentRoot(this.deps.config), 'watcher');
   }
 
+  localControl(_agentId: string): null {
+    return null;
+  }
+
   async observe(agentId: string): Promise<AgentObservation> {
     const slot = this.deps.store.agentUser(agentId);
     if (slot === null) return emptyObservation();

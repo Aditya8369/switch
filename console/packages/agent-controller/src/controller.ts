@@ -347,6 +347,7 @@ export async function runController(
     },
     assigned: (agentId) => assignment?.agents.some((entry) => entry.agent_id === agentId) ?? false,
     controlFile: (agentId) => join(runtime.agentStateRoot(agentId), CONTROL_FILE),
+    localControl: (agentId) => runtime.localControl(agentId),
     log,
     now: deps.now,
     timing: timing.control,

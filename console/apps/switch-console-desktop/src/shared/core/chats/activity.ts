@@ -23,7 +23,9 @@ export type ChatActivityUnavailableReason =
   /** The agent's controller is offline. */
   | 'controller-offline'
   /** The agent runs on a controller, which the Switch relay could not reach. */
-  | 'on-controller';
+  | 'on-controller'
+  /** The controller answered, but the agent's host on it is not running or does not answer. */
+  | 'host-unreachable';
 
 export type ChatActivityTarget =
   | {
@@ -55,6 +57,8 @@ export const ACTIVITY_UNAVAILABLE_TEXT: Record<ChatActivityUnavailableReason, st
     "The agent's controller is offline. Messages are kept and delivered when it reconnects.",
   'on-controller':
     "The agent's controller could not be reached for live activity. This chat shows its messages only.",
+  'host-unreachable':
+    "The agent's controller is online, but the agent's host on it is not running or does not answer. This chat shows its messages only.",
 };
 
 /**

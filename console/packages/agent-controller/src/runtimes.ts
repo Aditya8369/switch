@@ -1,4 +1,5 @@
 import type { ProviderReadiness, SharedHostConfig } from '@switch-console/agent-providers';
+import type { LocalControl } from './relay-control';
 import type {
   AgentObservation,
   AgentRunner,
@@ -82,5 +83,9 @@ export class AgentRuntimes implements AgentRuntime {
   /** The same for both: moving an agent between them keeps its root. */
   agentStateRoot(agentId: string): string {
     return this.shared.agentStateRoot(agentId);
+  }
+
+  localControl(agentId: string): LocalControl | null {
+    return this.shared.localControl(agentId);
   }
 }
