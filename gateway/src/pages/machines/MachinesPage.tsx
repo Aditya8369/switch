@@ -132,7 +132,8 @@ function providerChip(status: ProviderStatus, label: (provider: string) => strin
 
 /**
  * The controller's version, and where it stands against the release Switch names: on it,
- * waiting for its sessions to end, or stuck, with why.
+ * waiting for its sessions to end, or stuck, with why. The versions and the reason are on
+ * hover, since a dev build's version is too long to sit in the chip.
  */
 function controllerVersion(row: Controller) {
   const running = row.version;
@@ -150,37 +151,30 @@ function controllerVersion(row: Controller) {
       </Tooltip>
     );
   const update = row.status?.update;
-  const from = running ?? "unknown";
+  const names = `Runs ${running ?? "an unknown version"}; Switch names ${release.wanted}.`;
+  let chip: { label: string; color: "warning" | "error"; why: string };
   if (row.state !== "online" || !update || update.target !== release.wanted)
-    return (
-      <Tooltip
-        title={
-          row.state === "online"
-            ? `Switch names ${release.wanted}; this controller has said nothing about moving to it. A controller older than self-update never does: update it by hand once.`
-            : `Switch names ${release.wanted}; it moves to it once it is connected again.`
-        }
-      >
-        <Chip size="small" variant="outlined" color="warning" label={`${from} → ${release.wanted}`} />
-      </Tooltip>
-    );
-  const label =
-    update.state === "waiting_idle"
-      ? `${from} → ${release.wanted} when idle`
-      : update.state === "restart_needed"
-        ? `${release.wanted} installed, restart needed`
-        : `update to ${release.wanted} failed`;
-  const title =
-    update.state === "waiting_idle"
-      ? `Moves to ${release.wanted} once no session is running on it.`
-      : (update.problem ?? (update.state === "failed" ? "It did not say why." : ""));
+    chip = {
+      label: "behind",
+      color: "warning",
+      why:
+        row.state === "online"
+          ? "It has said nothing about moving to it: a controller older than self-update never does, so update it by hand once."
+          : "It moves to it once it is connected again.",
+    };
+  else if (update.state === "waiting_idle")
+    chip = { label: "updating when idle", color: "warning", why: "It moves to it once no session is running on it." };
+  else if (update.state === "restart_needed")
+    chip = { label: "restart needed", color: "warning", why: update.problem ?? "It installed it; restart it to run it." };
+  else chip = { label: "update failed", color: "error", why: update.problem ?? "It did not say why." };
   return (
-    <Tooltip title={title}>
-      <Chip
-        size="small"
-        variant="outlined"
-        color={update.state === "failed" ? "error" : "warning"}
-        label={label}
-      />
+    <Tooltip title={`${names} ${chip.why}`}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ height: "100%", overflow: "hidden" }}>
+        <Typography variant="body2" noWrap>
+          {running ?? EM_DASH}
+        </Typography>
+        <Chip size="small" variant="outlined" color={chip.color} label={chip.label} />
+      </Stack>
     </Tooltip>
   );
 }
@@ -319,7 +313,7 @@ export default function MachinesPage() {
       {
         field: "version",
         headerName: "Controller",
-        width: 170,
+        width: 210,
         valueGetter: (_value, row) => row.version,
         renderCell: ({ row }) => controllerVersion(row),
       },

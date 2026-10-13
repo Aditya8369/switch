@@ -159,9 +159,10 @@ describe("MachinesPage", () => {
     });
     render(<MachinesPage />);
     expect(await screen.findByText("0.31.0")).toBeTruthy();
-    expect(screen.getByText("0.1.0 → 0.31.0 when idle")).toBeTruthy();
-    expect(screen.getByText("update to 0.31.0 failed")).toBeTruthy();
-    expect(screen.getByText("0.1.0 → 0.31.0")).toBeTruthy();
+    expect(screen.getByText("updating when idle")).toBeTruthy();
+    expect(screen.getByText("update failed")).toBeTruthy();
+    expect(screen.getByText("behind")).toBeTruthy();
+    expect(screen.getAllByText("0.1.0")).toHaveLength(3);
   });
 
   it("shows a revoked machine's agents as not running, whatever it last reported", async () => {
