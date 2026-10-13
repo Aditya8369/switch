@@ -372,7 +372,7 @@ switchCore:
   # ships with that release's controller package filled in here. To roll
   # controllers back, point these at the previous release's package.
   controllerRelease:
-    # Plain x.y.z.
+    # x.y.z, or a dev build's x.y.z-<prerelease>.
     version: ""
     # An https URL to the switch-agent-controller-<version>.tgz package.
     url: ""

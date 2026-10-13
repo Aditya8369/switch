@@ -244,7 +244,7 @@ on SSH hosts and laptops; Switch Console's own controller updates with Console):
 switchCore:
   controllerRelease:
     version: "0.31.0"
-    url: "https://github.com/sandbox-quantum/switch/releases/download/v0.31.0/switch-agent-controller-0.31.0.tgz"
+    url: "https://github.com/sandbox-quantum/switch/releases/download/switch-agent-controller-v0.31.0/switch-agent-controller-0.31.0.tgz"
     sha256: "<sha256 of that file>"
 ```
 

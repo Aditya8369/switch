@@ -108,9 +108,8 @@ git push origin switch-v0.30.0-rc.1
   `core/pyproject.toml` and not already released as `switch-v0.30.0`.
 - **Never `latest`.** Images, chart and compose are pushed under `0.30.0-rc.1` only.
   `helm install` skips the chart unless given `--devel` or that exact `--version`.
-- **No controller release.** The controller's package script takes only a plain
-  `x.y.z` version, so an RC publishes no controller package and its chart leaves
-  `switchCore.controllerRelease` empty: controllers talking to an RC keep the
+- **No controller release.** An RC publishes no controller package and its chart
+  leaves `switchCore.controllerRelease` empty: controllers talking to an RC keep the
   version they have. Set the three values yourself to point an RC at a released
   controller.
 - **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
@@ -139,10 +138,17 @@ building from source at deploy time.
   before the next release or RC. The server reports `0.29.1.dev512` (PEP 440),
   stamped on the runner like an RC. A semver pre-release, so `helm install`
   skips it unless given that exact `--version`. No compose artifact.
+- **A dev controller too.** The run publishes the agents controller at the dev
+  version as a GitHub *prerelease*, `switch-agent-controller-v<dev version>`
+  (package only, no `install.sh`), and pins it into the dev switch chart's
+  `switchCore.controllerRelease`, so the dev environment's controllers follow
+  main the way a release's follow that release. `install.sh` and
+  `switch-agent-controller update` leave prereleases out.
 - **The newest push wins.** Pushes to main share a concurrency group, so a dev
   build still running when the next merge lands is cancelled.
 - **Pruned.** `switch-dev-cleanup.yml` runs daily and deletes dev builds older
-  than 30 days that are not among the 20 newest (`scripts/prune_dev_packages.py`;
+  than 30 days that are not among the 20 newest, the dev controller
+  prereleases and their tags included (`scripts/prune_dev_packages.py`;
   dispatch it with `dry_run` to see what it would delete).
 - **Not gated on PR CI.** It builds whatever reached main; what an environment
   runs is decided by its pin, not by the build existing.
@@ -292,7 +298,8 @@ git push origin switch-agent-controller-v0.2.0
 
 ### The controller a Switch release names
 
-A Switch release (`switch-v<version>`, not an RC) also publishes the controller,
+A Switch release (`switch-v<version>`, not an RC) also publishes the controller
+(a dev build of main does too, as a prerelease: see [Dev builds](#dev-builds)),
 built from the same commit, as `switch-agent-controller-v<version>`: the same
 GitHub release this workflow makes (package and `install.sh`, never Latest), so
 `install.sh` and `switch-agent-controller update` find it as they find any other.

@@ -82,8 +82,11 @@ def _require_matching_keypair(
 # A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
 _SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
-# The version shape the controller's package script accepts.
-_CONTROLLER_RELEASE_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+# The version shape the controller's package script accepts: a release's
+# x.y.z, or a dev build's x.y.z-<prerelease> (0.31.1-dev.412.gabc1234).
+_CONTROLLER_RELEASE_VERSION_RE = re.compile(
+    r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?"
+)
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -823,7 +826,7 @@ class SwitchConfig(BaseSettings):
         version = self.controller_release_version or ""
         if not _CONTROLLER_RELEASE_VERSION_RE.fullmatch(version):
             raise ValueError(
-                "CONTROLLER_RELEASE_VERSION must be a plain x.y.z version, got "
+                "CONTROLLER_RELEASE_VERSION must be x.y.z or x.y.z-<prerelease>, got "
                 f"{version!r}."
             )
         url = self.controller_release_url or ""

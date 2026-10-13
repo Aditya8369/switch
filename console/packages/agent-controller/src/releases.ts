@@ -1,5 +1,6 @@
 import { lchown, lstat, readdir, readFile, readlink, rename, rm, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { RELEASE_VERSION } from './update';
 
 /**
  * A releases directory: where a controller run by `install-service` keeps the
@@ -15,7 +16,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 export const PACKAGE_NAME = 'switch-agent-controller';
 export const CURRENT = 'current';
 const CURRENT_NEXT = 'current.new';
-const VERSION_DIR = /^\d+\.\d+\.\d+$/;
 
 /** Where an npm prefix holds the release's files. */
 export function packageDir(prefix: string): string {
@@ -90,7 +90,7 @@ export async function pointCurrent(
  * that owns it installs into.
  */
 export async function isManagedRelease(prefix: string): Promise<boolean> {
-  if (!VERSION_DIR.test(basename(prefix))) return false;
+  if (!RELEASE_VERSION.test(basename(prefix))) return false;
   try {
     return (await lstat(currentLink(dirname(prefix)))).isSymbolicLink();
   } catch {
@@ -113,9 +113,10 @@ export async function pruneReleases(releasesDir: string, keep: string[]): Promis
   for (const entry of await readdir(releasesDir)) {
     const path = join(releasesDir, entry);
     if (entry === CURRENT || kept.has(path)) continue;
-    if (VERSION_DIR.test(entry)) spare.push({ path, mtimeMs: (await lstat(path)).mtimeMs });
-    else if (entry === CURRENT_NEXT || /\.(partial|replaced-[\w-]+)$/.test(entry))
-      leftovers.push(path);
+    // Before the version test: `0.31.0-dev.4.partial` reads as a version too.
+    if (entry === CURRENT_NEXT || /\.(partial|replaced-[\w-]+)$/.test(entry)) leftovers.push(path);
+    else if (RELEASE_VERSION.test(entry))
+      spare.push({ path, mtimeMs: (await lstat(path)).mtimeMs });
   }
   spare.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const removed = [...spare.slice(1).map((entry) => entry.path), ...leftovers];

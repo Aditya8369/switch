@@ -125,6 +125,14 @@ def test_a_full_controller_release_is_accepted() -> None:
     assert release.sha256 == "a" * 64
 
 
+def test_a_dev_build_controller_release_is_accepted() -> None:
+    release = _config(
+        **{**_RELEASE, "controller_release_version": "0.31.1-dev.412.gabc1234"}
+    ).controller_release
+    assert release is not None
+    assert release.version == "0.31.1-dev.412.gabc1234"
+
+
 def test_empty_controller_release_values_count_as_unset() -> None:
     config = _config(
         controller_release_version="",
@@ -145,7 +153,9 @@ def test_a_partial_controller_release_raises(missing: str) -> None:
     ("field", "value", "message"),
     [
         ("controller_release_version", "v0.31.0", "CONTROLLER_RELEASE_VERSION"),
-        ("controller_release_version", "0.31.0-rc.1", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0-", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0-dev..1", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0+build", "CONTROLLER_RELEASE_VERSION"),
         ("controller_release_version", "0.31.0\n", "CONTROLLER_RELEASE_VERSION"),
         (
             "controller_release_url",

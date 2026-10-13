@@ -68,6 +68,16 @@ describe('readControllerRelease', () => {
     });
   });
 
+  it("reads a dev build's version", () => {
+    const read = readControllerRelease({
+      version: '0.31.1-dev.412.gabc1234',
+      url: 'https://example.invalid/switch-agent-controller-0.31.1-dev.412.gabc1234.tgz',
+      sha256: SHA,
+    });
+    expect(read.problem).toBeNull();
+    expect(read.release?.version).toBe('0.31.1-dev.412.gabc1234');
+  });
+
   it('treats a malformed one as none, and says why', () => {
     for (const raw of [
       'latest',
@@ -75,6 +85,8 @@ describe('readControllerRelease', () => {
       { version: '0.31.0', url: 'ftp://example.invalid/a.tgz', sha256: SHA },
       { version: '0.31.0', url: 'https://example.invalid/a.tgz', sha256: 'abc' },
       { version: '../../etc', url: 'https://example.invalid/a.tgz', sha256: SHA },
+      { version: '0.31.0-dev..1', url: 'https://example.invalid/a.tgz', sha256: SHA },
+      { version: '0.31.0-dev/../x', url: 'https://example.invalid/a.tgz', sha256: SHA },
     ]) {
       const read = readControllerRelease(raw);
       expect(read.release).toBeNull();

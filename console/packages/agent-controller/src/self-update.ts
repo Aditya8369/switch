@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { Fetch } from './api';
 import { errorMessage, type Logger } from './log';
 import { pointCurrent, prefixBin, pruneReleases, readCurrent } from './releases';
+import { RELEASE_VERSION } from './update';
 
 /**
  * Updating this controller to the release Switch names in its status
@@ -27,7 +28,7 @@ const MAX_PROBLEM = 500;
 export type ControllerReleaseTarget = { version: string; url: string; sha256: string };
 
 const controllerReleaseSchema = z.object({
-  version: z.string().regex(/^\d+\.\d+\.\d+$/, 'must be x.y.z'),
+  version: z.string().regex(RELEASE_VERSION, 'must be x.y.z or x.y.z-<prerelease>'),
   url: z.url({ protocol: /^https?$/ }),
   sha256: z
     .string()

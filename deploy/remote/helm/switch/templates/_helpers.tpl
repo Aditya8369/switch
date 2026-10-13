@@ -614,7 +614,8 @@ rather than from a CrashLoopBackOff.
 
 {{/*
 Refuse a controller release switch-core would refuse at startup: all three
-values or none, a plain x.y.z version, an https URL, a lowercase SHA-256.
+values or none, an x.y.z or x.y.z-<prerelease> version, an https URL, a lowercase
+SHA-256.
 */}}
 {{- define "switch.validateControllerRelease" -}}
 {{- with .Values.switchCore.controllerRelease }}
@@ -622,8 +623,8 @@ values or none, a plain x.y.z version, an https URL, a lowercase SHA-256.
 {{- if not (and .version .url .sha256) -}}
 {{- fail "switchCore.controllerRelease.version, .url and .sha256 are set all together or not at all: switch-core refuses to start with only some of them." -}}
 {{- end -}}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+$" .version) -}}
-{{- fail (printf "switchCore.controllerRelease.version must be a plain x.y.z version, got %q." .version) -}}
+{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?$" .version) -}}
+{{- fail (printf "switchCore.controllerRelease.version must be x.y.z or x.y.z-<prerelease>, got %q." .version) -}}
 {{- end -}}
 {{- if not (regexMatch "^https://[^/?#\\s]+" .url) -}}
 {{- fail (printf "switchCore.controllerRelease.url must be an https URL, got %q." .url) -}}

@@ -126,7 +126,7 @@ PUT /v1/management/controllers/{id}/status
 
 ```ts
 type ControllerRelease = {
-  version: string   // x.y.z
+  version: string   // x.y.z, or a dev build's x.y.z-<prerelease>
   url: string       // https, the switch-agent-controller-<version>.tgz package
   sha256: string    // the package's SHA-256, 64 lowercase hex characters
 }

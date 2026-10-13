@@ -86,8 +86,10 @@ version of their own to them without also giving them a release of their own.
   (`{wanted, running, current}`, null when none is named), and its status keeps
   the `update` the controller reports. A Switch release (not an RC) now also
   publishes the controller at its version as `switch-agent-controller-v<version>`,
-  and its chart names that package. Roll back by pointing the values at the
-  previous release.
+  and its chart names that package; a dev build of main does the same as a
+  prerelease, so the dev environment's controllers follow main. A controller
+  run as a service installs a release beside the one it runs and keeps the one
+  before. Roll back by pointing the values at the previous release.
 
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
