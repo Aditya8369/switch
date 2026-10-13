@@ -231,7 +231,7 @@ function installed(releases: string, version: string, ageS: number): string {
   return prefix;
 }
 
-describe('ReleasesDirInstaller', () => {
+describe.skipIf(process.platform === 'win32')('ReleasesDirInstaller', () => {
   it('installs beside the others, switches current, and keeps the previous release and one older', async () => {
     const releases = join(dir, 'releases');
     mkdirSync(releases);

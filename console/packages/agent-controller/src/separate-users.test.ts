@@ -149,7 +149,7 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
   });
 });
 
-describe('releases directory', () => {
+describe.skipIf(process.platform === 'win32')('releases directory', () => {
   const baked = {
     cli: '/opt/switch/controller/lib/node_modules/switch-agent-controller/cli.mjs',
     bundle: '/opt/switch/controller/lib/node_modules/switch-agent-controller/shared-host.mjs',
@@ -237,7 +237,7 @@ describe('releases directory', () => {
   });
 });
 
-describe('ensureReleases', () => {
+describe.skipIf(process.platform === 'win32')('ensureReleases', () => {
   let dir: string;
   let releases: string;
 
