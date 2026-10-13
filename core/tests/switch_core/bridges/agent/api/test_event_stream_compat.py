@@ -38,7 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import TICKET_FLOOR, EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
@@ -199,7 +199,7 @@ async def test_an_old_client_connects_receives_beats_and_lapses(
         "ok": True,
         "rooms": [ROOM],
         "cursor": ticket,
-        "position": {SLIPS: seq, room_source(ROOM): 0},
+        "position": {OWN_EVENTS: seq, room_source(ROOM): 0},
     }
 
     conn = protocol.connections.get("c1")
@@ -361,7 +361,7 @@ async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket(
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=8, accepts=1, artifact="agent-runtime"),
         expected_generation=None,
         transport="websocket",
@@ -437,7 +437,7 @@ def test_this_server_admits_an_old_runtime(speaks: int) -> None:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=speaks, accepts=1),
         expected_generation=None,
         transport="sse",

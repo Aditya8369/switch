@@ -106,7 +106,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import TICKET_FLOOR, Reader
-from switch_core.bridges.agent.protocol.positions import SLIPS, Position
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position
 from switch_core.bridges.agent.protocol.stream import (
     KEEPALIVE,
     Frame,
@@ -797,21 +797,31 @@ async def _resolve_start_position(
     last_event_id: str | None,
     reads_conversation: bool,
 ) -> tuple[Position, int | None]:
-    """Where a connection's events begin, and the number asked for when the
-    server no longer knows what it stood for.
+    """Work out the position a new connection starts sending events from.
 
-    A client that holds a position sends it as `start_at` (or "head"). One
-    that holds a single number sends it as `start_from`, or, reconnecting an
-    event stream, as `Last-Event-ID`, which wins as the most accurate statement
-    of what it processed. That number is the agent's own events when that is
-    all the stream reads; a stream that reads the conversation too handed out
-    tickets, and the ticket is looked up. An unknown ticket resumes at head,
-    and the stream opens with a gap saying so.
+    Returns the position and, when the client sent a ticket id the server no
+    longer has, that id, so the stream can open with a gap that names it.
+    Otherwise the second value is None.
+
+    A client on agent-protocol revision 9 sends `start_at`: either "head" or
+    a position such as `{"s": 12, "r:<room_id>": 40}`. When the position has
+    no `s` entry, the connection starts at the current end of the agent's
+    own events.
+
+    An older client holds one integer and sends it as `start_from`, or as
+    `Last-Event-ID` when an event stream reconnects. `Last-Event-ID` wins
+    because it is the id of the last event the client processed. When the
+    connection reads only the agent's own events, the integer is their `seq`.
+    When it also reads the room conversation (`reads_conversation`), the
+    integer is a ticket id from `agent_position_tickets` and the position is
+    looked up there. A ticket that has expired or never existed starts the
+    connection at the end of the agent's own events, and the stream reports
+    the gap.
     """
     buffer = protocol.event_buffer
     if start_at:
         if start_at == "head":
-            return {SLIPS: await buffer.head(agent.tenant_id, agent.id)}, None
+            return {OWN_EVENTS: await buffer.head(agent.tenant_id, agent.id)}, None
         try:
             position = positions.parse(start_at)
         except ValueError as exc:
@@ -819,12 +829,12 @@ async def _resolve_start_position(
                 status_code=400,
                 detail=f"start_at must be 'head' or a position: {exc}",
             ) from exc
-        if SLIPS not in position:
-            position[SLIPS] = await buffer.head(agent.tenant_id, agent.id)
+        if OWN_EVENTS not in position:
+            position[OWN_EVENTS] = await buffer.head(agent.tenant_id, agent.id)
         return position, None
     raw = last_event_id or start_from
     if raw in ("", "head"):
-        return {SLIPS: await buffer.head(agent.tenant_id, agent.id)}, None
+        return {OWN_EVENTS: await buffer.head(agent.tenant_id, agent.id)}, None
     try:
         number = max(int(raw), 0)
     except ValueError as exc:
@@ -835,9 +845,9 @@ async def _resolve_start_position(
     if reads_conversation and number >= TICKET_FLOOR:
         held = await buffer.ticket(agent.tenant_id, agent.id, number)
         if held is None:
-            return {SLIPS: await buffer.head(agent.tenant_id, agent.id)}, number
+            return {OWN_EVENTS: await buffer.head(agent.tenant_id, agent.id)}, number
         return held, None
-    return {SLIPS: number}, None
+    return {OWN_EVENTS: number}, None
 
 
 def _register_connection(
@@ -1099,16 +1109,23 @@ async def _record_beat(
     generation: int | None,
     position: Position | None = None,
 ) -> AgentConnection:
-    """Count a client's beat, and adopt how far it has read: a pong on the
-    socket, or a `POST /connection/beat` from an event-stream client.
+    """Count a client's beat and record how far it has read.
 
-    A client that holds a position reports it; one that holds a single number
-    reports that, read as the agent's own events, or, on a stream that reads
-    the conversation too, as the ticket it was handed. Each source is clamped
-    to its head first: a client can report a number from some other history
-    (a restored database, another server), and `beat()` never moves a
-    position backwards, so adopting it would skip every event up to it,
-    silently.
+    A beat is a pong on the WebSocket, or a `POST /connection/beat` from an
+    event-stream client. A client on agent-protocol revision 9 reports its
+    position. An older client reports one integer, `cursor`. On a connection
+    that reads only the agent's own events, the integer is their `seq`. On a
+    connection that also reads the room conversation, it is a ticket id, and
+    the position is looked up in `agent_position_tickets`; a smaller number
+    there cannot be mapped to a position and is ignored.
+
+    Each entry of the reported position is lowered to the newest row that
+    exists: `s` to the end of the agent's own events, and each `r:<room_id>` to
+    the newest `messages.seq` in that room. A client can report a number from
+    another history, such as a database restored from backup or a different
+    server. `beat()` never moves a position backwards, so keeping the larger
+    number would make the server skip every event up to it without telling the
+    client.
 
     Raises the registry's refusal when the connection is no longer this
     client's to beat for: another socket took it over (`taken_over`), or it
@@ -1123,10 +1140,10 @@ async def _record_beat(
     elif conn.reads_conversation:
         reported = {}
     else:
-        reported = {SLIPS: cursor}
-    if SLIPS in reported:
-        reported[SLIPS] = min(
-            reported[SLIPS], await protocol.event_buffer.head(tenant_id, agent_id)
+        reported = {OWN_EVENTS: cursor}
+    if OWN_EVENTS in reported:
+        reported[OWN_EVENTS] = min(
+            reported[OWN_EVENTS], await protocol.event_buffer.head(tenant_id, agent_id)
         )
     reported, _ = await protocol.event_buffer.within_rooms(tenant_id, reported)
     return protocol.connections.beat(agent_id, connection_id, reported, generation)
@@ -1304,8 +1321,10 @@ async def connection_socket(
         pump.cancel()
         pongs.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
-        # Waited for, so the stream has detached before this returns: its
-        # cleanup can be in the middle of a database read when it is cancelled.
+        # Cancelling the tasks only requests that they stop. The pump's cleanup
+        # may be in the middle of a database read, so this waits for both to
+        # finish before returning, which guarantees the stream has detached
+        # from the connection by then.
         await asyncio.gather(pump, pongs, return_exceptions=True)
         if failure is not None:
             logger.error(
@@ -1365,8 +1384,10 @@ async def _receive_pongs(
             try:
                 position = positions.parse(message["position"])
             except ValueError:
-                # A position that cannot be read is no report at all, not a
-                # reset: the beat still counts, and the position stays put.
+                # A position that fails to parse is treated as an empty
+                # report: the beat still counts and the connection's position
+                # stays where it was. A pong has no response that could carry
+                # the 422 that `POST /connection/beat` returns.
                 position = {}
         try:
             await _record_beat(

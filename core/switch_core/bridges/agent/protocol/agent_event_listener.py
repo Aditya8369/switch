@@ -1,13 +1,22 @@
-"""Hears new agent events and wakes this process's readers of that agent.
+"""Listens for Postgres notifications of new agent events and wakes this
+process's streams for that agent.
 
-The other half of `db/agent_event_notify_ddl.py`. Whichever process writes an
-agent's event, the one holding that agent's connection is woken here and reads
-the rows after its cursor. A wake-up is not a delivery, so the notification
-queue being lossy costs latency at worst; after a reconnect every reader here
-is woken, since anything announced while the connection was down is gone.
+A trigger defined in `db/agent_event_notify_ddl.py` sends a notification on the
+`switch_agent_event` channel for every new row in `agent_events`. The process
+that writes an agent's event is often not the process that holds the agent's
+connection, so every process listens here and rings the agent's doorbell
+(`EventBuffer.ring`). The stream behind the connection then reads the rows
+past its position from the table.
 
-Connection handling mirrors `MessageListener`: its own connection outside the
-pool, a heartbeat, and a capped backoff.
+A notification only wakes a stream; the event itself is always read from the
+table. If a notification is lost, the stream finds the event when its wait
+times out and it reads again, so the event arrives later but still arrives.
+Notifications sent while the listening connection is down are lost, so after
+every reconnect every stream in this process is woken to look for events it
+may have missed.
+
+Connection handling follows `MessageListener`: a dedicated connection outside
+the pool, a periodic heartbeat query, and reconnects with a capped backoff.
 """
 
 from __future__ import annotations
@@ -114,7 +123,11 @@ class AgentEventListener:
     def _on_notify(
         self, _connection: Any, _pid: int, _channel: str, payload: str
     ) -> None:
-        """asyncpg's callback, in the connection's read loop: ring and return."""
+        """Handle one notification by ringing the agent's doorbell.
+
+        asyncpg calls this from the connection's read loop, so it does nothing
+        that waits and returns straight away.
+        """
         try:
             agent_id = json.loads(payload)["agent_id"]
         except (ValueError, TypeError, KeyError):

@@ -34,7 +34,7 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     TICKET_FLOOR,
     EventBuffer,
 )
-from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.stream import (
     KEEPALIVE,
     Frame,
@@ -196,7 +196,7 @@ def _open(registry: AgentConnectionRegistry, *, cursor: int = 0, **kw: Any):
         "scope": "single",
         "delivery_filter": "all",
         "spawn_capable": False,
-        "position": {SLIPS: cursor},
+        "position": {OWN_EVENTS: cursor},
         "declaration": ClientDeclaration(speaks=PROTOCOL_VERSION),
         "expected_generation": None,
     }
@@ -222,7 +222,7 @@ async def test_first_frame_is_the_connection_state(db_buffer: EventBuffer) -> No
     # tell the holder of a connection from a client displaced from it.
     assert data["generation"] == conn.stream_generation
     # Where the stream starts, for a client that keeps a position.
-    assert data["position"] == {SLIPS: 0}
+    assert data["position"] == {OWN_EVENTS: 0}
 
 
 async def test_the_first_frame_declares_the_server(
@@ -386,7 +386,7 @@ async def test_the_chatter_before_a_mention_arrives_with_it_and_ahead_of_it(
     registry = AgentConnectionRegistry()
     # Settles long after this test is over.
     buffer = db_buffer_on(session_factory, settle_seconds=60)
-    conn = _open(registry, position={SLIPS: 0, room_source(ROOM_A): 0})
+    conn = _open(registry, position={OWN_EVENTS: 0, room_source(ROOM_A): 0})
     registry.claim_room(conn, ROOM_A)
     await say(session_factory, ROOM_A, "chatter")
     await _addressed(session_factory, buffer, "for you")
@@ -411,7 +411,7 @@ async def test_sequence_number_is_carried_for_resume(db_buffer: EventBuffer) -> 
 
     assert frames[1][1]["sequence"] == seq
     # And, for a client that keeps a position, the event's place in its source.
-    assert frames[1][1]["position"] == {SLIPS: seq}
+    assert frames[1][1]["position"] == {OWN_EVENTS: seq}
     assert conn.cursor == seq
 
 
@@ -429,7 +429,7 @@ async def test_a_client_that_keeps_one_number_is_handed_tickets(
     kept = await _keep(buffer, _message("for you"))
     conn = _open(
         registry,
-        position={SLIPS: 0, room_source(ROOM_A): 0},
+        position={OWN_EVENTS: 0, room_source(ROOM_A): 0},
         declaration=ClientDeclaration(speaks=POSITIONS_PROTOCOL_REVISION - 1),
     )
     registry.claim_room(conn, ROOM_A)
@@ -443,11 +443,11 @@ async def test_a_client_that_keeps_one_number_is_handed_tickets(
     assert chatter["sequence"] >= TICKET_FLOOR
     assert "position" not in chatter
     assert await buffer.ticket(TENANT_ZERO_ID, AGENT, chatter["sequence"]) == {
-        SLIPS: 0,
+        OWN_EVENTS: 0,
         room_source(ROOM_A): said.seq,
     }
     assert await buffer.ticket(TENANT_ZERO_ID, AGENT, mine["sequence"]) == {
-        SLIPS: kept,
+        OWN_EVENTS: kept,
         room_source(ROOM_A): said.seq,
     }
     assert conn.cursor == mine["sequence"]
@@ -518,7 +518,7 @@ async def test_addressed_filter_drops_ambient_chatter(
         registry,
         scope="all",
         delivery_filter="addressed",
-        position={SLIPS: 0, room_source(ROOM_A): 0},
+        position={OWN_EVENTS: 0, room_source(ROOM_A): 0},
     )
 
     await say(session_factory, ROOM_A, "chatter")
@@ -647,7 +647,7 @@ async def test_two_connections_receive_the_same_event(
     buffer = db_buffer
     await say(session_factory, ROOM_A, "shared")
     # Both resume from before it.
-    start = {SLIPS: 0, room_source(ROOM_A): 0}
+    start = {OWN_EVENTS: 0, room_source(ROOM_A): 0}
 
     session = registry.open(
         agent_id=AGENT,
@@ -774,7 +774,7 @@ async def test_stream_reports_restart_below_floor(
     assert gap["resumed_at"] == buffer.sequence_floor - 1
     assert gap["resumed_at"] > old_cursor
     # The same place, for a client that keeps a position.
-    assert gap["resumed_position"] == {SLIPS: gap["resumed_at"]}
+    assert gap["resumed_position"] == {OWN_EVENTS: gap["resumed_at"]}
     assert gap["all_rooms"] is True
     assert "restarted" in gap["reason"]
     assert frames[2][1]["sequence"] == first == buffer.sequence_floor
@@ -913,7 +913,7 @@ class TestFilteredEventsDoNotSpinTheLoop:
         monkeypatch.setattr(stream_module, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
         registry = AgentConnectionRegistry()
         buffer = db_buffer
-        conn = _open(registry, position={SLIPS: 0, room_source(ROOM_A): 0})
+        conn = _open(registry, position={OWN_EVENTS: 0, room_source(ROOM_A): 0})
         registry.claim_room(conn, ROOM_A)
 
         await say(session_factory, ROOM_A, "chatter")
@@ -968,7 +968,7 @@ class TestAConnectionWithNoRoomDoesNotConsume:
         # Parked: a keepalive rather than the event, and no position moved.
         await asyncio.wait_for(anext(stream), timeout=2.0)
 
-        assert conn.position == {SLIPS: 0}
+        assert conn.position == {OWN_EVENTS: 0}
         await stream.aclose()
 
     async def test_the_trigger_arrives_once_the_room_is_claimed(
@@ -1025,7 +1025,7 @@ async def test_replaced_stream_cannot_capture_its_successors_generation(
     _open(registry)
     assert await _take(old, 1) == []
     assert registry.beat(
-        AGENT, conn.id, {SLIPS: 0}, conn.stream_generation
+        AGENT, conn.id, {OWN_EVENTS: 0}, conn.stream_generation
     ).stream_attached
 
 
@@ -1042,7 +1042,7 @@ async def test_closed_stream_cannot_detach_a_recreated_connection(
     assert replacement is not conn
     await old.aclose()
     assert registry.beat(
-        AGENT, replacement.id, {SLIPS: 0}, replacement.stream_generation
+        AGENT, replacement.id, {OWN_EVENTS: 0}, replacement.stream_generation
     ).stream_attached
 
 
@@ -1081,7 +1081,7 @@ async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_fro
         registry,
         connection_id="c-resumed",
         scope="all",
-        position={SLIPS: 0, room_source(ROOM_A): 0, room_source(ROOM_B): 0},
+        position={OWN_EVENTS: 0, room_source(ROOM_A): 0, room_source(ROOM_B): 0},
     )
     stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     frames = await _take(stream, 2)
@@ -1173,7 +1173,7 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         """
         registry = AgentConnectionRegistry()
         buffer = db_buffer
-        conn = _open(registry, position={SLIPS: 0, room_source(ROOM_A): 0})
+        conn = _open(registry, position={OWN_EVENTS: 0, room_source(ROOM_A): 0})
         registry.claim_room(conn, ROOM_A)
         await buffer.take_counting(TENANT_ZERO_ID, AGENT, conn.id, ROOM_A)
         chatter = await say(session_factory, ROOM_A, "chatter")
@@ -1350,7 +1350,7 @@ class TestAGapNamesTheRoomsThatLostEvents:
         registry = AgentConnectionRegistry()
         buffer = db_buffer
         earlier = await say(session_factory, ROOM_A, "earlier")
-        conn = _open(registry, position={SLIPS: 0, room_source(ROOM_A): 4812})
+        conn = _open(registry, position={OWN_EVENTS: 0, room_source(ROOM_A): 4812})
         registry.claim_room(conn, ROOM_A)
 
         stream = event_frames(
@@ -1432,7 +1432,7 @@ async def test_each_delivered_event_counts_as_an_agent_bridge_event_out(
     try:
         registry = AgentConnectionRegistry()
         buffer = db_buffer
-        conn = _open(registry, position={SLIPS: 0, room_source(ROOM_B): 0})
+        conn = _open(registry, position={OWN_EVENTS: 0, room_source(ROOM_B): 0})
         registry.claim_room(conn, ROOM_A)
         registry.claim_room(conn, ROOM_B)
         await _keep(buffer, _message("one"))

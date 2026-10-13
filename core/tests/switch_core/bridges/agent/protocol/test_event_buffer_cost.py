@@ -21,7 +21,7 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     EventBuffer,
     Reader,
 )
-from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
@@ -164,7 +164,7 @@ async def test_a_read_and_an_unread_count_record_their_duration(
     await buffer.read(
         TENANT_ZERO_ID,
         "agent-1",
-        {SLIPS: 0, room_source("room-1"): 0},
+        {OWN_EVENTS: 0, room_source("room-1"): 0},
         conversation_rooms={"room-1"},
         limit=200,
     )

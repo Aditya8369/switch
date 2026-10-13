@@ -400,18 +400,20 @@ AGENT_EVENTS_DROPPED = _spec(
     "switch.agent.events_dropped",
     "sum",
     "{event}",
-    "Queued agent events deleted after the retention window. `reason` is "
-    '"retention"; a reader resuming from before them is told it missed them.',
+    "Agents' own events (`agent_events` rows) deleted once older than the "
+    'retention window. `reason` is always "retention". A client that resumes '
+    "from before a deleted event is told it missed events in that room.",
     "reason",
 )
-# What one read of an agent's queued events, or one unread count, returned and
-# cost. `operation` is "read" or "unread".
+# This histogram records how many events one read of an agent's events
+# returned, or how many unaddressed messages one unread count found.
+# `operation` is "read" or "unread".
 AGENT_BUFFER_SCANNED = _spec(
     "switch.agent.buffer.scanned",
     "histogram",
     "{event}",
-    "Events one read returned, or unaddressed messages one unread count found. "
-    "A read is bounded by its limit.",
+    "Events one read of an agent's events returned, or unaddressed messages one "
+    "unread count found. A read never returns more than its limit.",
     "operation",
     bounds=(0.0, 10.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 1500.0, 2000.0),
 )

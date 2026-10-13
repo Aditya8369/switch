@@ -22,7 +22,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.logging_context import LogContextFilter, current_log_context
 from switch_core.transport.postgres import PostgresTransport
@@ -131,7 +131,7 @@ class TestTheProtocolBindsItsAgent:
             scope="single",  # type: ignore[arg-type]
             delivery_filter="all",  # type: ignore[arg-type]
             spawn_capable=False,
-            position={SLIPS: 0},
+            position={OWN_EVENTS: 0},
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
             expected_generation=None,
         )

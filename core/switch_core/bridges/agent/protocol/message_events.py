@@ -1,9 +1,12 @@
-"""The agent event a room row becomes, built one way wherever it is built.
+"""Builds the agent event for a room message or join, for every code path.
 
-A message reaches an agent by two roads: the agent's consumer, when the row is
-delivered live and decided to be for the agent, and the room's log, read later
-for a reader that wants the rest of the conversation too. Both build the event
-here, so an agent cannot tell which road a message took.
+A room row reaches an agent in one of two ways. `AgentConsumer` builds an event
+when the row is delivered and is for the agent (an addressed message, a join it
+listens for), and writes it to the agent's own events (`agent_events`), the
+events meant for the agent, not ones it sent. `EventBuffer` builds one later
+from the `messages` row itself, for a reader that asked for the rest of the
+room's conversation too. Both call the functions here, so the agent receives
+the same event whichever path produced it.
 """
 
 from __future__ import annotations
@@ -23,8 +26,9 @@ if TYPE_CHECKING:
 
 
 def attachment_ref(event: InboundMedia) -> AttachmentRef:
-    """The file a media event carries. With a caption, body is the caption and
-    the real filename is in `filename`; without one, body is the filename."""
+    """The file a media event carries. When the file was sent with a caption,
+    `body` is the caption and the filename is in `filename`; without a
+    caption, `body` is the filename."""
     return AttachmentRef(
         filename=event.filename or event.body,
         mimetype=event.mimetype or "",
@@ -46,11 +50,12 @@ def message_event(
     thread_id: str | None,
     attachments: list[AttachmentRef] | None = None,
 ) -> AgentEvent:
-    """A message (with its files, when it has any) as the agent receives it.
+    """Build the `message` event the agent receives, with any attached files.
 
-    A message a platform posted for a person is from that person as far as the
-    agent is concerned: it answers whom the platform spoke for, not the client
-    that carried it.
+    When a platform client posted the message on behalf of a person, the
+    event names that person as the sender (and in `on_behalf_of`), because
+    the agent should answer the person and not the client that carried the
+    message.
     """
     sender_kind: str | None = None
     on_behalf_of: str | None = None
@@ -90,8 +95,11 @@ def room_join_event(
     timestamp: int,
     listening: bool,
 ) -> AgentEvent:
-    """Someone arriving in a room. `listening` says whether this agent is set to
-    react to arrivals there; the event is the same either way."""
+    """Build the `room_join` event for someone arriving in a room.
+
+    `listening` says whether this agent is set to receive join events in that
+    room. The rest of the event is the same either way.
+    """
     return AgentEvent(
         type="room_join",
         room_id=room_id,

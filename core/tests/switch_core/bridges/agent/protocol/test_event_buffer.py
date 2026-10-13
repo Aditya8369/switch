@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS, Position
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
@@ -311,7 +311,9 @@ async def test_the_cursor_advances_past_what_the_reader_can_never_want(
     assert (
         await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
     )
-    assert (await _poll_position(session_factory, "legacy:notifications"))[SLIPS] == 2
+    assert (await _poll_position(session_factory, "legacy:notifications"))[
+        OWN_EVENTS
+    ] == 2
 
 
 async def test_the_cursor_does_not_advance_past_a_room_joined_later(
@@ -329,7 +331,7 @@ async def test_the_cursor_does_not_advance_past_a_room_joined_later(
     await _asked(q, session_factory, "room-2")
 
     assert await q.poll(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
-    assert (await _poll_position(session_factory, "legacy:all"))[SLIPS] == 0
+    assert (await _poll_position(session_factory, "legacy:all"))[OWN_EVENTS] == 0
 
     polled = await q.poll(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM, "room-2"})
     assert [event.room_id for event in polled] == ["room-2"]
@@ -366,7 +368,9 @@ async def test_a_room_reader_still_advances_past_other_rooms(
     polled = await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)
 
     assert [event.room_id for event in polled] == [ROOM]
-    assert (await _poll_position(session_factory, f"legacy:room:{ROOM}"))[SLIPS] == 2
+    assert (await _poll_position(session_factory, f"legacy:room:{ROOM}"))[
+        OWN_EVENTS
+    ] == 2
 
 
 async def test_deleting_the_agent_clears_its_notifications(

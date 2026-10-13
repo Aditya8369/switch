@@ -18,7 +18,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 
 AGENT = "agent-demo"
 CONNECTION = "connection-demo"
@@ -37,7 +37,7 @@ def _protocol() -> _Protocol:
         scope="all",
         delivery_filter="addressed",
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(),
         expected_generation=None,
     )

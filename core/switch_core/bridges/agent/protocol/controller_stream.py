@@ -97,8 +97,10 @@ class _Attached:
     outcomes: dict[tuple[str, str], Outcome] = field(default_factory=dict)
     resync: bool = False
     unsubscribe: Callable[[], None] | None = None
-    # Rooms this stream has made sure are being counted for the agent, so a
-    # pass asks the database only about rooms it has not seen yet.
+    # Rooms this stream has already passed to `EventBuffer.ensure_counting`,
+    # which gives the agent an unread-count baseline for the room in
+    # `agent_room_reads`. Each delivery pass calls it only for rooms not in
+    # this set, so it does not write to the database for every room each time.
     counted: set[str] = field(default_factory=set)
 
 
@@ -331,7 +333,8 @@ class _ControllerStream:
             )
             self._subscribe_outcomes(attached)
             self._attached[agent_id] = attached
-            # A room nothing is counting for the agent yet is counted from now.
+            # Give each of the agent's rooms that has no unread-count baseline
+            # yet a baseline at the room's newest message.
             for room_id in rooms - attached.counted:
                 await self._buffer.ensure_counting(
                     self._tenant, agent_id, attached.reader_id, room_id
@@ -390,9 +393,11 @@ class _ControllerStream:
                 self._tenant, agent_id, attached.reader_id, room_id
             )
             attached.counted.add(room_id)
-        # The bound is taken before the read and the read stops at it, so a
-        # pass that finds nothing moves the cursor to exactly what was looked
-        # at, never over an event appended while it was reading.
+        # Take the number of the newest of the agent's own events before
+        # reading, and read no further than it. A read that finds nothing moves
+        # the cursor up to this number. An event added to `agent_events` while
+        # the read runs is numbered above it, so the cursor does not skip that
+        # event.
         bound = await self._buffer.head(self._tenant, agent_id)
         try:
             pending = await self._buffer.read_from(

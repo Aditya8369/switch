@@ -27,7 +27,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import TENANT_ZERO_ID
 from tests.db_buffer import say, seed_member
 
@@ -76,7 +76,7 @@ def _open(protocol: _Protocol, scope: str, connection_id: str) -> Any:
         scope=scope,
         delivery_filter="all",
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

@@ -1,28 +1,33 @@
-"""Agent events in Postgres: what is for each agent, and where each reader is
+"""Agent events in Postgres: each agent's own events and each reader's position
 
 Revision ID: a7e3c1d9f204
 Revises: 7c3e91a4d5b2
 Create Date: 2026-10-12
 
-The event buffer kept each agent's queued events, and every reader's place in
-them, in one process's memory, so a restart lost them and a second replica
-could not see them. These tables hold them durably:
+Creates the tables that hold each agent's queued events and each reader's
+place in them, so they survive a restart and every server process sees the
+same data:
 
-- `agent_events`: the events that are for an agent (addressed messages,
-  listened-for joins, tasks, commands) at the agent's own offsets, each with
-  the room row it came from. The rest of a room's conversation is read from
-  `messages` and not copied.
-- `agent_event_heads`: where each agent's offsets start and have reached, so
-  none is handed out twice after old rows are deleted.
-- `agent_event_drops`: the newest event deleted from each room, so a reader
-  resuming from before it is told what it missed.
-- `agent_room_reads`: how far each agent has caught up on each room, and who
-  is reading it, so "what did I miss" survives a restart.
-- `agent_poll_positions`: where each long-polling client has read up to.
-- `agent_position_tickets`: positions handed to clients that hold one number.
+- `agent_events`: each agent's own events. A row is an event meant for the
+  agent, not one it sent (an addressed message, a join it listens for, a task
+  event, a command), numbered per agent in `seq`, with `room_seq` and
+  `message_key` naming the room row it came from. The rest of a room's conversation stays in
+  `messages` and is not copied.
+- `agent_event_heads`: the first and latest `seq` given out per agent, so a
+  number is never given out twice after old rows are deleted.
+- `agent_event_drops`: per agent and room, the newest `seq` that retention
+  deleted, so a client resuming from below it is told it has a gap.
+- `agent_room_reads`: per agent and room, the `messages.seq` the agent last
+  caught up through and who is in the room, the baseline for the unread
+  count.
+- `agent_poll_positions`: the position the server keeps for each long-poll
+  endpoint, since long-polling clients send none.
+- `agent_position_tickets`: positions stored under a single number for
+  clients that can hold only one integer.
 
-An insert into `agent_events` announces itself, as a message does, so the
-process holding the agent's connection reads the new rows.
+It also creates a trigger that sends a `NOTIFY` on `switch_agent_event` for
+each insert into `agent_events`, which wakes the process holding the agent's
+connection so it reads the new rows.
 """
 
 import sqlalchemy as sa
@@ -34,7 +39,8 @@ down_revision = "7c3e91a4d5b2"
 branch_labels = None
 depends_on = None
 
-# Frozen copies of `db/agent_event_notify_ddl.py`, as migrations keep their DDL.
+# Copies of the DDL in `db/agent_event_notify_ddl.py`, written out here so
+# this migration keeps creating the same objects if that module changes.
 CREATE_NOTIFY_FUNCTION = """
 CREATE OR REPLACE FUNCTION switch_notify_agent_event() RETURNS trigger AS $$
 BEGIN
@@ -166,8 +172,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("agent_id", "reader_id"),
         _agent_fk("agent_poll_positions"),
     )
-    # Above every number an agent stream issued before positions, and below
-    # 2**53, where a JavaScript client stops counting exactly.
+    # Starts at 2**48, above the agent event numbers a client may also hold,
+    # so the server can tell a ticket id from an event number by size. It
+    # stays below 2**53, past which a JavaScript client loses precision.
     op.execute("CREATE SEQUENCE agent_position_ticket START WITH 281474976710656")
     op.create_table(
         "agent_position_tickets",

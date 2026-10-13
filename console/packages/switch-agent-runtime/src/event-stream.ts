@@ -1,4 +1,5 @@
 import { contractRange } from './artifacts';
+import { furthest, OWN_EVENTS, type Position, readPosition } from './positions';
 import { ReattachFence } from './reattach-fence';
 import { readSse } from './sse';
 import type { AgentBridgeEvent, SwitchCredentials } from './types';
@@ -25,11 +26,12 @@ const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
  * `openFrames`). That path is kept for a compatibility window and goes when
  * those servers are gone.
  *
- * Every event carries its place, and a reconnect names how far we got, so we
- * get exactly what we missed. The place is a position, one number per source
- * of events (see `Position`), from a server that speaks agent-protocol 9; an
- * older one numbers every event in a single sequence, and is sent that number
- * beside the position. A gap is never silent: if the server cannot serve our
+ * Each event frame says where the event is numbered, and on reconnect we tell
+ * the server how far we have read, so it sends exactly the events we missed. A
+ * server that speaks agent-protocol 9 tracks this as a position: one number for
+ * the agent's own events and one for each room's conversation (see `Position`).
+ * An older server understands only the own-events number, so we send that
+ * number as well. A gap is never silent: if the server cannot serve our
  * position it says so, and `onGap` fires so the caller can tell the agent to
  * re-read context rather than carry on believing it saw everything.
  */
@@ -100,38 +102,7 @@ export class PlacementsRefusedError extends Error {
 export type StreamScope = 'single' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
 
-/**
- * How far a connection has read: one number per source of events, each
- * counted on its own. `s` is the agent's own events, the ones addressed to it;
- * `r:<room id>` is a room's conversation, read by a connection that is sent
- * everything said there. Sources are the server's to name, so this runtime
- * keeps whatever it is sent and never interprets the keys.
- */
-export type Position = Record<string, number>;
-
-/** The source holding the agent's own events, the one number a server from
- * before positions (agent-protocol 8 and older) understands. */
-const OWN_EVENTS = 's';
-
-/** A position as sent, or null when it is not one. */
-function readPosition(raw: unknown): Position | null {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-  const position: Position = {};
-  for (const [source, value] of Object.entries(raw)) {
-    if (!Number.isSafeInteger(value) || (value as number) < 0) return null;
-    position[source] = value as number;
-  }
-  return position;
-}
-
-/** Each source at the further of the two. A position never moves back except
- * when the server says it must (a gap). */
-function furthest(current: Position, reported: Position): Position {
-  const position = { ...current };
-  for (const [source, value] of Object.entries(reported))
-    position[source] = Math.max(position[source] ?? 0, value);
-  return position;
-}
+export type { Position } from './positions';
 
 /**
  * Why a stream ended, in the form a caller can branch on.
@@ -337,9 +308,10 @@ export interface SwitchEventStreamDeps {
     reason: string;
     /** The rooms that lost events. Absent from a server that predates naming them. */
     rooms?: string[];
-    /** Where the agent's own events resume (`s`). */
+    /** The own-events number (`s`) the server resumes sending from after the gap. */
     resumedAt?: number;
-    /** Whether that moved back: the server's numbering restarted. */
+    /** True when `resumedAt` is behind the own-events number we had already read,
+     * which means the server restarted its numbering. */
     cursorReset?: boolean;
   }): void | Promise<void>;
   /** Fired when another stream took this connection over, or it was closed.
@@ -390,10 +362,12 @@ type HeaderedWebSocket = new (url: string, init: { headers: Record<string, strin
 
 export class SwitchEventStream {
   private readonly deps: SwitchEventStreamDeps;
-  /** How far we have read. Sent with every pong and beat, and as `start_at`
-   * when reopening. Seeded from `startCursor` when the caller needs to begin
-   * behind head rather than at it. */
-  private reached: Position;
+  /** How far this stream has read. We send it in every WebSocket pong and SSE
+   * beat, and as `start_at` when we reopen. When the caller passes
+   * `startCursor`, it becomes the own-events number, so the stream resumes from
+   * a saved point instead of starting at the current end of the agent's own
+   * events. */
+  private _position: Position;
   /** Aborts only the current socket, so a reconnect can replace it without
    * tearing down the connection. */
   private socketAbort: AbortController | null = null;
@@ -475,19 +449,20 @@ export class SwitchEventStream {
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
     this.rooms = [...deps.rooms];
-    this.reached = deps.startCursor === undefined ? {} : { [OWN_EVENTS]: deps.startCursor };
+    this._position = deps.startCursor === undefined ? {} : { [OWN_EVENTS]: deps.startCursor };
     this.spawnCapable = deps.spawnCapable === true;
     this.declaredSpawnCapable = this.spawnCapable;
   }
 
   get position(): Position {
-    return { ...this.reached };
+    return { ...this._position };
   }
 
-  /** How far we have read in the agent's own events: what a server from
-   * before positions is told, as `start_from`, `Last-Event-ID` and `cursor`. */
+  /** The own-events number (`s`) from our position. A server older than
+   * agent-protocol 9 understands only this number, so we also send it as
+   * `start_from`, as `Last-Event-ID`, and as `cursor` in pongs and beats. */
   private get cursor(): number {
-    return this.reached[OWN_EVENTS] ?? 0;
+    return this._position[OWN_EVENTS] ?? 0;
   }
 
   /**
@@ -843,9 +818,11 @@ export class SwitchEventStream {
           filter,
           start_from:
             this.cursor > 0 || this.deps.startCursor !== undefined ? String(this.cursor) : 'head',
-          // Where we are in every source, which a server that speaks
-          // positions takes over `start_from`. Nothing read yet is head.
-          start_at: Object.keys(this.reached).length ? JSON.stringify(this.reached) : 'head',
+          // Our state vector: where we are in every source. A server that
+          // speaks agent-protocol 9 uses it instead of `start_from`. When we
+          // have read nothing yet we send `head`, which asks the server to
+          // start at the current end of the agent's own events and of each room.
+          start_at: Object.keys(this._position).length ? JSON.stringify(this._position) : 'head',
           // What we are and what we speak, declared on the connect we already
           // make (CHOO-1865). A client that says nothing records as unknown
           // server-side, and a declaration cannot be backfilled after the fact
@@ -1063,7 +1040,9 @@ export class SwitchEventStream {
         return;
       }
       if (parsed.event === 'ping') {
-        socket.send(JSON.stringify({ type: 'pong', cursor: this.cursor, position: this.reached }));
+        socket.send(
+          JSON.stringify({ type: 'pong', cursor: this.cursor, position: this._position })
+        );
         return;
       }
       if (parsed.event === 'refused') {
@@ -1115,11 +1094,16 @@ export class SwitchEventStream {
     switch (frame.event) {
       case 'connection_state': {
         if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
-        // Where the server starts us, which for an open at head is the first
-        // we hear of where head was. Kept, so a reopen before any event
-        // arrives resumes from there rather than from wherever head has got to.
-        const opened = readPosition(frame.data.position);
-        if (opened) this.reached = furthest(this.reached, opened);
+        // `connection_state` is the first frame after the socket connects. Its
+        // `position` is the point the server will start sending events from:
+        // the `start_at` we asked for, or, when we asked for `head` because we
+        // had read nothing yet, the current end of the agent's own events and of
+        // each room. We fold it into our own position. Otherwise, if the
+        // socket drops and reconnects before any event arrives, we would ask
+        // for `head` again, start from wherever the end is by then, and
+        // never receive the events that arrived in between.
+        const startedAt = readPosition(frame.data.position);
+        if (startedAt) this._position = furthest(this._position, startedAt);
         this.announces = frame.data.announce_session_starts === true;
         this.attachedOver = this.openingOver;
         // Reached over the stream: whether the server has a socket for next
@@ -1196,9 +1180,12 @@ export class SwitchEventStream {
         const resumedAt = frame.data.resumed_at;
         if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
           throw new Error('Switch returned an invalid gap resume cursor.');
-        // Where every source resumes, from a server that speaks positions.
-        // Taken whole rather than merged: a gap is the one thing that can move
-        // a position back.
+        // A server that speaks agent-protocol 9 sends `resumed_position`, the
+        // position it will resume sending from after the gap. We replace our
+        // position with it rather than merging it with `furthest`, because a
+        // gap is the only case where the server moves a position back. Merging
+        // would keep our higher numbers, and the next reconnect would ask to
+        // start past events we never received.
         const resumed = readPosition(frame.data.resumed_position);
         if (frame.data.resumed_position !== undefined && resumed === null)
           throw new Error('Switch returned an invalid gap resume position.');
@@ -1210,9 +1197,9 @@ export class SwitchEventStream {
             ? {}
             : { resumedAt: Number(resumedAt), cursorReset: Number(resumedAt) < this.cursor }),
         });
-        if (resumed) this.reached = resumed;
+        if (resumed) this._position = resumed;
         else if (resumedAt !== undefined)
-          this.reached = { ...this.reached, [OWN_EVENTS]: Number(resumedAt) };
+          this._position = { ...this._position, [OWN_EVENTS]: Number(resumedAt) };
         return;
       }
       case 'evicted': {
@@ -1267,17 +1254,19 @@ export class SwitchEventStream {
   }
 
   /**
-   * Moves past an event once it has been handled: to the place the server
-   * names for it, or, from a server before positions, to its number.
+   * Advances our position past an event after it has been handled. A server
+   * that speaks agent-protocol 9 sends the event's `position`; an older server
+   * sends only its own-events number, as the frame id.
    *
-   * After the handler and not before, so an event whose handler throws is
-   * delivered again on the reopen that follows rather than counted as read.
+   * This runs after the handler, not before, so that if the handler throws the
+   * event is not counted as read and the server sends it again when the stream
+   * reopens.
    */
   private passed(frame: SocketFrame): void {
-    const place =
+    const eventPosition =
       readPosition(frame.data.position) ??
       (frame.id ? { [OWN_EVENTS]: Number(frame.id) || 0 } : null);
-    if (place) this.reached = furthest(this.reached, place);
+    if (eventPosition) this._position = furthest(this._position, eventPosition);
   }
 
   /**
@@ -1378,7 +1367,7 @@ export class SwitchEventStream {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,
           cursor: this.cursor,
-          position: this.reached,
+          position: this._position,
           generation: this.generation,
         });
         return { answered: true, status: resp.status, ok: resp.ok, body: await resp.text() };

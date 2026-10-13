@@ -73,10 +73,11 @@ export interface AgentBridgeEvent {
   room_id: string;
   payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
   /**
-   * The event's number among the agent's own events. Present on the push
-   * transport, absent on the legacy poll, and absent on a room's conversation
-   * sent to a connection that reads it (`filter: 'all'`), whose place is in
-   * `position`.
+   * The event's number in the agent's own events (`s`). It is present on the push
+   * transport and absent on the legacy poll. It is also absent on a message
+   * from a room's conversation sent to a connection that reads the whole room
+   * (`filter: 'all'`), because that message is numbered in the room's own
+   * sequence, which `position` carries.
    *
    * Load-bearing when a watcher spawns a session: the session's connection has
    * to start from *before* the message that triggered the spawn, or the very
@@ -94,9 +95,10 @@ export interface AgentBridgeEvent {
    */
   missed?: { count: number | null; reason: string | null };
   /**
-   * Where this event is, as the one source it came from and its number there
-   * (`{s: 7}` for the agent's own events, `{'r:<room id>': 42}` for a room's
-   * conversation). Sent by a server that speaks agent-protocol 9.
+   * The event's place as a position with one entry: the source it came from
+   * and its number there, for example `{s: 7}` for an event in the agent's
+   * own events or `{'r:<room id>': 42}` for a message in a room's conversation. A
+   * server that speaks agent-protocol 9 sends it.
    */
   position?: Record<string, number>;
 }

@@ -21,7 +21,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.clients.actor import Actor
 from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
@@ -136,7 +136,7 @@ async def test_the_rooms_claim_is_released(db_buffer: EventBuffer) -> None:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

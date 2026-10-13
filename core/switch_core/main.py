@@ -201,7 +201,8 @@ logger = logging.getLogger(__name__)
 # seconds keeps a stuck "working"/"awaiting-input" surface from lingering long
 # after a session crashes, while staying well above the per-pass DB cost.
 _RUNTIME_STATE_SWEEP_INTERVAL = 5.0
-# Retention is measured in hours, so a pass a minute is precise enough.
+# How often the retention loop deletes expired agent events. The retention
+# window is measured in hours, so running once a minute is precise enough.
 _AGENT_EVENT_RETENTION_INTERVAL = 60.0
 
 # How often to close connections whose heartbeat has lapsed. Kept well under
@@ -218,7 +219,8 @@ _FORCED_EXIT_GRACE_SECONDS = 3.0
 async def _agent_event_retention_loop(
     session_factory: async_sessionmaker[AsyncSession], buffer: EventBuffer
 ) -> None:
-    """Delete agent events past the retention window, one tenant at a time."""
+    """Once a minute, delete agent events and position tickets older than the
+    retention window, one tenant at a time."""
     with no_tenant():
         while True:
             await asyncio.sleep(_AGENT_EVENT_RETENTION_INTERVAL)
@@ -569,7 +571,8 @@ async def run(config: SwitchConfig) -> None:
         sequence_base=event_boot << 32,
         retention_seconds=config.agent_event_retention_seconds,
     )
-    # Wakes this process's readers when any process appends an agent event.
+    # Listens for the `NOTIFY` that each insert into `agent_events` sends, and
+    # wakes this process's streams for that agent, whichever process wrote it.
     agent_event_listener = AgentEventListener(
         lambda: create_unpooled_engine(config), event_buffer
     )

@@ -1,36 +1,45 @@
-"""An agent's events (CHOO-1857), kept in Postgres and read by position.
+"""An agent's events (CHOO-1857), stored in Postgres and read by position.
 
-What an agent is sent comes from two places.
+The events an agent receives come from two tables.
 
-**Its own events.** A message addressed to it, an arrival it listens for, a task
-it is part of, a command sent to it. Whether a room row is one of those is
-decided once, by the agent's consumer, when the row is delivered to it live, and
-cannot be decided again later (policies, budgets and role leases move on), so
-the decision is kept: a row in `agent_events`, numbered in the agent's own
-sequence. These are the db-buffer's slips.
+**The agent's own events.** These are the events meant for the agent: a
+message addressed to it, a room_join in a room where it listens for joins, a
+task it takes part in, a command sent to it. The agent's consumer
+(`clients/agent_consumer.py`) decides whether a room row is one of these when
+the row is delivered to it live. The decision cannot be repeated later, because
+the addressing policy, budgets and role leases it depended on may have changed
+by then, so the consumer stores it as a row in `agent_events`. These rows are
+called own events. Each agent numbers its own events in its own sequence
+(`agent_events.seq`).
 
 **The rest of the conversation.** Everything else said in the agent's rooms is
-already in `messages`, numbered per room, and is read from there when a reader
-wants it. Nothing is copied for it, so a busy room costs one write per message,
-not one per agent in it.
+already stored in `messages`, numbered per room (`messages.seq`), and is read
+from there when a reader asks for it. Nothing is copied per agent, so a message
+in a busy room costs one write, not one write per agent in the room.
 
-A reader's place is a position (`positions.py`): one number for the agent's own
-events, one per room for the conversation. Reading never removes, so several
-readers consume the same events independently, and a reader that drops off
-resumes from its position, on any process and across restarts.
+A reader's position (`positions.py`) records how far it has read: one number
+for the agent's own events and one number per room for the conversation. Reading
+deletes nothing, so several readers can consume the same events independently,
+and a reader that disconnects resumes from its position, on any process and
+after a restart.
 
-Slips are deleted when they age out of the retention window (`expire`), never
-because a reader has confirmed them. Deletion is never silent: each room's
-newest deleted slip is recorded in `agent_event_drops`, and the next reader
-resuming from before it is told it missed events there, by name.
+`expire` deletes own events once they are older than the retention window, never
+because a reader has confirmed them. Every deletion is recorded: the newest
+deleted own event per agent and room goes into `agent_event_drops`, and a reader
+that later resumes from before that own event is told which rooms it missed events
+in.
 
-A new slip announces itself (`db/agent_event_notify_ddl.py`) and the listener in
-every process rings that agent's doorbell, so the process holding the agent's
-connection wakes and reads. The doorbell is a wake-up, never the record.
+When an own event is inserted, Postgres sends a notification
+(`db/agent_event_notify_ddl.py`). A listener in every process receives it and
+sets that agent's doorbell, an in-memory `asyncio.Event`, so the process that
+holds the agent's connection wakes up and reads the new own event from the table.
+The doorbell only wakes readers; the table is the record.
 
-How far behind a reader is in a room is counted from `messages`: unaddressed
-conversation after the point the agent last caught up, minus its own slips.
-Where it caught up, and who is reading the room, are kept in `agent_room_reads`.
+An unread count says how much unaddressed conversation in a room the agent has
+not caught up on. It is counted from `messages` when asked: the room's messages
+after the agent's baseline for the room, minus the ones that became own events. The
+baseline (`caught_up_seq`) and the reader currently in the room are stored in
+`agent_room_reads`.
 """
 
 from __future__ import annotations
@@ -52,7 +61,7 @@ from switch_core.bridges.agent.protocol.message_events import (
     room_join_event,
 )
 from switch_core.bridges.agent.protocol.positions import (
-    SLIPS,
+    OWN_EVENTS,
     Position,
     merged,
     room_of,
@@ -89,40 +98,51 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How long a slip stays readable. This is the resume window for the agent's
-# own events: a client that reconnects within it recovers every one it missed,
-# and one that reconnects later is told it has a gap rather than handed a
-# partial stream. The conversation is never deleted, so it has no window.
+# How long an own event stays in `agent_events` before `expire` deletes it. A client
+# that reconnects within this window receives every own event it missed; a client
+# that reconnects later is told it has a gap instead of being handed an
+# incomplete stream. This module never deletes rows from `messages`, so the
+# conversation has no such window.
 DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
 
-# How old a room row has to be before it is read as conversation, when nothing
-# later in the room is among the agent's own events yet (that would show the
-# consumer is past it). The agent's consumer decides, as the row is delivered
-# to it, whether the row is for the agent; reading it sooner could hand the row
-# over as conversation a moment before the same row arrives as the agent's own
-# event. Seconds, because the consumer takes milliseconds; what can still race
-# it is a consumer stalled for longer, and the cost then is the message twice,
-# never not at all.
+# How old a row in `messages` must be before it is delivered as conversation.
+# The agent's consumer decides, when the row is delivered to it, whether the
+# row becomes an own event. If a reader delivered the row as conversation before
+# that decision and the consumer then made it an own event, the agent would receive
+# the same message twice. The wait is skipped when the agent already has a
+# own event for a later row in the same room, because the consumer handles a room's
+# rows in order and has therefore decided this one. The consumer normally
+# decides within milliseconds, so the duplicate only happens when it stalls
+# for longer than this; the agent then sees the message twice, never zero
+# times.
 CONVERSATION_SETTLE_SECONDS = 2.0
 
-# How long several files posted as one message are waited for before the parts
-# that did arrive are read as conversation, flagged as incomplete. The same
-# deadline the agent's consumer gives a group it is assembling.
+# Several files posted as one message are stored as separate rows in
+# `messages` that share an attachment group. A reader waits this many seconds
+# beyond the settle time for the rest of the group, then delivers the files
+# that did arrive as one message marked incomplete. The agent's consumer waits
+# the same time (`ATTACHMENT_GROUP_TIMEOUT_SECONDS`) when it assembles a group.
 CONVERSATION_GROUP_GRACE_SECONDS = 5.0
 
-# The first ticket a client holding one number can be handed (the
-# `agent_position_ticket` sequence starts here). Above every number an agent
-# stream issued before positions, so a number at or above it is a ticket.
+# Some clients can store only one integer as their place in the stream. Such a
+# client is sent a ticket: the id of a row in `agent_position_tickets` that
+# holds the full position. Ticket ids start here (the `agent_position_ticket`
+# sequence starts at this value), which is above the own event numbers the server
+# issues, so the server can tell a ticket from an own event number when a client
+# sends one back.
 TICKET_FLOOR = 2**48
 
 _READ = {"operation": "read"}
 _UNREAD = {"operation": "unread"}
 
-# Why an unread count is absent. Never a bare zero: a reader that is told
-# nothing went by must be able to trust it.
+# The reason sent when no unread count can be given, because nothing in
+# `agent_room_reads` says how far the agent had read the room. The count is
+# left empty rather than set to zero, so that a zero always means nothing was
+# missed.
 NO_BASELINE = "nothing recorded what you had already seen in this room"
-# Why a count is a floor: past the retention window the agent's own events are
-# gone, so what was addressed to it there can no longer be told from chatter.
+# The reason sent when a count is a lower bound. Own events older than the
+# retention window have been deleted, so the count cannot tell which older
+# messages were addressed to the agent and starts at the window instead.
 COUNTED_FROM_WINDOW = (
     "counted over the retention window only; you have not caught up on this "
     "room for longer than that"
@@ -130,7 +150,7 @@ COUNTED_FROM_WINDOW = (
 
 
 class CursorExpiredError(Exception):
-    """A reader asked to resume from a point no longer retained.
+    """A reader asked to resume from an own event number older than the oldest own event kept.
 
     Raised rather than fast-forwarding to head: a client that has missed events
     must be told, never handed a stream that looks complete.
@@ -171,32 +191,35 @@ def is_notifiable(event: AgentEvent) -> bool:
 
 @dataclass(frozen=True)
 class BufferedEvent:
-    """An event with its place in the source it was read from.
+    """An event together with the source it was read from.
 
-    `source` is the agent's own events (`positions.SLIPS`) or a room's
-    conversation; `seq` is the event's number there, which is what a reader's
-    position moves to once the event is delivered. `room_seq` is the room row
-    the event came from, and `at` when it happened, which orders events read
-    from different sources against each other.
+    `source` is `positions.OWN_EVENTS` for an event read from the agent's own events in
+    `agent_events`, or `room_source(room_id)` for one read from a room's
+    conversation in `messages`. `seq` is the event's number in that source;
+    once the event is delivered, the reader's position for that source moves
+    to it. `room_seq` is the `messages.seq` of the room row the event came
+    from. `at` is when the event happened, and is used to order events from
+    different sources against each other.
     """
 
     seq: int
     room_id: str
     event: AgentEvent
     notifiable: bool
-    source: str = SLIPS
+    source: str = OWN_EVENTS
     room_seq: int = 0
     at: float = 0.0
 
 
 @dataclass(frozen=True)
 class Conversation:
-    """What reading the rooms' conversation found.
+    """The result of reading the rooms' conversation from `messages`.
 
-    `through` is, per room, how far the read looked, delivered or not: rows
-    that are not conversation (the agent's own, other kinds of event, ones
-    already among its own events) are looked past all the same, so a reader's
-    position can move over them.
+    `events` holds what is to be delivered. `through` maps each room to the
+    last row the read examined, whether or not that row was delivered. Rows
+    that are not conversation (the agent's own messages, other kinds of event,
+    rows that are already own events) are skipped, but they still count as read, so
+    the reader's position moves past them and they are not examined again.
     """
 
     events: list[BufferedEvent] = field(default_factory=list)
@@ -223,7 +246,8 @@ class Unread:
     """Unaddressed messages a reader has yet to catch up on, in one room.
 
     `count` is None when nothing about it can be stated — better than a zero
-    the reader would believe. `reason` says why a count is absent; it is None
+    the reader would believe. `reason` explains a count that is missing
+    (`NO_BASELINE`) or only a lower bound (`COUNTED_FROM_WINDOW`), and is None
     exactly when the count is complete.
     """
 
@@ -236,13 +260,19 @@ def _epoch(when: datetime | None) -> float:
 
 
 def message_key(row: Message) -> str:
-    """The id a row's message is known by: its attachment group, when it is one
-    of several files posted as one message, otherwise its own event id."""
+    """The key of the message a `messages` row belongs to.
+
+    Several files posted as one message are stored as separate rows that share
+    an attachment group, so their key is the group id. Any other row's key is
+    its own transport event id. Own events store the same key in
+    `agent_events.message_key`, which is how a row is matched to its own event.
+    """
     group = parse_attachment_group(row.content or {})
     return group[0] if group is not None else row.transport_event_id
 
 
-# The same, in SQL, for counting over `messages` without reading every row.
+# `message_key` as a SQL expression over `messages m`, so that `_UNREAD_SQL`
+# can count in the database without loading every row.
 _MESSAGE_KEY_SQL = (
     "COALESCE(m.content->'com.switch.attachment_group'->>'id', m.transport_event_id)"
 )
@@ -279,16 +309,21 @@ class EventBuffer:
         settle_seconds: float = CONVERSATION_SETTLE_SECONDS,
     ) -> None:
         self._session_factory = session_factory
-        # An agent's first event is numbered from this boot's base, above every
-        # earlier boot's, so a cursor from before the agent had any rows here
-        # is recognisably older than all of them. After that its numbers come
-        # from its head row and survive restarts.
+        # `sequence_base` comes from a database sequence that advances on every
+        # boot (`main.py`), so it is above every number an earlier boot handed
+        # out. An agent's first own event is numbered from it. A client still holding
+        # a number from before the agent had any own events here therefore holds a
+        # number below `sequence_floor`, and is recognised as older than every
+        # own event. Later own events are numbered from the agent's row in
+        # `agent_event_heads`, so their numbers survive restarts.
         self.sequence_floor = sequence_base + 1
         self._retention_seconds = retention_seconds
         self._settle_seconds = settle_seconds
-        # Per process, and only the wake-up: which of this process's readers
-        # to ring when a slip lands. Rung by `enqueue` here and by the listener
-        # for slips other processes write.
+        # The doorbells of this process: one `asyncio.Event` per agent, set to
+        # wake this process's readers of that agent when an own event is inserted.
+        # `enqueue` sets it for own events written here, and the notification
+        # listener sets it for own events written by other processes. The events
+        # themselves are always read from `agent_events`.
         self._notify: dict[str, asyncio.Event] = {}
 
     @property
@@ -309,12 +344,14 @@ class EventBuffer:
         room_seq: int,
         message_key: str | None,
     ) -> int:
-        """Keep an event that is for the agent and return its sequence number.
+        """Store an event meant for the agent as an own event, and return its number.
 
-        The number comes from the agent's head row, advanced in the same
-        transaction as the insert, so numbers are contiguous and never handed
-        out twice, even after the rows before them have been deleted.
-        `room_seq` and `message_key` name the room row the event came from.
+        The number comes from the agent's row in `agent_event_heads`, which is
+        advanced in the same transaction as the insert into `agent_events`, so
+        numbers are contiguous and never handed out twice, even after older
+        own events have been deleted. `room_seq` and `message_key` identify the
+        `messages` row the event came from, so that conversation reads and
+        unread counts can recognise that row as already delivered.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             claim = (
@@ -371,13 +408,14 @@ class EventBuffer:
         limit: int | None = None,
         through_seq: int | None = None,
     ) -> list[BufferedEvent]:
-        """The agent's own events after `after_seq`, oldest first.
+        """The agent's own events numbered after `after_seq`, oldest first.
 
-        `rooms=None` means every room the agent has events in; otherwise only
-        the given rooms. `through_seq` stops the read at a bound the caller
-        took beforehand, so it can move a position to exactly what it was
-        handed. Raises `CursorExpiredError` if `after_seq` predates what is
-        still retained.
+        `rooms=None` reads own events from every room; otherwise only own events from the
+        given rooms. `through_seq`, when given, is an upper bound the caller
+        read before calling. The read stops there, so the caller can move its
+        position to that bound knowing it was handed every own event up to it.
+        Raises `CursorExpiredError` if `expire` has deleted own events numbered
+        after `after_seq`.
         """
         started = time.perf_counter()
         await self._check_cursor(tenant_id, agent_id, after_seq)
@@ -402,7 +440,7 @@ class EventBuffer:
                 room_id=row.room_id,
                 event=AgentEvent.model_validate(row.payload),
                 notifiable=row.notifiable,
-                source=SLIPS,
+                source=OWN_EVENTS,
                 room_seq=row.room_seq,
                 at=_epoch(row.created_at),
             )
@@ -425,30 +463,38 @@ class EventBuffer:
             return
 
     def doorbell(self, agent_id: str) -> asyncio.Event:
-        """The wake-up signal for an agent, shared by every reader here.
+        """The agent's doorbell, shared by every reader of the agent in this process.
 
-        Set whenever one of its events is appended, by this process or another.
-        Readers re-read from their own position when woken; the signal carries
-        no payload, so a spurious or missed wake costs latency, never
-        correctness.
+        It is set whenever an own event is inserted for the agent, by this process or
+        by another one. A reader that wakes re-reads from its own position. The
+        signal carries no payload, so a spurious or missed wake-up costs
+        latency, never correctness.
         """
         return self._notify.setdefault(agent_id, asyncio.Event())
 
     def ring(self, agent_id: str) -> None:
-        """Wake this process's readers of an agent. Called by `enqueue` and by
-        the listener when another process appends."""
+        """Set the agent's doorbell in this process.
+
+        `enqueue` calls this after inserting an own event, and the notification
+        listener calls it when another process inserts one.
+        """
         notify = self._notify.get(agent_id)
         if notify is not None:
             notify.set()
 
     def ring_everyone(self) -> None:
-        """Wake every reader here, after the listener was disconnected and may
-        have missed announcements."""
+        """Set every doorbell in this process.
+
+        The notification listener calls this each time it starts listening on
+        a Postgres connection, because it may have missed notifications while
+        it was not listening.
+        """
         for notify in self._notify.values():
             notify.set()
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
-        """The number of the agent's newest event (the floor less one if none)."""
+        """The number of the agent's newest own event, or `sequence_floor - 1` if the
+        agent has never had one. This is the agent's head."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             last = await session.scalar(
                 select(AgentEventHead.last_seq).where(
@@ -458,7 +504,8 @@ class EventBuffer:
         return self.sequence_floor - 1 if last is None else last
 
     async def heads(self, tenant_id: str, agent_ids: set[str]) -> dict[str, int]:
-        """`head` for several agents in one read, for a reader serving many."""
+        """`head` for several agents in one query, for a connection that
+        serves many agents."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             rows = (
                 await session.execute(
@@ -474,8 +521,11 @@ class EventBuffer:
         }
 
     async def first_seq(self, tenant_id: str, agent_id: str) -> int:
-        """Where the agent's numbering starts: anything below it was issued
-        before the agent had events here, by a server that no longer holds them."""
+        """The number of the agent's first own event.
+
+        A number below it was handed out before the agent had any own events in
+        `agent_events`, so nothing the server holds corresponds to it.
+        """
         async with tenant_session(self._session_factory, tenant_id) as session:
             first = await session.scalar(
                 select(AgentEventHead.first_seq).where(
@@ -485,7 +535,8 @@ class EventBuffer:
         return self.sequence_floor if first is None else first
 
     async def oldest_retained(self, tenant_id: str, agent_id: str) -> int:
-        """Number of the agent's oldest retained event (0 if there is none)."""
+        """The number of the agent's oldest own event still in `agent_events`, or 0
+        if it has none."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             oldest = await session.scalar(
                 select(func.min(AgentEventRow.seq)).where(
@@ -497,7 +548,8 @@ class EventBuffer:
     async def rooms_dropped_after(
         self, tenant_id: str, agent_id: str, after_seq: int
     ) -> tuple[str, ...]:
-        """The rooms that lost events a reader at `after_seq` would have seen."""
+        """The rooms in which `expire` deleted own events numbered after
+        `after_seq`, so a reader at `after_seq` has missed events there."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             rooms = (
                 await session.scalars(
@@ -526,7 +578,7 @@ class EventBuffer:
         return set(rooms)
 
     async def room_heads(self, tenant_id: str, room_ids: set[str]) -> dict[str, int]:
-        """Each room's newest position (0 for a room with nothing in it yet)."""
+        """Each room's highest `messages.seq`, or 0 for a room with no rows yet."""
         if not room_ids:
             return {}
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -543,12 +595,13 @@ class EventBuffer:
     async def within_rooms(
         self, tenant_id: str, position: Position
     ) -> tuple[Position, list[str]]:
-        """`position` with each room's place no further than the room's newest
-        row, and the rooms whose place was further.
+        """`position` with each room's number lowered to the room's highest
+        `messages.seq` where it was higher, and the rooms that were lowered.
 
-        A place past the end of a room comes from some other history (a
-        restored database). Kept, it would pass over that many of the room's
-        next messages without a word, since a position never moves back.
+        A number beyond the end of a room can only come from a different
+        history of the database, for example after a restore from backup. If
+        it were kept, the reader would silently skip that many of the room's
+        next messages, because a position never moves backwards.
         """
         rooms = {
             room_id for source in position if (room_id := room_of(source)) is not None
@@ -565,9 +618,13 @@ class EventBuffer:
     async def room_window_starts(
         self, tenant_id: str, room_ids: set[str]
     ) -> dict[str, int]:
-        """Per room, the position just before the retention window: what a
-        reader that has never read a room counts and reads from, the same
-        stretch of conversation the agent's own events are kept for."""
+        """For each room, the `messages.seq` of its newest row older than the
+        retention window, or 0 if there is none.
+
+        A reader with no number for a room starts reading there, and a room
+        with no unread baseline starts counting there, so both cover the same
+        span of time that own events are kept for.
+        """
         if not room_ids:
             return {}
         cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
@@ -587,16 +644,19 @@ class EventBuffer:
         *,
         limit: int,
     ) -> Conversation:
-        """The conversation in each of the rooms in `after`, past its position.
+        """The conversation in each room of `after`, read from `messages`
+        after the room's number in `after`.
 
-        What is read: messages and arrivals by others, since the agent joined,
-        that are not already among its own events, and that the agent's
-        consumer has decided are not. A room is read in order up to the first
-        row it may not have decided yet. It takes a room's rows one at a time,
-        in order, so every row up to its newest own event in the room is
-        decided; a row past that is decided once it is old enough
-        (`CONVERSATION_SETTLE_SECONDS`). Several files posted as one message
-        are read as one, once all of them are in or the grace for the rest has
+        A row is delivered when it is a message or a join by someone other
+        than the agent, sent after the agent joined the room, and not already
+        an own event. A row may only be delivered once the agent's consumer has
+        decided whether it becomes an own event. The consumer handles a room's rows
+        one at a time, in order, so every row up to the room row of the
+        agent's newest own event in that room is decided. A later row is treated as
+        decided once it is older than `CONVERSATION_SETTLE_SECONDS`. Each room
+        is read in order and the read stops at the first undecided row.
+        Several files posted as one message are delivered as one event, once
+        all of them are present or `CONVERSATION_GROUP_GRACE_SECONDS` has
         passed.
         """
         if not after:
@@ -631,7 +691,9 @@ class EventBuffer:
                     await session.scalars(select(Room).where(Room.id.in_(after)))
                 ).all()
             }
-            # The database's clock, the one `sent_at` was stamped with.
+            # Computed with the database's clock, which is the clock that
+            # stamped `sent_at`, so a difference between this process's clock
+            # and the database's cannot shorten or lengthen the settle time.
             settled_before: datetime = cast(
                 datetime,
                 await session.scalar(
@@ -641,9 +703,11 @@ class EventBuffer:
             group_deadline = settled_before - timedelta(
                 seconds=CONVERSATION_GROUP_GRACE_SECONDS
             )
-            # The agent's newest own event per room, from its consumer (a
-            # message or an arrival; commands are kept by another).
-            decided: dict[str, int] = {
+            # For each room, the room row of the agent's newest own event written by
+            # its consumer. Only message and room_join own events count: command
+            # own events are written elsewhere, so they say nothing about how far
+            # the consumer has got in the room.
+            decided_through: dict[str, int] = {
                 room_id: seq
                 for room_id, seq in (
                     await session.execute(
@@ -674,7 +738,7 @@ class EventBuffer:
                     )
                 ).all():
                     if (
-                        row.seq > decided.get(room_id, 0)
+                        row.seq > decided_through.get(room_id, 0)
                         and cast(datetime, row.sent_at) >= settled_before
                     ):
                         break
@@ -707,11 +771,13 @@ class EventBuffer:
         agent_id: str,
         group_deadline: datetime,
     ) -> tuple[list[BufferedEvent], int]:
-        """One room's rows as conversation, and how far they were looked at."""
-        # The rows already among the agent's own events: each event covers its
-        # message up to the room row it was delivered through. A file posted
-        # with others that arrives after its group was delivered is past that
-        # row, and is conversation like any other.
+        """Turn one room's rows into conversation events, and return them with
+        the `messages.seq` of the last row examined."""
+        # For each message key, the highest room row an own event for that message
+        # was delivered through. A row at or below it is already an own event and is
+        # skipped. A file of a multi-file message that arrives after the own event
+        # for its group was written is above that row, so it is delivered as
+        # conversation.
         keys = {message_key(row) for row in rows}
         delivered_through: dict[str, int] = {
             key: seq
@@ -727,7 +793,7 @@ class EventBuffer:
             ).all()
         }
 
-        def already_mine(row: Message) -> bool:
+        def already_an_own_event(row: Message) -> bool:
             return row.seq <= delivered_through.get(message_key(row), -1)
 
         attachments: dict[str, list[MessageAttachment]] = {}
@@ -742,15 +808,19 @@ class EventBuffer:
             ).all():
                 attachments.setdefault(attachment.message_id, []).append(attachment)
 
-        # Several files posted as one message: the parts present here, by group.
+        # The files of each multi-file message present in `rows`, keyed by
+        # attachment group id, as (index, total, row).
         groups: dict[str, list[tuple[int, int, Message]]] = {}
         for row in rows:
-            if already_mine(row):
+            if already_an_own_event(row):
                 continue
             group = parse_attachment_group(row.content or {})
             if group is not None:
                 groups.setdefault(group[0], []).append((group[1], group[2], row))
 
+        # A group that is still incomplete and within its grace time stops the
+        # read at its first file, so the whole group is delivered by a later
+        # read instead of in pieces.
         held_from: int | None = None
         for parts in groups.values():
             total = parts[0][1]
@@ -778,7 +848,7 @@ class EventBuffer:
             through = row.seq
             if row.sender_id == my_sender or row.sent_at < joined_at:
                 continue
-            if already_mine(row):
+            if already_an_own_event(row):
                 continue
             key = message_key(row)
             inbound = to_inbound(
@@ -854,9 +924,14 @@ class EventBuffer:
         parts: list[tuple[int, int, Message]],
         attachments: dict[str, list[MessageAttachment]],
     ) -> tuple[AgentEvent, int]:
-        """Several files posted as one message, as the one message. Led by the
-        lowest part present, which carries the caption and the id the sender
-        was handed; flagged when parts are missing, as a live delivery would."""
+        """Build one message event from the files of a multi-file message, and
+        return it with the highest room row among the files.
+
+        The event is based on the lowest-numbered file present, which carries
+        the caption and the message id the sender was given. When files are
+        missing, the body says how many arrived, as a live delivery by the
+        consumer does.
+        """
         ordered = sorted(parts, key=lambda part: part[0])
         total = ordered[0][1]
         lead = ordered[0][2]
@@ -918,32 +993,33 @@ class EventBuffer:
         *,
         conversation_rooms: set[str],
         notifiable_only: bool = False,
-        slip_rooms: set[str] | None = None,
+        own_event_rooms: set[str] | None = None,
         limit: int,
     ) -> tuple[list[BufferedEvent], Position]:
-        """The agent's own events and its rooms' conversation past `position`,
-        in the order they happened, and how far each source was looked at.
+        """The agent's own events and its rooms' conversation after `position`, in
+        the order they happened, and how far each source was read.
 
-        The agent's own events are read up to a head taken before the read, so
-        the returned position never moves past one appended while reading.
-        Events from one source stay in that source's order; sources are
-        interleaved by time. Each of `conversation_rooms` is read from its
-        place in `position`; one without a place is not read.
+        Own events are read up to the agent's head as it was before the read, so the
+        returned position never moves past an own event inserted during the read.
+        Events from one source keep that source's order, and events from
+        different sources are interleaved by time. Each room in
+        `conversation_rooms` is read from its number in `position`; a room with
+        no number in `position` is not read.
         """
-        after = position.get(SLIPS, self.sequence_floor - 1)
+        after = position.get(OWN_EVENTS, self.sequence_floor - 1)
         bound = await self.head(tenant_id, agent_id)
-        slips = await self.read_from(
+        own_events = await self.read_from(
             tenant_id,
             agent_id,
             after,
-            rooms=slip_rooms,
+            rooms=own_event_rooms,
             notifiable_only=notifiable_only,
             limit=limit,
             through_seq=bound,
         )
         looked: Position = {}
-        if len(slips) < limit and bound > after:
-            looked[SLIPS] = bound
+        if len(own_events) < limit and bound > after:
+            looked[OWN_EVENTS] = bound
         conversation = await self.read_conversation(
             tenant_id,
             agent_id,
@@ -956,7 +1032,7 @@ class EventBuffer:
         )
         for room_id, seq in conversation.through.items():
             looked[room_source(room_id)] = seq
-        return _interleaved([slips, *_by_source(conversation.events)]), looked
+        return _interleaved([own_events, *_by_source(conversation.events)]), looked
 
     # ------------------------------------------------------------------
     # Tickets, for clients that hold one number
@@ -965,8 +1041,12 @@ class EventBuffer:
     async def mint_tickets(
         self, tenant_id: str, agent_id: str, positions: list[Position]
     ) -> list[int]:
-        """One ticket per position, in order, for a client that can only hold
-        one number: it sends the number back and gets the position."""
+        """Store each position in `agent_position_tickets` and return the ticket
+        ids, in order.
+
+        A client that can hold only one integer is sent a ticket id. When it
+        sends the id back, `ticket` returns the stored position.
+        """
         if not positions:
             return []
         ids: list[int] = []
@@ -985,8 +1065,8 @@ class EventBuffer:
     async def ticket(
         self, tenant_id: str, agent_id: str, ticket_id: int
     ) -> Position | None:
-        """The position a ticket holds, or None when it is unknown or expired,
-        or was handed to another agent."""
+        """The position stored under a ticket id, or None when the ticket does
+        not exist, has been deleted by `expire`, or belongs to another agent."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             position = await session.scalar(
                 select(AgentPositionTicket.position).where(
@@ -1003,13 +1083,14 @@ class EventBuffer:
     async def ensure_counting(
         self, tenant_id: str, agent_id: str, reader_id: str, room_id: str
     ) -> None:
-        """A connection is delivering this room: count it from now if nothing
-        is counting it yet.
+        """Start counting unread messages in a room that a connection
+        delivers, unless the room already has a row in `agent_room_reads`.
 
-        Covering a room is not being in it. A connection carries every session
-        of an agent and delivers the union of their rooms, so a connection
-        saying what it covers must not take a room from whoever is in it.
-        Nothing already recorded is touched.
+        A connection carries every session of an agent and delivers the union
+        of their rooms, so delivering a room does not mean being in it. A
+        connection listing the rooms it delivers must not take a room from the
+        session that is in it, so an existing row is left unchanged. A new
+        row's baseline is the room's current end, so the count starts now.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
@@ -1027,11 +1108,13 @@ class EventBuffer:
     async def take_counting(
         self, tenant_id: str, agent_id: str, reader_id: str, room_id: str
     ) -> None:
-        """A connection has taken this room from whoever held it.
+        """Record that a connection has taken this room from whoever held it.
 
-        For the doors where the room slot itself changes hands and the registry
-        has granted the takeover. The taker becomes the one whose reading clears
-        the count; what the room is behind by survives the change of hands.
+        This is for callers where the room itself changes hands and the
+        registry has granted the takeover. The connection becomes the occupant
+        in `agent_room_reads`, the only reader whose reads clear the room's
+        unread count. The baseline is kept, so messages the room had not caught
+        up on are still counted after the change.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
@@ -1050,13 +1133,13 @@ class EventBuffer:
     async def hand_counting_to(
         self, tenant_id: str, agent_id: str, reader: Reader, room_id: str
     ) -> None:
-        """Record that `reader` is the one in the room now.
+        """Record that `reader` is now the reader in the room.
 
-        Connecting to a room is taking it, so the newcomer becomes the only
-        caller whose reading clears the count there. What the room is behind by
-        survives the change of hands. A room nothing has counted yet counts
-        the retention window, the most that can be said about how far behind
-        it is.
+        Connecting to a room takes it, so the new reader becomes the only one
+        whose reads clear the room's unread count. The baseline is kept, so
+        messages the room had not caught up on are still counted after the
+        change. A room with no row yet gets a baseline at the start of the
+        retention window, which is as far back as a count can reach.
         """
         start = (await self.room_window_starts(tenant_id, {room_id}))[room_id]
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -1082,14 +1165,16 @@ class EventBuffer:
         through_seq: int,
         arrived_on: str | None,
     ) -> None:
-        """Record that the room's occupant has caught up through `through_seq`,
-        a position in the room.
+        """Record that the room's occupant has read the room through
+        `through_seq`, a `messages.seq` in that room.
 
-        Forward only, and only for the room named. Ignored from anyone but the
-        occupant: a read is begun before its history arrives, so a session
-        displaced while its read was in flight comes back holding an answer for
-        a room it has left. A session may take the count over from the
-        connection it is speaking over (`arrived_on`), and from nothing else.
+        The baseline only moves forward, and only for the room named. A call
+        from any reader other than the occupant is ignored. A read starts
+        before its history arrives, so a session displaced while its read was
+        in flight comes back with a result for a room it has left, and must not
+        clear the new occupant's count. The one exception is a session taking
+        the room over from the connection it arrived on (`arrived_on`); it
+        cannot take it over from any other reader.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             held = await session.scalar(
@@ -1128,15 +1213,17 @@ class EventBuffer:
     async def unread(
         self, tenant_id: str, agent_id: str, room_id: str, through_seq: int
     ) -> Unread:
-        """Unaddressed messages in one room the agent has not caught up on, up
-        to `through_seq`, a position in the room.
+        """Count the unaddressed messages in one room that the agent has not
+        caught up on, up to `through_seq`, a `messages.seq` in that room.
 
-        Counted from the room's own log on demand, so it cannot disagree with
-        it. Only messages, and not the agent's own: an agent is told how much
+        The count is computed from `messages` when asked, so it always agrees
+        with the room's log. It counts messages only, leaving out the ones the agent
+        sent and the ones that became own events, because it tells the agent how much
         conversation went past it. Several files posted as one message count
-        once. Never further back than the retention window, where what was
-        addressed to the agent can still be told apart; a count cut there says
-        so.
+        once. The count never reaches further back than the retention window:
+        older own events have been deleted, so older messages addressed to the agent
+        can no longer be told apart. A count cut at the window says so in its
+        `reason`.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             baseline = await session.scalar(
@@ -1176,8 +1263,11 @@ class EventBuffer:
     # ------------------------------------------------------------------
 
     def remove(self, agent_id: str) -> None:
-        """Forget this process's wake-up for an agent. Everything kept about it
-        goes with the agent's own row (`ON DELETE CASCADE`)."""
+        """Forget this process's doorbell for an agent.
+
+        The agent's rows in the tables this module uses are deleted with its
+        row in `agents` (`ON DELETE CASCADE`).
+        """
         self._notify.pop(agent_id, None)
 
     async def drop_room(self, tenant_id: str, agent_id: str, room_id: str) -> None:
@@ -1211,11 +1301,11 @@ class EventBuffer:
     # ------------------------------------------------------------------
 
     async def expire(self, tenant_id: str) -> int:
-        """Delete one tenant's events and tickets older than the retention window.
+        """Delete one tenant's own events and tickets older than the retention window.
 
-        Lossy, so it records, per agent and room, the newest event it deleted:
-        the next reader resuming from before that is told it missed events
-        there. Retention is independent of what readers have confirmed: an
+        For each agent and room it records the newest own event it deleted in
+        `agent_event_drops`, so a reader resuming from before that own event is told
+        it missed events there. Retention is independent of what readers have confirmed: an
         event stays readable for its window whether or not somebody has already
         consumed it, so a reader that arrives late still sees recent history.
         """
@@ -1270,28 +1360,28 @@ class EventBuffer:
     # ------------------------------------------------------------------
     # Legacy long-poll compatibility
     #
-    # Polling clients send no position and have nowhere to keep one, so the
-    # server keeps it for them, per reader (`agent_poll_positions`): "everything
-    # after the last thing I gave you, and record that I gave it". Behaviour is
-    # unchanged from their point of view — they never see a duplicate — but
-    # reads are not destructive, so a streaming reader on the same agent is
-    # unaffected.
+    # Long-polling clients send no position and have nowhere to store one, so
+    # the server stores it for them in `agent_poll_positions`, one row per
+    # agent and poll endpoint (`reader_id`). Each poll returns everything after
+    # what the server last gave that reader, and records what it gave. These
+    # clients never see a duplicate. Reading deletes nothing, so a streaming
+    # reader of the same agent is unaffected.
     #
-    # Delivery stays at-most-once for these callers, exactly as before: the
-    # position advances on send, so a response lost in flight loses its events.
+    # Delivery to these clients is at most once: the position advances when a
+    # response is sent, so a response lost in flight loses its events.
     # ------------------------------------------------------------------
 
     async def poll(
         self, tenant_id: str, agent_id: str, *, rooms: set[str], timeout: float = 30
     ) -> list[AgentEvent]:
-        """Everything for this agent in the rooms it is in: its own events and
-        the conversation.
+        """Every event for this agent in the rooms it is in: its own events and the
+        rooms' conversation.
 
-        `rooms` is how the caller applies membership, and it is required: the
-        agent's events are keyed by agent and know nothing about who is in
-        what, so one queued while the agent was a member stays queued after it
-        is removed. A default would make the leak the thing a new caller gets
-        for free.
+        `rooms` is the agent's current room membership, and it is required.
+        Own events are stored per agent with no record of membership, so an own event
+        written while the agent was in a room stays readable after the agent
+        is removed from it. Without a required filter, a new caller would by
+        default receive events from rooms the agent has left.
         """
         return await self._legacy_poll(
             tenant_id,
@@ -1318,10 +1408,11 @@ class EventBuffer:
     async def poll_notifications(
         self, tenant_id: str, agent_id: str, *, rooms: set[str], timeout: float = 30
     ) -> list[AgentEvent]:
-        """The agent's own addressed events, under the same membership rule.
+        """The agent's notifiable own events (see `is_notifiable`), filtered by
+        `rooms` in the same way as `poll`.
 
-        This is the stream carrying messages addressed at the agent, so it is
-        the one a removal matters most on.
+        This stream carries the messages addressed to the agent, so it is where
+        leaking events from a room the agent has left would matter most.
         """
         return await self._legacy_poll(
             tenant_id,
@@ -1358,8 +1449,10 @@ class EventBuffer:
             return events
 
         if conversation:
-            # The conversation announces nothing to this doorbell and is read
-            # once it has settled, so a poll waiting for it looks again then.
+            # New conversation rows do not set the doorbell, and they are only
+            # delivered once they have settled, so a poll that includes
+            # conversation wakes after twice the settle time to look again
+            # instead of sleeping through the whole timeout.
             await self.wait(agent_id, min(timeout, self._settle_seconds * 2))
         else:
             await self.wait(agent_id, timeout)
@@ -1376,25 +1469,28 @@ class EventBuffer:
         notifiable_only: bool,
         rooms_are_membership: bool,
     ) -> list[AgentEvent]:
-        """One read, moving the position past what this reader can never want.
+        """Read once for a long-polling reader, save its new position, and
+        return the events.
 
-        Past what it can never want, and no further. The bound on the agent's
-        own events is taken before the read and the read stops at it, so the
-        position moves through exactly what was handed over. A room set taken
-        from membership is not fixed: an agent added to a room that already
-        has events for it would find the position already past them, so with
-        membership the bound is the newest event in those rooms, not the head.
+        The bound on own event numbers is read before the own events and the read stops
+        at it, so the saved position covers exactly the own events returned. When
+        `rooms` is the agent's membership, the bound is the newest own event in
+        those rooms rather than the agent's head. Membership can grow: if the
+        position moved to the head, own events already written for a room the agent
+        is added to later would sit below the position and never be delivered.
+        `poll_room` reads a fixed room chosen by the reader, so it passes
+        `rooms_are_membership=False` and moves to the head.
         """
         position = await self._poll_position(
             tenant_id, agent_id, reader_id, rooms if conversation else set()
         )
-        after = position[SLIPS]
+        after = position[OWN_EVENTS]
         if rooms_are_membership:
             through = await self._last_seq_in_rooms(tenant_id, agent_id, after, rooms)
         else:
             through = await self.head(tenant_id, agent_id)
         try:
-            slips = await self.read_from(
+            own_events = await self.read_from(
                 tenant_id,
                 agent_id,
                 after,
@@ -1415,7 +1511,7 @@ class EventBuffer:
                 exc.oldest,
             )
             after = max(exc.oldest - 1, 0)
-            slips = await self.read_from(
+            own_events = await self.read_from(
                 tenant_id,
                 agent_id,
                 after,
@@ -1423,8 +1519,8 @@ class EventBuffer:
                 notifiable_only=notifiable_only,
                 through_seq=through,
             )
-        moved = merged(position, {SLIPS: max(through, after)})
-        found: list[list[BufferedEvent]] = [slips]
+        moved = merged(position, {OWN_EVENTS: max(through, after)})
+        found: list[list[BufferedEvent]] = [own_events]
         if conversation:
             said = await self.read_conversation(
                 tenant_id,
@@ -1443,14 +1539,14 @@ class EventBuffer:
     async def _poll_position(
         self, tenant_id: str, agent_id: str, reader_id: str, rooms: set[str]
     ) -> Position:
-        """A poller's position, with a place in each of `rooms`.
+        """A long-polling reader's position from `agent_poll_positions`, with a
+        number for each room in `rooms`.
 
-        A poller seen for the first time starts before the oldest event still
-        kept, mirroring the queue it replaces: events accumulated while nobody
-        was polling and the first poll drained them. Starting at head would
-        silently swallow anything that arrived before the client got around to
-        asking. A room it has not read yet starts at the retention window, for
-        the same reason.
+        A reader seen for the first time starts just before the agent's oldest
+        own event still kept, so own events written before the client first polled are
+        delivered. Starting at the head would silently skip them. A room the
+        reader has no number for starts at the beginning of the retention
+        window, for the same reason.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             stored = await session.scalar(
@@ -1460,9 +1556,9 @@ class EventBuffer:
                 )
             )
         position: Position = dict(stored) if stored is not None else {}
-        if SLIPS not in position:
+        if OWN_EVENTS not in position:
             oldest = await self.oldest_retained(tenant_id, agent_id)
-            position[SLIPS] = max(oldest - 1, 0)
+            position[OWN_EVENTS] = max(oldest - 1, 0)
         missing = {room_id for room_id in rooms if room_source(room_id) not in position}
         if missing:
             starts = await self.room_window_starts(tenant_id, missing)
@@ -1473,8 +1569,9 @@ class EventBuffer:
     async def _save_poll_position(
         self, tenant_id: str, agent_id: str, reader_id: str, position: Position
     ) -> None:
-        # Selected through the agent, so a poll still in flight when its agent
-        # is deleted saves nothing rather than failing.
+        # The row is inserted from a SELECT on `agents`, so if the agent was
+        # deleted while the poll was in flight, nothing is saved and the insert
+        # does not fail on the foreign key.
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(
                 insert(AgentPollPosition)
@@ -1507,9 +1604,9 @@ class EventBuffer:
     ) -> int:
         """The newest retained event after `after_seq` in one of `rooms`.
 
-        `after_seq` itself when there is none, so a caller confirming this
-        never moves a position over an event held for a room the agent is not
-        in yet.
+        Returns `after_seq` itself when there is none. A caller that moves its
+        position to the returned number therefore never moves past an own event held
+        for a room the agent has not joined yet.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             last = await session.scalar(
@@ -1546,9 +1643,12 @@ class EventBuffer:
 
 
 def _counting(agent_id: str, room_id: str, *, baseline: Any, occupant: Reader) -> Any:
-    """An `agent_room_reads` row for a room that exists, and none for one that
-    does not: a room deleted while a reader covered it has nothing left to
-    count, and must not fail the reader's stream."""
+    """An insert of an `agent_room_reads` row, selected from `rooms` so that it
+    inserts nothing when the room does not exist.
+
+    A room can be deleted while a reader still delivers it. The insert then
+    does nothing, instead of failing the reader's stream on the foreign key.
+    """
     return insert(AgentRoomRead).from_select(
         [
             AgentRoomRead.tenant_id,
@@ -1570,8 +1670,9 @@ def _counting(agent_id: str, room_id: str, *, baseline: Any, occupant: Reader) -
 
 
 def _window_start(room_id: str, cutoff: datetime) -> Any:
-    """The room's newest row from before `cutoff`: one probe of the room's
-    `sent_at` index, rather than a scan of everything said since."""
+    """A query for the `messages.seq` of the room's newest row sent before
+    `cutoff`. It reads one entry of the room's `sent_at` index instead of
+    scanning every row sent since."""
     return (
         select(Message.seq)
         .where(Message.room_id == room_id, Message.sent_at < cutoff)
@@ -1581,7 +1682,8 @@ def _window_start(room_id: str, cutoff: datetime) -> Any:
 
 
 def _room_head(room_id: str) -> Any:
-    """A room's newest position, as an expression for an insert."""
+    """The room's highest `messages.seq` (0 when it has none), as a subquery
+    to use inside an insert."""
     return (
         select(func.coalesce(func.max(Message.seq), 0))
         .where(Message.room_id == room_id)
@@ -1598,11 +1700,12 @@ def _by_source(events: list[BufferedEvent]) -> list[list[BufferedEvent]]:
 
 
 def _interleaved(sources: list[list[BufferedEvent]]) -> list[BufferedEvent]:
-    """Several sources' events as one sequence, earliest first.
+    """Merge several sources' events into one list, earliest first.
 
-    Only each source's next event is ever compared, so every source keeps its
-    own order — which is what makes a position safe to move per event — while
-    sources are woven together by when their events happened.
+    Only the next event of each source is compared, so each source's events
+    stay in their own order. That order is what makes it safe to move a
+    reader's position after each delivered event. Events from different
+    sources are merged by when they happened.
     """
     heads = [0] * len(sources)
     out: list[BufferedEvent] = []

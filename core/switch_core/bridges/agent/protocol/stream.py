@@ -6,13 +6,17 @@ never asks again; it opens once and reads. `api/handlers.py` sends them over
 the WebSocket, or, for a client built before it, as a Server-Sent Events
 stream: both encode the same frames from the same loop, so they cannot drift.
 
-Every event carries its place, so a client that reconnects names how far it
-got and resumes exactly where it stopped. A client that holds a position is
-told each event's source and number (`position`); one that holds a single
-number is told that number, or, when the stream reads more than one source, a
-ticket standing for the position. Gaps are reported as their own event rather
-than skipped: a client that has missed events must never see a stream that
-looks complete.
+Every event says where it sits, so a client that reconnects can say how far it
+got and resume exactly where it stopped. A client on agent-protocol revision 9
+or later receives `position` on each event: the event's source and its number
+there. The source is `s` for the agent's own events in `agent_events` (the
+events meant for the agent, not ones it sent) or `r:<room_id>` for a room's
+messages. An older client holds a single number, sent as `sequence`. For a
+client that receives only the agent's own events it is the event's number among
+them. For a client that receives every room message it is a ticket, a number
+the server maps back to a full position when the client resumes. Gaps are
+reported as their own event rather than skipped: a client that has missed
+events must never see a stream that looks complete.
 """
 
 from __future__ import annotations
@@ -39,7 +43,11 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
-from switch_core.bridges.agent.protocol.positions import SLIPS, Position, room_source
+from switch_core.bridges.agent.protocol.positions import (
+    OWN_EVENTS,
+    Position,
+    room_source,
+)
 from switch_core.observability.catalogue import BRIDGE_EVENTS_OUT
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import current_tenant_id
@@ -229,8 +237,10 @@ async def _event_stream(
 
         unsubscribe_outcomes = approvals.subscribe(tenant, agent_id, owe, recheck)
         resync[0] = True
-    # Rooms this stream has made sure are being counted, so a pass of the loop
-    # asks the database only about rooms it has not seen yet.
+    # Rooms this stream has already passed to `EventBuffer.ensure_counting`,
+    # which gives the agent an unread-count baseline for the room in
+    # `agent_room_reads`. Each pass of the loop calls it only for rooms not in
+    # this set, so it does not write to the database for every room each time.
     counted: set[str] = set()
     last_keepalive = time.monotonic()
     try:
@@ -316,9 +326,12 @@ async def _event_stream(
                     yield KEEPALIVE
                 continue
 
-            # Where counting starts for a room nothing is counting yet: now. A
-            # room covered later starts from then too. Covering is not taking:
-            # the room slot changes hands at the doors, not on every pass.
+            # Give each room this connection covers an unread-count baseline at
+            # the room's newest message if it has none yet. A room the
+            # connection starts covering later gets its baseline when this loop
+            # first sees it. This never takes the room's count from another
+            # connection; that happens through `take_counting` when a connection
+            # opens on a room or claims it, not on each pass here.
             for room_id in conn.rooms - counted:
                 await buffer.ensure_counting(tenant, agent_id, conn.id, room_id)
                 counted.add(room_id)
@@ -328,9 +341,11 @@ async def _event_stream(
                 conversation_rooms = await _conversation_rooms(
                     conn, registry, buffer, tenant
                 )
-                # A room this connection has never read starts where the room
-                # is now: what was said before it covered the room is history,
-                # read with `read_context`, not a backlog to deliver.
+                # A room with no entry in the position has never been read by
+                # this connection, so it starts at the room's newest message.
+                # Earlier messages are history the agent can fetch with
+                # `read_context`; sending them all as new events would bury the
+                # agent in a backlog.
                 fresh = {
                     room_id
                     for room_id in conversation_rooms
@@ -349,7 +364,7 @@ async def _event_stream(
                     limit=CATCH_UP_BATCH,
                 )
             except CursorExpiredError as exc:
-                conn.position[SLIPS] = max(exc.oldest - 1, 0)
+                conn.position[OWN_EVENTS] = max(exc.oldest - 1, 0)
                 yield _frame(
                     "gap",
                     await _gap(
@@ -366,12 +381,16 @@ async def _event_stream(
 
             # Room coverage is evaluated per event rather than up front: a
             # sibling claiming a room must take effect immediately, without
-            # tearing the stream down. An uncovered event of the agent's own is
-            # passed over, and the position moves past it all the same.
+            # tearing the stream down. One of the agent's own events for a room
+            # this connection does not cover is not sent, but the position
+            # still moves past it. Room messages need no check here, because
+            # `_conversation_rooms` only returned rooms this connection covers.
             deliver: list[BufferedEvent] = []
             for item in pending:
-                if item.source == SLIPS and not registry.covers(conn, item.room_id):
-                    conn.position[SLIPS] = item.seq
+                if item.source == OWN_EVENTS and not registry.covers(
+                    conn, item.room_id
+                ):
+                    conn.position[OWN_EVENTS] = item.seq
                     continue
                 deliver.append(item)
 
@@ -396,9 +415,9 @@ async def _event_stream(
                         "count": unread.count,
                         "reason": unread.reason,
                     }
-                # Advance before yielding: the position tracks what the server
-                # has written out. What the client has actually processed comes
-                # back on its heartbeat, which is what governs resume.
+                # Advance before yielding, because the position records what
+                # the server has written out. What the client has processed
+                # comes back on its heartbeat, and that governs resume.
                 if item.seq > conn.position.get(item.source, -1):
                     conn.position[item.source] = item.seq
                 if tickets:
@@ -410,12 +429,15 @@ async def _event_stream(
                 )
                 yield _frame(item.event.type, payload, seq=frame_seq)
 
-            # Past what was looked at and not delivered: events the filter left
-            # out, rows that are not conversation. Nothing is lost by moving
-            # past them: the position records what has been written out, not
-            # what the agent has caught up on, so they stay countable. Not
-            # moving past them would leave "anything new?" below permanently
-            # true, and the loop would spin instead of waiting.
+            # Move the position past every row the read examined, including
+            # rows it did not return: own events the `addressed` filter left
+            # out, and room messages that are not conversation for this agent
+            # (messages it sent, or ones already among its own events). Nothing
+            # is lost, because the position records what the server has written
+            # out, not what the agent has caught up on, and those rows still
+            # count towards the agent's unread counts. If the position stayed
+            # behind them, the "anything new?" check below would stay true and
+            # the loop would spin instead of waiting.
             for source, seq in looked.items():
                 if seq > conn.position.get(source, -1):
                     conn.position[source] = seq
@@ -432,14 +454,20 @@ async def _event_stream(
                 or conn.released_rooms
                 or outcomes
                 or resync[0]
-                or await buffer.head(tenant, agent_id) > conn.position.get(SLIPS, 0)
+                or await buffer.head(tenant, agent_id)
+                > conn.position.get(OWN_EVENTS, 0)
                 or conn.rooms != last_rooms
             ):
                 continue
 
-            # The conversation rings no bell: a row past the agent's newest own
-            # event is read once it has settled, so a stream that reads it
-            # looks again when one may have.
+            # New room messages do not ring the doorbell; only the agent's own
+            # events do. A room message newer than the newest of the agent's
+            # own events in that room is read only once it is `settle_seconds`
+            # old, which gives the agent's consumer time to add it to the
+            # agent's own events first if it is for the agent. A stream that
+            # receives every room message therefore wakes every
+            # `settle_seconds` to read messages that have settled, instead of
+            # sleeping for the whole keepalive interval.
             timeout = (
                 buffer.settle_seconds
                 if conn.reads_conversation
@@ -466,16 +494,18 @@ async def _gap(
     all_rooms: bool,
     reason: str,
 ) -> dict[str, Any]:
-    """A gap frame: the position the stream resumes at, and the one number an
-    older client adopts in its place.
+    """Build a gap frame from the connection's current position.
 
-    That number is how far the stream is in the agent's own events, except
-    for a client that holds one number over the conversation too. That client
-    is handed a ticket for the position: a plain number, sent back, would be
-    read as the agent's own events alone, and the conversation would start
-    over from wherever the rooms are then.
+    `resumed_position` is the position the stream continues from. `resumed_at`
+    is the single number an older client adopts instead. For most clients it is
+    the `s` entry, the place in the agent's own events. A client that receives
+    every room message but holds a single number is sent a new ticket for the
+    whole position. If that client were sent the `s` entry and later resumed
+    from it, the server would treat the number as an own-events place only,
+    start every room again at its newest message, and the client would never
+    receive the room messages it had not read yet.
     """
-    resumed_at = conn.position.get(SLIPS, 0)
+    resumed_at = conn.position.get(OWN_EVENTS, 0)
     if conn.reads_conversation and not conn.speaks_positions:
         (resumed_at,) = await buffer.mint_tickets(
             tenant, conn.agent_id, [dict(conn.position)]
@@ -494,13 +524,16 @@ async def _gap(
 async def _opening_gaps(
     conn: AgentConnection, buffer: EventBuffer, tenant: str
 ) -> list[dict[str, Any]]:
-    """What the client's resume point says it missed, told before anything else.
+    """Check the position the client resumed from, and return the gap frames
+    to send before any event.
 
-    A ticket the server no longer holds, a number from before this agent's
-    events were kept here, one ahead of everything held, or one older than
-    what is still retained. Each is reported, never smoothed over: a client
-    left believing it is caught up when its numbering no longer means anything
-    never re-reads what it lost.
+    A gap is due when the client resumed from a ticket the server does not
+    have, from an own-events number issued before this agent's current
+    numbering started, from a number past the newest of the agent's own events,
+    from a room place past that room's newest message, or from a point older
+    than the events still retained. Each case is reported rather than corrected
+    quietly. A client that believes it is caught up when its numbers no longer
+    mean anything would never re-read what it lost.
     """
     agent_id = conn.agent_id
     gaps: list[dict[str, Any]] = []
@@ -520,13 +553,15 @@ async def _opening_gaps(
         )
         return gaps
 
-    at = conn.position.get(SLIPS, 0)
+    at = conn.position.get(OWN_EVENTS, 0)
     head = await buffer.head(tenant, agent_id)
     floor = await buffer.first_seq(tenant, agent_id)
     if 0 < at < floor - 1:
-        # Numbering only ever starts above every earlier one, so the client
-        # keeps its sequence-based dedupe (nothing is reused); what it has lost
-        # is every event from before.
+        # The number is below where the numbering of this agent's own events
+        # starts (`first_seq`), so an earlier server issued it and those events
+        # are gone. New numbering always starts above every earlier number, so
+        # the client's dedupe by sequence number stays valid. The client has
+        # lost every event from before.
         logger.warning(
             "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
             "earlier server boot (this agent's events start at %s)",
@@ -535,7 +570,7 @@ async def _opening_gaps(
             at,
             floor,
         )
-        conn.position[SLIPS] = floor - 1
+        conn.position[OWN_EVENTS] = floor - 1
         gaps.append(
             await _gap(
                 conn,
@@ -560,7 +595,7 @@ async def _opening_gaps(
             at,
             head,
         )
-        conn.position[SLIPS] = head
+        conn.position[OWN_EVENTS] = head
         gaps.append(
             await _gap(
                 conn,
@@ -577,8 +612,10 @@ async def _opening_gaps(
         )
         at = head
 
-    # A place past the end of a room is from a history the room no longer has
-    # (a restored database): what is said there next would be passed over.
+    # A room place past the room's newest message comes from a history the
+    # room no longer has, for example after a database restore. Positions never
+    # move back, so if it were kept the stream would skip that many of the
+    # room's next messages without telling the client.
     within, past = await buffer.within_rooms(tenant, conn.position)
     if past:
         logger.warning(
@@ -601,8 +638,9 @@ async def _opening_gaps(
             )
         )
 
-    # A point the agent's events can no longer serve is reported, not silently
-    # moved to head. The client re-reads room context to recover.
+    # If retention has deleted any of the agent's own events after the client's
+    # number, report a gap instead of quietly moving the client to the newest
+    # event. The client recovers by re-reading room context.
     lost = await buffer.rooms_dropped_after(tenant, agent_id, at)
     if lost:
         oldest = await buffer.oldest_retained(tenant, agent_id)
@@ -615,7 +653,7 @@ async def _opening_gaps(
             oldest,
             ", ".join(lost),
         )
-        conn.position[SLIPS] = max(oldest - 1, 0)
+        conn.position[OWN_EVENTS] = max(oldest - 1, 0)
         gaps.append(
             await _gap(
                 conn,
@@ -637,9 +675,12 @@ async def _conversation_rooms(
     buffer: EventBuffer,
     tenant: str,
 ) -> set[str]:
-    """The rooms whose conversation this connection is sent: the room it holds,
-    for a session; for a connection over every room, each room the agent is in
-    that no live sibling holds."""
+    """Return the rooms whose every message this connection receives.
+
+    A session connection (scope `single`) receives the room it has claimed. A
+    connection over all of the agent's rooms receives each room the agent is a
+    member of, except rooms another connection of the same agent has claimed.
+    """
     if conn.scope == "single":
         return set(conn.rooms)
     member = await buffer.member_rooms(tenant, conn.agent_id)
@@ -652,9 +693,13 @@ async def _tickets_for(
     tenant: str,
     deliver: list[BufferedEvent],
 ) -> list[int]:
-    """Tickets for the events about to be sent, when the client holds one number
-    and the stream reads more than one source: each stands for the position
-    after its event, so the number the client sends back resumes it there."""
+    """Mint a ticket for each event about to be sent, for a client that
+    receives every room message but holds a single number.
+
+    Each ticket stands for the position just after its event, so when the
+    client reconnects with that number it resumes after that event. Every
+    other client gets an empty list.
+    """
     if conn.speaks_positions or not conn.reads_conversation or not deliver:
         return []
     positions: list[Position] = []
@@ -669,13 +714,17 @@ async def _tickets_for(
 def _number_for(
     conn: AgentConnection, item: BufferedEvent, tickets: list[int], index: int
 ) -> int | None:
-    """The number a delivered event is sent with: its ticket, for a client that
-    holds one number over more than one source; otherwise its number in the
-    agent's own events, or none for the conversation, whose place is in
-    `position`."""
+    """Return the `sequence` number to send with a delivered event.
+
+    When the client is sent tickets, the number is the event's ticket.
+    Otherwise one of the agent's own events carries its number in
+    `agent_events`, and a room message carries none, because a client that
+    receives room messages without tickets speaks positions and reads the
+    message's place from `position`.
+    """
     if tickets:
         return tickets[index]
-    if item.source == SLIPS:
+    if item.source == OWN_EVENTS:
         return item.seq
     return None
 
@@ -702,7 +751,7 @@ async def _wait_for_work(
     """Wait for a new event or a change to the connection itself.
 
     Returns False when neither happened within `timeout`, so the caller can
-    look again or write a comment to keep the socket warm.
+    read again or send a keepalive.
     """
     waiters = [
         asyncio.ensure_future(bell.wait()),

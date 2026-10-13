@@ -1,9 +1,12 @@
-"""The `NOTIFY` that announces a new row in `agent_events`.
+"""The trigger that sends a Postgres `NOTIFY` for each new row in `agent_events`.
 
-The same arrangement as `notify_ddl.py` for rooms: the insert names who moved
-and how far, never what was said, and the process holding that agent's
-connection reads the rows after its own position. `agent_events/listener.py`
-is the listening half.
+It follows the design `notify_ddl.py` describes for `messages`. The payload
+carries only the agent id and the new row's `seq`, never the event itself.
+The notification wakes the server process that holds the agent's
+connection, and that process reads the new rows from the table, so a lost
+notification delays delivery but loses nothing.
+`bridges/agent/protocol/agent_event_listener.py` is the process side that
+listens on the channel.
 """
 
 AGENT_EVENT_CHANNEL = "switch_agent_event"

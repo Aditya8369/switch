@@ -25,7 +25,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
     Closure,
 )
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 
@@ -157,7 +157,7 @@ class TestASessionIsTheAgentNotTheConnection:
             scope="all",
             delivery_filter="all",
             spawn_capable=False,
-            position={SLIPS: 0},
+            position={OWN_EVENTS: 0},
             declaration=ClientDeclaration(),
             expected_generation=None,
         )

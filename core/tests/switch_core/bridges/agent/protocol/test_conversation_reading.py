@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.agent.protocol.event_buffer import BufferedEvent, EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS, room_source
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID, Agent
 from switch_core.db.session_scope import tenant_session
@@ -151,10 +151,10 @@ async def test_a_place_past_the_end_of_a_room_is_brought_back_to_it(
 
     within, past = await buffer.within_rooms(
         TENANT_ZERO_ID,
-        {SLIPS: 99, room_source(ROOM): 9, room_source(EMPTY_ROOM): 3},
+        {OWN_EVENTS: 99, room_source(ROOM): 9, room_source(EMPTY_ROOM): 3},
     )
 
-    assert within == {SLIPS: 99, room_source(ROOM): 2, room_source(EMPTY_ROOM): 0}
+    assert within == {OWN_EVENTS: 99, room_source(ROOM): 2, room_source(EMPTY_ROOM): 0}
     assert past == [ROOM, EMPTY_ROOM]
 
 

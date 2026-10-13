@@ -45,7 +45,7 @@ from switch_core.bridges.agent.protocol.liveness import (
 from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER as TAKEN_OVER
 from switch_core.bridges.agent.protocol.liveness import CloseCode as CloseCode
 from switch_core.bridges.agent.protocol.liveness import Closure as Closure
-from switch_core.bridges.agent.protocol.positions import SLIPS, Position, merged
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position, merged
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     AGENT_CONNECTIONS_EXPIRED,
@@ -94,9 +94,10 @@ SESSION_COMMAND_PROTOCOL_REVISION = 5
 # or session placement on its connection was taken over by another connection.
 ROOM_RELEASED_PROTOCOL_REVISION = 6
 
-# A client that holds a position (one number per source) rather than one number:
-# it opens with `start_at`, reads `position` off each event, and reports its
-# position on every heartbeat. Older clients are given one number throughout.
+# From this agent-protocol revision a client tracks a position (one number per
+# source, see `positions.py`) instead of a single number. It opens with
+# `start_at`, reads `position` from each event, and reports its position on
+# every heartbeat. A client on an older revision is sent a single number.
 POSITIONS_PROTOCOL_REVISION = 9
 
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
@@ -397,9 +398,9 @@ class AgentConnection:
     scope: Scope
     delivery_filter: DeliveryFilter
     spawn_capable: bool
-    # How far this connection has been sent, one number per source
-    # (`positions.py`): the agent's own events, and for a connection that reads
-    # the conversation, each room it covers.
+    # How far the server has sent events to this connection, as a position
+    # (`positions.py`). It holds the agent's own events (`agent_events`) and,
+    # for a connection that receives every room message, each room it covers.
     position: Position
     last_beat: float
     opened_at: float
@@ -432,12 +433,15 @@ class AgentConnection:
     # Rooms another connection took off this one, not yet written to its
     # stream, with the session of this connection that was placed there.
     released_rooms: dict[str, str | None] = field(default_factory=dict)
-    # The last ticket handed to this connection's client, when it reads more
-    # than one source and can only hold one number (see `speaks_positions`).
+    # The ticket last sent to this connection's client. Only a client that
+    # receives every room message but holds a single number is sent tickets. A
+    # ticket is the id of a row in `agent_position_tickets` that stores a full
+    # position, so the client can resume from it by sending back one number.
     ticket: int = 0
-    # Set when the client asked to resume from a number the server no longer
-    # holds (an unknown or expired ticket): its stream opens with a gap. The
-    # number it asked for is kept to say so.
+    # True when the client asked to resume from a ticket the server does not
+    # have, because it expired or never existed. The stream then opens with a
+    # gap frame, and `resume_requested` holds the number the client sent so the
+    # gap can report it.
     resume_lost: bool = False
     resume_requested: int = 0
 
@@ -446,25 +450,30 @@ class AgentConnection:
 
     @property
     def reads_conversation(self) -> bool:
-        """Whether this connection is sent the rooms' conversation as well as
-        the agent's own events: one that asked for everything, not only what is
-        addressed to the agent."""
+        """Whether this connection asked for every room message (`filter=all`),
+        read from `messages`, as well as the agent's own events."""
         return self.delivery_filter == "all"
 
     @property
     def speaks_positions(self) -> bool:
-        """Whether the client holds a position rather than one number."""
+        """Whether the client is on agent-protocol revision 9 or later, and so
+        sends and receives positions instead of a single number."""
         speaks = self.declaration.speaks
         return speaks is not None and speaks >= POSITIONS_PROTOCOL_REVISION
 
     @property
     def cursor(self) -> int:
-        """The one number a client is told beside its position: the ticket for
-        the position, for a client that holds only one number and reads the
-        conversation too; otherwise how far it is in the agent's own events."""
+        """The single number sent in `cursor` fields, for clients that predate
+        positions.
+
+        A client that receives every room message and does not speak positions
+        is given the ticket last sent to it, because one number cannot hold its
+        place in several rooms. Every other client is given its place in the
+        agent's own events, the `s` entry of its position.
+        """
         if self.reads_conversation and not self.speaks_positions:
             return self.ticket
-        return self.position.get(SLIPS, 0)
+        return self.position.get(OWN_EVENTS, 0)
 
 
 # The `(transport, client)` an agent run by an agents controller counts under:
@@ -795,9 +804,11 @@ class AgentConnectionRegistry:
         position: Position,
         generation: int | None,
     ) -> AgentConnection:
-        """Record a client tick and how far it has read.
+        """Record a client tick and the position it reports.
 
-        The position only ever moves forward, source by source.
+        The reported position is merged into the stored one (`merged`), so no
+        source moves back: a tick that arrives late carrying an older position
+        leaves the connection where it is.
 
         Rejects a tick for a connection with no stream: the client is alive but
         receiving nothing, and must be told to reopen rather than left believing

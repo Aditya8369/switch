@@ -2342,22 +2342,32 @@ class DeliveryCursor(TenantScoped, Base):
 
 
 class AgentEventRow(TenantScoped, Base):
-    """One event that is for one agent, at its position in that agent's stream.
+    """One of an agent's own events: an event meant for that agent, not one it
+    sent.
 
-    Written only for what concerns the agent: a message addressed to it, a
-    join it listens for, a task it is part of, a command sent to it. Those are
-    decided once, when the room's row is delivered to the agent's consumer,
-    and cannot be decided again later, so the decision is kept here. The rest
-    of a room's conversation is read from `messages` itself and never copied.
+    The agent's consumer (`AgentConsumer`) writes a row when a room row it is
+    handed turns out to be for the agent: a message addressed to it, a join it
+    is set to listen for, a task event it is part of, or a command sent to it.
+    Whether a row is for the agent depends on the room's state at the moment
+    it is delivered, so the consumer records the decision here instead of
+    leaving it to be worked out again at read time. The rest of a room's
+    conversation is not copied here; a reader that wants it reads `messages`.
 
-    `seq` is the agent's own offset, contiguous and never reused (see
-    `AgentEventHead`); `payload` is the event as it goes on the wire.
-    `room_seq` is the room row the event came from (for several files posted
-    as one message, the row that completed it), and `message_key` the id that
-    row's conversation is known by (the attachment group, or the row's own
-    event id), so the conversation read from `messages` can leave out what is
-    already here. Rows are deleted after the retention window; `messages`,
-    the conversation itself, is never touched.
+    `seq` numbers the own events of one agent. The numbers are contiguous
+    and never reused (`AgentEventHead` hands them out). `payload` is the event
+    exactly as it is sent to the agent. `notifiable` is false only for
+    commands, and a connection that asked for addressed events only reads the
+    rows where it is true.
+
+    `room_seq` is the `messages.seq` of the room row the event came from. When
+    several files are posted as one message, it is the row of the last part to
+    arrive. `message_key` is the attachment group id for such a message and the
+    row's own event id otherwise. A reader that combines these own events with
+    the room's conversation uses the pair to leave out the rows of `messages`
+    it has already received from here.
+
+    The retention loop in `main.py` deletes rows older than
+    `agent_event_retention_seconds`. It never deletes from `messages`.
     """
 
     __tablename__ = "agent_events"
@@ -2394,13 +2404,20 @@ class AgentEventRow(TenantScoped, Base):
 
 
 class AgentEventHead(TenantScoped, Base):
-    """Where an agent's stream starts and how far it has got.
+    """The first and the latest `agent_events.seq` given out for one agent.
 
-    Offsets come from here rather than from the highest row, because rows are
-    deleted as they age and an offset must never be handed out twice: a reader
-    resuming after it would take a new event for one it had seen. `first_seq`
-    is above every offset the in-memory buffer ever issued, so a cursor from
-    before the outbox is recognisably older than anything here.
+    `EventBuffer.enqueue` takes the next number from `last_seq` here rather
+    than from the highest row in `agent_events`, because the retention loop
+    deletes old rows. If the newest rows were deleted and their numbers handed
+    out again, a client that had already read up to one of those numbers
+    would treat the new event carrying it as one it had seen, and never
+    receive it.
+
+    `first_seq` is the number of the agent's first event. It is derived from
+    the boot number of the process that wrote that event (`agent_event_boot`,
+    shifted left 32 bits), which puts it above every number an earlier server
+    process could have given a client. A client resuming from such a number
+    is therefore below everything stored here and is told it has a gap.
     """
 
     __tablename__ = "agent_event_heads"
@@ -2420,10 +2437,12 @@ class AgentEventHead(TenantScoped, Base):
 
 
 class AgentEventDrop(TenantScoped, Base):
-    """The newest event deleted from one of an agent's rooms.
+    """The newest `agent_events.seq` that retention deleted, per agent and room.
 
-    A reader resuming from at or below it missed events in that room, and is
-    told so by name rather than handed a stream that looks complete.
+    `EventBuffer.expire` writes `dropped_through` when it deletes an agent's
+    rows. A client that resumes from a number below it has missed events in
+    that room. The stream then opens with a gap that names the room, instead
+    of carrying on as if nothing were missing.
     """
 
     __tablename__ = "agent_event_drops"
@@ -2443,13 +2462,19 @@ class AgentEventDrop(TenantScoped, Base):
 
 
 class AgentRoomRead(TenantScoped, Base):
-    """How far an agent has caught up on one room, and who is reading it.
+    """The baseline for an agent's unread count in one room, and who owns it.
 
-    `caught_up_seq` is the room's `messages.seq` the agent last caught up
-    through; unaddressed conversation after it is what the agent is told it
-    missed. `occupant_id` is the session or connection in the room now: only
-    its reading clears the count. Kept here rather than in a process so the
-    count survives a restart and reads the same from every process.
+    `caught_up_seq` is the `messages.seq` the agent had read through the last
+    time it caught up on the room with `read_context`. The unaddressed
+    messages after it are the `missed_count` the agent is shown.
+
+    `occupant_id` is whoever is in the room for this agent now: a session id
+    when `occupant_is_session` is true, a connection id otherwise. Only a
+    catch-up by that occupant moves `caught_up_seq`, so a session that has
+    left the room cannot clear the count of the one that replaced it.
+
+    The row lives in Postgres so the count survives a restart and every
+    server process reports the same number.
     """
 
     __tablename__ = "agent_room_reads"
@@ -2483,11 +2508,14 @@ class AgentRoomRead(TenantScoped, Base):
 
 
 class AgentPollPosition(TenantScoped, Base):
-    """Where a long-polling client has read up to, kept for it.
+    """How far a long-polling client has read, stored on its behalf.
 
-    A polling client sends no position and has nowhere to keep one, so the
-    server keeps it, per reader: the agent-wide poll, the notifications poll,
-    and each room's poll.
+    The long-poll endpoints take no position from the client, so the server
+    remembers one for each kind of poll. `reader_id` names the poll:
+    `legacy:all` for the agent-wide poll, `legacy:notifications` for the
+    notifications poll, and `legacy:room:<room_id>` for a single room's poll.
+    `position` is the state vector the next poll resumes from: `s` for the
+    agent's own events and `r:<room_id>` for each room's conversation.
     """
 
     __tablename__ = "agent_poll_positions"
@@ -2515,23 +2543,32 @@ class AgentPollPosition(TenantScoped, Base):
 agent_position_ticket_sequence = Sequence(
     "agent_position_ticket",
     metadata=Base.metadata,
-    # Above every number an agent stream has issued before positions, so a
-    # client comparing numbers never mistakes a ticket for an older event.
-    # Below 2**53, where a JavaScript client stops counting exactly.
+    # Ticket ids start at 2**48 (`TICKET_FLOOR`), above the agent event numbers
+    # (`agent_events.seq`) a client may also hold. The server can therefore
+    # tell a ticket id from an event number by size alone, and a client that
+    # keeps the highest number it has seen never discards a ticket as older.
+    # 2**48 is also well below 2**53, past which a JavaScript client can no
+    # longer hold an integer exactly.
     start=2**48,
 )
 
 
 class AgentPositionTicket(TenantScoped, Base):
-    """A position handed to a client that can only hold one number.
+    """A stored position, identified by a single number, for older clients.
 
-    Clients speaking agent-protocol revision 8 or older track a single number
-    per stream. A stream that reads from more than one source (the agent's own
-    events and the rooms' conversation) has a position with one number per
-    source, so each event such a client is sent carries the id of a ticket
-    holding the position after it, and the id it sends back is looked up here.
-    Clients that speak positions never create one. Deleted with the events
-    they point at, after the retention window.
+    A reader's position is a state vector: `s` for how far it has read the
+    agent's own events (`agent_events`) and `r:<room_id>` for how far it has
+    read each room's conversation (`messages`). Clients on agent-protocol
+    revision 8 or older can hold only one integer. When such a client reads the
+    whole conversation, the server stores the position after each event it
+    sends as a row here and sends the row's `id` as the event id. When the
+    client resumes or beats with that id, the server looks the position up
+    here.
+
+    Clients on revision 9 send the position itself and never cause a row to
+    be written. The retention loop deletes tickets older than
+    `agent_event_retention_seconds`, the same window as the events they
+    point into.
     """
 
     __tablename__ = "agent_position_tickets"
@@ -2621,6 +2658,12 @@ event.listen(
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
 
+# These attach the trigger that sends a Postgres `NOTIFY` on channel
+# `switch_agent_event` for every new `agent_events` row, so the server process
+# waiting to deliver that agent's events wakes up. They run only when
+# `metadata.create_all` builds the schema, which the tests do. Real databases
+# get the same trigger from migration a7e3c1d9f204. The SQL lives in
+# `db/agent_event_notify_ddl.py`.
 event.listen(
     AgentEventRow.__table__,
     "after_create",

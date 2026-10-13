@@ -120,8 +120,9 @@ class _PendingAttachmentGroup:
     total: int
     parts: dict[int, AttachmentRef] = field(default_factory=dict)
     body: str = ""
-    # The highest room position among the parts seen, so the message the group
-    # becomes is recorded against the row that finished it.
+    # The highest `messages.seq` among the parts received so far. The combined
+    # message is written to the agent's own events with this as its `room_seq`,
+    # the row of the part that completed the group.
     through_seq: int = 0
     # Whether any part of the group addressed this agent. Addressing is read off
     # the message text, and the text rides on part 0 alone — every other part's
@@ -517,8 +518,9 @@ class AgentConsumer(Consumer[AgentActor]):
                 session, meta.room_id, self.agent.id
             )
             if not listening:
-                # An arrival this agent does not react to is the room's
-                # conversation, read from the room's log by whoever wants it.
+                # The agent does not listen for joins in this room, so the join
+                # is not written to its own events. A reader that wants the
+                # whole conversation still sees it, read from `messages`.
                 return
             member_name = await self._member_name(session, event)
         await self._event_buffer.enqueue(
@@ -629,8 +631,9 @@ class AgentConsumer(Consumer[AgentActor]):
             )
 
         if not is_addressed:
-            # The room's conversation, not the agent's own event: it stays in
-            # the room's log, where a reader that wants it reads it.
+            # An unaddressed message is not written to the agent's own events.
+            # A reader that wants the whole conversation reads it from
+            # `messages`.
             return
         # Serialising runs once per agent per message, so only when it will be seen.
         if logger.isEnabledFor(logging.DEBUG):

@@ -16,7 +16,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT_ID = "agent-1"
@@ -52,7 +52,7 @@ def _open(
         scope="all",
         delivery_filter="all",
         spawn_capable=True,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

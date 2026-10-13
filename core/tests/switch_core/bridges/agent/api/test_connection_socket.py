@@ -38,7 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Agent
@@ -178,7 +178,7 @@ def test_events_arrive_with_their_sequence_number(
         assert message["data"]["payload"]["body"] == "hello"
         # The client speaks positions, so it is told the event's place in its
         # source too.
-        assert message["data"]["position"] == {SLIPS: seq}
+        assert message["data"]["position"] == {OWN_EVENTS: seq}
 
 
 def test_the_server_pings_and_a_pong_counts_as_a_beat(

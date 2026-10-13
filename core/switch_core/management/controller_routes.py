@@ -454,8 +454,12 @@ async def record_beat(
         binding = presence.binding(agent_id)
         if agent_id not in agents or binding is None:
             continue
-        # Clamped to the head, as an agent's own beat is: a higher number
-        # belongs to a previous life of this process.
+        # The controller reports how far it has read each agent's own events.
+        # A number past the agent's newest own event can only come from a
+        # database that has since been restored from a backup, or from another
+        # server. Keeping it would make the next read start past events the
+        # agent never received, so it is lowered to the newest one, as an
+        # agent's own beat is.
         confirmed = min(
             cursor, await protocol.event_buffer.head(principal.tenant_id, agent_id)
         )

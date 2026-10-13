@@ -690,11 +690,11 @@ async def read_context(
 
     buffer = protocol.event_buffer
     tenant_id = require_tenant_id()
-    # Where the room is, sampled before the read, because anything written
-    # while the history response is in flight is not in that response.
-    # Clearing through the later position would report a zero for a message
-    # the agent never saw; clearing through this one can only leave something
-    # counted twice.
+    # The room's newest `messages.seq`, taken before the history read because
+    # a message written while the read is in flight is not in its response.
+    # Recording the catch-up through a later number would mark such a message
+    # as read when the agent never saw it. Recording it through this number
+    # can at worst count a message twice.
     through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
     context = await protocol.read_context(

@@ -34,7 +34,11 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS, Position, room_source
+from switch_core.bridges.agent.protocol.positions import (
+    OWN_EVENTS,
+    Position,
+    room_source,
+)
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from tests.db_buffer import db_buffer_on, say, seed_agent, seed_room
@@ -95,7 +99,7 @@ def _connect(
         scope="single",
         delivery_filter="addressed" if one_number else "all",
         spawn_capable=False,
-        position={SLIPS: at},
+        position={OWN_EVENTS: at},
         declaration=ClientDeclaration(
             speaks=POSITIONS_PROTOCOL_REVISION - 1 if one_number else PROTOCOL_VERSION
         ),
@@ -114,7 +118,7 @@ async def _beat(
     position: Position | None = None
     cursor = seq
     if reports == POSITION:
-        position, cursor = {SLIPS: seq}, 0
+        position, cursor = {OWN_EVENTS: seq}, 0
     return await _record_beat(
         protocol,  # type: ignore[arg-type]
         AGENT_ID,
@@ -137,8 +141,8 @@ async def test_a_number_past_the_head_is_pulled_back_to_it(
     beaten = await _beat(protocol, 9, reports)
 
     assert await protocol.event_buffer.head(TENANT_ZERO_ID, AGENT_ID) == 0
-    assert conn.position[SLIPS] == 0
-    assert beaten.position[SLIPS] == 0
+    assert conn.position[OWN_EVENTS] == 0
+    assert beaten.position[OWN_EVENTS] == 0
 
 
 async def test_the_next_event_after_a_foreign_number_is_still_delivered(
@@ -155,7 +159,7 @@ async def test_the_next_event_after_a_foreign_number_is_still_delivered(
     await _addressed(protocol.event_buffer)
 
     delivered = await protocol.event_buffer.read_from(
-        TENANT_ZERO_ID, AGENT_ID, conn.position[SLIPS], rooms={ROOM_ID}
+        TENANT_ZERO_ID, AGENT_ID, conn.position[OWN_EVENTS], rooms={ROOM_ID}
     )
     assert [item.seq for item in delivered] == [1]
 
@@ -171,7 +175,7 @@ async def test_a_number_within_the_buffer_is_left_alone(
 
     await _beat(protocol, 2, reports)
 
-    assert conn.position[SLIPS] == 2
+    assert conn.position[OWN_EVENTS] == 2
 
 
 async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position(
@@ -181,10 +185,10 @@ async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position(
     sequence = await _addressed(protocol.event_buffer)
     conn = _connect(protocol, at=2 << 32)
     await _beat(protocol, (1 << 32) + 2)
-    assert conn.position[SLIPS] == 2 << 32
+    assert conn.position[OWN_EVENTS] == 2 << 32
     assert (
         await protocol.event_buffer.read_from(
-            TENANT_ZERO_ID, AGENT_ID, conn.position[SLIPS]
+            TENANT_ZERO_ID, AGENT_ID, conn.position[OWN_EVENTS]
         )
     )[0].seq == sequence
 
@@ -207,7 +211,7 @@ async def test_a_place_past_a_rooms_end_is_pulled_back_to_it(
         CONN_ID,
         0,
         current,
-        {SLIPS: 0, room_source(ROOM_ID): 9},
+        {OWN_EVENTS: 0, room_source(ROOM_ID): 9},
     )
 
     assert conn.position[room_source(ROOM_ID)] == 2

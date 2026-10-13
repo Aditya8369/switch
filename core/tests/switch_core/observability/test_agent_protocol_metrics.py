@@ -20,7 +20,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.positions import SLIPS
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
@@ -111,7 +111,7 @@ def test_expired_connections_are_counted(registry, monkeypatch):
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -136,7 +136,7 @@ def test_a_quiet_sweep_counts_nothing(registry):
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -152,7 +152,7 @@ def _open(connections: AgentConnectionRegistry, connection_id: str = "c1") -> No
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        position={SLIPS: 0},
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
