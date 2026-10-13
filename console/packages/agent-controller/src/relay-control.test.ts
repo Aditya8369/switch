@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,11 +7,18 @@ import {
   type ControlContext,
   serveControl,
   type SessionLinks,
+  sharedSessionRoot,
   WatcherControl,
 } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from './log';
-import { PAGE_BYTES, readControlFile, RelayControl, type RelayControlDeps } from './relay-control';
+import {
+  type LocalControl,
+  PAGE_BYTES,
+  readControlFile,
+  RelayControl,
+  type RelayControlDeps,
+} from './relay-control';
 import type { AgentControlFrame, ControlPushBody, ControlReply } from './schemas';
 
 const AGENT = 'agent-1';
@@ -51,6 +58,7 @@ function relayControl(overrides: Partial<RelayControlDeps>): RelayControl {
     },
     assigned: () => true,
     controlFile: () => join(tmpdir(), 'no-such-control-file.json'),
+    localControl: () => null,
     log: silentLogger,
     now: Date.now,
     timing: {
@@ -397,6 +405,111 @@ describe('relaying to an agent’s host', () => {
       controlFile: () => join(root, CONTROL_FILE),
     });
     expect(failed(await relay(control, { health: true }))).toBe('agent_not_running');
+  });
+});
+
+describe('relaying to an agent host in the controller’s process', () => {
+  const OTHER = 'agent-2';
+
+  /** Gives `sessionId` a saved configuration naming `agentId`, as its host's launch writes it. */
+  async function savedSession(sessionId: string, agentId: string): Promise<void> {
+    const root = sharedSessionRoot(sessionId);
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, 'config.json'), JSON.stringify({ session: { sessionId, agentId } }));
+  }
+
+  /** Every in-process agent host shares one session registry: `links` serves both agents. */
+  async function inProcess() {
+    vi.stubEnv('HOME', await tempRoot());
+    await savedSession('mine', AGENT);
+    await savedSession('theirs', OTHER);
+    const dispatched: string[] = [];
+    const links = fakeLinks((request) => {
+      dispatched.push(JSON.stringify(request));
+      return { throughSequence: 1, session: { epoch: 'e1' } };
+    });
+    const watcher = new WatcherControl();
+    let stopped!: () => void;
+    let running = true;
+    const local: LocalControl = {
+      context: {
+        agentId: AGENT,
+        links: links.links,
+        ensure: async () => null,
+        watcher,
+        transfers: {} as ControlContext['transfers'],
+      },
+      closed: new Promise<void>((resolve) => (stopped = resolve)),
+    };
+    const control = relayControl({
+      localControl: (agentId) => (agentId === AGENT && running ? local : null),
+    });
+    const stop = () => {
+      running = false;
+      stopped();
+    };
+    return { control, links, watcher, dispatched, stop };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('answers in the process, with no control port, and pushes what it subscribed to', async () => {
+    const host = await inProcess();
+    const health = (await relay(host.control, { health: true })) as {
+      ok: true;
+      result: { state: string };
+    };
+    expect(health.result.state).toBe('not-running');
+    const snapshot = await relay(host.control, {
+      sessionId: 'mine',
+      request: { type: 'snapshot' },
+    });
+    expect(snapshot).toMatchObject({ ok: true, result: { epoch: 'e1', pageCount: 1 } });
+    expect(await relay(host.control, { subscribe: 'mine' })).toEqual({
+      ok: true,
+      result: { failure: null },
+    });
+    expect(await relay(host.control, { watchHealth: true })).toEqual({ ok: true, result: null });
+    host.links.emit(sessionEvent(1));
+    host.watcher.report({ state: 'connected' });
+    await vi.waitFor(() => expect(pushes().flatMap((body) => body.events)).toHaveLength(2));
+    expect(pushes().find((body) => body.subscription === 'mine')!.events[0]).toMatchObject({
+      event: sessionEvent(1),
+    });
+    expect(pushes().find((body) => body.subscription === 'health')!.events[0]).toMatchObject({
+      health: { state: 'connected' },
+    });
+  });
+
+  it('never reads or commands a session of another agent', async () => {
+    const host = await inProcess();
+    const command = { type: 'command', command: {}, requesterName: null };
+    for (const message of [
+      { sessionId: 'theirs', request: { type: 'snapshot' } },
+      { sessionId: 'theirs', request: command },
+      { sessionId: 'unknown', request: command },
+      { subscribe: 'theirs' },
+      { journal: 'theirs' },
+      { place: { sessionId: 'theirs', roomId: 'r' } },
+      { forget: 'theirs' },
+    ])
+      expect(failed(await relay(host.control, message))).toBe('not_own_session');
+    expect(host.dispatched).toEqual([]);
+    expect(host.links.subscribers()).toBe(0);
+    expect(await relay(host.control, { sessionId: 'mine', request: command })).toMatchObject({
+      ok: true,
+    });
+    expect(host.dispatched).toHaveLength(1);
+  });
+
+  it('falls back to the control port once the agent host stops', async () => {
+    const host = await inProcess();
+    await relay(host.control, { health: true });
+    host.stop();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(failed(await relay(host.control, { health: true }))).toBe('agent_not_running');
   });
 });
 

@@ -26,11 +26,11 @@ export type ActivityDeps = {
   localAgents: (serverId: string) => Promise<LocalChatAgent[]>;
   /** A local agent's placements (session → room), or null while its watcher cannot be asked. */
   placements: (serverId: string, consoleAgentId: string) => Promise<Record<string, string> | null>;
-  /** A managed agent's placements on its controller, through the relay; null when the relay fails. */
+  /** A managed agent's placements on its controller, through the relay; why not when the relay fails. */
   controllerPlacements: (
     serverId: string,
     agentId: string
-  ) => Promise<Record<string, string> | null>;
+  ) => Promise<Record<string, string> | 'on-controller' | 'host-unreachable'>;
   /** The signed-in person's managed agents, or null where the server has no agent management. */
   ownedManagedAgents: (serverId: string) => Promise<OwnedManagedAgent[] | null>;
   /** Whether the signed-in person owns the Switch agent. */
@@ -79,7 +79,7 @@ export async function resolveChatActivity(
   if (managed.controllerId === null) return unavailable('not-on-this-machine');
   if (!managed.controllerOnline) return unavailable('controller-offline');
   const placements = await deps.controllerPlacements(serverId, agentId);
-  if (placements === null) return unavailable('on-controller');
+  if (typeof placements === 'string') return unavailable(placements);
   const sessionId = placedSession(placements, roomId);
   if (sessionId === null) return unavailable('not-placed');
   return {

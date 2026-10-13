@@ -6,7 +6,7 @@ function deps(overrides: Partial<ActivityDeps>): ActivityDeps {
   return {
     localAgents: async () => [],
     placements: async () => ({}),
-    controllerPlacements: async () => null,
+    controllerPlacements: async () => 'on-controller',
     ownedManagedAgents: async () => [],
     ownsAgent: async () => false,
     ...overrides,
@@ -67,7 +67,7 @@ describe('resolveChatActivity', () => {
         { agentId: 'agent-c', controllerId: 'ctl-1', controllerOnline: true },
       ],
       controllerPlacements: async (_server, agentId) =>
-        agentId === 'agent-c' ? { 'session-c': 'room-1' } : null,
+        agentId === 'agent-c' ? { 'session-c': 'room-1' } : 'on-controller',
     });
     expect(
       await resolveChatActivity(d, { serverId: 's', agentId: 'agent-c', roomId: 'room-1' })
@@ -95,5 +95,14 @@ describe('resolveChatActivity', () => {
     expect(
       await resolveChatActivity(deps({ ownedManagedAgents: managed(false) }), input)
     ).toMatchObject({ kind: 'unavailable', reason: 'controller-offline' });
+    expect(
+      await resolveChatActivity(
+        deps({
+          ownedManagedAgents: managed(true),
+          controllerPlacements: async () => 'host-unreachable',
+        }),
+        input
+      )
+    ).toMatchObject({ kind: 'unavailable', reason: 'host-unreachable' });
   });
 });

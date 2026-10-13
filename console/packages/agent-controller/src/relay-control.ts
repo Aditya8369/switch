@@ -1,15 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import { connect } from 'node:net';
+import { join } from 'node:path';
 import {
   ControlClient,
+  type ControlContext,
   ControlError,
   type ControlMessage,
   controlMessageSchema,
+  ControlPeer,
   type ControlPush,
+  handleControlMessage,
   SessionHostFailedError,
   SessionUnavailableError,
+  sharedSessionRoot,
   SidecarConnectionClosedError,
   type WatcherHealth,
 } from '@switch-console/agent-providers';
@@ -31,9 +36,11 @@ import {
  * `POST …/control/{relay_id}`, and the live views they open pushed back with
  * `POST …/control/push`.
  *
- * Each agent's host answers on its loopback control port, found in the
- * `control.json` that host writes. That file is the agent's, so it is read as
- * untrusted. Starting a session (`ensure`) and reading reasoning are refused:
+ * An agent host in a process of its own answers on its loopback control
+ * port, found in the `control.json` that host writes. That file is the
+ * agent's, so it is read as untrusted. An agent host in this process is
+ * answered here, limited to the agent's own sessions: the in-process hosts
+ * share one session registry. Starting a session (`ensure`) and reading reasoning are refused:
  * a session is started by the agent's own watcher, and reasoning never leaves
  * this machine.
  */
@@ -76,6 +83,8 @@ export type RelayControlDeps = {
   assigned: (agentId: string) => boolean;
   /** The `control.json` the agent's host writes. */
   controlFile: (agentId: string) => string;
+  /** The agent's host when it runs in this process; null when it does not. */
+  localControl: (agentId: string) => LocalControl | null;
   log: Logger;
   /** Unix epoch ms, as `deadline_ms` counts. */
   now: () => number;
@@ -151,6 +160,86 @@ export async function readControlFile(path: string): Promise<{ port: number; tok
   return file.data;
 }
 
+/** How a relay reaches an agent host that runs in this controller's process. */
+export type LocalControl = {
+  context: ControlContext;
+  /** Settles when that agent host stops. */
+  closed: Promise<unknown>;
+};
+
+/** The session a message names, if it names one. */
+function namedSession(message: ControlMessage): string | null {
+  if ('request' in message) return message.sessionId;
+  if ('subscribe' in message) return message.subscribe;
+  if ('place' in message) return message.place.sessionId;
+  if ('forget' in message) return message.forget;
+  if ('journal' in message) return message.journal;
+  if ('reasoning' in message) return message.reasoning.sessionId;
+  if ('attachment' in message) return message.attachment.sessionId;
+  return null;
+}
+
+/** Refuses a session whose saved configuration does not name `agentId` as its agent. */
+export async function assertOwnSession(agentId: string, sessionId: string): Promise<void> {
+  let owner: unknown = null;
+  try {
+    const text = await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8');
+    owner = (JSON.parse(text) as { session?: { agentId?: unknown } } | null)?.session?.agentId;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError))
+      throw error;
+  }
+  if (owner !== agentId)
+    throw new ControlError(
+      'not_own_session',
+      `Session ${sessionId} is not a session of agent ${agentId}.`
+    );
+}
+
+/** An agent host in this process, answered directly; its live views push through `sink`. */
+class LocalTransport {
+  private readonly peer: ControlPeer;
+
+  constructor(
+    readonly local: LocalControl,
+    sink: (push: ControlPush) => void
+  ) {
+    this.peer = new ControlPeer(sink);
+  }
+
+  private async handle(message: ControlMessage, dispatching: () => void): Promise<unknown> {
+    const sessionId = namedSession(message);
+    if (sessionId !== null) await assertOwnSession(this.local.context.agentId, sessionId);
+    dispatching();
+    return handleControlMessage(this.local.context, this.peer, message, () => {});
+  }
+
+  call(message: ControlMessage, dispatching: () => void): Promise<unknown> {
+    return this.handle(message, dispatching);
+  }
+
+  subscribe(sessionId: string): Promise<unknown> {
+    return this.handle({ subscribe: sessionId }, () => {});
+  }
+
+  async watchHealth(): Promise<void> {
+    await this.handle({ watchHealth: true }, () => {});
+  }
+
+  unsubscribe(name: string): void {
+    void this.handle(
+      name === HEALTH_SUBSCRIPTION ? { watchHealth: false } : { unsubscribe: name },
+      () => {}
+    );
+  }
+
+  close(): void {
+    this.peer.close();
+  }
+}
+
+type Transport = PortTransport | LocalTransport;
+
 /** A connection to an agent's control port; its live views push through `sink`. */
 class PortTransport {
   private readonly offs = new Map<string, () => void>();
@@ -196,6 +285,10 @@ class PortTransport {
     this.offs.get(name)?.();
     this.offs.delete(name);
     this.failures.delete(name);
+  }
+
+  close(): void {
+    this.client.close();
   }
 }
 
@@ -301,8 +394,8 @@ const key = (agentId: string, name: string) => `${agentId}\n${name}`;
 
 export class RelayControl {
   private readonly inflight = new Map<string, Inflight>();
-  private readonly ports = new Map<string, PortTransport>();
-  private readonly connecting = new Map<string, Promise<PortTransport>>();
+  private readonly ports = new Map<string, Transport>();
+  private readonly connecting = new Map<string, Promise<Transport>>();
   /** The subscriptions Switch holds a view of, per agent. */
   private readonly wanted = new Map<string, Set<string>>();
   /** Subscriptions whose transport went away; each skipped a `seq` when it did. */
@@ -561,13 +654,22 @@ export class RelayControl {
 
   // -- Transports -------------------------------------------------------------
 
-  private async transport(agentId: string): Promise<PortTransport> {
+  private async transport(agentId: string): Promise<Transport> {
     if (!this.deps.assigned(agentId))
       throw new ControlError(
         'not_assigned',
         `Agent ${agentId} is not assigned to this controller.`
       );
     const open = this.ports.get(agentId);
+    const local = this.deps.localControl(agentId);
+    if (local) {
+      if (open instanceof LocalTransport && open.local === local) return open;
+      if (open) this.closeTransport(agentId, open);
+      const transport = new LocalTransport(local, (push) => this.push(agentId, push));
+      this.ports.set(agentId, transport);
+      void local.closed.then(() => this.closeTransport(agentId, transport));
+      return transport;
+    }
     if (open) return open;
     let connecting = this.connecting.get(agentId);
     if (!connecting) {
@@ -578,11 +680,11 @@ export class RelayControl {
   }
 
   /** The transport live views are on now, without opening one. */
-  private reachable(agentId: string): PortTransport | null {
+  private reachable(agentId: string): Transport | null {
     return this.ports.get(agentId) ?? null;
   }
 
-  private async connect(agentId: string): Promise<PortTransport> {
+  private async connect(agentId: string): Promise<Transport> {
     const { port, token } = await readControlFile(this.deps.controlFile(agentId));
     if (this.closed) throw new ControlError('agent_unreachable', 'The controller is stopping.');
     const socket = connect({ host: '127.0.0.1', port });
@@ -609,14 +711,18 @@ export class RelayControl {
     }
     const transport = new PortTransport(client, (push) => this.push(agentId, push));
     this.ports.set(agentId, transport);
-    client.onClose(() => {
-      if (this.ports.get(agentId) !== transport) return;
-      this.ports.delete(agentId);
-      this.deps.log.warn('The connection to an agent’s control port closed', { agentId });
-      this.transportLost(agentId);
-      this.resubscribeLater(agentId);
-    });
+    client.onClose(() => this.closeTransport(agentId, transport));
     return transport;
+  }
+
+  /** The agent's host went away from under `transport`: its live views are opened again once it is back. */
+  private closeTransport(agentId: string, transport: Transport): void {
+    if (this.ports.get(agentId) !== transport) return;
+    this.ports.delete(agentId);
+    transport.close();
+    this.deps.log.warn('The connection to an agent’s host closed', { agentId });
+    this.transportLost(agentId);
+    this.resubscribeLater(agentId);
   }
 
   /** Every live view of the agent is gone: each skips a `seq`, so Switch resyncs once it is back. */
@@ -684,7 +790,7 @@ export class RelayControl {
     this.retries.delete(agentId);
     const port = this.ports.get(agentId);
     this.ports.delete(agentId);
-    port?.client.close();
+    port?.close();
     this.pages.forget(agentId);
   }
 
@@ -697,7 +803,7 @@ export class RelayControl {
     this.outboxes.clear();
     const ports = [...this.ports.values()];
     this.ports.clear();
-    for (const port of ports) port.client.close();
+    for (const port of ports) port.close();
     this.pages.clear();
   }
 }

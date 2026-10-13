@@ -1,3 +1,4 @@
+import { RelayError } from '@switch-console/agent-providers';
 import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
@@ -53,6 +54,12 @@ const onServer = withServerWorkspaceSession;
 
 /** Short-lived reads the activity lookup repeats on every placement change. */
 const CACHE_MS = 10_000;
+/** What a controller answers when it is reached but the agent's host on it is not. */
+const HOST_UNREACHABLE_CODES = new Set([
+  'agent_not_running',
+  'agent_unreachable',
+  'control_file_invalid',
+]);
 const cache = new Map<string, { at: number; value: Promise<unknown> }>();
 function cached<T>(key: string, read: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
@@ -89,6 +96,10 @@ const activityDeps: ActivityDeps = {
       const client = await controllerControl(controllerAgentKey(serverId, agentId));
       return (await client.health()).placements;
     } catch (error) {
+      const reason =
+        error instanceof RelayError && HOST_UNREACHABLE_CODES.has(error.relayCode)
+          ? 'host-unreachable'
+          : 'on-controller';
       log.warn(
         'Could not ask a managed agent’s controller for its placements; showing messages only',
         {
@@ -97,7 +108,7 @@ const activityDeps: ActivityDeps = {
           error: String(error),
         }
       );
-      return null;
+      return reason;
     }
   },
   ownedManagedAgents: (serverId) =>

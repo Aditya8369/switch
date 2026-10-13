@@ -132,6 +132,10 @@ export class FakeRuntime implements AgentRuntime {
     return `/data/watchers/${agentId}`;
   }
 
+  localControl(_agentId: string): null {
+    return null;
+  }
+
   async probe(
     _provider: Provider,
     _binaryPath: string,

@@ -172,10 +172,12 @@ export {
   type ControlContext,
   type ControlMessage,
   controlMessageSchema,
+  ControlPeer,
   type ControlPush,
+  handleControlMessage,
   serveControl,
 } from './host/control';
-export { ControlError } from './host/attachment-transfers';
+export { AttachmentTransfers, ControlError } from './host/attachment-transfers';
 export {
   RELAY_TIMEOUT_MS,
   RelayClient,
