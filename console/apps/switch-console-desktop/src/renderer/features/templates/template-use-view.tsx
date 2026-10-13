@@ -1309,9 +1309,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     await queryClient
       .invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) })
       .catch(() => {});
-    void rpc.roomTemplates
-      .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
-      .catch(() => {});
     const deaf = result.createdAgents.filter((a) => !a.listening).map((a) => a.name);
     if (deaf.length > 0 && result.room)
       toast({
@@ -1434,17 +1431,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         .invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) })
         .catch(() => {});
     }
-    // A recent is used again from its own text, so a bundled template whose
-    // instructions live in a separate file is stored with them inlined.
-    void (async () => {
-      const yamlText = loaded.instructions
-        ? await rpc.agentTemplates.compose({
-            yamlText: loaded.yamlText,
-            instructions: loaded.instructions,
-          })
-        : loaded.yamlText;
-      await rpc.roomTemplates.saveRecent({ serverId, name: loaded.name, yamlText });
-    })().catch(() => {});
 
     // Rooms the agents join: the one this page was opened from, and the ones
     // the template names for each agent.
