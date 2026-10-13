@@ -44,6 +44,7 @@ ENROLLMENT_CODE_INVALID = "enrollment_code_invalid"
 OPERATION_UNSUPPORTED = "operation_unsupported"
 NOT_FOUND = "not_found"
 VALIDATION_ERROR = "validation_error"
+RELAY_RESOLVED = "relay_resolved"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -81,5 +82,6 @@ ALL_REASON_CODES = frozenset(
         OPERATION_UNSUPPORTED,
         NOT_FOUND,
         VALIDATION_ERROR,
+        RELAY_RESOLVED,
     }
 )
