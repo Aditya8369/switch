@@ -22,7 +22,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { cn } from '@renderer/utils/utils';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { chatFailure } from '../stores/chat-errors';
-import { chatsStore } from '../stores/chats';
+import { chatsStore, chatTitler } from '../stores/chats';
 
 /**
  * Start a chat with one agent: a private direct room owned by the person. One
@@ -64,6 +64,7 @@ export const NewChatModal = observer(function NewChatModal({
         requestId,
       });
       chatsStore.add(serverId, chat);
+      chatTitler.created(chat, Boolean(name.trim()));
       onSuccess(chat);
     } catch (caught) {
       const failure = chatFailure(caught);
