@@ -1151,6 +1151,18 @@ class RoomYamlService:
             errors=errors,
         )
 
+    async def check_bridges(self, parsed: ParsedTemplate) -> None:
+        """Every messaging app the rooms name must exist, checked before
+        anything is created: a run that creates agents first would otherwise
+        find out only once they exist."""
+        specs = (
+            list(parsed.spec.rooms)
+            if isinstance(parsed.spec, GroupSpec)
+            else [parsed.spec]
+        )
+        for spec in specs:
+            await self._resolve_bridge_id(spec.bridge)
+
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:
             async with self._session_factory() as session:

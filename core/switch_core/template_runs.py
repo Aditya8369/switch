@@ -268,7 +268,9 @@ class TemplateAgents:
                     tenant_id, owner_id, self._spec(plan, plan.machine, plan.directory)
                 )
             except AgentManagementRefused as refused:
-                problems.append(Problem(plan.slot, refused.code, str(refused)))
+                problems.append(
+                    Problem(plan.slot, refused.code, _bare(str(refused), refused.code))
+                )
                 continue
             directory, problem = _directory(plan, placement)
             if problem is not None:
@@ -458,6 +460,18 @@ class TemplateAgents:
                 "exist; delete them in Switch Console."
             )
         return RunUndone(message, left_behind)
+
+
+def _bare(message: str, code: str) -> str:
+    """Management's sentence without what the run's own refusal says around
+    it: its "Nothing was created:" opening and its trailing reason code."""
+    for opening in ("Nothing was created: ", "Nothing was created. "):
+        if message.startswith(opening):
+            message = message[len(opening) :]
+    for ending in (f" ({code}).", f" ({code})"):
+        if message.endswith(ending):
+            message = message[: -len(ending)]
+    return message.rstrip(".")
 
 
 def _reason(error: Exception) -> str:

@@ -281,6 +281,9 @@ async def test_no_machine_that_can_run_every_agent_is_named(managed):
             inputs={"team": "red"},
         )
     assert {p.code for p in e.value.problems} == {"machine_unresolved"}
+    # Why each machine could not take them, so nobody has to go and look.
+    assert "box is offline" in str(e.value)
+    assert "claude is not signed in on server" in str(e.value)
 
 
 @pytest.mark.asyncio
@@ -300,6 +303,7 @@ async def test_a_refusal_names_the_agent_and_nothing_is_created(managed):
         ("red-helper", "provider_not_installed")
     }
     assert "codex is not installed on machine 'laptop'" in str(e.value)
+    assert str(e.value).count("Nothing was created") == 1
     assert e.value.reason == "agents_not_created"
     assert managed["management"].created == []
     assert await _rooms(managed) == []
@@ -421,6 +425,7 @@ async def test_a_kickoff_to_a_new_agent_that_would_ignore_it_is_refused_first(ma
         )
     assert e.value.reason == "kickoff_ignored"
     assert "red-lead" in str(e.value)
+    assert "`addressing: owner-agents`" in str(e.value)
     assert managed["management"].created == []
 
 
@@ -550,4 +555,23 @@ agent:
     with pytest.raises(AgentsNotCreated) as e:
         await _as(managed["agent_id"], run_template, template_id=template_id)
     assert {p.code for p in e.value.problems} == {"connections_off"}
+    assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_messaging_app_is_refused_before_any_agent(managed):
+    template_id = await _stored(
+        managed,
+        TEAM.replace(
+            '  name: "{team}-room"\n', '  name: "{team}-room"\n  bridge: Nowhere\n'
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Unknown bridge"):
+        await _as(
+            managed["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "red"},
+        )
     assert managed["management"].created == []

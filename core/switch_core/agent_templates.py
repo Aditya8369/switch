@@ -351,6 +351,21 @@ def _machine_ready(machine: dict[str, Any], provider: str | None) -> bool:
     )
 
 
+def _why_not_ready(machine: dict[str, Any], providers: set[str]) -> str:
+    name = str(machine.get("name"))
+    state = machine.get("state")
+    if state != "online":
+        return f"{name} is {state}"
+    entries = {str(e.get("provider")): e for e in machine.get("providers") or []}
+    for provider in sorted(providers):
+        entry = entries.get(provider)
+        if entry is None or not entry.get("installed"):
+            return f"{provider} is not installed on {name}"
+        if entry.get("auth") in ("missing", "expired"):
+            return f"{provider} is not signed in on {name}"
+    return f"{name} cannot take it"
+
+
 def _find_machine(machines: list[dict[str, Any]], ref: str) -> dict[str, Any] | None:
     by_id = next((m for m in machines if m.get("id") == ref), None)
     if by_id is not None:
@@ -388,6 +403,8 @@ class _Planner:
         }
         self.entries = _agents(data)
         self.problems: list[Problem] = []
+        # Why `$first` found no machine, one line per machine the owner has.
+        self.unready: list[str] = []
 
     def field_texts(self) -> list[str]:
         return [
@@ -456,6 +473,7 @@ class _Planner:
                 if ready is not None:
                     self.values[name] = str(ready["id"])
                     return str(ready["id"])
+                self.unready = [_why_not_ready(m, providers) for m in ordered]
                 continue
             found = _find_machine(self.machines, candidate)
             if found is not None:
@@ -482,6 +500,11 @@ class _Planner:
             if machine is None or candidate in ready:
                 return candidate
         return None
+
+    def unready_text(self) -> str:
+        if self.machines == []:
+            return " (your owner has no machines)"
+        return f" ({'; '.join(self.unready)})" if self.unready else ""
 
     def problem(self, slot: str, code: str, message: str) -> None:
         self.problems.append(Problem(slot, code, message))
@@ -522,8 +545,8 @@ class _Planner:
                         slot,
                         "machine_unresolved",
                         f"none of the machines its '{ref.group(1)}' input "
-                        "offers is one of your owner's machines that can take it; "
-                        "give a machine in inputs.",
+                        "offers is one of your owner's machines that can take it"
+                        f"{self.unready_text()}; give a machine in inputs.",
                     )
             else:
                 machine = str(self.text(slot, machine_field, values, "machine"))
@@ -534,8 +557,8 @@ class _Planner:
                     slot,
                     "machine_unresolved",
                     f"none of the machines the '{shared}' input offers is one "
-                    "of your owner's machines that can take it; give a machine "
-                    "in inputs.",
+                    f"of your owner's machines that can take it{self.unready_text()}; "
+                    "give a machine in inputs.",
                 )
         elif entry.get("location") is not None or self.for_all("location"):
             self.problem(

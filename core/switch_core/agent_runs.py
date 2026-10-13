@@ -338,17 +338,36 @@ class RunService:
                         continue
                     if name not in refused:
                         refused.append(name)
-        if refused:
-            listed = ", ".join(refused)
-            raise RunRefused(
-                "kickoff_ignored",
-                f"Nothing was created: the kickoff mentions {listed}, and "
-                f"{'it does' if len(refused) == 1 else 'they do'} not accept "
-                f"messages from {agent.name}, so nobody would start work in the "
-                f"room. Ask their owner to let {agent.name} address them (in "
-                f"Switch Console, the agent's 'Who can talk to your agent'), or "
-                f"leave them out of the kickoff.",
+        if not refused:
+            return
+        created = [name for name in refused if name in pending]
+        existing = [name for name in refused if name not in pending]
+        reasons: list[str] = []
+        if existing:
+            listed = ", ".join(existing)
+            reasons.append(
+                f"the kickoff mentions {listed}, and "
+                f"{'it does' if len(existing) == 1 else 'they do'} not accept "
+                f"messages from {agent.name}. Ask their owner to let {agent.name} "
+                "address them (in Switch Console, the agent's 'Who can talk to "
+                "your agent'), or leave them out of the kickoff"
             )
+        if created:
+            listed = ", ".join(created)
+            reasons.append(
+                f"the kickoff mentions {listed}, which this run creates answering "
+                f"only its owner, so {agent.name}'s kickoff would not reach "
+                f"{'it' if len(created) == 1 else 'them'}. Give "
+                f"{'its entry' if len(created) == 1 else 'their entries'} "
+                "`addressing: owner-agents` (or `anyone`) in the template, or "
+                "leave them out of the kickoff"
+            )
+        raise RunRefused(
+            "kickoff_ignored",
+            "Nothing was created: "
+            + "; ".join(reasons)
+            + ". Nobody would start work in the room (kickoff_ignored).",
+        )
 
     async def _trace(self, origin: AgentOrigin) -> str | None:
         """The run so far, top down, as the woken agents are shown it."""

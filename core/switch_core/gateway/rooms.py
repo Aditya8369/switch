@@ -595,6 +595,7 @@ async def run_template_with_agents(
                 body.yaml, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed)
+            await rooms_yaml.check_bridges(parsed)
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
