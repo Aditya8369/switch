@@ -424,8 +424,35 @@ class EventBuffer:
         room_seq: int,
         message_key: str | None,
     ) -> int:
-        """Number one own event and insert it, in one transaction."""
+        """Number one own event and insert it, in one transaction, unless an
+        event from the same source is already stored, and return its number.
+
+        The source is `(message_key, room_id, room_seq, type)`
+        (`uq_agent_events_source`):
+        the consumer of another switch-core process makes the same decision
+        for the same room row, and a write retried after a commit whose
+        acknowledgement was lost repeats one that was made. Either would
+        otherwise give the agent the same event twice under two numbers. When
+        the other write lands between the lookup and the insert, the insert
+        does nothing and the transaction is rolled back, which also gives back
+        the number it took.
+        """
+        source = (
+            select(AgentEventRow.seq).where(
+                AgentEventRow.agent_id == agent_id,
+                AgentEventRow.message_key == message_key,
+                AgentEventRow.room_id == room_id,
+                AgentEventRow.room_seq == room_seq,
+                AgentEventRow.type == event.type,
+            )
+            if message_key is not None
+            else None
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
+            if source is not None:
+                stored = await session.scalar(source)
+                if stored is not None:
+                    return int(stored)
             claim = (
                 insert(AgentEventHead)
                 .values(
@@ -441,8 +468,9 @@ class EventBuffer:
                 .returning(AgentEventHead.last_seq)
             )
             seq = (await session.execute(claim)).scalar_one()
-            session.add(
-                AgentEventRow(
+            inserted = await session.scalar(
+                insert(AgentEventRow)
+                .values(
                     tenant_id=tenant_id,
                     agent_id=agent_id,
                     seq=seq,
@@ -453,7 +481,31 @@ class EventBuffer:
                     payload=event.model_dump(mode="json"),
                     notifiable=is_notifiable(event),
                 )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        AgentEventRow.agent_id,
+                        AgentEventRow.message_key,
+                        AgentEventRow.room_id,
+                        AgentEventRow.room_seq,
+                        AgentEventRow.type,
+                    ],
+                    index_where=AgentEventRow.message_key.is_not(None),
+                )
+                .returning(AgentEventRow.seq)
             )
+            if inserted is None:
+                await session.rollback()
+                assert source is not None
+                stored = await session.scalar(source)
+                assert stored is not None
+                logger.info(
+                    "[EVENT-BUF] own event for agent %s from %s was already stored "
+                    "as %s",
+                    agent_id,
+                    message_key,
+                    stored,
+                )
+                return int(stored)
             await session.commit()
         return seq
 
