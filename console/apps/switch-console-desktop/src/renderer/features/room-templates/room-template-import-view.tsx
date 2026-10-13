@@ -25,7 +25,6 @@ import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { StepPager } from '@renderer/lib/ui/step-pager';
 
 // ── Source step ─────────────────────────────────────────────────────────────
 
@@ -45,7 +44,6 @@ function SourceStep({
   onNext,
   canAdvance,
   onFileSelect,
-  onSaveToServer,
   saving,
   editing,
 }: {
@@ -59,7 +57,6 @@ function SourceStep({
    * Next button and the pager's arrow cannot come to different answers. */
   canAdvance: boolean;
   onFileSelect: (name: string) => void;
-  onSaveToServer: () => void;
   saving: boolean;
   /** Set when the document belongs to a stored template: the actions become Cancel and Save changes. */
   editing?: { onCancel: () => void; onSave: () => void; canSave: boolean };
@@ -197,12 +194,8 @@ function SourceStep({
         </div>
       ) : (
         <div className="flex items-center justify-end gap-2 pt-2">
-          <Button variant="outline" disabled={!yamlText.trim() || saving} onClick={onSaveToServer}>
-            <Save className="mr-1.5 size-3.5" />
-            {saving ? 'Saving…' : 'Save to workspace'}
-          </Button>
           <Button disabled={!canAdvance} onClick={onNext}>
-            Next
+            {saving ? 'Importing…' : 'Import'}
             <ArrowRight className="ml-1.5 size-3.5" />
           </Button>
         </div>
@@ -248,7 +241,6 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     yamlText: initialYaml,
     sourceName: initialName,
     templateId: initialTemplateId,
-    edit: editing,
     editingTemplate,
   } = useParams('templateImport').params;
   const [yamlText, setYamlText] = useState(initialYaml ?? '');
@@ -281,40 +273,26 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     };
   }, [yamlText]);
 
-  // Parse before navigating so a syntax error is shown next to the editor,
-  // where it can be fixed, rather than on the Use page.
-  const handleParseAndAdvance = useCallback(async () => {
-    setParseError(null);
-    try {
-      await rpc.agentTemplates.parseAgents({ yamlText });
-      const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
-      if (coreYaml) await rpc.roomTemplates.parse({ yamlText: coreYaml });
-      else if ((await rpc.agentTemplates.parseAgents({ yamlText })).agents.length === 0) {
-        throw new Error('Template must have a "room:", "group:" or "agent:" block.');
-      }
-      appState.navigation.navigate('templateUse', {
-        serverId,
-        yamlText,
-        sourceName: sourceName ?? undefined,
-      });
-    } catch (e) {
-      setParseError(failureText(e, 'Could not parse this template.'));
-    }
-  }, [yamlText, serverId, sourceName]);
-
-  // Save the document to the workspace without using it. The dialog asks for
-  // the name and description, prefilled from the document.
+  // Import is saving: every template lives on the workspace, and is used from
+  // there. The document is checked first, so a syntax error shows by the
+  // editor; the dialog asks for the name and description, prefilled from it.
   const handleSaveToServer = useCallback(async () => {
     setSaving(true);
     setParseError(null);
     try {
+      await rpc.agentTemplates.parseAgents({ yamlText });
+      if ((await rpc.agentTemplates.kind({ yamlText })) === 'room') {
+        const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
+        if (coreYaml) await rpc.roomTemplates.parse({ yamlText: coreYaml });
+      }
       const prefill = await prefillForSave(yamlText, sourceName);
       showModal('saveTemplateModal', {
         serverId,
         serverName: switchServersStore.servers.find((sv) => sv.id === serverId)?.name ?? null,
         content: yamlText,
         ...prefill,
-        onSuccess: () => appState.navigation.navigate('templates', { serverId }),
+        onSuccess: ({ id }) =>
+          appState.navigation.navigate('templateDetail', { serverId, templateId: id }),
       });
     } catch (e) {
       setParseError(failureText(e, 'Could not read this template.'));
@@ -370,13 +348,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       appState.navigation.navigate('templateUse', { serverId, templateId: initialTemplateId });
       return;
     }
-    // `edit` is set when the deployer came back from the Use page to change
-    // the document, so it must not be sent on again.
-    if (initialYaml && initialYaml.trim().length > 0 && !editing) {
-      advancedOnce.current = true;
-      void handleParseAndAdvance();
-    }
-  }, [initialTemplateId, initialYaml, editing, serverId, handleParseAndAdvance]);
+  }, [initialTemplateId, serverId]);
 
   // The pager's arrow only repeats the Next button below, so both read this
   // rather than spelling the condition once each and drifting apart.
@@ -432,10 +404,9 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             onYamlChange={setYamlText}
             parseError={parseError}
             warnings={warnings}
-            onNext={handleParseAndAdvance}
+            onNext={() => void handleSaveChanges()}
             canAdvance={canAdvance}
             onFileSelect={setSourceName}
-            onSaveToServer={handleSaveToServer}
             saving={saving}
             editing={{
               onCancel: () =>
@@ -456,24 +427,16 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     <ServerPage
       width={896}
       title="Import a template"
-      description="Paste an agent, room or group template, or pick a YAML file. The document says which it is."
-      footer={
-        <StepPager
-          pageName="Pick a template"
-          onBack={null}
-          onNext={canAdvance ? () => void handleParseAndAdvance() : null}
-        />
-      }
+      description="Paste a template or pick a YAML file. It is saved on this workspace, and used from there like every other template."
     >
       <SourceStep
         yamlText={yamlText}
         onYamlChange={setYamlText}
         parseError={parseError}
         warnings={warnings}
-        onNext={handleParseAndAdvance}
+        onNext={() => void handleSaveToServer()}
         canAdvance={canAdvance}
         onFileSelect={setSourceName}
-        onSaveToServer={handleSaveToServer}
         saving={saving}
       />
     </ServerPage>
