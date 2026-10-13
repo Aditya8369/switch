@@ -621,11 +621,33 @@ export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
   return fetchJson<AgentDetail>(`/agents/${agentId}`);
 }
 
-export async function deleteAgent(agentId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/agents/${agentId}`, {
+export interface DeleteAgentResult {
+  ok: boolean;
+  // Chat platforms whose clean-up failed. The agent is deleted regardless;
+  // each platform finishes the clean-up when its bridge next starts.
+  bridge_cleanup_failures: string[];
+}
+
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult | null> {
+  return fetchJson<DeleteAgentResult>(`/agents/${agentId}`, {
     method: "DELETE",
   });
-  return res?.ok ?? false;
+}
+
+export interface RenameAgentResult {
+  agent: AgentSummary;
+  old_name: string;
+  // Chat platforms that could not be updated yet. The rename stands; each
+  // catches up when its bridge next starts.
+  bridge_failures: string[];
+  templates_mentioning_old_name: string[];
+}
+
+export async function renameAgent(
+  agentId: string,
+  name: string,
+): Promise<RenameAgentResult> {
+  return jsonRequest<RenameAgentResult>(`/agents/${agentId}/name`, "PUT", { name });
 }
 
 export async function updateAgentAddressingPolicy(

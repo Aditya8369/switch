@@ -1,13 +1,20 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import EditOutlined from "@mui/icons-material/EditOutlined";
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Divider,
   IconButton,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -18,6 +25,7 @@ import {
   type AgentRoomMembership,
   type AgentSessionDetail,
   type AgentSummary,
+  renameAgent,
   updateAgentOptions,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -72,6 +80,11 @@ export default function AgentDetailPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameNotice, setRenameNotice] = useState<{
+    severity: "success" | "warning";
+    lines: string[];
+  } | null>(null);
 
   if (loading) {
     return (
@@ -102,9 +115,19 @@ export default function AgentDetailPage() {
         <IconButton onClick={() => navigate("/agents")} size="small">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
-          {agent.name}
-        </Typography>
+        <Typography variant="h5">{agent.name}</Typography>
+        {isOwner && !agent.parent_agent_id && agent.children.length === 0 && (
+          <Tooltip title="Rename agent">
+            <IconButton
+              size="small"
+              aria-label="Rename agent"
+              onClick={() => setRenameOpen(true)}
+            >
+              <EditOutlined fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
+        <Box sx={{ flexGrow: 1 }} />
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
@@ -114,6 +137,29 @@ export default function AgentDetailPage() {
           />
         )}
       </Stack>
+
+      {renameNotice && (
+        <Alert
+          severity={renameNotice.severity}
+          onClose={() => setRenameNotice(null)}
+          sx={{ mb: 2 }}
+        >
+          {renameNotice.lines.map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </Alert>
+      )}
+
+      <RenameAgentDialog
+        open={renameOpen}
+        agent={agent}
+        onClose={() => setRenameOpen(false)}
+        onRenamed={(lines, severity) => {
+          setRenameOpen(false);
+          setRenameNotice({ lines, severity });
+          refetch();
+        }}
+      />
 
       <Stack spacing={4}>
         <InfoSection agent={agent} />
@@ -165,6 +211,104 @@ export default function AgentDetailPage() {
         )}
       </Stack>
     </Box>
+  );
+}
+
+function RenameAgentDialog({
+  open,
+  agent,
+  onClose,
+  onRenamed,
+}: {
+  open: boolean;
+  agent: AgentDetail;
+  onClose: () => void;
+  onRenamed: (lines: string[], severity: "success" | "warning") => void;
+}) {
+  const [name, setName] = useState(agent.name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setName(agent.name);
+      setError(null);
+    }
+  }, [open, agent.name]);
+
+  const trimmed = name.trim();
+  const unchanged = trimmed === agent.name;
+
+  const submit = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await renameAgent(agent.id, trimmed);
+      const lines = [`Renamed "${result.old_name}" to "${result.agent.name}".`];
+      if (result.bridge_failures.length > 0) {
+        lines.push(
+          `Not yet updated on: ${result.bridge_failures.join("; ")}. ` +
+            "It catches up when that bridge next starts.",
+        );
+      }
+      if (result.templates_mentioning_old_name.length > 0) {
+        lines.push(
+          "These saved templates still use the old name: " +
+            result.templates_mentioning_old_name.join(", ") +
+            ".",
+        );
+      }
+      const clean =
+        result.bridge_failures.length === 0 &&
+        result.templates_mentioning_old_name.length === 0;
+      onRenamed(lines, clean ? "success" : "warning");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="xs">
+      <DialogTitle>Rename agent</DialogTitle>
+      <DialogContent>
+        <DialogContentText sx={{ mb: 2 }}>
+          The name is what people type to mention the agent. Its rooms, roles
+          and history stay with it, and its handle on connected chat platforms
+          is renamed too.
+        </DialogContentText>
+        <TextField
+          autoFocus
+          fullWidth
+          label="New name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !unchanged && trimmed && !saving) void submit();
+          }}
+          helperText="Lowercase letters, digits, dots, hyphens and underscores."
+          inputProps={{ "aria-label": "New name" }}
+        />
+        {error && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error}
+          </Alert>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button
+          variant="contained"
+          onClick={() => void submit()}
+          disabled={saving || unchanged || !trimmed}
+        >
+          {saving ? "Renaming…" : "Rename"}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
