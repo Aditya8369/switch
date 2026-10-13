@@ -29,6 +29,7 @@ import {
   resetChatStream,
   resyncChatStream,
 } from './chat-streams';
+import { generateChatTitle } from './chat-title';
 import {
   archiveChat,
   createChat,
@@ -209,6 +210,8 @@ export const chatsController = createRPCController({
     onServer(serverId, (server) => archiveChat(server, roomId)),
   rename: (serverId: string, roomId: string, name: string): Promise<void> =>
     onServer(serverId, (server) => renameChat(server, roomId, name)),
+  /** A short chat name from its first message, from the user's local Claude CLI. */
+  title: (message: string): Promise<string> => generateChatTitle(message),
   /**
    * Where the agent's session for the chat runs, as seen from this machine.
    * Changes follow on the room health channel.

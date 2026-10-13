@@ -1,5 +1,7 @@
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
+import { log } from '@renderer/utils/logger';
+import { ChatTitler } from './chat-titler';
 import { ChatsStore, chatsEventsFrom } from './chats-store';
 
 /** The app's chats store, following the workspace the window is scoped to. */
@@ -25,3 +27,11 @@ chatsStore.follow(() => ({
     ? `${workspacesStore.active.id}:${workspacesStore.active.tenantId}`
     : null,
 }));
+
+export const chatTitler = new ChatTitler({
+  title: (message) => rpc.chats.title(message),
+  rename: (serverId, roomId, name) => rpc.chats.rename(serverId, roomId, name),
+  chat: (roomId) => chatsStore.chat(roomId),
+  add: (serverId, chat) => chatsStore.add(serverId, chat),
+  warn: (message, context) => log.warn(message, context),
+});

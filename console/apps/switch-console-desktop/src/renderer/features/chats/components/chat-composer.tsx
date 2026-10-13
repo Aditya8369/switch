@@ -19,6 +19,7 @@ import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
 import { snippetOf } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
+import { chatTitler } from '../stores/chats';
 import {
   PromptInput,
   PromptInputAttachments,
@@ -115,6 +116,7 @@ export const ChatComposer = observer(function ChatComposer({
       mentionAgentId: mentionAgentIdFor(agents, selectedAgentId),
       files: files.map(({ file }) => chatFile(file)),
     });
+    void chatTitler.sent(serverId, timeline.roomId, body);
     setDraft('');
     setFiles([]);
     onClearReply();
