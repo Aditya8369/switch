@@ -21,6 +21,17 @@ from tests.switch_core.gateway.agent_route_harness import (
     is_admin,
 )
 
+
+class _NoBridgeProtocol:
+    """Stands in for AgentCore: these routes only tell it the agent changed."""
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        return []
+
+
+_PROTOCOL = _NoBridgeProtocol()
+
+
 _AGENT_STORE = AgentStore()
 
 _NAME = "Switch Dev"
@@ -40,6 +51,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=_NAME),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
             )
@@ -63,6 +75,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name="  Switch Dev  "),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
             )
@@ -83,6 +96,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=_OTHER_NAME),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
             )
@@ -106,6 +120,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=cleared),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
             )
@@ -129,6 +144,7 @@ class TestUpdateAgentDisplayName:
                     UpdateAgentDisplayNameRequest(display_name=_NAME),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     other,
                     await is_admin(session, other),
                 )
@@ -151,6 +167,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=_NAME),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 admin,
                 await is_admin(session, admin),
             )
@@ -169,6 +186,7 @@ class TestUpdateAgentDisplayName:
                     UpdateAgentDisplayNameRequest(display_name=_NAME),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
                 )
@@ -199,6 +217,7 @@ class TestUpdateAgentDisplayName:
                     UpdateAgentDisplayNameRequest(display_name=bad_name),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
                 )

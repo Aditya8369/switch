@@ -16,6 +16,17 @@ from tests.switch_core.gateway.agent_route_harness import (
     is_admin,
 )
 
+
+class _NoBridgeProtocol:
+    """Stands in for AgentCore: these routes only tell it the agent changed."""
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        return []
+
+
+_PROTOCOL = _NoBridgeProtocol()
+
+
 _AGENT_STORE = AgentStore()
 
 
@@ -32,6 +43,7 @@ class TestUpdateAgentDescription:
                 UpdateAgentDescriptionRequest(description="  Reviews PRs  "),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
             )
@@ -54,6 +66,7 @@ class TestUpdateAgentDescription:
                     UpdateAgentDescriptionRequest(description="   "),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
                 )
@@ -73,6 +86,7 @@ class TestUpdateAgentDescription:
                     UpdateAgentDescriptionRequest(description="Mine now"),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     other,
                     await is_admin(session, other),
                 )

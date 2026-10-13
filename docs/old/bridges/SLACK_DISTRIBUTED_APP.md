@@ -169,7 +169,8 @@ the same job once installed — the differences are all in `settings` and
                 "message.channels",
                 "message.groups",
                 "message.im",
-                "message.mpim"
+                "message.mpim",
+                "subteam_updated"
             ]
         },
         "interactivity": {

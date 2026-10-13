@@ -17,6 +17,13 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agents
 
 
+class _NoBridges:
+    """A deployment with no collaboration bridges running."""
+
+    def bridges_for_tenant(self, tenant_id: str) -> list[object]:
+        return []
+
+
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
@@ -28,6 +35,7 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.user_store = UserStore()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
     svc.room_role_store = RoomRoleStore()  # type: ignore[attr-defined]
+    svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
     return svc
 
 
