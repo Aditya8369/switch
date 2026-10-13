@@ -169,3 +169,15 @@ def test_lint_reads_a_v2_document():
     assert "invalid_resource_type" in codes
     unknown = lint_template(EXPERT.replace("{expert.name} hi", "{nobody.name} hi"))
     assert "unknown_reference" in {w.code for w in unknown.warnings}
+
+
+def test_an_input_that_refers_to_a_resource_is_resolved():
+    plan = plan_template(
+        EXPERT,
+        {},
+        {"name": "Expert N1", "directory": "{$agents_dir}/{expert.name}"},
+        builtins={"$creator": "ada"},
+        machines=MACHINES,
+    )
+    (agent,) = plan.new_agents
+    assert agent.directory == "{$agents_dir}/expert-n1"

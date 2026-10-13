@@ -379,7 +379,9 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
         out["room"] = room_block(room_keys[0])
         if resources[room_keys[0]].get("kickoff"):
             out["kickoff"] = resources[room_keys[0]]["kickoff"]
-    run_inputs = {k: v for k, v in inputs.items() if k in params}
+    # An input may carry a reference too: a directory param's default,
+    # "{$agents_dir}/{expert.name}", filled into the form and sent back.
+    run_inputs = {k: resolve(v, f"input {k}") for k, v in inputs.items() if k in params}
     return Compiled(
         document=yaml.safe_dump(out, sort_keys=False, allow_unicode=True),
         inputs=run_inputs,

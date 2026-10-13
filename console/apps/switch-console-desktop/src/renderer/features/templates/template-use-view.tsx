@@ -1687,10 +1687,18 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     return location === null || location === LOCAL_RUN_LOCATION ? null : location;
   };
 
+  /** The directory a directory param resolves to for the agent reading it. */
+  const directoryShownFor = (param: ParamSpec): string => {
+    const setup = setups[agentIndexOf(param)];
+    if (!setup) return '';
+    return management && setup.managedDirectory
+      ? shownDirectory(setup.managedDirectory, setup.machine)
+      : setup.directory;
+  };
+
   /** How a value reads on one line, folded. */
   const summaryOf = (param: ParamSpec, value: string | number | boolean): string => {
-    const resolvedDirectory =
-      param.type === 'directory' ? (setups[agentIndexOf(param)]?.directory ?? '') : '';
+    const resolvedDirectory = param.type === 'directory' ? directoryShownFor(param) : '';
     return param.type === 'provider'
       ? (providerDisplayName(String(value)) ?? String(value))
       : param.type === 'location' && !management
@@ -1717,8 +1725,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
     // A directory param's value can read `{$agents_dir}` and `{agent}`; the
     // control shows the path they resolve to, and an edit writes a literal.
-    const resolvedDirectory =
-      param.type === 'directory' ? setups[agentIndexOf(param)]?.directory || null : null;
+    const resolvedDirectory = param.type === 'directory' ? directoryShownFor(param) || null : null;
     const field = (
       <ParamField
         key={param.name}
