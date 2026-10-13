@@ -4,7 +4,10 @@ import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
-import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
+import {
+  ServerStatusPill,
+  serverState,
+} from '@renderer/features/switch-servers/server-presentation';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
@@ -99,7 +102,11 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       }
       rightSlot={
         <div className="mr-1 flex items-center gap-1.5">
-          {server && <ServerStatusPill server={server} />}
+          {server &&
+            (!tabbed ||
+              (serverState(server) !== 'connected' && serverState(server) !== 'running-local')) && (
+              <ServerStatusPill server={server} />
+            )}
           {agent && <ManagedAgentActionsMenu agent={agent} />}
         </div>
       }
