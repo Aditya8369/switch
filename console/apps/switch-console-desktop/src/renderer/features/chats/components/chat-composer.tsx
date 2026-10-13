@@ -1,8 +1,15 @@
 import type { Command } from '@switch-console/shared/session-v1';
-import { Cpu, Paperclip, Users, X } from 'lucide-react';
+import {
+  ChevronDown,
+  Minimize2,
+  Paperclip,
+  RotateCcw,
+  SlidersHorizontal,
+  Users,
+  X,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
-import { SessionV1Controls } from '@renderer/features/sessions/components/transcript/session-v1-controls';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { Button } from '@renderer/lib/ui/button';
@@ -13,7 +20,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
-import { ACTIVITY_UNAVAILABLE_TEXT } from '@shared/core/chats/activity';
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
 import { snippetOf } from '../chat-threads';
@@ -50,7 +57,7 @@ function stopBlocker(activity: AgentActivity | null): string | null {
   if (!activity?.session) return null;
   if (!activity.session.capabilities.interrupt)
     return "This agent's provider cannot be interrupted from here.";
-  if (!activity.view?.connected) return 'Reconnecting to the agent’s session…';
+  if (!activity.view?.connected) return "Reconnecting to the agent's session...";
   if (activity.client?.hasPendingCommand())
     return 'Waiting for the previous command to be confirmed.';
   return null;
@@ -93,6 +100,8 @@ export const ChatComposer = observer(function ChatComposer({
   const [files, setFiles] = useState<{ id: string; file: File }[]>([]);
   const [controlError, setControlError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const roomOnly = agents.length > 1 && selectedAgentId === ROOM_ONLY;
   const selected = roomOnly
@@ -100,7 +109,6 @@ export const ChatComposer = observer(function ChatComposer({
     : (agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null);
   const session = activity?.session ?? null;
   const runningTurn = activity?.runningTurn ?? null;
-  const target = activity?.target ?? null;
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
@@ -128,7 +136,7 @@ export const ChatComposer = observer(function ChatComposer({
     try {
       await activity.client.execute(body, crypto.randomUUID());
     } catch (error) {
-      setControlError(failureText(error, 'The agent’s session did not take the command.'));
+      setControlError(failureText(error, "The agent's session did not take the command."));
     }
   };
 
@@ -144,18 +152,12 @@ export const ChatComposer = observer(function ChatComposer({
   const status = stopping ? 'sending' : showStop ? 'running' : 'idle';
   const unknownCommands =
     activity?.view?.snapshot?.commandStatuses.filter((each) => each.status === 'unknown') ?? [];
-  const modelUnavailable =
-    target?.kind === 'unavailable'
-      ? target.message
-      : !session
-        ? 'Connecting to the agent’s session…'
-        : null;
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
       {unknownCommands.length > 0 && (
         <p role="status" className="mb-2 text-xs text-foreground-muted">
-          Not confirmed: Switch couldn’t confirm whether an earlier action finished. It won’t run
+          Not confirmed: Switch couldn't confirm whether an earlier action finished. It won't run
           that action again automatically.
         </p>
       )}
@@ -196,7 +198,9 @@ export const ChatComposer = observer(function ChatComposer({
           />
           <PromptInputTextarea
             aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the room'}`}
-            placeholder={disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the room'}…`}
+            placeholder={
+              disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the room'}...`
+            }
             value={draft}
             disabled={disabled !== null}
             onChange={(event) => setDraft(event.target.value)}
@@ -243,27 +247,134 @@ export const ChatComposer = observer(function ChatComposer({
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
-              {session && activity?.client ? (
-                <SessionV1Controls
-                  key={`${session.epoch}:${JSON.stringify(session.model)}`}
-                  session={session}
-                  disabled={
-                    !activity.view?.connected ||
-                    session.connectivity !== 'online' ||
-                    activity.client.hasPendingCommand() ||
-                    session.status !== 'ready' ||
-                    activity.working ||
-                    session.pendingRequestIds.length > 0
-                  }
-                  execute={execute}
-                />
-              ) : (
-                <PromptInputButton
-                  disabled
-                  tooltip={modelUnavailable ?? ACTIVITY_UNAVAILABLE_TEXT['not-on-this-machine']}
+              {session && activity?.client && (
+                <Popover
+                  open={contextOpen}
+                  onOpenChange={(open) => {
+                    setContextOpen(open);
+                    setConfirmReset(false);
+                  }}
                 >
-                  <Cpu className="size-3.5" />
-                </PromptInputButton>
+                  <PopoverTrigger
+                    render={<Button variant="ghost" size="sm" />}
+                    className="h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted"
+                    aria-label="Context actions"
+                  >
+                    <SlidersHorizontal className="size-3.5" />
+                    Context
+                    <ChevronDown className="size-3" />
+                  </PopoverTrigger>
+                  <PopoverContent
+                    side="top"
+                    align="start"
+                    className="w-80 max-w-[calc(100vw-2rem)] gap-2 p-3"
+                  >
+                    <PopoverTitle>
+                      {confirmReset ? 'Start a fresh conversation?' : 'Conversation context'}
+                    </PopoverTitle>
+                    {confirmReset ? (
+                      <>
+                        <p className="text-xs text-foreground-muted">
+                          The agent starts with a fresh context. Earlier messages stay in the
+                          transcript as history.
+                        </p>
+                        <div className="flex justify-end gap-2 pt-2">
+                          <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={
+                              !activity.view?.connected ||
+                              session.connectivity !== 'online' ||
+                              activity.client.hasPendingCommand() ||
+                              session.status !== 'ready' ||
+                              activity.working ||
+                              session.pendingRequestIds.length > 0 ||
+                              !session.capabilities.reset
+                            }
+                            onClick={() => {
+                              setContextOpen(false);
+                              setConfirmReset(false);
+                              void execute({ type: 'session.reset' });
+                            }}
+                          >
+                            Start fresh
+                          </Button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          variant="ghost"
+                          disabled={
+                            !activity.view?.connected ||
+                            session.connectivity !== 'online' ||
+                            activity.client.hasPendingCommand() ||
+                            session.status !== 'ready' ||
+                            activity.working ||
+                            session.pendingRequestIds.length > 0 ||
+                            !session.capabilities.compact
+                          }
+                          className="h-auto justify-start gap-3 px-2 py-2 text-left"
+                          onClick={() => {
+                            setContextOpen(false);
+                            void execute({ type: 'session.compact' });
+                          }}
+                        >
+                          <Minimize2 className="size-4 shrink-0" />
+                          <span>
+                            <span className="block">Compact context</span>
+                            <span className="block text-xs font-normal text-foreground-muted">
+                              {session.capabilities.compact
+                                ? 'Free up space in this conversation'
+                                : 'Native compaction is unavailable'}
+                            </span>
+                          </span>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          disabled={
+                            !activity.view?.connected ||
+                            session.connectivity !== 'online' ||
+                            activity.client.hasPendingCommand() ||
+                            session.status !== 'ready' ||
+                            activity.working ||
+                            session.pendingRequestIds.length > 0 ||
+                            !session.capabilities.reset
+                          }
+                          className="h-auto justify-start gap-3 px-2 py-2 text-left"
+                          onClick={() => setConfirmReset(true)}
+                        >
+                          <RotateCcw className="size-4 shrink-0" />
+                          <span>
+                            <span className="block">Reset context...</span>
+                            <span className="block text-xs font-normal text-foreground-muted">
+                              {session.capabilities.reset
+                                ? 'Start fresh and keep transcript history'
+                                : 'Reset is unavailable for this session'}
+                            </span>
+                          </span>
+                        </Button>
+                        {(!activity.view?.connected ||
+                          session.connectivity !== 'online' ||
+                          activity.client.hasPendingCommand() ||
+                          session.status !== 'ready' ||
+                          activity.working ||
+                          session.pendingRequestIds.length > 0) && (
+                          <p className="text-xs text-foreground-muted">
+                            Context changes need a connected, idle session with no pending requests
+                            or commands.
+                          </p>
+                        )}
+                        <p className="border-t border-border pt-2 text-xs text-foreground-muted">
+                          Skills and MCP load from the execution host. Restart the host while idle
+                          after changing their configuration.
+                        </p>
+                      </>
+                    )}
+                  </PopoverContent>
+                </Popover>
               )}
               <PromptInputButton
                 tooltip="Attach files"
