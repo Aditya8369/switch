@@ -20,6 +20,17 @@ const GITHUB_REPO =
   /^(?:https:\/\/github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
 
 /**
+ * The texts of an entry's runtime fields, for telling whether a param is read
+ * by one. The renderer's copy of the main process's: the renderer can import
+ * only types from `@main`.
+ */
+export function runtimeFieldTexts(
+  agent: Pick<ParsedAgentEntry, 'provider' | 'location' | 'machine' | 'directory'>
+): string[] {
+  return [agent.provider ?? '', agent.location ?? '', agent.machine ?? '', agent.directory ?? ''];
+}
+
+/**
  * The machine a new agent runs on: the one its `machine` names (by id or
  * name), else the one behind its `location` (this computer or an SSH host),
  * or null when none of the deployer's machines is it.

@@ -2,13 +2,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  type FormOptions,
-  type ParsedAgentEntry,
-  runtimeFieldTexts,
-  type TemplateConnection,
-  type TemplateKind,
-  type UnsaidRuntime,
+import type {
+  FormOptions,
+  ParsedAgentEntry,
+  TemplateConnection,
+  TemplateKind,
+  UnsaidRuntime,
 } from '@main/core/agent-templates/template-document';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
@@ -76,6 +75,7 @@ import {
   machineProblem,
   managedDirectory,
   runAgent,
+  runtimeFieldTexts,
   shownDirectory,
 } from './use/managed-run';
 import { ParamField } from './use/param-field';
