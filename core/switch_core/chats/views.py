@@ -22,9 +22,11 @@ from switch_core.db.models import (
     CollaborationBridge,
     Message,
     Room,
+    User,
     room_agents,
 )
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.delivery.addressing import named_agents
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 PREVIEW_CHARS = 140
@@ -59,6 +61,10 @@ class ChatAgent(CamelModel):
     display_name: str | None
     icon_url: str | None
     provider: str | None
+    # The name the agent also answers to in this room, if any.
+    alias: str | None
+    owner_name: str | None
+    owned_by_viewer: bool
 
 
 class ChatLastMessage(CamelModel):
@@ -109,6 +115,9 @@ class ChatMessage(CamelModel):
     thread_root_id: str | None
     attachments: list[ChatAttachment]
     client_txn: str | None
+    # The room's agents the body names by @name or @alias. Display only: who
+    # a message addresses is each agent's own decision.
+    named_agent_ids: list[str]
 
 
 class ChatMember(CamelModel):
@@ -130,15 +139,16 @@ async def _bridge(session: AsyncSession, room: Room) -> CollaborationBridge | No
 async def chat_summary(
     session: AsyncSession, room: Room, *, viewer_id: str, can_manage: bool
 ) -> ChatSummary:
-    agent_rows = (
+    rows = (
         await session.execute(
-            select(Agent)
+            select(Agent, room_agents.c.alias, User.name)
             .join(room_agents, room_agents.c.agent_id == Agent.id)
+            .outerjoin(User, User.id == Agent.owner_id)
             .where(room_agents.c.room_id == room.id)
             .order_by(Agent.name)
         )
-    ).scalars()
-    agents = list(agent_rows)
+    ).all()
+    agents = [agent for agent, _alias, _owner in rows]
     providers = {
         definition.agent_id: definition.definition.get("provider")
         for definition in (
@@ -177,8 +187,11 @@ async def chat_summary(
                 display_name=agent.display_name,
                 icon_url=agent.icon_url,
                 provider=_provider(agent, providers.get(agent.id)),
+                alias=alias,
+                owner_name=owner_name,
+                owned_by_viewer=agent.owner_id == viewer_id,
             )
-            for agent in agents
+            for agent, alias, owner_name in rows
         ],
         can_manage=can_manage,
         owns_agent=any(agent.owner_id == viewer_id for agent in agents),
@@ -218,6 +231,16 @@ async def chat_messages(
     }
     bridge = await _bridge(session, room)
     attachments = await _MESSAGE_STORE.attachments_for(session, [m.id for m in shown])
+    names: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    for agent_id, name, alias in await session.execute(
+        select(Agent.id, Agent.name, room_agents.c.alias)
+        .join(room_agents, room_agents.c.agent_id == Agent.id)
+        .where(room_agents.c.room_id == room.id)
+    ):
+        names[agent_id] = name
+        if alias:
+            aliases[agent_id] = alias
     out: list[ChatMessage] = []
     for message in shown:
         client = clients.get(message.sender_client_id or "")
@@ -260,6 +283,7 @@ async def chat_messages(
                     for attachment in attachments.get(message.id, [])
                 ],
                 client_txn=message.client_txn_id,
+                named_agent_ids=named_agents(names, aliases, message.body or ""),
             )
         )
     return out

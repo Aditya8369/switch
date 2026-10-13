@@ -105,6 +105,7 @@ class SendRequest(CamelModel):
     thread_root_id: str | None = None
     upload_ids: list[str] = []
     mention_agent_id: str | None = None
+    mention_agent_ids: list[str] = []
 
 
 class SentMessages(CamelModel):
@@ -270,6 +271,7 @@ async def send_message(
         thread_root_id=req.thread_root_id,
         upload_ids=req.upload_ids,
         mention_agent_id=req.mention_agent_id,
+        mention_agent_ids=req.mention_agent_ids,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return SentMessages(messages=await chat_messages(session, room, posted))

@@ -967,6 +967,7 @@ class ChatService:
         thread_root_id: str | None,
         upload_ids: list[str],
         mention_agent_id: str | None,
+        mention_agent_ids: list[str],
     ) -> tuple[Room, list[Message]]:
         """Post the user's message, every part of it in one transaction.
 
@@ -974,16 +975,31 @@ class ChatService:
         writing rows: each part, and the operation marked done, commit
         together or not at all. A retry after a failure before the commit
         posts it once; one after the commit answers the parts already posted.
+
+        The agents the message is for come as `mention_agent_ids`, or one as
+        `mention_agent_id` from earlier clients, never both. They are a set:
+        the same agents in another order are the same request.
         """
-        payload_hash = _hash(
-            {
-                "roomId": room_id,
-                "body": body,
-                "threadRootId": thread_root_id,
-                "uploadIds": upload_ids,
-                "mentionAgentId": mention_agent_id,
-            }
-        )
+        if mention_agent_id is not None and mention_agent_ids:
+            raise ChatError(
+                422,
+                "MENTIONS_CONFLICT",
+                "Name the agents in mentionAgentIds, or one in mentionAgentId; "
+                "not both.",
+            )
+        mentions = sorted(set(mention_agent_ids))
+        request: dict[str, object] = {
+            "roomId": room_id,
+            "body": body,
+            "threadRootId": thread_root_id,
+            "uploadIds": upload_ids,
+            "mentionAgentId": mention_agent_id,
+        }
+        if mentions:
+            request["mentionAgentIds"] = mentions
+        payload_hash = _hash(request)
+        if mention_agent_id is not None:
+            mentions = [mention_agent_id]
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
             operation = await self._operation(session, user.id, request_id)
@@ -998,8 +1014,8 @@ class ChatService:
                 for upload_id in upload_ids
             ]
             root = await self._thread_root(session, room, thread_root_id)
-            if mention_agent_id is not None:
-                body = await self._with_mention(session, room, mention_agent_id, body)
+            if mentions:
+                body = await self._with_mentions(session, room, mentions, body)
 
             if not await self._claim(
                 session,
@@ -1110,16 +1126,28 @@ class ChatService:
             )
         return found[0].thread_root_event_id or found[0].transport_event_id
 
-    async def _with_mention(
-        self, session: AsyncSession, room: Room, agent_id: str, body: str
+    async def _with_mentions(
+        self, session: AsyncSession, room: Room, agent_ids: list[str], body: str
     ) -> str:
-        if agent_id not in await self._room_store.get_agent_ids(session, room.id):
+        """`body` led by an `@name` for each agent it does not already name by
+        name or room alias, so every agent decides it was addressed by the
+        same rule a typed mention meets."""
+        in_room = set(await self._room_store.get_agent_ids(session, room.id))
+        if any(agent_id not in in_room for agent_id in agent_ids):
             raise ChatError(422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat.")
-        agent = await self._agent_store.get(session, agent_id)
-        assert agent is not None
-        if mention_regex(agent.name).search(strip_emphasis(body)) is not None:
+        aliases = await self._room_store.list_aliases(session, room.id)
+        text = strip_emphasis(body)
+        missing: list[str] = []
+        for agent_id in agent_ids:
+            agent = await self._agent_store.get(session, agent_id)
+            assert agent is not None
+            spoken = [agent.name, *([aliases[agent_id]] if agent_id in aliases else [])]
+            if all(mention_regex(name).search(text) is None for name in spoken):
+                missing.append(agent.name)
+        prefix = " ".join(f"@{name}" for name in sorted(missing))
+        if not prefix:
             return body
-        return f"@{agent.name} {body}" if body else f"@{agent.name}"
+        return f"{prefix} {body}" if body else prefix
 
 
 def _owns_agent_in_room(user_id: str) -> ColumnElement[bool]:
