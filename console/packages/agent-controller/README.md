@@ -159,7 +159,10 @@ Linux it also starts at boot and survives logout only with lingering on
 keeps the `PATH` of the shell that installed it, so the provider CLIs found then are
 found by the service. A data directory other than the default gets a service name
 with a hash of its path, so two controllers on one account each get their own.
-`uninstall-service` stops and removes it and keeps the enrollment.
+The service runs the controller through `<data dir>/releases/current`, which
+`install-service` points at the npm install it was run from (see
+[Updates](#updates)). `uninstall-service` stops and removes it, and the releases it
+installed, and keeps the enrollment.
 
 On Linux without a systemd user manager (some containers and minimal VMs),
 `install-service` refuses. Run `run` under your own supervisor instead, with the
@@ -365,23 +368,30 @@ with `--credential-stdin`) never updates itself: it updates with Console.
 
 Where it installs depends on how the controller was installed:
 
-- **As a service of your user, or a plain npm install:** with `npm install --global
+- **As a service, of your user or with `--separate-users`:** into its releases
+  directory, `<data dir>/releases` for a service of your user (`--releases-dir`,
+  which `install-service` passes to `run`) or the one the separate-users setup
+  names (see [Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own)).
+  Each release is `<releases>/<version>/`, an npm prefix: it installs into
+  `<version>.partial`, checks it, renames it, then points `<releases>/current`, which
+  the service runs through, at it in one step. It keeps the release it replaced and
+  at most one older one, and never touches a prefix outside the directory, such as
+  the npm install `current` first named. A failed install leaves `current` as it
+  was. A service of your user installed before releases directories updates in
+  place, as below, until `install-service` is run again.
+- **A plain npm install, not run as a service:** with `npm install --global
   --prefix <prefix>`, over the prefix the running controller came from, as `update`
-  does. A controller run from a checkout does not update itself, and reports why.
-  Under systemd (which sets `INVOCATION_ID`) or launchd (`--launchd`) it exits `7`
-  to be restarted; run any other way, it installs, reports `restart_needed` and
-  logs that it must be restarted, and keeps running.
-- **With `install-service --separate-users`:** into its releases directory (see
-  [Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own)), as
-  `<releases>/<version>/`, an npm prefix: it installs into `<version>.partial`,
-  checks it, renames it, then points `<releases>/current` at it in one step. It
-  keeps the release it replaced and at most one older one, and never touches a
-  prefix outside the directory.
+  does. A controller run from a checkout does not update itself, and reports why,
+  as does one on Windows. Under systemd (which sets `INVOCATION_ID`) or launchd
+  (`--launchd`) it exits `7` to be restarted; run any other way, it installs,
+  reports `restart_needed` and logs that it must be restarted, and keeps running.
 
 **By hand.** `update` installs the newest published release with npm and restarts
 the service if it runs; `update --check` only says whether there is one. `run` logs
 a warning when a newer release exists, and `doctor` shows it. `update` refuses to
-install into a releases directory, which only its controller installs into.
+install into a releases directory, which only its controller installs into. Run from
+the npm install, it installs there and points the service's `current` back at it when
+that is newer than what `current` names.
 
 ### Checking a machine
 
@@ -600,6 +610,7 @@ It holds:
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 | `updates/` | A release being downloaded to update to (deleted once installed or refused), and npm's cache. The last update attempt is kept in `controller.db`. |
+| `releases/` | With `install-service`: the releases the controller installed for itself, each an npm prefix, and `current`, the link the service runs through. |
 
 An agent whose definition names no directory works in
 `~/.switch/agents/<server>/<name>/`, where `<server>` is the server's address

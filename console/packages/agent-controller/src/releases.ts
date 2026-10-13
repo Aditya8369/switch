@@ -1,9 +1,10 @@
 import { lchown, lstat, readdir, readFile, readlink, rename, rm, symlink } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
- * A releases directory: where a controller run by `install-service
- * --separate-users` keeps the releases it installs for itself. Each
+ * A releases directory: where a controller run by `install-service` keeps the
+ * releases it installs for itself (`<data dir>/releases` for a service of
+ * the user's, its own directory with `--separate-users`). Each
  * `<releases>/<version>/` is an npm prefix holding one release, and
  * `<releases>/current` links to the prefix the controller's unit and its
  * agents' units run from: one of those, or the one the controller was first
@@ -28,6 +29,13 @@ export function prefixBin(prefix: string): string {
 
 export function currentLink(releasesDir: string): string {
   return join(releasesDir, CURRENT);
+}
+
+/** `path`, a file of the release in the npm prefix `prefix`, as reached through `<releases>/current`; a path outside `prefix` as it is. */
+export function throughCurrent(releasesDir: string, prefix: string, path: string): string {
+  const inside = relative(prefix, path);
+  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) return path;
+  return join(currentLink(releasesDir), inside);
 }
 
 /** What `<releases>/current` is now. */

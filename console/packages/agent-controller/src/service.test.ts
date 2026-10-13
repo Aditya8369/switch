@@ -16,6 +16,7 @@ const SPEC: ServiceSpec = {
   dataDir: '/srv/controller data',
   envFile: '/home/me/agents.env',
   sharedHostBundle: null,
+  releasesDir: null,
   path: '/home/me/.local/bin:/usr/bin:/bin',
 };
 
@@ -29,6 +30,17 @@ describe('systemdUnit', () => {
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('RestartPreventExitStatus=2 3 4 5 6');
     expect(unit).not.toContain('--launchd');
+  });
+
+  it('runs through the releases directory, and tells the controller where it is', () => {
+    const unit = systemdUnit({
+      ...SPEC,
+      cli: '/srv/controller data/releases/current/lib/node_modules/switch-agent-controller/cli.mjs',
+      releasesDir: '/srv/controller data/releases',
+    });
+    expect(unit).toContain(
+      '"/srv/controller data/releases/current/lib/node_modules/switch-agent-controller/cli.mjs" "run" "--data-dir" "/srv/controller data" "--env-file" "/home/me/agents.env" "--releases-dir" "/srv/controller data/releases"'
+    );
   });
 
   it('restarts on 7, restarting into an update', () => {

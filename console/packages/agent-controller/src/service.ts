@@ -17,6 +17,8 @@ export type ServiceSpec = {
   dataDir: string;
   envFile: string | null;
   sharedHostBundle: string | null;
+  /** The releases directory the service runs through (`<releases>/current`), and the controller installs releases into; null when it runs from where it is. */
+  releasesDir: string | null;
   path: string;
 };
 
@@ -54,6 +56,7 @@ function runArguments(spec: ServiceSpec, launchd: boolean): string[] {
     spec.dataDir,
     ...(spec.envFile ? ['--env-file', spec.envFile] : []),
     ...(spec.sharedHostBundle ? ['--shared-host-bundle', spec.sharedHostBundle] : []),
+    ...(spec.releasesDir ? ['--releases-dir', spec.releasesDir] : []),
     ...(launchd ? ['--launchd'] : []),
   ];
 }

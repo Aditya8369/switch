@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   cliToolsBase,
@@ -45,7 +45,7 @@ import { createLogger, errorMessage } from './log';
 import { loginShellPath } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { definitionProblem } from './reconcile';
-import { isManagedRelease } from './releases';
+import { isManagedRelease, readCurrent, throughCurrent } from './releases';
 import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION } from './schemas';
@@ -75,6 +75,7 @@ import {
 import {
   assertControllerCanRunSeparateUsers,
   DEFAULT_AGENT_USERS,
+  ensureReleases,
   findSeparateUsersConfig,
   installSeparateUsers,
   loadSeparateUsersConfig,
@@ -114,6 +115,7 @@ Commands:
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin] [--agent-runtime default|separate-user]
+      [--releases-dir <dir>]
       Run the agents assigned to this machine and report their status.
       --agent-runtime separate-user runs every agent as a Linux user of its
       own, as set up by install-service --separate-users.
@@ -121,6 +123,8 @@ Commands:
       the data directory holds none, and move the same identity to a new
       server URL when it holds that one. --credential-stdin reads the
       controller credential from stdin and keeps it in memory only.
+      --releases-dir, which install-service passes, is where it installs
+      the releases Switch names, beside the ones before.
   set-info [--name <name>] [--description <text>] [--data-dir <dir>]
       Rename this machine and/or change its description on the server, with
       this controller's own credential. Either or both; --description ""
@@ -131,9 +135,12 @@ Commands:
       Run this controller as a service of this user: a systemd user unit on
       Linux, a launchd agent on macOS. It starts now and again at each login
       (at boot too, on Linux with lingering on), and restarts after an error
-      that may pass. It keeps the PATH of the shell that installed it.
+      that may pass. It keeps the PATH of the shell that installed it. It
+      runs the controller through <data dir>/releases/current, where it
+      installs the releases Switch names and keeps the one before.
   uninstall-service [--data-dir <dir>]
-      Stop the service and remove it. The enrollment and data are kept.
+      Stop the service and remove it, and the releases it installed. The
+      enrollment and data are kept.
   install-service --separate-users [--user <name>] [--data-dir <dir>]
       [--env-file <path>] [--agents-dir <dir>] [--agent-users <n>] [--no-block]
       [--releases-dir <dir>]
@@ -367,12 +374,18 @@ async function runCommand(args: string[]): Promise<number> {
       'env-file': { type: 'string' },
       launchd: { type: 'boolean' },
       'agent-runtime': { type: 'string' },
+      'releases-dir': { type: 'string' },
     },
     strict: true,
   });
   const agentRuntime = values['agent-runtime'] ?? 'default';
   if (agentRuntime !== 'default' && agentRuntime !== 'separate-user')
     throw new UsageError('--agent-runtime must be default or separate-user.');
+  if (agentRuntime === 'separate-user' && values['releases-dir'] !== undefined)
+    throw new UsageError(
+      '--releases-dir is for a service of your user; agents as users of their own read it from their setup.'
+    );
+  const releasesDir = values['releases-dir'] ? resolve(values['releases-dir']) : null;
   // Before anything reads the environment: the agents inherit it.
   const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
   Object.assign(process.env, fromFile);
@@ -439,7 +452,12 @@ async function runCommand(args: string[]): Promise<number> {
       credential === null
         ? new SelfUpdater({
             version: VERSION,
-            installer: await installerFor(separateUsers, updateNpm(dataDir), process.platform),
+            installer: await installerFor(
+              separateUsers,
+              releasesDir,
+              updateNpm(dataDir),
+              process.platform
+            ),
             download: (release, signal) =>
               downloadVerified({
                 fetch,
@@ -668,6 +686,7 @@ export function isSupervised(
 /** How this controller installs a release for itself, as it was installed. */
 export async function installerFor(
   separateUsers: SeparateUsersConfig | null,
+  releasesDir: string | null,
   npm: NpmSetup,
   platform: NodeJS.Platform
 ): Promise<ReleaseInstaller> {
@@ -681,6 +700,14 @@ export async function installerFor(
       : unavailableInstaller(
           'The setup for agents as users of their own predates releases directories; run sudo switch-agent-controller install-service --separate-users again so this controller can update itself.'
         );
+  if (releasesDir) {
+    const current = await readCurrent(releasesDir);
+    return current.kind === 'link'
+      ? new ReleasesDirInstaller({ npm, releasesDir })
+      : unavailableInstaller(
+          `--releases-dir ${releasesDir} has no current link, which install-service makes; run switch-agent-controller install-service again so this controller can update itself.`
+        );
+  }
   const cli = cliPath();
   const prefix = installPrefix(cli);
   if (!prefix)
@@ -689,7 +716,7 @@ export async function installerFor(
     );
   if (await isManagedRelease(prefix))
     return unavailableInstaller(
-      `This controller runs from ${prefix}, a releases directory, but not as the service install-service --separate-users set up, which alone installs releases there.`
+      `This controller runs from ${prefix}, a releases directory, but without --releases-dir, which the service install-service sets up passes; only that service installs releases there.`
     );
   return new PrefixInstaller({ npm, prefix, cli });
 }
@@ -736,19 +763,58 @@ async function installServiceCommand(args: string[]): Promise<number> {
   } finally {
     store.close();
   }
+  const cli = cliPath();
+  const releases = await planServiceReleases(cli, serviceReleasesDir(dataDir));
+  const releasesNote = releases
+    ? await ensureReleases({
+        releasesDir: releases.dir,
+        prefix: releases.prefix,
+        version: VERSION,
+        owner: null,
+      })
+    : `This controller runs from ${cli}, not an npm install (a checkout?), so it does not update itself.`;
   const report = await installService(
     {
       node: process.execPath,
-      cli: cliPath(),
+      cli: releases ? throughCurrent(releases.dir, releases.prefix, cli) : cli,
       dataDir,
       envFile,
-      sharedHostBundle,
+      sharedHostBundle:
+        releases && sharedHostBundle
+          ? throughCurrent(releases.dir, releases.prefix, sharedHostBundle)
+          : sharedHostBundle,
+      releasesDir: releases?.dir ?? null,
       path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     },
     runSecretCommand
   );
-  process.stdout.write([`Installed and started: ${report.file}`, ...report.notes, ''].join('\n'));
+  process.stdout.write(
+    [`Installed and started: ${report.file}`, ...report.notes, releasesNote, ''].join('\n')
+  );
   return EXIT_OK;
+}
+
+/** Where a service of the user's keeps the releases it installs for itself. */
+function serviceReleasesDir(dataDir: string): string {
+  return join(dataDir, 'releases');
+}
+
+/**
+ * The releases directory a service of the user's runs through, for the
+ * controller at `cli`, and the npm prefix that controller came from; null
+ * when it is not an npm install (a checkout), which cannot have one.
+ */
+export async function planServiceReleases(
+  cli: string,
+  dir: string
+): Promise<{ dir: string; prefix: string } | null> {
+  const prefix = installPrefix(cli);
+  if (!prefix) return null;
+  if ((await isManagedRelease(prefix)) && resolve(dirname(prefix)) !== resolve(dir))
+    throw new ConfigurationError(
+      `This controller runs from ${prefix}, the releases directory of another setup. Run install-service with the controller npm installed (switch-agent-controller on your PATH).`
+    );
+  return { dir, prefix };
 }
 
 async function installSeparateUsersCommand(values: {
@@ -817,9 +883,19 @@ async function uninstallServiceCommand(args: string[]): Promise<number> {
   }
   if (values.user !== undefined)
     throw new UsageError('--user is for uninstall-service --separate-users.');
-  const removed = await uninstallService(resolveDataDir(values['data-dir']), runSecretCommand);
+  const dataDir = resolveDataDir(values['data-dir']);
+  const removed = await uninstallService(dataDir, runSecretCommand);
+  const releasesDir = serviceReleasesDir(dataDir);
+  const current = await readCurrent(releasesDir);
+  if (current.kind !== 'missing') await rm(releasesDir, { recursive: true, force: true });
   process.stdout.write(
-    removed ? 'Stopped and removed the service.\n' : 'No service was installed.\n'
+    [
+      removed ? 'Stopped and removed the service.' : 'No service was installed.',
+      ...(current.kind !== 'missing'
+        ? [`Removed the releases it installed for itself, in ${releasesDir}.`]
+        : []),
+      '',
+    ].join('\n')
   );
   return EXIT_OK;
 }
@@ -910,7 +986,7 @@ async function updateCommand(args: string[]): Promise<number> {
   const prefix = installPrefix(cliPath());
   if (prefix && (await isManagedRelease(prefix)))
     throw new ConfigurationError(
-      `This controller runs from ${prefix}, a releases directory set up by install-service --separate-users: it installs the release Switch names itself, once no session runs. To install another by hand, install it system-wide and run that setup again.`
+      `This controller runs from ${prefix}, a releases directory install-service set up: it installs the release Switch names itself, once no session runs. To install another by hand, install it with npm and run install-service again.`
     );
   const dataDir = resolveDataDir(values['data-dir']);
   process.stdout.write(`Installing ${latest.version} from ${latest.packageUrl}\n`);
@@ -930,6 +1006,11 @@ async function updateCommand(args: string[]): Promise<number> {
   } finally {
     await rm(file, { force: true });
   }
+  const releasesDir = serviceReleasesDir(dataDir);
+  if (prefix && (await readCurrent(releasesDir)).kind === 'link')
+    process.stdout.write(
+      `${await ensureReleases({ releasesDir, prefix, version: latest.version, owner: null })}\n`
+    );
   if ((await serviceState(dataDir, runSecretCommand)) === 'running') {
     await restartService(dataDir, runSecretCommand);
     process.stdout.write(`Installed ${latest.version} and restarted the service.\n`);
