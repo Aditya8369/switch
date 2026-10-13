@@ -156,7 +156,9 @@ class ListeningActor:
 @pytest_asyncio.fixture
 async def managed(env, monkeypatch):
     monkeypatch.setattr(definitions, "LISTEN_TIMEOUT_SECONDS", 0.2)
-    env["protocol"].config = SimpleNamespace(template_max_bytes=64 * 1024)
+    env["protocol"].config = SimpleNamespace(
+        template_max_bytes=64 * 1024, feature_flags={"agent_management": True}
+    )
     env["protocol"].telemetry = None
     env["protocol"].service_broker = None
     deleted: list[str] = []

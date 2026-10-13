@@ -92,7 +92,9 @@ kickoff: "@{agent} introduce yourself."
 
 @pytest_asyncio.fixture
 async def tools(env):
-    env["protocol"].config = SimpleNamespace(template_max_bytes=64 * 1024)
+    env["protocol"].config = SimpleNamespace(
+        template_max_bytes=64 * 1024, feature_flags={"agent_management": False}
+    )
     env["protocol"].telemetry = None
     async with env["session_factory"]() as session:
         stranger = User(name="mallory", email="m@example.com", role="member")
@@ -134,6 +136,11 @@ async def _bob_id(env: dict[str, Any]) -> str:
         bob = await AgentStore().get_by_name(session, "claude-code.bob")
         assert bob is not None
         return bob.id
+
+
+def _saved(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A listing without the templates that come with Switch."""
+    return [r for r in rows if r["saved_by"] != "Switch"]
 
 
 @pytest.fixture(autouse=True)
@@ -216,9 +223,15 @@ async def test_list_shows_shared_and_the_owners_private_templates(tools):
 
     rows = await _as(tools["agent_id"], list_templates)
 
-    assert {r["name"] for r in rows} == {"mine-private", "theirs-shared"}
+    # The ones that come with Switch first, then what the owner can read.
+    assert rows[0]["id"] == "official:switch-expert"
+    assert {r["name"] for r in rows} == {
+        "Switch expert",
+        "mine-private",
+        "theirs-shared",
+    }
     assert all(r["can_edit"] is False for r in rows)
-    assert {r["saved_by"] for r in rows} == {"alice", "mallory"}
+    assert {r["saved_by"] for r in rows} == {"Switch", "alice", "mallory"}
 
 
 @pytest.mark.asyncio
@@ -363,7 +376,7 @@ async def test_save_is_owned_by_the_owner_and_marked_with_the_agent(tools):
     )
     assert saved["kind"] == "room"
     rows = await _as(tools["agent_id"], list_templates)
-    assert [(r["name"], r["can_edit"], r["saved_by"]) for r in rows] == [
+    assert [(r["name"], r["can_edit"], r["saved_by"]) for r in _saved(rows)] == [
         ("standup", True, "agent claude-code.alice")
     ]
 
@@ -383,7 +396,7 @@ async def test_save_refuses_a_template_with_warnings_unless_bypassed(tools, capl
     assert "bypass_warnings=true" in str(e.value)
     assert _refusals(caplog) == [("save_template", "has_warnings")]
     rows = await _as(tools["agent_id"], list_templates)
-    assert [r["name"] for r in rows] == [], "nothing is stored when refused"
+    assert _saved(rows) == [], "nothing is stored when refused"
 
     saved = await _as(
         tools["agent_id"],
@@ -609,7 +622,9 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         description="",
         yaml=ROOM_TEMPLATE,
     )
-    templates = AgentTemplates(TemplateStore(), max_bytes=64 * 1024)
+    templates = AgentTemplates(
+        TemplateStore(), max_bytes=64 * 1024, agent_management=False
+    )
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
         owner = await session.get(User, tools["user_id"])
@@ -826,3 +841,26 @@ rooms:
   - { name: lobby, description: Lobby, agents: [lead] }
 """
     assert template_kind(template) == "group"
+
+
+@pytest.mark.asyncio
+async def test_an_official_template_is_read_and_never_changed(tools, caplog):
+    detail = await _as(
+        tools["agent_id"], get_template, template_id="official:switch-expert"
+    )
+    # Without agent management, the document Switch Console runs the agent of.
+    assert detail["saved_by"] == "Switch"
+    assert detail["content"].startswith("version: 1")
+    assert "Switch expert" in detail["name"]
+
+    with pytest.raises(AgentRefused, match="comes with Switch"):
+        await _as(
+            tools["agent_id"],
+            update_template,
+            template_id="official:switch-expert",
+            description="mine now",
+        )
+    with pytest.raises(AgentRefused, match="comes with Switch"):
+        await _as(
+            tools["agent_id"], delete_template, template_id="official:switch-expert"
+        )

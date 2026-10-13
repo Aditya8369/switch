@@ -163,7 +163,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
 
   const [loaded, setLoaded] = useState<LoadedTemplate | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'save' | 'delete' | 'export' | null>(null);
+  const [busy, setBusy] = useState<'delete' | 'export' | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [showDocument, setShowDocument] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
@@ -180,7 +180,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     let cancelled = false;
     setLoaded(null);
     setError(null);
-    loadTemplateById(workspaceId, templateId, me?.id ?? null)
+    loadTemplateById(workspaceId, templateId)
       .then((t) => {
         if (cancelled) return;
         setLoaded(t);
@@ -193,7 +193,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
       cancelled = true;
       setCurrentName(null);
     };
-  }, [workspaceId, templateId, me?.id]);
+  }, [workspaceId, templateId]);
 
   const back = (
     <Button
@@ -224,14 +224,14 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     );
   }
 
-  const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
+  const official = loaded.server.official;
+  const mine = !official && me !== null && loaded.server.ownerId === me.id;
   // The server says what this user may do: it knows who administers the
   // workspace, which the user's global role does not tell. An older server
   // leaves the answer out, and the owner-or-admin guess stands in.
-  const canManage =
-    loaded.server !== null && (loaded.server.canManage ?? (mine || me?.role === 'admin'));
+  const canManage = !official && (loaded.server.canManage ?? (mine || me?.role === 'admin'));
   const canEdit =
-    loaded.server !== null &&
+    !official &&
     (loaded.server.canEdit ?? (canManage || loaded.server.writeVisibility === 'public'));
   const singleAgent = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
   // In a single-agent document the room refers to the agent as `{agent}`. The
@@ -241,32 +241,8 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
 
   const use = () => navigate('templateUse', { serverId, templateId });
 
-  const saveToServer = async () => {
-    if (!loaded.bundled || workspaceId === null) return;
-    setBusy('save');
-    try {
-      const saved = await rpc.workspaces.saveTemplate({
-        workspaceId,
-        name: loaded.bundled.name,
-        description: loaded.bundled.description,
-        kind: loaded.bundled.kind,
-        content: loaded.document,
-      });
-      toast({ title: `"${loaded.name}" is now on ${server?.name ?? 'the workspace'}` });
-      navigate('templateDetail', { serverId, templateId: saved.id });
-    } catch (e) {
-      toast({
-        title: 'Could not save the template to the workspace',
-        description: failureText(e, 'Check the server connection and try again.'),
-        variant: 'destructive',
-      });
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const remove = async () => {
-    if (!loaded.server || workspaceId === null) return;
+    if (workspaceId === null) return;
     setBusy('delete');
     try {
       await rpc.workspaces.deleteTemplate({ workspaceId, templateId: loaded.server.id });
@@ -302,14 +278,12 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     }
   };
 
-  const ownerLine = loaded.bundled
-    ? 'Shipped with Switch'
+  const ownerLine = official
+    ? 'Comes with Switch'
     : mine
       ? 'Yours'
-      : `Uploaded by ${loaded.server?.creator ?? 'someone'}`;
-  const visibilityLine = loaded.server
-    ? accessLine(accessOf(loaded.server))
-    : 'Shared with everyone';
+      : `Uploaded by ${loaded.server.creator}`;
+  const visibilityLine = accessLine(accessOf(loaded.server));
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
@@ -324,30 +298,10 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 <span>{ownerLine}</span>
                 <span>·</span>
                 <span>{visibilityLine}</span>
-                {loaded.server && loaded.server.version > 1 && (
+                {loaded.server.version > 1 && (
                   <>
                     <span>·</span>
                     <span>Version {loaded.server.version}</span>
-                  </>
-                )}
-                {loaded.copyOf && (
-                  <>
-                    <span>·</span>
-                    <span>A copy of the built-in one</span>
-                  </>
-                )}
-                {loaded.savedCopy && (
-                  <>
-                    <span>·</span>
-                    <button
-                      type="button"
-                      className="cursor-pointer underline underline-offset-2 hover:text-foreground"
-                      onClick={() =>
-                        navigate('templateDetail', { serverId, templateId: loaded.savedCopy!.id })
-                      }
-                    >
-                      A copy is saved on this workspace
-                    </button>
                   </>
                 )}
               </span>
@@ -357,24 +311,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
         >
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{KIND_LABEL[loaded.kind]}</Badge>
-            {loaded.bundled && (
-              <Badge variant="outline" title="Shipped with Switch">
+            {official && (
+              <Badge variant="outline" title="Comes with Switch">
                 Official
               </Badge>
             )}
             <span className="flex-1" />
-            {loaded.bundled && !loaded.savedCopy && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy !== null}
-                onClick={() => void saveToServer()}
-              >
-                {busy === 'save' ? 'Saving…' : 'Save to workspace'}
-              </Button>
-            )}
-            {canEdit && loaded.server && (
+            {canEdit && (
               <Button
                 type="button"
                 variant="outline"
@@ -386,11 +329,11 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                     yamlText: loaded.document,
                     edit: true,
                     editingTemplate: {
-                      id: loaded.server!.id,
+                      id: loaded.server.id,
                       name: loaded.name,
                       description: loaded.description,
-                      kind: loaded.server!.kind,
-                      access: accessOf(loaded.server!),
+                      kind: loaded.server.kind,
+                      access: accessOf(loaded.server),
                       canChangeAccess: canManage,
                     },
                   })

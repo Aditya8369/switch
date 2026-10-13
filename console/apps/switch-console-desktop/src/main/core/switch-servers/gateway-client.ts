@@ -2503,8 +2503,10 @@ export type StoredTemplateSummary = {
   description: string;
   kind: string;
   creator: string;
-  /** The owner's user id, so the Console can mark the signed-in user's own templates. */
+  /** The owner's user id, so the Console can mark the signed-in user's own templates. Null for one that comes with Switch. */
   ownerId: string | null;
+  /** Comes with Switch: served by the server itself, and nobody can change or delete it. */
+  official: boolean;
   /** Starts at 1 and goes up by one each time the document is changed. */
   version: number;
   /** `private` is seen by its owner and admins only. */
@@ -2527,7 +2529,7 @@ export type StoredTemplateDetail = StoredTemplateSummary & {
 
 type RegistryTemplateSummary = {
   id: string;
-  owner_id: string;
+  owner_id: string | null;
   owner_name: string | null;
   name: string;
   description: string;
@@ -2537,6 +2539,7 @@ type RegistryTemplateSummary = {
   write_visibility?: TemplateVisibility;
   can_edit?: boolean;
   can_manage?: boolean;
+  official?: boolean;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -2545,8 +2548,9 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     name: t.name,
     description: t.description,
     kind: t.kind,
-    creator: t.owner_name ?? t.owner_id,
+    creator: t.owner_name ?? t.owner_id ?? 'Switch',
     ownerId: t.owner_id,
+    official: t.official ?? false,
     // A server that does not report versions is read as being on the first.
     version: t.version ?? 1,
     // A server without visibility fields shares every template and lets its

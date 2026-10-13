@@ -60,7 +60,6 @@ import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
-import { bundledYamlFor, findBundledTemplate } from './bundled-templates';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
   type AgentSlot,
@@ -149,31 +148,24 @@ type UsePageTemplate = {
 async function loadUsePageTemplate(workspaceId: string, params: Params): Promise<UsePageTemplate> {
   let name: string;
   let yamlText: string;
-  let instructions: string | null = null;
+  // A document from the server has its instructions written in.
+  const instructions: string | null = null;
   let origin: AgentTemplateOrigin | null = null;
   if (params.templateId) {
-    const bundled = findBundledTemplate(params.templateId);
-    if (bundled) {
-      name = bundled.name;
-      yamlText = await bundledYamlFor(bundled, params.serverId);
-      instructions = bundled.instructions;
-      origin = { id: bundled.id, name: bundled.name, source: 'bundled' };
-    } else {
-      const detail = await rpc.workspaces.getTemplateDetail({
-        workspaceId,
-        templateId: params.templateId,
-      });
-      name = detail.name;
-      yamlText = detail.definition;
-      const serverId = workspacesStore.serverIdFor(workspaceId);
-      origin = {
-        id: detail.id,
-        name: detail.name,
-        source: 'server',
-        workspaceId,
-        ...(serverId ? { serverId } : {}),
-      };
-    }
+    const detail = await rpc.workspaces.getTemplateDetail({
+      workspaceId,
+      templateId: params.templateId,
+    });
+    name = detail.name;
+    yamlText = detail.definition;
+    const serverId = workspacesStore.serverIdFor(workspaceId);
+    origin = {
+      id: detail.id,
+      name: detail.name,
+      source: 'server',
+      workspaceId,
+      ...(serverId ? { serverId } : {}),
+    };
   } else if (params.yamlText) {
     name = params.sourceName?.replace(/(\.template)?\.ya?ml$/i, '') ?? 'Pasted template';
     yamlText = params.yamlText;

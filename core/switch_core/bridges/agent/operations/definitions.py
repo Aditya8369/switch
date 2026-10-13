@@ -48,6 +48,7 @@ from switch_core.bridges.agent.protocol.instructions import build_room_instructi
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.feature_flags import AGENT_MANAGEMENT
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_runs import (
@@ -1946,7 +1947,11 @@ async def _require_agents_exist(names: list[str]) -> None:
 
 def _agent_templates() -> AgentTemplates:
     protocol = get_protocol()
-    return AgentTemplates(TemplateStore(), max_bytes=protocol.config.template_max_bytes)
+    return AgentTemplates(
+        TemplateStore(),
+        max_bytes=protocol.config.template_max_bytes,
+        agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
+    )
 
 
 @operation

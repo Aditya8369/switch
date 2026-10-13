@@ -8,7 +8,6 @@ import {
   Loader2,
   Upload,
   UserRound,
-  Users,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -31,7 +30,6 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
 import { cn } from '@renderer/utils/utils';
-import { bundledTemplates } from './bundled-templates';
 import { runMatches } from './template-runs';
 import { RECENT_ROW, TemplateRunRow, useTemplateRuns } from './template-runs-list';
 
@@ -63,17 +61,13 @@ const KIND_ICON: Record<Kind, typeof Bot> = {
   group: Boxes,
 };
 
-/** One card in the listing: a bundled template, or a template saved on the workspace. */
+/** One card in the listing: a template on the workspace, official or saved by someone. */
 type TemplateListEntry = {
-  /** The id the card opens: a bundled id, or a workspace template id. */
   id: string;
   kind: Kind;
   name: string;
   description: string;
-  bundled: boolean;
-  server: StoredTemplateSummary | null;
-  /** The document text, when it is available without a request (a bundled template). */
-  content: string | null;
+  server: StoredTemplateSummary;
 };
 
 function kindOf(kind: string): Kind {
@@ -116,19 +110,15 @@ const summaryCache = new Map<string, Promise<TemplateSummary>>();
 function fetchSummary(workspaceId: string, item: TemplateListEntry): Promise<TemplateSummary> {
   // The version is part of the key, so an edit made elsewhere refreshes the
   // card as soon as the listing reports it.
-  const key = `${workspaceId}:${item.id}:${item.server?.version ?? 0}`;
+  const key = `${workspaceId}:${item.id}:${item.server.version}`;
   let pending = summaryCache.get(key);
   if (!pending) {
     pending = (async () => {
-      const yamlText =
-        item.content ??
-        (
-          await rpc.workspaces.getTemplateDetail({
-            workspaceId,
-            templateId: item.id,
-          })
-        ).definition;
-      return rpc.agentTemplates.summarize({ yamlText });
+      const { definition } = await rpc.workspaces.getTemplateDetail({
+        workspaceId,
+        templateId: item.id,
+      });
+      return rpc.agentTemplates.summarize({ yamlText: definition });
     })();
     pending.catch(() => summaryCache.delete(key));
     summaryCache.set(key, pending);
@@ -190,7 +180,8 @@ function TemplateCard({
 }) {
   const Icon = KIND_ICON[item.kind];
   const summary = useTemplateSummary(workspaceId, item);
-  const mine = item.server !== null && meId !== null && item.server.ownerId === meId;
+  const official = item.server.official;
+  const mine = !official && meId !== null && item.server.ownerId === meId;
   return (
     <div className="group relative flex min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1">
       <button
@@ -203,18 +194,12 @@ function TemplateCard({
         <div className="flex items-center gap-2">
           <Icon className="size-4.5 shrink-0 text-foreground-muted" />
           <h3 className="min-w-0 truncate font-medium text-foreground">{item.name}</h3>
-          {item.bundled && (
-            <Badge variant="outline" title="Shipped with Switch">
+          {official && (
+            <Badge variant="outline" title="Comes with Switch">
               Official
             </Badge>
           )}
-          {item.server && mine && !item.bundled && <Badge variant="secondary">Yours</Badge>}
-          {item.bundled && item.server && (
-            <Badge variant="secondary" title="A copy is saved on this workspace; it lists below">
-              <Users />
-              Saved
-            </Badge>
-          )}
+          {mine && <Badge variant="secondary">Yours</Badge>}
         </div>
         <p className="line-clamp-3 text-sm text-foreground-muted">
           {item.description || <span className="italic">No description.</span>}
@@ -223,7 +208,7 @@ function TemplateCard({
           <span className="text-xs text-foreground-passive">
             {summary ? summaryLine(summary) : ' '}
           </span>
-          {item.server && !item.bundled && <OwnerRow name={item.server.creator} mine={mine} />}
+          {!official && <OwnerRow name={item.server.creator} mine={mine} />}
         </div>
       </div>
       {/* On top of the overlay: the one action that does not need the page. */}
@@ -236,12 +221,6 @@ function TemplateCard({
   );
 }
 
-/**
- * What was used lately: the template runs the server records for this
- * workspace, newest first, then the documents used from this Console, kept
- * locally per workspace. A run opens to show the rooms it made; a document can
- * be used again or saved to the workspace, where everyone can find it.
- */
 /**
  * The runs on this workspace: the rooms agents created from templates, run by
  * run, where a run can be stopped, or a paused one let continue. Shown only
@@ -311,9 +290,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
-  // The server searches name and description. The full listing stays loaded
-  // for the recents and for marking a built-in as saved; the search results
-  // replace it only for the workspace cards.
+  // The server searches name and description; its hits replace the listing
+  // while there is a search.
   const [searchHits, setSearchHits] = useState<StoredTemplateSummary[] | null>(null);
   useEffect(() => {
     const q = query.trim();
@@ -347,8 +325,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const noProvider = availability !== undefined && !availability.some((a) => a.available);
 
   useEffect(() => {
-    // No workspace is an answer, not a wait. The bundled templates below still
-    // render; leaving the spinner up would claim a list is on its way.
+    // No workspace is an answer, not a wait: leaving the spinner up would
+    // claim a list is on its way.
     if (workspaceId === null) {
       setTemplates([]);
       setListError('This server has no workspace yet, so its templates cannot be read.');
@@ -364,8 +342,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         if (!cancelled) setTemplates(result);
       })
       .catch((e: unknown) => {
-        // The bundled templates render either way. A failed request is shown as a
-        // failure, not as an empty workspace.
+        // A failed request is shown as a failure, not as an empty workspace.
         if (!cancelled) {
           setTemplates([]);
           setListError(failureText(e, 'Could not read this workspace’s templates.'));
@@ -380,30 +357,12 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   }, [workspaceId, reloadKey]);
 
   const templatesShown = useMemo(() => {
-    // A bundled card is always the bundled document. Saving it creates a
-    // workspace template, listed below as the user's own; the bundled card
-    // only marks that a copy exists. Names are unique per owner, so only the
-    // user's own template of that name counts as the copy.
-    const byName = new Map(
-      templates.filter((t) => meId !== null && t.ownerId === meId).map((t) => [t.name, t])
-    );
-    const builtIn: TemplateListEntry[] = bundledTemplates.map((b) => ({
-      id: b.id,
-      kind: kindOf(b.kind),
-      name: b.name,
-      description: b.description,
-      bundled: true,
-      server: byName.get(b.name) ?? null,
-      content: b.yamlText,
-    }));
     const onWorkspace: TemplateListEntry[] = (searchHits ?? templates).map((t) => ({
       id: t.id,
       kind: kindOf(t.kind),
       name: t.name,
       description: t.description,
-      bundled: false,
       server: t,
-      content: null,
     }));
     const needle = query.trim().toLowerCase();
     const matches = (t: TemplateListEntry) =>
@@ -411,14 +370,11 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       (needle.length === 0 ||
         t.name.toLowerCase().includes(needle) ||
         t.description.toLowerCase().includes(needle) ||
-        (t.server?.creator ?? '').toLowerCase().includes(needle));
-    const mine = (t: TemplateListEntry) => meId !== null && t.server?.ownerId === meId;
+        t.server.creator.toLowerCase().includes(needle));
+    const mine = (t: TemplateListEntry) => meId !== null && t.server.ownerId === meId;
     // One list: the badges on each card (Official, Yours, who saved it) say
     // where it comes from.
-    return [
-      ...(onlyMine ? [] : builtIn.filter(matches)),
-      ...onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t))),
-    ];
+    return onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t)));
   }, [templates, searchHits, query, kind, onlyMine, meId]);
 
   const handleUse = (item: TemplateListEntry) =>

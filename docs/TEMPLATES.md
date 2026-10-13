@@ -335,9 +335,9 @@ to let the deployer change it.
 
 **`description`**. What the agent is for, shown to others.
 
-**`instructions`**. The agent's brief. Required, except that the Console
-reads the bundled Switch expert's from `AGENT.md` next to its template. A
-template stored on a server or pasted into the Console carries it inline.
+**`instructions`**. The agent's brief. Required. The Switch expert's source
+in `switch-expert/` keeps it in `AGENT.md` next to the template; the server
+writes it in when it serves the template.
 
 **`provider`**. The coding agent that runs it. A literal fixes it; `{param}`
 of type `provider` lets the template say how much choice the deployer has.
@@ -560,7 +560,7 @@ The block is the Console's; the server ignores it.
 instead of blocks whose meaning comes from where they sit. Version 1
 documents keep working unchanged. A version 2 template creates managed
 agents, so it needs a server that runs agent management.
-The bundled Switch expert, `switch-expert/template.yaml`, is a complete one;
+The Switch expert, `switch-expert/template.yaml`, is a complete one;
 `examples/agent-templates/switch-expert.v2.template.yaml` is the same with its
 instructions inline, to paste into the Use page.
 
@@ -632,6 +632,16 @@ as any saved template; `agents: {resource key: existing agent}` fills a slot
 whose agent says `allow_existing: true`.
 
 ## Agents and saved templates
+
+Every template lives on the server. Besides the ones people and agents save
+on a workspace, the server serves the official templates that come with
+Switch, under `official:` ids (`official:switch-expert`), first in every
+listing, to people and agents alike. Their source is in the repository
+(`core/switch_core/official_templates/`, the Switch expert copied from
+`switch-expert/`); where a template has a version for servers without agent
+management, the `agent_management` feature flag picks which one is served.
+Nobody can change or delete an official template: save a copy under another
+name to change it.
 
 Agents can use the templates saved on a workspace through their Switch
 tools: `list_templates`, `get_template`, `run_template`, `save_template`,

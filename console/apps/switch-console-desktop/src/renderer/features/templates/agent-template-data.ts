@@ -6,12 +6,7 @@ import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
-import {
-  type BundledTemplate,
-  bundledTemplates,
-  bundledYamlFor,
-  findBundledTemplate,
-} from './bundled-templates';
+import { bundledYamlFor, findBundledTemplate } from './bundled-templates';
 
 /**
  * One agent as a template describes it, plus its room part already converted
@@ -65,7 +60,8 @@ export async function agentTemplateFromContent(
 }
 
 /** Whether the template recorded on an agent's config can still be loaded.
- * A bundled template can be dropped from a later Console. */
+ * An agent made before templates came from the server records a template
+ * bundled with the Console, which a later Console can drop. */
 export function templateOriginExists(origin: AgentTemplateOrigin): boolean {
   return origin.source !== 'bundled' || findBundledTemplate(origin.id) !== undefined;
 }
@@ -112,23 +108,11 @@ function templateWorkspaceId(origin: AgentTemplateOrigin): string {
   );
 }
 
-/** Resolve a listing entry (bundled or from the server's registry) into the agent it describes. */
+/** Resolve a listing entry into the agent it describes. */
 export async function loadAgentTemplate(
   workspaceId: string,
   template: StoredTemplateSummary
 ): Promise<AgentTemplate> {
-  const bundled = findBundledTemplate(template.id);
-  if (bundled) {
-    const yamlText = await bundledYamlFor(
-      bundled,
-      workspacesStore.serverIdFor(workspaceId) ?? null
-    );
-    return agentTemplateFromContent(bundled.name, yamlText, bundled.instructions, {
-      id: bundled.id,
-      name: bundled.name,
-      source: 'bundled',
-    });
-  }
   const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId: template.id });
   const serverId = workspacesStore.serverIdFor(workspaceId);
   return agentTemplateFromContent(detail.name, detail.definition, null, {
@@ -140,19 +124,13 @@ export async function loadAgentTemplate(
   });
 }
 
-/** A template loaded for its page: its source, what it creates, and its document. */
+/** A template loaded for its page: its record, what it creates, and its document. */
 export type LoadedTemplate = {
   name: string;
   description: string;
   kind: TemplateKind;
-  /** The bundled template, when this is one. Null for a workspace template. */
-  bundled: BundledTemplate | null;
-  /** For a bundled template: its copy saved on the workspace, or null when there is none. */
-  savedCopy: StoredTemplateSummary | null;
-  /** For a workspace template: the bundled template with the same name, or null when there is none. */
-  copyOf: BundledTemplate | null;
-  /** The workspace record, when the template is stored on the server. Null for a bundled template. */
-  server: StoredTemplateSummary | null;
+  /** The workspace's record of it. */
+  server: StoredTemplateSummary;
   /** The agents the template creates, in document order. Empty for a room template. */
   agents: ParsedAgentEntry[];
   /** The room part, parsed: the rooms and the params. Null when the document has no rooms. */
@@ -163,51 +141,14 @@ export type LoadedTemplate = {
   document: string;
 };
 
-/**
- * Load one template by the id the listing gave it: a bundled id, or a registry
- * row id. A bundled template also records whether the signed-in user saved a
- * copy of it on the workspace, and a workspace row of theirs records which
- * built-in it copies, so the page can say either. Names are unique only per
- * owner, so someone else's template of the same name is not a copy.
- */
+/** Load one template by the id the listing gave it. */
 export async function loadTemplateById(
   workspaceId: string,
-  templateId: string,
-  meId: string | null
+  templateId: string
 ): Promise<LoadedTemplate> {
-  const bundled = findBundledTemplate(templateId);
-  let name: string;
-  let description: string;
-  let document: string;
-  let server: StoredTemplateSummary | null = null;
-  let copyOf: BundledTemplate | null = null;
-  let savedCopy: StoredTemplateSummary | null = null;
-  if (bundled) {
-    savedCopy =
-      (await rpc.workspaces.listTemplates({ workspaceId }).catch(() => [])).find(
-        (t) => t.name === bundled.name && meId !== null && t.ownerId === meId
-      ) ?? null;
-    name = bundled.name;
-    description = bundled.description;
-    const yamlText = await bundledYamlFor(
-      bundled,
-      workspacesStore.serverIdFor(workspaceId) ?? null
-    );
-    document = bundled.instructions
-      ? await rpc.agentTemplates.compose({ yamlText, instructions: bundled.instructions })
-      : yamlText;
-  } else {
-    const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId });
-    const { definition, ...summary } = detail;
-    name = detail.name;
-    description = detail.description;
-    document = definition;
-    server = summary;
-    copyOf =
-      meId !== null && detail.ownerId === meId
-        ? (bundledTemplates.find((b) => b.name === detail.name) ?? null)
-        : null;
-  }
+  const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId });
+  const { definition: document, ...server } = detail;
+  const { name, description } = detail;
   const kind = await rpc.agentTemplates.kind({ yamlText: document });
   const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
   // Every param, the Console's own types included, so the Inputs table lists
@@ -222,9 +163,6 @@ export async function loadTemplateById(
     name,
     description,
     kind,
-    bundled: bundled ?? null,
-    savedCopy,
-    copyOf,
     server,
     agents,
     room,
