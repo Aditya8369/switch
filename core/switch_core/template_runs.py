@@ -33,6 +33,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 )
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
 from switch_core.db.models import Agent
+from switch_core.db.session_scope import tenant_session
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -211,7 +212,7 @@ class TemplateAgents:
             )
         problems: list[Problem] = []
         names = [plan.name for plan in plans]
-        async with self._protocol.session_factory() as session:
+        async with tenant_session(self._protocol.session_factory, tenant_id) as session:
             taken = {
                 agent.name
                 for agent in await self._protocol.agent_store.get_by_names(
@@ -273,7 +274,7 @@ class TemplateAgents:
             if problem is not None:
                 problems.append(problem)
                 continue
-            grants, grant_problems = await self._check_grants(owner_id, plan)
+            grants, grant_problems = await self._check_grants(tenant_id, owner_id, plan)
             problems.extend(grant_problems)
             checked.append(
                 CheckedAgent(
@@ -291,7 +292,7 @@ class TemplateAgents:
         return checked
 
     async def _check_grants(
-        self, owner_id: str, plan: NewAgentPlan
+        self, tenant_id: str, owner_id: str, plan: NewAgentPlan
     ) -> tuple[list[CheckedGrant], list[Problem]]:
         if not plan.connections:
             return [], []
@@ -316,7 +317,9 @@ class TemplateAgents:
                 )
             )
         for connection in plan.connections:
-            async with self._protocol.session_factory() as session:
+            async with tenant_session(
+                self._protocol.session_factory, tenant_id
+            ) as session:
                 try:
                     grants.append(
                         await self._broker.check_grant_terms(
@@ -384,17 +387,19 @@ class TemplateAgents:
                         machine=dict(result["machine"]),
                     )
                 )
-                await self._finish(owner_id, result["agent_id"], agent)
+                await self._finish(tenant_id, owner_id, result["agent_id"], agent)
             except Exception as error:
                 raise await self.undone(
                     created, f"creating {plan.name} failed: {_reason(error)}"
                 ) from error
         return created
 
-    async def _finish(self, owner_id: str, agent_id: str, agent: CheckedAgent) -> None:
+    async def _finish(
+        self, tenant_id: str, owner_id: str, agent_id: str, agent: CheckedAgent
+    ) -> None:
         """Set what creating the managed agent does not: who may address it
         and the connections it is granted."""
-        async with self._protocol.session_factory() as session:
+        async with tenant_session(self._protocol.session_factory, tenant_id) as session:
             await self._protocol.agent_store.update(
                 session, agent_id, addressing_policy=agent.addressing_policy
             )
@@ -403,7 +408,9 @@ class TemplateAgents:
             return
         assert self._broker is not None
         for grant in agent.grants:
-            async with self._protocol.session_factory() as session:
+            async with tenant_session(
+                self._protocol.session_factory, tenant_id
+            ) as session:
                 row = await session.get(Agent, agent_id)
                 if row is None:
                     raise RuntimeError(f"agent {agent_id} vanished while being created")
