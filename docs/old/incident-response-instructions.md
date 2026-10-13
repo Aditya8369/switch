@@ -17,6 +17,8 @@ supplied to the team separately.
 - [1. The alert hub's instructions](#1-the-alert-hubs-instructions)
 - [2. The Responder procedure document](#2-the-responder-procedure-document)
 - [3. The war-room template](#3-the-war-room-template)
+- [3a. The RCA-room template](#3a-the-rca-room-template)
+- [3b. The drill-room template](#3b-the-drill-room-template)
 - [4. The On-call SOP document](#4-the-on-call-sop-document)
 - [5. The agent's description](#5-the-agents-description)
 - [6. Reference types](#6-reference-types)
@@ -65,18 +67,21 @@ Four moving parts, and one rule that holds them together.
   agent's half of the alert process: it triages every alert, pings each person
   PagerDuty lists as on call when an alert needs one, and declares incidents in
   PagerDuty in three defined cases. After a declaration it supports the incident process: at Sev0 it
-  builds and runs a war room, and at Sev1 it keeps the update clock in the hub.
+  builds and runs a war room, then an RCA room for the write-up, and at Sev1 it
+  keeps the update clock in the hub. It also sets up drill rooms on request.
   Its procedure is a Switch document, not a file on its host.
-- **The war-room template.** A registered, shared room template. The agent runs
-  it with `run_template`, filled in with what it looked up. A person can run it
-  from the Console when no agent is available.
+- **Three registered, shared room templates.** The **war room**, one per Sev0;
+  the **RCA room**, which takes over from the war room at resolution; and the
+  **drill room**, a private rehearsal of the hub. The agent runs each with
+  `run_template`, filled in with what it looked up. A person can run any of
+  them from the Console when no agent is available.
 - **The alert-side configuration.** Every monitor mentions the agent in its
   Slack message. That mention is what wakes the agent: Switch does not hand an
   agent messages that do not address it. Critical monitors carry a marker next
   to the mention.
 
 **The rule: one session, one room.** The agent runs as a separate session per
-room: one in the hub, and one in each war room. A session posts only in its own
+room: one in the hub, and one in each war, RCA or drill room. A session posts only in its own
 room. Connecting to another room would move it out of its room, and the room it
 left would stop hearing from it. It reads other rooms without connecting.
 Everything below is written so that no session ever has to leave.
@@ -87,7 +92,7 @@ The same list appears in the procedure (block 2), because that is what the
 agent reads. It is here too so that the people deploying it know what they are
 signing up for.
 
-**In scope: five jobs, and nothing else.**
+**In scope: six jobs, and nothing else.**
 
 1. **Alert triage** in the alert hub: the agent's lane of the alert-process
    diagram, from "Seen by" to "On-caller needed?", the ping, and the wait for a
@@ -97,11 +102,13 @@ signing up for.
    response window during on-call hours.
 3. **Incident support** after a declaration: the Sev0 war room, the Sev1 banner
    thread, the update clock, situation-report drafts, the escalation notice,
-   the timeline, and the close-out prompts and RCA draft.
+   the timeline, the close-out prompts, and at Sev0 the RCA room and its draft.
 4. **Lookups** about the above: who owns a service, its Sev1 threshold, its
    runbook and dashboard, who is on call, what the process says.
 5. **Suggestions about noisy or badly-configured alerts**, in the alert's
    thread. A suggestion only; the alert's lifecycle is the on-caller's.
+6. **Drill rooms:** setting one up when a person in the hub asks, and playing
+   itself in it, against a test PagerDuty service only.
 
 **Out of scope, by name.** Asked to do any of these, the agent declines in one
 line and names who does it.
@@ -118,10 +125,11 @@ line and names who does it.
 | Deciding customer impact, or a severity | The on-caller | Incident process |
 | Escalating outside on-call hours | Nobody: the alert waits | Alert process |
 | Posting in the stakeholder channel | A person | This design's rule |
-| The handover meeting, onboarding, training | The on-callers and rota owners | Manual |
+| The handover meeting, onboarding, training. A drill room is the agent's to set up and play in; running the training is not | The on-callers and rota owners | Manual |
 
-The agent works only in the alert hub and in war rooms it built. The same agent
-may do other work elsewhere; none of that happens from these rooms.
+The agent works only in the alert hub, in war rooms and RCA rooms it built, and
+in drill rooms. The same agent may do other work elsewhere; none of that
+happens from these rooms.
 
 ## The surfaces, and which ones are used
 
@@ -131,9 +139,12 @@ may do other work elsewhere; none of that happens from these rooms.
 | A room document: **Responder procedure** | Yes | [2](#2-the-responder-procedure-document) |
 | A room document: **On-call SOP** | Yes | [4](#4-the-on-call-sop-document) |
 | A registered, shared template: **Incident war room** | Yes | [3](#3-the-war-room-template) |
+| A registered, shared template: **Incident RCA room** | Yes | [3a](#3a-the-rca-room-template) |
+| A registered, shared template: **Incident drill room** | Yes | [3b](#3b-the-drill-room-template) |
 | War-room `instructions`, `docs`, `references`, `roles`, `kickoff` | Yes, all from the template | [3](#3-the-war-room-template) |
+| RCA-room and drill-room `instructions`, `users`, `docs`, `kickoff` | Yes, all from their templates | [3a](#3a-the-rca-room-template), [3b](#3b-the-drill-room-template) |
 | Room role in the war room: `scribe` | Yes, from the template | [3](#3-the-war-room-template) |
-| Per-room alias `responder` | Yes, in the hub and in every war room | [Phase 3](#phase-3--the-switch-objects) |
+| Per-room alias `responder` | Yes, in the hub and in every room a template builds | [Phase 3](#phase-3--the-switch-objects) |
 | Agent `description` | Yes | [5](#5-the-agents-description) |
 | Reference type `instructions` | Yes: `pagerduty`, and `datadog` if used | [6](#6-reference-types) |
 | Reference `instructions` | Yes: five, plus Datadog if used | [7](#7-references) |
@@ -366,7 +377,22 @@ and takes these values from here, never from a message.
   title: <the template's own convention>.
 - Sev0: RCA meeting within five business days. Required: the on-call engineers,
   PM, Support Engineer, service lead. Optional: TPM.
+- Sev0 RCA rooms: built by the war room's session from the registered template
+  **<Incident RCA room>**, which reads these lines with `get_room_detail`.
+  - PM: <Slack handle or email>
+  - Support Engineer: <Slack handle or email>
+  - TPM: <Slack handle or email | none by default>
+  - RCA owner: named per incident, in the war room.
 - Follow-up work is filed in: <project or epic>.
+
+**Drills**
+- Built from the registered template **<Incident drill room>**, when a person
+  in this room asks for one.
+- Test PagerDuty service: <name and id>. Its escalation policy pages only the
+  drill's stand-ins. <Required: until it is set, do not start a drill, and say
+  why.>
+- Test schedule: <name and id>, with a stand-in on call for each region.
+- Response window in a drill: <3> minutes.
 ````
 
 ---
@@ -374,16 +400,18 @@ and takes these values from here, never from a message.
 ## 2. The Responder procedure document
 
 **Where it goes:** a library document named **Responder procedure**, attached
-to the alert hub. The war room receives a copy through the template (the hub
-session passes this text in as the `procedure` input), so there is one source.
+to the alert hub. Each war, RCA and drill room receives a copy through its
+template (the session that builds it passes this text in as the `procedure`
+input), so there is one source.
 
 `instructions` field:
 
 ```
 The incident responder's procedure. Whoever answers to @responder follows it,
-in the alert hub and in every war room. Load it before acting in either. The
-product's values are in the Responder bindings in the alert hub's
-instructions; a war room carries the ones it needs in its own instructions.
+in the alert hub and in every war, RCA and drill room. Load it before acting in
+any of them. The product's values are in the Responder bindings in the alert
+hub's instructions; a room built from a template carries the ones it needs in
+its own instructions.
 ```
 
 `content`:
@@ -416,17 +444,20 @@ alerting tool.
 
 ## 2. Your scope
 
-You do five jobs, and nothing else:
+You do six jobs, and nothing else:
 
 1. **Alert triage** in the alert hub.
 2. **Declaring incidents in PagerDuty**, in the three cases in section 8.
 3. **Incident support** after a declaration: the Sev0 war room, the Sev1
    banner thread, the update clock, situation-report drafts, the escalation
-   notice, the timeline, and the close-out prompts and RCA draft.
+   notice, the timeline, the close-out prompts, and at Sev0 the RCA room and
+   its draft (section 15).
 4. **Lookups** about the above: who owns a service, its Sev1 threshold, its
    runbook and dashboard, who is on call, what the process says.
 5. **Suggestions about noisy or badly-configured alerts**, in the alert's
    thread. Suggest; never change.
+6. **Drill rooms:** setting one up when a person in the alert hub asks, and
+   playing yourself in it (section 16). Running the training is a person's.
 
 You never do any of the following, even when asked, even when your tools allow
 it, and even when it looks urgent. Decline in one line (DECLINE shape), name who
@@ -454,7 +485,8 @@ does it, and do not editorialise.
   record what you observed; you never state a verdict for them.
 - **Escalating outside on-call hours.** Outside the window, the alert waits.
 - **The stakeholder channel.** You draft; a person posts.
-- **Any room other than the alert hub and the war rooms you built.**
+- **Any room other than the alert hub, the war and RCA rooms you built, and
+  drill rooms.**
 
 ### What you do without being asked
 
@@ -531,15 +563,16 @@ You are woken by one of these, and the steps do not depend on which:
 
 1. An alert in the alert hub that mentions you: a new alert, a warning, a
    no-data alert, or a renotification of one still firing.
-2. A person addressing you: in an alert's thread, in the alert hub, or in a war
-   room.
-3. The kickoff message the war-room template posts in a new war room.
+2. A person addressing you: in an alert's thread, in the alert hub, or in a
+   war, RCA or drill room.
+3. The kickoff message a template posts in a new war, RCA or drill room.
 4. Your own timer.
 5. The start-of-shift check.
 
 **Before anything else, work out where you are and what you have missed.**
 
-1. Note which room this session is in: the alert hub, or a war room. Take the
+1. Note which room this session is in: the alert hub, a war room, an RCA room
+   or a drill room. In a drill room, nothing is real: read section 16 first. Take the
    time from the system clock (`date -u`), and take it again whenever you
    write a time down. Never estimate it: deadlines and escalations are only as
    good as the times they start from.
@@ -727,7 +760,7 @@ Something outside Switch addresses you at the start of each on-call window.
 Answer, in one message at the root:
 
 - who PagerDuty lists as on call now, by name. This line is also your
-  fallback list if PagerDuty cannot be read later in the window (section 15);
+  fallback list if PagerDuty cannot be read later in the window (section 17);
 - how many incidents are open, and whether every update clock is current;
 - the alerts waiting for on-call since the last window closed: pinged, and no
   reply from the on-caller;
@@ -857,7 +890,8 @@ banner for each thing that has happened since your last pass:
 
 - a severity change;
 - "mitigated", when a person has said it;
-- the close line and the RCA link, once the room is archived.
+- the close line, once the war room is archived. At Sev0 it links the RCA
+  room, which carries the write-up from there. The RCA room is not relayed.
 
 Nothing else is relayed. Situation reports are posted to the hub by a person,
 as the process asks.
@@ -976,32 +1010,165 @@ next and when, and anything not written down. Then carry on as before.
 
 ### Closing out
 
-When a person confirms recovery, the process asks for three things. Prompt for
-each, and do the parts that are yours.
+When a person confirms recovery, the process asks for three things: resolve in
+PagerDuty with fix notes, write the RCA, and at Sev0 hold the RCA meeting
+within five business days. The first is a person's. At Sev0 the other two move
+to an RCA room, which you build from here.
 
-1. **Resolve in PagerDuty, with fix notes.** A person does this. Say so, and do
-   not do it yourself.
-2. **The RCA write-up, in the team's template.** The template is the RCA
-   template reference attached here. Draft each of its sections in the room,
-   from the timeline. A person creates the page. If you have Confluence access
-   and a person asks you to, you may create the draft page; never unasked. Keep
-   it blameless: name systems, decisions and gaps, never people. Every action
-   needs an owner and a tracking link. An action with neither is a wish, so list
-   it as an open question instead.
-3. **At Sev0, the RCA meeting within five business days.** Remind the room, and
-   name the attendees the process requires: the on-call engineers, PM, Support
-   Engineer and service lead. TPM is optional. You do not schedule it.
+1. **Resolve in PagerDuty, with fix notes.** A person does this. Say so, do not
+   do it yourself, and wait for a person to say it is done.
+2. **Propose the RCA room's people, and wait for a yes.** In one message at the
+   root, propose:
+   - the **RCA owner**: ask who, if nobody has been named;
+   - the **PM** and the **Support Engineer**: from the alert hub's bindings,
+     read with `get_room_detail` on the hub this room's instructions name;
+   - the **service lead**: the service's owner in the On-call SOP document. If
+     it names two people, ask which one leads. Never choose for them;
+   - the **TPM**, if the bindings name one;
+   - the **meeting deadline**: five business days after the day of resolution,
+     counted from the system clock. Say that public holidays are not counted.
 
-When a person says the write-up is done, post the **CLOSE** line, delete your
-timer, and archive the room. The hub session carries the close line under the
-banner on its next pass.
+   Ask a person to confirm, mentioning each person they name. Take each handle
+   from the mentions in their reply, or an email address they give. Never guess
+   one.
+3. **Build it.** Look for a room named `<prefix> rca <number>`. If it exists,
+   post its link and go to step 5. Otherwise run the registered RCA-room
+   template named in the hub's bindings, with `run_template` and these inputs:
+   - `incident_id`, `service`, `summary`, `incident_url`: as in this room's
+     instructions
+   - `resolved_at`: when a person confirmed recovery, with the time zone
+   - `meeting_due`: the deadline from step 2, as YYYY-MM-DD
+   - `war_room`: this room's name
+   - `rca_owner`, `pm`, `support_engineer`, `service_lead`: as confirmed
+   - `procedure`: the full text of the Responder procedure attached here
+   - `product`, `prefix`, `bridge`, `responder_agent`, and the PagerDuty,
+     incident process and RCA template reference names: from the hub's
+     bindings
 
-**Do not confuse the three endings.** Mitigation stops the update clock.
-Resolution is a person's action in PagerDuty. A finished write-up closes the
-room. They usually come in that order, sometimes hours apart. Never infer a
-later one from an earlier one.
+   If Switch cannot find one of the people, it creates nothing and names them.
+   Say so, and ask again for that person.
+4. **Finish what the template cannot do.** Invite the on-call engineers who
+   worked the incident (this room's members), and the TPM if confirmed, with
+   `add_users_to_room`. Name anyone it could not add. Link the RCA room to this
+   room with `link_rooms`, label `war room`.
+5. **Close this room.** Post the **CLOSE** line, linking the RCA room. Delete
+   your timer, and archive this room. The hub session carries the close line
+   under the banner on its next pass. Archiving does not stop the RCA room's
+   session reading this room's history.
 
-## 15. When something does not work
+**If the incident is no longer Sev0** by the time it is resolved, there is no
+RCA meeting and no RCA room. Draft the write-up here instead, as section 15
+describes, and close this room when a person says the write-up is done.
+
+**Do not confuse the endings.** Mitigation stops the update clock. Resolution
+is a person's action in PagerDuty, and at Sev0 it starts the RCA room. A
+published write-up, and at Sev0 a held meeting, close the RCA room. They come
+in that order, sometimes days apart. Never infer a later one from an earlier
+one.
+
+## 15. RCA room
+
+You are here because the RCA-room template's kickoff addressed you. The
+incident is over. This room is for its write-up and, at Sev0, the RCA meeting.
+
+### Opening it
+
+1. Read the room's instructions and attached documents.
+2. Find the war room the instructions name, among your rooms including
+   archived ones (`list_rooms(include_archived=True)`). Read its whole history
+   with `read_context(room_id=…)`, paging back with `before` until `truncated`
+   is false. Read the incident in PagerDuty, including its log.
+3. Post the **OPENING** at the root: what happened, in one line; who is here
+   and why; the meeting deadline; and that a draft follows.
+
+### The draft
+
+Draft every section of the team's RCA template: the RCA template reference
+attached here. If you cannot read it, use the RCA outline attached here, and
+say so in the draft.
+
+- **Facts from the record only:** the war room's messages, its timeline lines
+  and situation reports, and the PagerDuty incident. Give each timeline entry
+  its time and its source. Where the record is silent, leave the field blank
+  and ask.
+- **The root cause and the contributing factors are proposals,** marked as
+  such. The RCA owner decides them.
+- **Blameless:** name systems, decisions and gaps, never people.
+- **Every corrective action needs an owner and a tracking link.** An action
+  with neither is a wish: list it as an open question instead.
+- **Severity:** write the Sev value, and note that S0 = Sev0.
+
+Post the draft as one markdown file (`send_attachment`), with one message at
+the root naming what you could not fill and whom you are asking. When people
+correct it, post a revised file, and say in one line what changed.
+
+A person creates the page. If you have Confluence access and a person asks you
+to, you may create the draft page from the template; never unasked.
+
+### The meeting
+
+At Sev0 the process asks for the RCA meeting within five business days of
+resolution. The deadline is in this room's description. A person schedules it
+and posts the invite here; you do not. The attendees the process requires: the
+on-call engineers, the PM, the Support Engineer and the service lead. The TPM
+is optional. If you are addressed after the deadline and no invite has been
+posted, say so, once.
+
+### Closing
+
+When a person says the page is published and the meeting has been held, post
+the **CLOSE** line with the page link, and archive this room. If the war room
+is not archived yet, archive it too.
+
+This room keeps no clock and no timer.
+
+## 16. Drill rooms
+
+A drill room is a private rehearsal of the alert hub. Nothing in it is real,
+and nobody outside the drill may be paged from it.
+
+### Setting one up, from the alert hub
+
+When a person in the alert hub asks for a drill:
+
+1. **Check the bindings name a test PagerDuty service and a test schedule.** If
+   they do not, say a drill cannot start without them, and stop. A drill on the
+   real service pages the real on-call.
+2. **Run the registered drill-room template** named in the bindings, with
+   `run_template` and these inputs:
+   - `drill_lead`: the person who asked, unless they named someone else
+   - `trainee`: the person they named, or the drill lead again if nobody
+   - `pagerduty_service`, `schedule`, `response_window`: the bindings' drill
+     values
+   - `procedure`, `sop`: the full text of the two documents attached to the hub
+   - `alert_hub`: this room's name
+   - `product`, `prefix`, `bridge`, `responder_agent`: from the bindings
+   - `run`: 1, or the next number if a drill room with that name exists today
+
+   Take each person's handle from a mention in the request, never a guess.
+3. **Reply with the drill room's link**, in the request's thread, and stop. The
+   template's kickoff starts your session there.
+
+### In the drill room
+
+- The room's instructions open with a **drill notice**, then send you to the
+  real alert hub's instructions. Read those with `get_room_detail`, and follow
+  them and this procedure's alert-hub sections as if this room were the hub.
+- **Where the notice and the hub's bindings disagree, the notice wins.** Its
+  one hard rule: declare only on the test service it names. If you cannot tell
+  which service a declaration would land on, do not declare.
+- **Test alerts** come from the drill lead and start `[test alert]`. Treat
+  each one as a monitor's post that mentions you.
+- **The drill lead may move the clock** inside or outside on-call hours. That
+  is the only binding a message may change, and only the drill lead's.
+- **War and RCA rooms you build in a drill** use the drill prefix and take the
+  drill room as their alert hub, so their sessions read the drill notice when
+  they read their hub's instructions, and follow it too.
+- **Never act in the real alert hub** from a drill. Read it; never post there.
+- **Do not read the Drill script ahead** to anticipate a test. Act on each
+  test alert as it comes.
+
+## 17. When something does not work
 
 Say so, in the room, at the point it happens. Never substitute a plausible
 answer for a real one.
@@ -1029,11 +1196,12 @@ answer for a real one.
   do not declare.
 - **You are asked to do something out of scope:** decline in one line and name
   who does it (DECLINE shape).
-- **`run_template` fails, or the template cannot be found:** say so under the
-  banner, with the error. Tell on-call a person can create the room from the
-  Console's template screen, using the registered template.
+- **`run_template` fails, or the template cannot be found:** say so where you
+  were asked (under the banner, in the war room, or in the drill request's
+  thread), with the error. Say a person can create the room from the Console's
+  template screen, using the registered template.
 
-## 16. How to write
+## 18. How to write
 
 Rooms are bridged to Slack, and people read them on a phone mid-incident.
 
@@ -1075,7 +1243,7 @@ ping when on-call is needed; without one when not.
 > PagerDuty <number> (<priority, or "no priority yet">) · <link> · declared by <who, and which case>
 > War room: <link, or "none at Sev1"> · Invited: <names> · not added: <names and why, or "none">
 
-**OPENING**: war room only, the first message.
+**OPENING**: the first message in a war room or an RCA room.
 
 **SITREP**: always marked as a draft.
 
@@ -1107,8 +1275,9 @@ what it means for what you just said.
 
 > ⚠️ PagerDuty did not accept the declaration, so nobody has been paged. @<handle> @<handle> please pick this up directly.
 
-**CLOSE**: when the write-up is done and the room is being archived. Link the
-RCA page.
+**CLOSE**: when a room is being archived. In a Sev0 war room, link the RCA
+room. In an RCA room, or a war room that wrote its own write-up, link the RCA
+page.
 ````
 
 ---
@@ -1262,8 +1431,8 @@ room:
 
     ## What this room is for
 
-    This incident, until its write-up is done. Not releases or promotions, not
-    the rota, not improvement work: those happen where they always do.
+    This incident, until it is resolved. Not releases or promotions, not the
+    rota, not improvement work: those happen where they always do.
 
     ## What is attached
 
@@ -1305,12 +1474,16 @@ room:
 
     1. Confirm recovery, and resolve the incident in PagerDuty with fix notes.
        A person does this.
-    2. Write the RCA in the team's template, drafted here from this room's
-       timeline.
-    3. Sev0: hold the RCA meeting within five business days. Required: the
-       on-call engineers, PM, Support Engineer and service lead. TPM optional.
+    2. Sev0: @responder proposes the RCA room's people (the RCA owner, PM,
+       Support Engineer and service lead) and the meeting deadline, five
+       business days out. Confirm them, mentioning each person.
+    3. @responder builds the RCA room, invites this room's on-call engineers,
+       and archives this room. The write-up and the RCA meeting happen there,
+       drafted from this room's timeline, which stays readable.
 
-    The room stays open until the write-up is done. Then @responder archives it.
+    If the incident is no longer Sev0 when it is resolved, there is no RCA
+    meeting: the write-up is drafted here, and the room stays open until it is
+    done.
 
   roles:
     - name: scribe
@@ -1367,6 +1540,437 @@ kickoff: |
 Parsed and linted with the shipped template parser on `main`. See the design
 document's [template section](incident-response-sop.md#the-war-room-template)
 for what was checked, and for the four things the template cannot do yet.
+
+---
+
+## 3a. The RCA-room template
+
+**Where it goes:** the template registry, saved as a **shared** template named
+**Incident RCA room**. The war room's session runs it at Sev0, once a person
+says the incident is resolved in PagerDuty (procedure section 14). A person can
+run it from the Console's template screen.
+
+The four named attendees are `user` inputs, so Switch checks each one on the
+messaging app before it creates anything. Each takes a Slack handle or an email
+address. The on-call engineers and an optional TPM are invited once the room
+exists: a param cannot hold a list, and a `user` param cannot be left empty.
+
+````yaml
+# Incident RCA room: one room per Sev0 incident, from resolution to the RCA
+# meeting.
+#
+# Registered as a shared template. The war room's responder session runs it
+# with run_template once a person says the incident is resolved in PagerDuty
+# and has confirmed who attends. A person can run the same template from the
+# Console's template screen.
+#
+# The RCA owner, PM, support engineer and service lead are one person each, so
+# each is a user input, checked against the messaging app before anything is
+# created. The on-call engineers and an optional TPM are invited afterwards
+# (add_users_to_room): a param cannot hold a list, and a user param cannot be
+# left empty.
+version: 0
+
+params:
+  incident_id:
+    type: string
+    label: Incident number
+    description: The PagerDuty incident number, e.g. 1287
+    pattern: "^[A-Za-z0-9-]+$"
+  service:
+    type: string
+    description: The affected service, as the SOP's severity table names it
+  summary:
+    type: string
+    description: One line, in a stakeholder's words — what customers saw
+  incident_url:
+    type: string
+    label: Incident link
+    description: Link to the incident in PagerDuty
+    pattern: "https://.+"
+  resolved_at:
+    type: string
+    label: Resolved at
+    description: When recovery was confirmed, with the time zone, e.g. 2026-10-13 14:20 UTC
+  meeting_due:
+    type: string
+    label: RCA meeting due by
+    description: Five business days after resolution, as YYYY-MM-DD
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+  war_room:
+    type: room
+    label: War room
+    description: The incident's war room. The write-up is drafted from its timeline.
+  rca_owner:
+    type: user
+    label: RCA owner
+    description: Owns the write-up, and publishes it
+  pm:
+    type: user
+    label: PM
+    description: The product manager. Required at the RCA meeting.
+  support_engineer:
+    type: user
+    label: Support engineer
+    description: Required at the RCA meeting
+  service_lead:
+    type: user
+    label: Service lead
+    description: The affected service's owner, from the SOP's severity table. Required at the RCA meeting.
+  product:
+    type: string
+    description: The product's name, as people say it
+  prefix:
+    type: string
+    label: Channel prefix
+    description: Lower-case prefix for the room and channel name
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+  bridge:
+    type: bridge
+    description: The INTERNAL workspace's messaging app. Never an external-facing one.
+  responder_agent:
+    type: agent
+    label: Responder agent
+    description: The shared incident responder
+  pagerduty_reference:
+    type: string
+    description: Name of the product's PagerDuty reference
+  process_reference:
+    type: string
+    description: Name of the reference to the incident process page
+  rca_template_reference:
+    type: string
+    description: Name of the reference to the team's RCA template
+  procedure:
+    type: string
+    multiline: true
+    input: advanced
+    description: The Responder procedure document's text. The agent passes it in.
+    default: >-
+      Not supplied when this room was created. The current Responder
+      procedure is attached to the alert hub.
+  rca_outline:
+    type: string
+    multiline: true
+    input: advanced
+    description: The sections the write-up needs, for when the team's RCA template cannot be read. Replace with the template's own sections.
+    default: |-
+      1. Summary: incident number, severity, detected, resolved, customer impact window, service, RCA owner, incident lead, participants.
+      2. Executive summary: what happened, who was affected, and how service was restored.
+      3. Customer and business impact: who and how many, scope, what stopped working, contractual impact, data or security impact.
+      4. Timeline: time, event, and who or what it came from.
+      5. Detection and response: how it was found, what helped, what slowed it, whether escalation and communication held.
+      6. Root cause: the primary cause, contributing factors, and five whys.
+      7. Resolution and recovery: the mitigation, the permanent fix, how it was validated, remaining risk.
+      8. Corrective and preventive actions: each with a type (prevent, detect, respond), an owner, a priority, a due date and a tracking link.
+  visibility:
+    type: enum
+    enum: [channel_private, channel_public]
+    default: channel_private
+    input: advanced
+    description: Private by default. A Sev0 can be a security incident, and the meeting's attendees are named.
+
+room:
+  name: "{prefix} rca {incident_id}"
+  description: "RCA · {service} · {summary} · meeting due {meeting_due} · {incident_url}"
+  bridge: "{bridge}"
+  channel_type: "{visibility}"
+  read_visibility: private
+  write_visibility: private
+  agents: ["{responder_agent}"]
+  aliases:
+    "{responder_agent}": responder
+  users: ["{rca_owner}", "{pm}", "{support_engineer}", "{service_lead}"]
+
+  instructions: |
+    # {product} incident {incident_id} — RCA
+
+    **{service}** — {summary}
+    Incident record: {incident_url} · resolved {resolved_at}
+    War room: {war_room}
+
+    This room is for the incident's write-up and its RCA meeting, nothing
+    else. The incident is over. If it comes back, that is a new alert in the
+    alert hub, not a conversation here.
+
+    ## Who is here, and why
+
+    The process requires these people at a Sev0's RCA meeting: the on-call
+    engineers, the PM, the Support Engineer and the service lead. The TPM is
+    optional. The RCA owner writes and publishes the write-up.
+
+    ## For the responder
+
+    Load the Responder procedure document attached to this room, and follow
+    its RCA-room section. Work only in this room. Read the war room with
+    read_context; never connect to it.
+
+    ## For everyone
+
+    @responder drafts the write-up in the team's RCA template, from the war
+    room's timeline, its situation reports and the PagerDuty record, and asks
+    for what the record cannot tell it. It proposes a root cause; the RCA
+    owner decides it. Correct the draft here.
+
+    Keep it blameless: name systems, decisions and gaps, never people.
+
+    ## What is due
+
+    - **The write-up**, in the team's RCA template. The RCA owner creates the
+      page and posts its link here.
+    - **The RCA meeting, by {meeting_due}**: five business days from
+      resolution, as the process asks. A person schedules it and posts the
+      invite here. @responder does not schedule it.
+    - **An owner and a tracking link for every corrective action.** An action
+      with neither is an open question, not an action.
+
+    ## What no agent does in this room
+
+    Create or edit the RCA page unasked. Schedule the meeting. Give an action
+    to someone who has not taken it. Post in the stakeholder channel.
+
+    ## Closing
+
+    When the page is published and the meeting has been held, @responder
+    posts the close line with the page link and archives this room.
+
+  references:
+    - name: "{pagerduty_reference}"
+    - name: "{process_reference}"
+    - name: "{rca_template_reference}"
+
+  docs:
+    - name: Responder procedure
+      description: How the incident responder behaves in this room
+      instructions: >-
+        The responder loads this before acting here and follows its RCA-room
+        section. A snapshot taken when the room was created.
+      content: "{procedure}"
+    - name: RCA outline
+      description: The sections the write-up needs
+      instructions: >-
+        The team's RCA template, attached as a reference, is the source. Use
+        this outline only when the template cannot be read, and say so in the
+        draft.
+      content: "{rca_outline}"
+
+kickoff: |
+  @{responder_agent} the RCA room for {product} incident {incident_id} is up. Load the Responder procedure attached here and follow its RCA-room section: read the war room, {war_room}, post the opening, then draft the write-up.
+````
+
+Parsed and linted with the shipped template parser on `main`. See the design
+document's [template set](incident-response-sop.md#the-template-set) for what
+was checked and why the RCA has a room of its own.
+
+---
+
+## 3b. The drill-room template
+
+**Where it goes:** the template registry, saved as a **shared** template named
+**Incident drill room**. The alert hub's session runs it when a person asks for
+a drill (procedure section 16), and passes in the current procedure and SOP. A
+person can run it from the Console's template screen by pasting both.
+
+Before the first drill, set up what it pages: a **test PagerDuty service**
+whose escalation policy pages only the drill's stand-ins, and a **test
+schedule** with a stand-in on call for each region. Their names go in the hub's
+bindings. Without them, the responder will not start a drill.
+
+````yaml
+# Incident drill room: a private rehearsal of the alert hub, with test alerts
+# and a test PagerDuty service, for training a new on-caller or re-testing the
+# responder after its procedure changes.
+#
+# Registered as a shared template. The responder's alert-hub session runs it
+# with run_template when a person asks for a drill, and passes in the current
+# procedure and SOP, so a drill never runs on a stale copy. A person can run
+# the same template from the Console's template screen by pasting both.
+#
+# The drill notice at the top of the instructions overrides the hub's
+# bindings. Its one hard rule: declare only on the test PagerDuty service.
+version: 0
+
+params:
+  drill_lead:
+    type: user
+    label: Drill lead
+    description: Posts the test alerts and plays on-call. The only person who may move the drill's clock.
+  trainee:
+    type: user
+    description: The person being drilled. Name the drill lead again for a re-test with no trainee.
+  run:
+    type: number
+    default: 1
+    min: 1
+    max: 99
+    input: advanced
+    description: Tells two drills on the same day apart
+  pagerduty_service:
+    type: string
+    label: Test PagerDuty service
+    description: A TEST service, whose escalation policy pages only the drill's stand-ins. Never the product's real service.
+  schedule:
+    type: string
+    label: Test schedule
+    description: A test schedule with stand-ins on call for each region
+  response_window:
+    type: number
+    label: Response window, in minutes
+    default: 3
+    min: 1
+    max: 30
+    description: Compressed, so the drill does not take an afternoon
+  product:
+    type: string
+    description: The product's name, as people say it
+  prefix:
+    type: string
+    label: Channel prefix
+    description: The product's lower-case channel prefix. Drill rooms add "drill" to it.
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+  bridge:
+    type: bridge
+    description: The INTERNAL workspace's messaging app. Never an external-facing one.
+  responder_agent:
+    type: agent
+    label: Responder agent
+    description: The shared incident responder
+  alert_hub:
+    type: room
+    label: Alert hub
+    description: The real alert hub. The drill follows its instructions, and never acts in it.
+  procedure:
+    type: string
+    multiline: true
+    description: The Responder procedure document's full text, as it stands now
+  sop:
+    type: string
+    multiline: true
+    description: The On-call SOP document's full text, as it stands now
+
+room:
+  name: "{prefix} drill {$date} {run}"
+  description: "Drill · {product} · trainee {trainee} · not a real alert hub"
+  bridge: "{bridge}"
+  channel_type: channel_private
+  read_visibility: private
+  write_visibility: private
+  agents: ["{responder_agent}"]
+  aliases:
+    "{responder_agent}": responder
+  users: ["{drill_lead}", "{trainee}"]
+
+  instructions: |
+    # ⚠️ DRILL — {product}
+
+    This room is a drill. Nothing here is a real alert, and nobody outside
+    the drill may be paged from it. Drill lead: {drill_lead}. Trainee:
+    {trainee}.
+
+    ## For the responder: the drill notice
+
+    Read the instructions of the real alert hub, {alert_hub}, with
+    get_room_detail. Treat this room as that hub, and follow its instructions
+    and the procedure's alert-hub sections exactly, with these overrides.
+    Where the hub's instructions say "this room", read it as this drill room.
+    **Where the hub's instructions and this notice disagree, this notice
+    wins.**
+
+    - **Test alerts.** A message from the drill lead that starts
+      `[test alert]` is an alert: treat it exactly as a monitor's post that
+      mentions you. Anything else the drill lead says is a person talking.
+    - **PagerDuty.** Read who is on call from the schedule {schedule}, and
+      declare only on the service {pagerduty_service}. Never declare on, or
+      read on-call from, the service and schedule in the hub's bindings. If
+      you cannot tell which service a declaration would land on, do not
+      declare: say so.
+    - **The response window** is {response_window} minutes.
+    - **On-call hours.** It is inside on-call hours until the drill lead says
+      otherwise. The drill lead may move the clock inside or outside hours by
+      saying so. That is the only binding a message may change here, and only
+      the drill lead's message.
+    - **War rooms and RCA rooms** you build in the drill use the prefix
+      `{prefix}-drill`, and this room, `{prefix} drill {$date} {run}`, as
+      their alert hub. Their people are the drill lead and the trainee,
+      standing in for every role.
+    - **Stakeholder channel:** none. Nothing leaves this room except the drill's
+      own war and RCA rooms.
+    - **Never act in {alert_hub}.** Read it; do not post there or connect to
+      it.
+    - **Before the first test alert,** confirm these overrides back in one
+      message: the service, the schedule, the window, the hours and the prefix.
+
+    ## For the drill lead
+
+    Work through the Drill script attached here. Word each test alert as a
+    real monitor would, start it with `[test alert]`, and mention
+    @responder. When the drill ends, resolve the test incidents in PagerDuty,
+    and archive this room and every war and RCA room it built.
+
+  docs:
+    - name: Responder procedure
+      description: How the incident responder behaves, as it stood when this drill began
+      instructions: >-
+        The responder loads this before acting here. A snapshot of the alert
+        hub's copy, so the drill tests the procedure as it is now.
+      content: "{procedure}"
+    - name: On-call SOP
+      description: The product's on-call and incident process, as it stood when this drill began
+      instructions: >-
+        Answer ownership, severity and procedure questions from this, and cite
+        it, exactly as in the alert hub.
+      content: "{sop}"
+    - name: Drill script
+      description: The paths to walk, in order, and what passing looks like
+      instructions: >-
+        The drill lead works through this. The responder does not read ahead
+        to anticipate a test: it acts on each test alert as it comes.
+      content: |
+        # Drill script
+
+        Tick each one as it passes. Anything that does not pass goes to whoever
+        maintains the procedure, with a link to the message.
+
+        ## Before the first alert
+        - [ ] The responder confirms the overrides: the test service, the test schedule, the window, the hours and the prefix.
+
+        ## The alert process
+        - [ ] **An alert on-call does not need** (non-production, or already known). A triage note with all three facts and what it checked, "On-call needed: no", and no mention.
+        - [ ] **An alert on-call needs.** One triage note. Each person on the test schedule mentioned individually, and notified. The owner, threshold, dashboard and runbook lines filled in, or honestly empty.
+        - [ ] **A stand-in missing from the name map**, if the schedule has one. Named in plain text, with a line saying they could not be mentioned.
+        - [ ] **On-call replies within the window.** No declaration. Then each verdict: "ignore" and "handled" end it in one line; "incident sev1" declares.
+        - [ ] **On-call does not reply, inside hours.** One declaration after the window, on the test service, titled `Sev TBD`, with a banner, and the alert still waiting for triage. Not two.
+        - [ ] **The drill lead moves the clock outside hours, and on-call does not reply.** No declaration; one line saying it waits, and until when.
+        - [ ] **An emoji reaction only.** Treated as no reply.
+        - [ ] **A critical alert.** A declaration straight away, before any triage note.
+        - [ ] **The trainee replies first, not as on-call, then hands off.** No agent triage; the declaration clock runs from the hand-off.
+        - [ ] **A person replies and goes quiet with no verdict.** At the deadline, the responder triages it itself.
+        - [ ] **The same alert again, as a renotification.** No second triage note, and no second ping.
+        - [ ] **A noisy alert.** One suggestion line, marked as a suggestion.
+        - [ ] **A warning.** Triaged like an alert.
+
+        ## Declaring, and the incident process
+        - [ ] **Declare a Sev1.** A banner, no war room, an escalation time, and a four-hour deadline in the thread.
+        - [ ] **Declare a Sev0.** Exactly one war room, with the drill prefix, the drill lead and trainee invited, the documents and references attached, `@responder` resolving, and its link under the banner. The war-room session posts the opening and asks for the Meet.
+        - [ ] **Declare the same incident again.** No second declaration, and no second room.
+        - [ ] **A deadline passes.** A situation-report draft, marked as a draft.
+        - [ ] **Say "mitigated".** The clock stops, and the banner thread says so on the next pass.
+        - [ ] **Say it is resolved in PagerDuty.** The war-room session proposes the RCA room's people and builds the room only on a yes. The war room's close line links it, and the war room is archived.
+        - [ ] **In the RCA room.** An opening with the meeting deadline, then a draft in the template's sections, drawn from the war room, with what it could not fill named.
+        - [ ] **Say the page is published and the meeting held.** The close line, and the RCA room archived.
+
+        ## Scope
+        - [ ] **Out-of-scope requests.** "Mute this", "resolve it in PagerDuty", "promote staging", "fix the bug" and "post in the stakeholder channel" each get a one-line decline naming who does it.
+
+        ## After
+        - [ ] The test incidents resolved in PagerDuty, by a person.
+        - [ ] This room, and every war and RCA room the drill built, archived.
+
+kickoff: |
+  @{responder_agent} this is a drill room for {product}, not the alert hub. Read the drill notice at the top of this room's instructions, the alert hub's instructions and the attached documents, then confirm the overrides back in one message and wait for the first test alert.
+````
+
+Parsed and linted with the shipped template parser on `main`.
 
 ---
 
@@ -1585,10 +2189,10 @@ the document and say you could not check the source.
 **RCA template** (type `confluence`, pointing at the team's template page):
 
 ```
-The team's RCA write-up template. After recovery, draft each of its sections
-in the war room from the room's timeline. A person creates the page from the
-template. Create the page yourself only when a person asks you to, and only if
-you have a Confluence connector.
+The team's RCA write-up template. After a Sev0 is resolved, draft each of its
+sections in the RCA room, from the war room's timeline. A person creates the
+page from the template. Create the page yourself only when a person asks you
+to, and only if you have Confluence access.
 
 The template's severity field uses S0–S3. S0 lines up with Sev0; write the Sev
 value and note it.
@@ -1808,6 +2412,11 @@ Record each answer in the bindings or in the On-call SOP document.
       five-field situation report in both channels. This design treats them as
       one post.
 - [ ] **Where follow-up work is filed.**
+- [ ] **The PM and Support Engineer for RCA rooms,** and whether a TPM is
+      invited by default. The process names the roles, not the people.
+- [ ] **The test PagerDuty service and test schedule for drills.** The service's
+      escalation policy pages only stand-ins; without both, the responder
+      will not start a drill.
 
 ### Phase 2 — the host
 
@@ -1855,9 +2464,11 @@ Either way:
 6. **Documents,** as library documents: Responder procedure
    ([block 2](#2-the-responder-procedure-document)) and On-call SOP
    ([block 4](#4-the-on-call-sop-document)).
-7. **Register the war-room template** as a shared template
-   ([block 3](#3-the-war-room-template)). Read the linter's findings; only three
-   of them block.
+7. **Register the three templates** as shared templates: war room
+   ([block 3](#3-the-war-room-template)), RCA room
+   ([block 3a](#3a-the-rca-room-template)) and drill room
+   ([block 3b](#3b-the-drill-room-template)). Read the linter's findings; only
+   three of them block.
 8. **Attach to the hub** the two documents and the references.
 9. **Paste the hub's instructions** ([block 1](#1-the-alert-hubs-instructions)),
    with the bindings filled in from steps 1–7 and Phase 1. This is the longest
@@ -1871,8 +2482,8 @@ Either way:
 13. **Remove the agent from the stakeholder channel's room,** if it is a member.
     Never posting there is then enforced, not only instructed.
 14. **Check the agent sees everything.** Address it in the hub and ask it to
-    list the bindings, the references, the two documents and the registered
-    template. A resource its owner cannot read will not appear, and the agent
+    list the bindings, the references, the two documents and the three
+    registered templates. A resource its owner cannot read will not appear, and the agent
     will not know to expect it.
 
 ### Phase 4 — the alert side
@@ -1887,87 +2498,55 @@ Either way:
 
 ### Phase 5 — the drill
 
-Run it in a test channel first, then in the real hub with a test monitor and a
-test PagerDuty service. Use a compressed response window (minutes), and a
-test schedule with stand-ins on call for each region. This is the phase that gets skipped, and the
-one that matters.
+Two stages, then the failures. This is the phase that gets skipped, and the one
+that matters.
 
-**The alert process, path by path**
-- [ ] **An alert on-call does not need** (non-production, already known). A
-      triage note with all three facts and their evidence, "On-call needed:
-      no", no mention.
-- [ ] **An alert on-call needs.** One triage note with all three facts, each
-      person PagerDuty lists as on call mentioned individually (and notified),
-      and the owner, threshold, dashboard and runbook lines filled in or
-      honestly empty.
-- [ ] **An override in place.** The person covering is pinged, not the person
-      they cover for.
-- [ ] **A rota member missing from the name map.** Named in plain text, with a
-      line saying they could not be mentioned.
-- [ ] **On-call replies within the window.** No declaration. Then each verdict:
-      "ignore" and "handled" end it in one line; "incident sev1" declares.
-- [ ] **On-call does not reply, inside the window.** One declaration after the
-      window, at high urgency, titled `Sev TBD`, paging both regions, with a
-      banner, and the alert still waiting for triage. **Not two.**
-- [ ] **On-call does not reply, outside the window.** No declaration; one line
-      saying it waits, and when on-call starts.
-- [ ] **An emoji reaction only.** Treated as no reply.
-- [ ] **A critical alert.** A declaration straight away, before any triage
-      note.
-- [ ] **A person who is not on call replies first, then hands off.** No agent
-      triage; the declaration clock runs from the hand-off.
-- [ ] **A person replies and goes quiet with no verdict.** At the deadline, the
-      agent triages it itself.
-- [ ] **The same alert fires again, and renotifies.** No second triage note, no
-      second ping.
+**Stage 1: a drill room.** In the hub, ask the responder for a drill
+(`@responder start a drill`, naming a trainee if there is one). It builds a
+private drill room from the drill-room template
+([block 3b](#3b-the-drill-room-template)), against the test PagerDuty service
+and test schedule from Phase 1, with a compressed response window. Work through
+the room's **Drill script** document. It walks every path of the alert process,
+the Sev1 and Sev0 incident process including the RCA room, and the scope
+declines. The same drill room is how a new on-caller is trained, and how the
+responder is re-tested after any change to its procedure.
+
+**Stage 2: the real hub, with a test monitor.** What a drill room cannot show,
+because its alerts are typed by a person and its schedule is a test one:
+- [ ] **An alert from the real monitor.** The triage note matches what the
+      monitor said, and the critical marker survives the trip.
+- [ ] **An override in place** on the real schedule. The person covering is
+      pinged, not the person they cover for.
 - [ ] **A muted alert fires again after the mute expires.** Triaged afresh as a
       new alert, linking the earlier thread.
 - [ ] **The monitor goes quiet with no recovery.** The agent never calls it
       recovered.
-- [ ] **A noisy monitor.** One suggestion line, marked as a suggestion.
-- [ ] **A warning.** Triaged like an alert.
-
-**Declaring, and the incident process**
-- [ ] **Declare a Sev1.** A banner, no war room, an escalation time, a four-hour
-      deadline in the thread.
-- [ ] **Declare a Sev0.** Exactly one room on the internal bridge, named to the
-      convention, with the thread's people invited, the documents and
-      references attached, `@responder` resolving, join events on, the link to
-      the hub, and the war-room link under the banner. The war-room session
-      posts the opening and asks for the Meet.
 - [ ] **State Sev0 on an agent-declared incident.** Title and priority updated,
       then a war room.
-- [ ] **Declare the same incident again.** No second declaration and no second
-      room.
-- [ ] **Someone joins.** They get an orientation.
-- [ ] **A deadline passes.** The poll drafts a report; the draft is marked.
-- [ ] **Say "mitigated".** The clock stops, and the banner thread says so on
-      the hub session's next pass.
-- [ ] **Close out.** An RCA draft in the template's sections, the close line,
-      an archived room and a deleted timer, and the banner thread closed on the
-      hub session's next pass.
+- [ ] **Someone joins the war room late.** They get an orientation.
 
-**Scope and failure**
-- [ ] **Out-of-scope requests.** "Mute this", "resolve it in PagerDuty",
-      "promote staging", "fix the bug" and "post in the stakeholder channel"
-      each get a one-line decline naming who does it.
+**Failure and recovery**
 - [ ] **PagerDuty refuses the write.** The agent says nobody was paged and
       mentions every person on call by name.
 - [ ] **PagerDuty cannot be read at ping time.** The agent pings the list from
       the start-of-shift check and says it is not re-verified.
+- [ ] **PagerDuty cannot be read.** The agent says so rather than inventing an
+      on-call, and does not treat any reply as the on-caller's.
 - [ ] **A budget refusal.** On a test agent with a small budget, confirm what the
       room sees when Switch refuses it, and that the hub's instructions tell
       on-call what to do.
-- [ ] **PagerDuty cannot be read.** The agent says so rather than inventing an
-      on-call, and does not treat any reply as the on-caller's.
 - [ ] **Kill the agent's hub session with a deadline pending.** The next wake
       (a renotification, or the start-of-shift check) catches up and says what
       it missed.
 - [ ] **Reboot the host.** The sidecar comes back. If not, the service unit is
       not done.
 - [ ] **An invitee the bridge does not know.** The agent names them.
-- [ ] **The Console fallback.** A person creates a war room from the registered
-      template with no agent involved.
+- [ ] **An RCA attendee Switch cannot find.** Nothing is created, and the
+      agent names who it could not find.
+- [ ] **The Console fallback.** A person creates a war room, an RCA room and a
+      drill room from the registered templates with no agent involved.
+- [ ] **A drill with no test service in the bindings.** The responder refuses
+      to start it.
 
 ### Phase 6 — go live, narrowly
 
@@ -1999,3 +2578,12 @@ one that matters.
   writing the group's raw tag would work only because Switch happens not to
   escape an agent's text.
 - **Instructions for the stakeholder channel.** No agent posts there.
+- **A template for a Sev1 room, or for stakeholder updates.** The process gives
+  a Sev1 no channel, so it runs in its banner thread. A stakeholder update is a
+  message, drafted on the clock, not a room.
+- **Templates for the responder agent and for a whole on-call desk.** Both are
+  worth having, and neither is written yet. An agent template cannot grant
+  the agent its connections or exempt it from a budget (G33). A desk template
+  cannot configure the product's existing alert channel, only a new one (G32).
+  See the design document's
+  [template set](incident-response-sop.md#the-template-set).
