@@ -16,6 +16,7 @@ import type {
   TemplateRunResult,
 } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { machineLabel } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
@@ -1706,7 +1707,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? ''
           : runLocationLabel(String(value), allowedHosts)
         : param.type === 'machine' || param.type === 'location'
-          ? (machines?.find((m) => m.id === value || m.name === value)?.name ?? String(value))
+          ? (() => {
+              const m = machines?.find((c) => c.id === value || c.name === value);
+              return m ? machineLabel(m) : String(value);
+            })()
           : param.type === 'room' && value === NEW
             ? (newRoomForPick?.name ?? 'New room')
             : param.type === 'directory'
@@ -2088,8 +2092,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                                     : null,
                                   location: setup.machine
                                     ? setup.machine.state === 'online'
-                                      ? setup.machine.name
-                                      : `${setup.machine.name} (${setup.machine.state})`
+                                      ? machineLabel(setup.machine)
+                                      : `${machineLabel(setup.machine)} (${setup.machine.state})`
                                     : (setup.machineText ?? null),
                                   directory:
                                     setup.managedDirectory === ''

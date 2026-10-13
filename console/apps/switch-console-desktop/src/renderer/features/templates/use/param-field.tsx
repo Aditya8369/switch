@@ -93,22 +93,24 @@ export function ParamField({
       <MachineSelect value={strVal} onChange={onChange} machines={machines} disabled={disabled} />
     );
   } else if (param.type === 'directory') {
-    control = sshHost ? (
-      <Input
-        value={strVal}
-        disabled={disabled}
-        placeholder="/home/agent/repo"
-        className="font-mono text-xs"
-        onChange={(e) => onChange(e.target.value)}
-      />
-    ) : (
-      <LocalDirectorySelector
-        title="Choose the agent's working directory"
-        message="The agent runs from here. The folder is created when the agent is."
-        path={strVal}
-        onPathChange={onChange}
-      />
-    );
+    // A managed agent's directory is on its machine, not here: no folder picker.
+    control =
+      sshHost || locationAsMachine ? (
+        <Input
+          value={strVal}
+          disabled={disabled}
+          placeholder="/home/agent/repo"
+          className="font-mono text-xs"
+          onChange={(e) => onChange(e.target.value)}
+        />
+      ) : (
+        <LocalDirectorySelector
+          title="Choose the agent's working directory"
+          message="The agent runs from here. The folder is created when the agent is."
+          path={strVal}
+          onPathChange={onChange}
+        />
+      );
   } else if (param.type === 'room') {
     control = (
       <RoomChoiceField
