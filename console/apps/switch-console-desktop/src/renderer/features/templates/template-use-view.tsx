@@ -1669,6 +1669,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       if (setup.machine !== null || setup.machineText !== null || setup.location === null)
         return null;
       if (workspaceId === null) return null;
+      // One notice per location: each sets the machine up, and a second would
+      // only report that the first is already doing it.
+      const first = setups.find(
+        (s) =>
+          s.existing === null &&
+          s.machine === null &&
+          s.machineText === null &&
+          s.location === setup.location
+      );
+      if (first !== setup) return null;
       return (
         <LocationMachineNotice
           serverId={serverId}
@@ -1857,7 +1867,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                                     ? (providerDisplayName(setup.provider) ?? setup.provider)
                                     : null,
                                   location: setup.machine
-                                    ? `${setup.machine.name}${setup.machine.state === 'online' ? '' : ` (${setup.machine.state})`}`
+                                    ? setup.machine.state === 'online'
+                                      ? setup.machine.name
+                                      : setup.location !== null
+                                        ? `${runLocationLabel(setup.location, allowedHosts)} (${setup.machine.name}, ${setup.machine.state})`
+                                        : `${setup.machine.name} (${setup.machine.state})`
                                     : setup.location !== null
                                       ? `${runLocationLabel(setup.location, allowedHosts)} (not a machine on this server yet)`
                                       : (setup.machineText ?? null),
