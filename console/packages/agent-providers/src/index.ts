@@ -176,6 +176,13 @@ export {
   serveControl,
 } from './host/control';
 export { ControlError } from './host/attachment-transfers';
+export {
+  RELAY_TIMEOUT_MS,
+  RelayClient,
+  RelayClosedError,
+  RelayError,
+  type RelayFetch,
+} from './host/relay-client';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
