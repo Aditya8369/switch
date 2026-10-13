@@ -408,11 +408,17 @@ def lint_template(text: str) -> LintResult:
         )
 
     for name in sorted(used - declared):
+        team_agent = name == "agent" and isinstance(document.get("agents"), list)
         warnings.append(
             Finding(
                 "undeclared_placeholder",
-                f"'{{{name}}}' is used but no parameter declares it, so it will "
-                "be left in the document as written.",
+                "'{agent}' outside an agent's own entry is ambiguous in a "
+                "template with an agents: list, since it could be any of them. "
+                "Name the agent by the text written as its name, or use the "
+                "single agent: form, so it is not left in the document as written."
+                if team_agent
+                else f"'{{{name}}}' is used but no parameter declares it, so it "
+                "will be left in the document as written.",
                 name,
             )
         )

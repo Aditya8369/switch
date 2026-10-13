@@ -590,4 +590,5 @@ room:
   agents: [lead]
 """
     result = lint_template(text)
-    assert [w for w in result.warnings if "'{agent}'" in w.message]
+    (warning,) = [w for w in result.warnings if "'{agent}'" in w.message]
+    assert "ambiguous" in warning.message
