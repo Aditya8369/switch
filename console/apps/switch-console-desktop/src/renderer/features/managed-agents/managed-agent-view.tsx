@@ -3,7 +3,6 @@ import { MoreVertical, Play, Square, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -25,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentChats } from './agent-chats';
 import { type AgentTab, agentTabStore } from './agent-tab-store';
 import { ManagedAgentPage } from './managed-agent-page';
@@ -42,7 +41,6 @@ type ManagedAgentParams = {
 
 const TABS = [
   { value: 'chats', label: 'Chats' },
-  { value: 'connections', label: 'Connections' },
   { value: 'settings', label: 'Settings' },
 ] as const satisfies readonly { value: AgentTab; label: string }[];
 
@@ -190,9 +188,7 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
   const { params } = useParams('managedAgent');
   const agents = useManagedAgents(params.serverId);
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId);
-  const flags = useFeatureFlags(params.serverId);
-  const tabbed = flags.agent_chats;
-  const serviceConnections = flags.service_connections;
+  const tabbed = useFeatureFlags(params.serverId).agent_chats;
   if (agents.error)
     return (
       <ServerPage width={900} title={params.name} description="">
@@ -226,28 +222,6 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
   if (!tabbed) return <ManagedAgentPage key={agent.agentId} agent={agent} />;
   const tab = agentTabStore.tabFor(agent.agentId);
   if (tab === 'chats') return <AgentChats key={agent.agentId} agent={agent} />;
-  if (tab === 'connections')
-    return (
-      <ServerPage
-        width={900}
-        title="Connections"
-        description="The service connections this agent may use."
-      >
-        {serviceConnections ? (
-          <ServiceGrantsRow
-            serverId={agent.serverId}
-            workspaceId={agent.workspaceId}
-            agentId={agent.agentId}
-            agentName={managedAgentLabel(agent)}
-            cloud={agent.machine !== null && isCloudMachine(agent.machine)}
-          />
-        ) : (
-          <p className="text-sm text-foreground-muted">
-            Service connections are not turned on for this server.
-          </p>
-        )}
-      </ServerPage>
-    );
   return <ManagedAgentPage key={agent.agentId} agent={agent} />;
 });
 
