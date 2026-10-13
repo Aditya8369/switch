@@ -518,6 +518,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
             "has_warnings",
             "missing_agents",
             "agent_creation_console_only",
+            "agents_not_created",
+            "run_undone",
             "busy",
             "run_paused",
             "run_stopped",

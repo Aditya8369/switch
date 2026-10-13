@@ -3,13 +3,14 @@
 The registry keeps documents verbatim and never parses them. When an agent
 asks what a template is, or asks to run one, something has to: this module
 says which kind a document is, which agents it would create, and how to turn
-an agent or team template into a room document the server can provision.
+an agent or team template into the agents to create and the room document
+the server provisions after them.
 
-The server never creates agents; the Console does, on the machine the agent
-runs on. So an agent or team template is runnable here only when every agent
-it describes is swapped for an agent that already exists, the way the
-Console's Use page does it for "Existing agent". The ``agent:``/``agents:``
-block is then dropped and the room half runs like any room template.
+Each agent a template describes is either created, as a managed agent on one
+of the owner's machines (`plan_template`, then `template_runs`), or, where
+the entry says `allow_existing: true`, filled with an agent that already
+exists. Either way the ``agent:``/``agents:`` block is then dropped and the
+room half runs like any room template, naming the agents by their names.
 """
 
 from __future__ import annotations
@@ -21,14 +22,21 @@ from typing import Any, Literal
 import yaml
 from pydantic import ValidationError
 
-from switch_core.agent_refusals import AgentRefused
 from switch_core.rooms_yaml import (
     CONSOLE_PARAM_TYPES,
     ENTITY_PARAM_TYPES,
+    FIRST,
     PLACEHOLDER_RE,
     ParamSpec,
     coerce_param,
     interpolate,
+)
+from switch_core.template_runs import (
+    AGENTS_DIR,
+    AgentsNotCreated,
+    ConnectionPlan,
+    NewAgentPlan,
+    Problem,
 )
 
 TemplateKind = Literal["room", "group", "agent"]
@@ -164,6 +172,17 @@ def _placeholders(node: Any, into: set[str]) -> set[str]:
     return into
 
 
+def _room_part(data: dict[str, Any]) -> dict[str, Any] | None:
+    """The keys the server provisions rooms from, or None for a document
+    that describes no room."""
+    part = {
+        k: data[k] for k in ("room", "group", "rooms", "links", "kickoff") if k in data
+    }
+    if not part.get("room") and "group" not in part and "rooms" not in part:
+        return None
+    return part
+
+
 def room_document(
     text: str, filled: dict[str, str], inputs: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
@@ -171,10 +190,9 @@ def room_document(
     create replaced by the existing agent that fills its slot.
 
     ``filled`` maps a slot, by the name the template writes or the name it
-    resolves to with ``inputs``, to an existing agent's name. Returns the
-    document and the inputs to run it with. A document with no agents is
-    returned as it is. A slot left empty is refused: creating an agent is the
-    Console's to do.
+    resolves to with ``inputs``, to the name of the agent standing in it: an
+    existing one, or the one the run creates. Returns the document and the
+    inputs to run it with. A document with no agents is returned as it is.
     """
     data = _load(text)
     agents = _agents(data)
@@ -195,27 +213,11 @@ def room_document(
             if key:
                 replacements[key] = chosen
     if unfilled:
-        raise AgentRefused(
-            "agent_creation_console_only",
-            "Nothing was created: this template creates "
-            f"{', '.join(unfilled)}, and creating agents happens in Switch "
-            "Console. To run it here, fill each with an agent that already "
-            "exists, in `agents`: {slot name: agent name}.",
-        )
+        raise ValueError(f"No agent named for {', '.join(unfilled)}")
 
-    room_part = {
-        k: data[k] for k in ("room", "group", "rooms", "links", "kickoff") if k in data
-    }
-    if (
-        not room_part.get("room")
-        and "group" not in room_part
-        and "rooms" not in room_part
-    ):
-        raise AgentRefused(
-            "agent_creation_console_only",
-            "Nothing was created: this template only creates an agent, with no "
-            "room to run. Creating agents happens in Switch Console.",
-        )
+    room_part = _room_part(data)
+    if room_part is None:
+        raise ValueError("The template has no room to provision")
     if isinstance(data.get("agent"), dict):
         # A one-agent template names its agent `{agent}` in the room, a value
         # the Console supplies. Here it is the agent that fills the slot.
@@ -284,3 +286,469 @@ def room_document(
         out["params"] = params
     out.update(room_part)
     return yaml.safe_dump(out, sort_keys=False, allow_unicode=True), run_inputs
+
+
+# ── Planning a run on the server ──────────────────────────────────────────
+
+_AGENT_ADDRESSING = ("owner", "owner-agents", "anyone")
+_GITHUB_REPO = re.compile(
+    r"\A(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?\Z"
+)
+
+
+@dataclass(frozen=True)
+class TemplatePlan:
+    """What running a template creates: the agents, by slot, and the room
+    document after them (None when the template describes no room), with the
+    inputs to provision it with. ``existing`` maps each slot filled with an
+    agent that already exists to that agent's name."""
+
+    new_agents: list[NewAgentPlan]
+    existing: dict[str, str]
+    document: str | None
+    inputs: dict[str, Any]
+
+
+def _machine_ready(machine: dict[str, Any], provider: str | None) -> bool:
+    if machine.get("state") != "online":
+        return False
+    if provider is None:
+        return True
+    return any(
+        entry.get("provider") == provider
+        and entry.get("installed")
+        and entry.get("auth") not in ("missing", "expired")
+        for entry in machine.get("providers") or []
+    )
+
+
+def _find_machine(machines: list[dict[str, Any]], ref: str) -> dict[str, Any] | None:
+    by_id = next((m for m in machines if m.get("id") == ref), None)
+    if by_id is not None:
+        return by_id
+    named = [m for m in machines if m.get("name") == ref]
+    return named[0] if len(named) == 1 else None
+
+
+def _ready_providers(machine: dict[str, Any] | None) -> list[str]:
+    if machine is None:
+        return []
+    return [
+        str(entry["provider"])
+        for entry in machine.get("providers") or []
+        if entry.get("installed") and entry.get("auth") not in ("missing", "expired")
+    ]
+
+
+class _Planner:
+    """Resolves each agent entry to what it creates, collecting every problem
+    rather than stopping at the first."""
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        values: dict[str, Any],
+        machines: list[dict[str, Any]] | None,
+    ) -> None:
+        self.data = data
+        self.values = values
+        self.machines = machines
+        raw = data.get("params") or {}
+        self.params: dict[str, dict[str, Any]] = {
+            k: v for k, v in raw.items() if isinstance(v, dict)
+        }
+        self.entries = _agents(data)
+        self.problems: list[Problem] = []
+
+    def field_texts(self) -> list[str]:
+        return [
+            str(entry[key])
+            for entry in self.entries
+            for key in ("provider", "location", "machine", "directory")
+            if entry.get(key) is not None
+        ]
+
+    def for_all(self, kind: str) -> str | None:
+        """The param of type ``kind`` that no entry's field reads, which says
+        it for every agent."""
+        texts = self.field_texts()
+        for name, spec in self.params.items():
+            if spec.get("type") == kind and not any(
+                f"{{{name}}}" in text for text in texts
+            ):
+                return name
+        return None
+
+    def chain(self, name: str) -> list[str]:
+        default = self.params.get(name, {}).get("default")
+        if isinstance(default, list):
+            return [str(c) for c in default]
+        return [] if default is None else [str(default)]
+
+    def resolve_machine_param(self, name: str, provider: str | None) -> str | None:
+        """A machine param's value: as given, else the first candidate of its
+        default the owner has (``$first``: the first online machine that can
+        run the provider)."""
+        if name in self.values:
+            return str(self.values[name])
+        if self.machines is None:
+            return None
+        ordered = sorted(self.machines, key=lambda m: str(m.get("name")))
+        for candidate in self.chain(name):
+            if candidate == FIRST:
+                ready = next((m for m in ordered if _machine_ready(m, provider)), None)
+                if ready is not None:
+                    return str(ready["id"])
+                continue
+            found = _find_machine(self.machines, candidate)
+            if found is not None:
+                return str(found["id"])
+        return None
+
+    def resolve_provider_param(self, name: str, machine_ref: str | None) -> str | None:
+        """A provider param's value: as given, else the first candidate of its
+        default ready on the agent's machine (``$first``: the first ready)."""
+        if name in self.values:
+            return str(self.values[name])
+        machine = (
+            _find_machine(self.machines, machine_ref)
+            if self.machines is not None and machine_ref is not None
+            else None
+        )
+        ready = _ready_providers(machine)
+        for candidate in self.chain(name):
+            if candidate == FIRST:
+                if ready:
+                    return ready[0]
+                continue
+            if machine is None or candidate in ready:
+                return candidate
+        return None
+
+    def problem(self, slot: str, code: str, message: str) -> None:
+        self.problems.append(Problem(slot, code, message))
+
+    def text(self, slot: str, node: Any, values: dict[str, Any], what: str) -> Any:
+        """``node`` with the values filled in; a placeholder left over names
+        an input nobody gave."""
+        result = interpolate(node, values)
+        left = sorted(
+            n
+            for n in _placeholders(result, set())
+            if not n.startswith("$") and n in self.params
+        )
+        if left:
+            self.problem(
+                slot,
+                "input_missing",
+                f"its {what} needs {', '.join(left)}, which has no value; give "
+                "it in inputs.",
+            )
+        return result
+
+    def plan(self, entry: dict[str, Any], slot: str) -> NewAgentPlan | None:
+        before = len(self.problems)
+        values = dict(self.values)
+        name = _resolved_name(entry, values)
+        values["agent"] = name
+
+        provider_field = entry.get("provider")
+        provider_hint = (
+            str(interpolate(provider_field, values))
+            if provider_field is not None
+            else None
+        )
+        if provider_hint is not None and PLACEHOLDER_RE.search(provider_hint):
+            provider_hint = None
+
+        machine: str | None = None
+        machine_field = entry.get("machine")
+        if machine_field is not None:
+            ref = PLACEHOLDER_RE.fullmatch(str(machine_field))
+            if ref and self.params.get(ref.group(1), {}).get("type") == "machine":
+                machine = self.resolve_machine_param(ref.group(1), provider_hint)
+                if machine is None:
+                    self.problem(
+                        slot,
+                        "machine_unresolved",
+                        f"none of the machines its '{ref.group(1)}' input "
+                        "offers is one of your owner's machines that can take it; "
+                        "give a machine in inputs.",
+                    )
+            else:
+                machine = str(self.text(slot, machine_field, values, "machine"))
+        elif (shared := self.for_all("machine")) is not None:
+            machine = self.resolve_machine_param(shared, provider_hint)
+            if machine is None:
+                self.problem(
+                    slot,
+                    "machine_unresolved",
+                    f"none of the machines the '{shared}' input offers is one "
+                    "of your owner's machines that can take it; give a machine "
+                    "in inputs.",
+                )
+        elif entry.get("location") is not None or self.for_all("location"):
+            self.problem(
+                slot,
+                "location_console_only",
+                "it says where it runs as a location (this computer or an SSH "
+                "host), which only Switch Console can turn into a machine. Run "
+                "the template from Switch Console, or give the agent a "
+                "'machine:'.",
+            )
+        else:
+            self.problem(
+                slot,
+                "machine_unsaid",
+                "the template never says which machine it runs on. Give it a "
+                "'machine:' or declare a 'machine' param.",
+            )
+
+        provider: str | None = None
+        if provider_field is not None:
+            ref = PLACEHOLDER_RE.fullmatch(str(provider_field))
+            if ref and self.params.get(ref.group(1), {}).get("type") == "provider":
+                provider = self.resolve_provider_param(ref.group(1), machine)
+            else:
+                provider = str(self.text(slot, provider_field, values, "provider"))
+        elif (shared := self.for_all("provider")) is not None:
+            provider = self.resolve_provider_param(shared, machine)
+        else:
+            self.problem(
+                slot,
+                "provider_unsaid",
+                "the template never says which coding agent runs it. Give it a "
+                "'provider:' or declare a 'provider' param.",
+            )
+        if provider is None and len(self.problems) == before:
+            self.problem(
+                slot,
+                "provider_unresolved",
+                "none of the coding agents its provider input offers is ready "
+                "on its machine; give a provider in inputs.",
+            )
+
+        directory: str | None = None
+        directory_field = entry.get("directory")
+        if directory_field is None and (shared := self.for_all("directory")):
+            directory_field = f"{{{shared}}}"
+        if directory_field is None:
+            self.problem(
+                slot,
+                "directory_unsaid",
+                "the template never says which directory it works in. Give it "
+                f"a 'directory:' ({AGENTS_DIR}/{{agent}} is its own folder on "
+                "the machine) or declare a 'directory' param.",
+            )
+        else:
+            directory = str(self.text(slot, directory_field, values, "directory"))
+
+        join = [
+            j
+            for j in interpolate(entry.get("join") or [], values)
+            if isinstance(j, str) and j.strip()
+        ]
+        if join:
+            self.problem(
+                slot,
+                "join_console_only",
+                f"it joins {', '.join(join)}, and adding a new agent to rooms "
+                "that already exist happens in Switch Console. Run the "
+                "template there, or leave out join.",
+            )
+
+        addressing = str(entry.get("addressing") or "owner")
+        if addressing not in _AGENT_ADDRESSING:
+            self.problem(
+                slot,
+                "invalid_addressing",
+                f"addressing '{addressing}' is not one of "
+                f"{', '.join(_AGENT_ADDRESSING)}.",
+            )
+
+        instructions = str(
+            self.text(slot, entry.get("instructions") or "", values, "instructions")
+        )
+        if not instructions.strip():
+            self.problem(slot, "instructions_unsaid", "it has no instructions.")
+
+        connections = self.connections(entry, slot, values)
+        repo = entry.get("repo")
+        if repo:
+            repo_text = str(self.text(slot, repo, values, "repo"))
+            match = _GITHUB_REPO.match(repo_text)
+            if match is None:
+                self.problem(
+                    slot,
+                    "repo_not_github",
+                    f"its repo {repo_text} is not a GitHub repository; a "
+                    "machine reaches a repository through a GitHub connection.",
+                )
+            else:
+                full_name = match.group(1)
+                github = next((c for c in connections if c.service == "github"), None)
+                if github is None:
+                    connections.append(ConnectionPlan("github", None, [full_name]))
+                elif full_name.lower() not in {r.lower() for r in github.repositories}:
+                    connections[connections.index(github)] = ConnectionPlan(
+                        "github", github.access, [*github.repositories, full_name]
+                    )
+                instructions += (
+                    f"\n\nYou work on the GitHub repository {full_name}. If "
+                    "your working directory is not a clone of it yet, clone "
+                    f"https://github.com/{full_name}.git into it first."
+                )
+
+        isolation = str(interpolate(entry.get("isolation") or "shared", values))
+        if isolation not in ("shared", "isolated"):
+            self.problem(
+                slot,
+                "invalid_isolation",
+                f"isolation '{isolation}' is not shared or isolated.",
+            )
+        auto_approve = interpolate(entry.get("auto_approve", False), values)
+        if not isinstance(auto_approve, bool):
+            self.problem(
+                slot, "invalid_auto_approve", "auto_approve is not true or false."
+            )
+        advanced = self.text(
+            slot, entry.get("advanced_config") or {}, values, "advanced_config"
+        )
+        if not isinstance(advanced, dict):
+            self.problem(
+                slot, "invalid_advanced_config", "advanced_config is not a mapping."
+            )
+        model = entry.get("model")
+        model_text = (
+            str(self.text(slot, model, values, "model")) if model is not None else ""
+        )
+        display_name = entry.get("display_name")
+
+        if len(self.problems) > before:
+            return None
+        assert machine is not None and provider is not None
+        return NewAgentPlan(
+            slot=slot,
+            name=name,
+            description=str(
+                interpolate(entry.get("description") or "", values) or name
+            ),
+            display_name=(
+                str(interpolate(display_name, values)) if display_name else None
+            ),
+            instructions=instructions,
+            provider=provider,
+            machine=machine,
+            model=model_text or None,
+            advanced_config=dict(advanced),
+            isolation=isolation,
+            auto_approve=bool(auto_approve),
+            directory=directory,
+            addressing=addressing,
+            connections=connections,
+        )
+
+    def connections(
+        self, entry: dict[str, Any], slot: str, values: dict[str, Any]
+    ) -> list[ConnectionPlan]:
+        raw = entry.get("connections") or []
+        if not isinstance(raw, list):
+            self.problem(slot, "invalid_connections", "connections is not a list.")
+            return []
+        plans: list[ConnectionPlan] = []
+        for item in self.text(slot, raw, values, "connections"):
+            if isinstance(item, str):
+                item = {"service": item}
+            if not isinstance(item, dict) or not item.get("service"):
+                self.problem(
+                    slot,
+                    "invalid_connections",
+                    "each connection is a service name or {service, access, repos}.",
+                )
+                continue
+            access = item.get("access")
+            if access not in (None, "read", "write"):
+                self.problem(
+                    slot,
+                    "invalid_connections",
+                    f"{item['service']}: access '{access}' is not read or write.",
+                )
+                continue
+            repos = item.get("repos") or []
+            if isinstance(repos, str):
+                repos = [repos]
+            plans.append(
+                ConnectionPlan(
+                    service=str(item["service"]),
+                    access=access,
+                    repositories=[str(r) for r in repos if str(r).strip()],
+                )
+            )
+        return plans
+
+
+def plan_template(
+    text: str,
+    filled: dict[str, str],
+    inputs: dict[str, Any],
+    *,
+    builtins: dict[str, str],
+    machines: list[dict[str, Any]] | None,
+) -> TemplatePlan:
+    """What running ``text`` on the server creates.
+
+    ``filled`` puts an existing agent in a slot, by the name the template
+    writes or the one it resolves to; only an entry that says
+    ``allow_existing: true`` takes one. Every other entry is created as a
+    managed agent. ``machines`` is the owner's machines as ``list_machines``
+    reports them (None without agent management), for a ``machine`` or
+    ``provider`` param's candidates. Refused with every problem found, before
+    anything is created.
+    """
+    data = _load(text)
+    values = {**builtins, **_known_values(data, inputs)}
+    values.pop(AGENTS_DIR[1:-1], None)
+    planner = _Planner(data, values, machines)
+    known = set(filled)
+    names: dict[str, str] = {}
+    existing: dict[str, str] = {}
+    new_agents: list[NewAgentPlan] = []
+    for index, entry in enumerate(planner.entries):
+        written = _written_name(entry)
+        resolved = _resolved_name(entry, values)
+        slot = resolved or written or f"agent {index + 1}"
+        chosen = filled.get(written) or filled.get(resolved)
+        known -= {written, resolved}
+        if chosen:
+            if entry.get("allow_existing") is not True:
+                planner.problem(
+                    slot,
+                    "existing_not_allowed",
+                    "the template does not let an existing agent stand in for "
+                    "it (no allow_existing: true); it is created.",
+                )
+                continue
+            existing[slot] = chosen
+            for key in (written, resolved):
+                if key:
+                    names[key] = chosen
+            continue
+        plan = planner.plan(entry, slot)
+        if plan is not None:
+            new_agents.append(plan)
+            for key in (written, resolved):
+                if key:
+                    names[key] = plan.name
+    for unknown in sorted(known):
+        planner.problem(
+            unknown,
+            "no_such_slot",
+            "the template has no agent by that name. get_template lists its "
+            "agent slots.",
+        )
+    if planner.problems:
+        raise AgentsNotCreated(planner.problems)
+    if _room_part(data) is None:
+        return TemplatePlan(new_agents, existing, None, {})
+    document, run_inputs = room_document(text, names, inputs)
+    return TemplatePlan(new_agents, existing, document, run_inputs)

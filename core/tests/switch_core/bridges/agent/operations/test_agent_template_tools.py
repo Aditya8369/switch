@@ -18,7 +18,12 @@ from sqlalchemy import select, update
 
 from switch_core.agent_refusals import AgentRefused
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
-from switch_core.agent_templates import agent_slots, room_document, template_kind
+from switch_core.agent_templates import (
+    agent_slots,
+    plan_template,
+    room_document,
+    template_kind,
+)
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
     reset_call_context,
@@ -58,9 +63,11 @@ agents:
     description: Routes reports
     provider: "{provider}"
     instructions: Route reports.
+    allow_existing: true
   - name: "{team}-repro"
     description: Reproduces bugs
     instructions: Reproduce bugs.
+    allow_existing: true
 room:
   name: "{team}-triage"
   description: The triage room
@@ -74,6 +81,7 @@ agent:
   name: jq-expert
   description: Answers jq questions
   instructions: Answer jq questions.
+  allow_existing: true
 room:
   name: "Ask {agent}"
   description: "Ask {agent} about jq"
@@ -171,15 +179,18 @@ def test_a_team_template_becomes_a_room_with_the_chosen_agents():
     assert inputs == {}
 
 
-def test_an_unfilled_slot_is_refused_with_the_console_message():
-    with pytest.raises(
-        AgentRefused, match="creating agents happens in Switch Console"
-    ) as e:
-        room_document(
-            TEAM_TEMPLATE, {"red-triager": "claude-code.alice"}, {"team": "red"}
+def test_an_existing_agent_only_stands_in_where_the_template_allows_it():
+    template = TEAM_TEMPLATE.replace("    allow_existing: true\n", "", 1)
+    with pytest.raises(AgentRefused) as e:
+        plan_template(
+            template,
+            {"red-triager": "claude-code.alice", "red-repro": "claude-code.bob"},
+            {"team": "red"},
+            builtins={},
+            machines=None,
         )
-    assert e.value.reason == "agent_creation_console_only"
-    assert "red-repro" in str(e.value)
+    assert e.value.reason == "agents_not_created"
+    assert "red-triager: the template does not let an existing agent" in str(e.value)
 
 
 # ── The tools ─────────────────────────────────────────────────────────────
@@ -295,15 +306,20 @@ async def test_run_an_agent_template_with_an_existing_agent(tools):
 
 
 @pytest.mark.asyncio
-async def test_run_that_would_create_an_agent_is_refused_and_reported(tools, caplog):
+async def test_run_that_would_create_an_agent_without_management_is_refused(
+    tools, caplog
+):
     template_id = await _stored(
         tools, tools["user_id"], "jq", AGENT_TEMPLATE, kind="agent"
     )
 
-    with pytest.raises(AgentRefused, match="Switch Console"):
+    with pytest.raises(AgentRefused, match="Nothing was created") as e:
         await _as(tools["agent_id"], run_template, template_id=template_id)
 
-    assert _refusals(caplog) == [("run_template", "agent_creation_console_only")]
+    # The entry never says where it runs, and this server has no agent
+    # management to run it on: both are named, and nothing is created.
+    assert "machine_unsaid" in str(e.value)
+    assert _refusals(caplog) == [("run_template", "agents_not_created")]
     assert "Refused agent claude-code.alice" in caplog.text
 
 
@@ -483,8 +499,10 @@ params:
 agents:
   - name: "{team}-lead"
     instructions: Lead.
+    allow_existing: true
   - name: "{team}-helper"
     instructions: Help.
+    allow_existing: true
 group:
   name: "{team}"
 rooms:

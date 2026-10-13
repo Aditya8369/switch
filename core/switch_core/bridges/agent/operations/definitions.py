@@ -12,13 +12,13 @@ and room come from `operations.context`.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
-from switch_core.agent_templates import room_document
+from switch_core.agent_templates import plan_template
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -46,10 +46,19 @@ from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge, User
+from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
+from switch_core.template_runs import (
+    AgentsNotCreated,
+    CheckedAgent,
+    CreatedAgent,
+    NewAgentPlan,
+    Problem,
+    TemplateAgents,
+    pending_addressing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1733,7 +1742,9 @@ async def create_room_from_yaml(
         rooms: [...], errors: [...]}``.
     """
     async with _refusals_reported("create_room_from_yaml"):
-        return await _provision_as_agent(yaml, inputs)
+        return await _provision_as_agent(
+            yaml, inputs, template_name=None, new_agents=[]
+        )
 
 
 async def _acting_for() -> ActingFor:
@@ -1775,20 +1786,54 @@ async def _refusals_reported(operation_name: str) -> AsyncIterator[None]:
 
 
 async def _provision_as_agent(
-    yaml: str,
+    yaml: str | None,
     inputs: dict[str, Any] | None,
     *,
-    template_name: str | None = None,
+    template_name: str | None,
+    new_agents: Sequence[NewAgentPlan],
 ) -> dict[str, Any]:
-    """Create the rooms a document describes, as the calling agent: the one
-    path for a document an agent writes and a template it runs, so the run
-    guards in ``agent_runs`` apply the same to both."""
+    """Create the agents and rooms a document describes, as the calling
+    agent: the one path for a document an agent writes and a template it
+    runs, so the run guards in ``agent_runs`` apply the same to both.
+
+    ``new_agents`` are created first, as managed agents of the owner, once
+    every check of the agents and the rooms has passed; when the rooms then
+    fail, they are deleted again. ``yaml`` is None for a template that
+    creates agents and no room.
+    """
     protocol = get_protocol()
     acting = await _acting_for()
     agent, owner = acting.agent, acting.owner
     # An agent acts for its owner but not with the owner's admin reach: a
     # document it writes or a template it runs attaches only what the owner
     # could attach as a member, never another person's private reference.
+
+    tenant_id = require_tenant_id()
+    creator: TemplateAgents | None = None
+    checked: list[CheckedAgent] = []
+    if new_agents:
+        if management_port() is not None:
+            permission = await management_permission()
+            if isinstance(permission, str):
+                raise AgentsNotCreated(
+                    [
+                        Problem(p.slot, "cannot_manage_agents", permission)
+                        for p in new_agents
+                    ]
+                )
+        creator = TemplateAgents(
+            protocol=protocol,
+            management=management_port(),
+            broker=protocol.service_broker,
+        )
+        checked = await creator.check(tenant_id, owner.id, new_agents)
+    created_names = {plan.name for plan in new_agents}
+
+    if yaml is None:
+        if creator is None:
+            raise ValueError("The template describes no agent and no room")
+        created = await creator.create(tenant_id, owner.id, checked)
+        return {"created_agents": _created_view(created)}
 
     rooms_yaml = protocol.room_yaml_service()
     inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
@@ -1802,7 +1847,9 @@ async def _provision_as_agent(
         if isinstance(parsed.spec, GroupSpec)
         else [(parsed.spec, parsed.kickoff)]
     )
-    await _require_agents_exist([n for spec, _ in room_specs for n in spec.agents])
+    await _require_agents_exist(
+        [n for spec, _ in room_specs for n in spec.agents if n not in created_names]
+    )
     kickoffs = [
         (text, list(spec.agents), dict(spec.aliases or {}))
         for spec, text in room_specs
@@ -1813,27 +1860,56 @@ async def _provision_as_agent(
         owner_name=owner.name,
         from_room_id=await connected_room(),
         kickoffs=kickoffs,
+        pending=pending_addressing(new_agents, owner.id),
     ) as origin:
-        if isinstance(parsed.spec, GroupSpec):
-            group_result = await rooms_yaml.provision_group(
-                parsed.spec,
-                user_id=owner.id,
-                is_admin=False,
-                creator_name=builtins["$creator"],
-                origin=origin,
-                template_name=template_name,
-            )
-            return group_result.model_dump()
-        result = await rooms_yaml.provision(
-            parsed.spec,
-            kickoff=parsed.kickoff,
-            user_id=owner.id,
-            is_admin=False,
-            creator_name=builtins["$creator"],
-            origin=origin,
-            template_name=template_name,
+        created = (
+            []
+            if creator is None
+            else await creator.create(tenant_id, owner.id, checked)
         )
-    return result.model_dump()
+        try:
+            if isinstance(parsed.spec, GroupSpec):
+                group_result = await rooms_yaml.provision_group(
+                    parsed.spec,
+                    user_id=owner.id,
+                    is_admin=False,
+                    creator_name=builtins["$creator"],
+                    origin=origin,
+                    template_name=template_name,
+                )
+                result = group_result.model_dump()
+            else:
+                room_result = await rooms_yaml.provision(
+                    parsed.spec,
+                    kickoff=parsed.kickoff,
+                    user_id=owner.id,
+                    is_admin=False,
+                    creator_name=builtins["$creator"],
+                    origin=origin,
+                    template_name=template_name,
+                )
+                result = room_result.model_dump()
+        except Exception as error:
+            if creator is None or not created:
+                raise
+            raise await creator.undone(
+                created, f"the rooms could not be created: {error}"
+            ) from error
+    if new_agents:
+        result["created_agents"] = _created_view(created)
+    return result
+
+
+def _created_view(created: Sequence[CreatedAgent]) -> list[dict[str, Any]]:
+    return [
+        {
+            "slot": agent.slot,
+            "agent_id": agent.agent_id,
+            "name": agent.name,
+            "machine": agent.machine,
+        }
+        for agent in created
+    ]
 
 
 async def _require_agents_exist(names: list[str]) -> None:
@@ -1935,25 +2011,39 @@ async def run_template(
     inputs: dict[str, Any] | None = None,
     agents: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Create the rooms a saved template describes, as you, the same way
-    ``create_room_from_yaml`` does with a document you write.
+    """Create the agents and rooms a saved template describes, as you, the
+    same way ``create_room_from_yaml`` does with a document you write.
 
     Everything ``create_room_from_yaml`` says about kickoffs and refusals
     applies here too, and the run is listed under the template's name in
-    Switch Console. An agent or team template runs only when each agent it
-    would create is filled with an agent that already exists: creating agents
-    happens in Switch Console.
+    Switch Console.
+
+    An agent or team template creates its agents as managed agents of your
+    owner, each on the machine its entry names (``machine:`` or a ``machine``
+    param), before the rooms. That needs agent management on this server and
+    the "can manage agents" capability, and each machine online with the
+    provider installed and logged in. Everything is checked first: when
+    anything would fail, nothing is created and the refusal lists every
+    problem with its reason code. If the rooms then fail, the agents created
+    are deleted again. Confirm what will be created with the person asking
+    first: it starts real agents on their machines.
 
     Args:
         template_id: The id from ``list_templates``.
-        inputs: Values for the template's params (see ``get_template``).
-        agents: For an agent or team template, which existing agent fills
-            each slot: ``{slot name: agent name}``, the slot named as
-            ``get_template`` lists it or as it reads with your inputs.
+        inputs: Values for the template's params (see ``get_template``),
+            including a ``machine`` or ``provider`` param.
+        agents: Existing agents to stand in for slots instead of creating
+            them, ``{slot name: agent name}``, the slot named as
+            ``get_template`` lists it or as it reads with your inputs. Only a
+            slot whose entry says ``allow_existing: true`` takes one.
 
     Returns:
         As ``create_room_from_yaml``: for a room ``{room_id, room_name, ...}``,
-        for a group ``{group_id, group_name, rooms, errors}``.
+        for a group ``{group_id, group_name, rooms, errors}``; plus, when it
+        created agents, ``created_agents``: each ``{slot, agent_id, name,
+        machine}``. Check them with ``list_managed_agents`` as after
+        ``create_agent``. A template with no room returns only
+        ``created_agents``.
     """
     protocol = get_protocol()
     async with _refusals_reported("run_template"):
@@ -1961,10 +2051,39 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        document, run_inputs = room_document(content, agents or {}, inputs or {})
-        return await _provision_as_agent(
-            document, run_inputs or None, template_name=name
+        builtins = await protocol.room_yaml_service().builtins_for(
+            user_id=acting.owner.id,
+            name=acting.owner.name,
+            email=acting.owner.email,
+            text=content,
+            inputs=inputs,
         )
+        plan = plan_template(
+            content,
+            agents or {},
+            inputs or {},
+            builtins=builtins,
+            machines=await _owners_machines(),
+        )
+        return await _provision_as_agent(
+            plan.document,
+            plan.inputs or None,
+            template_name=name,
+            new_agents=plan.new_agents,
+        )
+
+
+async def _owners_machines() -> list[dict[str, Any]] | None:
+    """The owner's machines, for a template's machine and provider choices;
+    None when this agent cannot see them (no agent management, or no
+    capability), which the run's checks then report."""
+    port = management_port()
+    if port is None:
+        return None
+    permission = await management_permission()
+    if isinstance(permission, str):
+        return None
+    return await port.list_machines(permission.tenant_id, permission.owner.id)
 
 
 @operation

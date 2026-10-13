@@ -78,12 +78,13 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
 
-# Param types the Console answers and removes before provisioning: the coding
-# agent that runs an agent the template creates, the machine it runs on, and
-# its working directory. The server sees them only in stored documents. They
-# are known types so such a document passes the lint and can be stored; if
-# one does reach provisioning it is treated as a string.
-CONSOLE_PARAM_TYPES = ("provider", "location", "directory")
+# Param types that say how an agent the template creates runs: the coding
+# agent that runs it, where it runs (`location`, a Console answer: this
+# computer or an SSH host; `machine`, one of the owner's machines on the
+# server), and its working directory. They are read when the agents are
+# created and removed before the rooms are provisioned; if one does reach
+# provisioning it is treated as a string.
+CONSOLE_PARAM_TYPES = ("provider", "location", "machine", "directory")
 
 # Param types whose ``default`` may be a list of candidates, tried in order
 # until one names something the server (or, for the Console's types, the
@@ -92,7 +93,7 @@ CONSOLE_PARAM_TYPES = ("provider", "location", "directory")
 # the first coding agent available where the agent runs. A `user` param has no "first":
 # which account is meant depends on who asks, and ``{$creator}`` already
 # covers the deployer.
-CHAIN_PARAM_TYPES = ("agent", "bridge", "room", "provider", "location")
+CHAIN_PARAM_TYPES = ("agent", "bridge", "room", "provider", "location", "machine")
 FIRST = "$first"
 # In a `room` param's chain: the room the template's own ``room:`` block
 # describes. Resolved by the Console, which decides between creating that
@@ -116,6 +117,7 @@ ParamType = Literal[
     "user",
     "provider",
     "location",
+    "machine",
     "directory",
 ]
 
