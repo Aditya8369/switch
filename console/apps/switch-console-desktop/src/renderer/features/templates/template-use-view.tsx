@@ -1725,7 +1725,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
     // A directory param's value can read `{$agents_dir}` and `{agent}`; the
     // control shows the path they resolve to, and an edit writes a literal.
-    const resolvedDirectory = param.type === 'directory' ? directoryShownFor(param) || null : null;
+    // A managed agent's keeps `{$agents_dir}`, the machine's own folder, so an
+    // edit still writes something the server can resolve.
+    const resolvedDirectory =
+      param.type === 'directory'
+        ? management
+          ? setups[agentIndexOf(param)]?.managedDirectory || null
+          : setups[agentIndexOf(param)]?.directory || null
+        : null;
     const field = (
       <ParamField
         key={param.name}
