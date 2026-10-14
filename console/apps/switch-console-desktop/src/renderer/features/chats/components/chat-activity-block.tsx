@@ -1,6 +1,6 @@
 import type { Item } from '@switch-console/shared/session-v1';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { SessionV1Request } from '@renderer/features/sessions/components/transcript/session-v1-request';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
@@ -105,6 +105,17 @@ function SwitchActions({
   );
 }
 
+/** How a turn ended, with the host's reason for it muted after it. */
+export function turnEndLabel(label: string, reason: string | null): ReactNode {
+  if (!reason) return label;
+  return (
+    <>
+      {label}
+      <span className="text-foreground-passive"> — {reason}</span>
+    </>
+  );
+}
+
 /**
  * What the agent did for one room message, from its session: its reasoning
  * (local and SSH hosts only), each tool it ran, and the approvals it asks
@@ -116,10 +127,13 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   activity,
   turn,
   agent,
+  endReason,
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
   agent: { name: string; iconUrl: string | null };
+  /** Why the turn ended, from the host's notice in the room; null when it posted none. */
+  endReason: string | null;
 }) {
   const running = turn.status === 'queued' || turn.status === 'running';
   const reasoning = activity.reasoning.get(turn.turnId) ?? null;
@@ -162,7 +176,11 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           <div role="status">
             <WorkLogRow
               icon={<FailedIcon />}
-              label={turn.status === 'interrupted' ? 'Stopped' : 'The turn ended with an error'}
+              label={turnEndLabel(
+                turn.status === 'interrupted' ? 'Stopped' : 'The turn ended with an error',
+                endReason
+              )}
+              title={endReason ?? undefined}
               tone="failed"
             />
           </div>

@@ -5,6 +5,10 @@ import {
   type ChatMessage,
   liveSessionStartingNotices,
   SESSION_STARTING_MESSAGE,
+  TURN_FAILED_PHRASE,
+  TURN_INTERRUPTED_PHRASE,
+  turnEndNotice,
+  UNPOSTED_REPLY_MESSAGE,
 } from '@shared/core/chats/chats';
 
 function message(messageId: string, clientId: string, body: string): ChatMessage {
@@ -69,5 +73,49 @@ describe('session-starting notices', () => {
       'utf8'
     );
     expect(source).toContain(`SESSION_STARTING_MESSAGE = '${SESSION_STARTING_MESSAGE}'`);
+  });
+});
+
+describe('turn-end notices', () => {
+  it('reads how the turn ended and why', () => {
+    const read = (body: string) => turnEndNotice(message('$n', 'helper', body));
+    expect(
+      read(
+        'I finished without replying. The turn was interrupted: Claude turn ended: error_during_execution'
+      )
+    ).toEqual({ outcome: 'interrupted', reason: 'Claude turn ended: error_during_execution' });
+    expect(read('I finished without replying. The turn failed: Not signed in.')).toEqual({
+      outcome: 'failed',
+      reason: 'Not signed in.',
+    });
+    expect(read('I finished without replying. The turn failed.')).toEqual({
+      outcome: 'failed',
+      reason: null,
+    });
+    expect(read('I finished without replying.')).toEqual({ outcome: 'completed', reason: null });
+  });
+
+  it('leaves other messages alone', () => {
+    expect(
+      turnEndNotice(
+        message('$n', 'helper', 'I finished without posting a reply. My last words were:\n\nHi')
+      )
+    ).toBeNull();
+    expect(
+      turnEndNotice(message('$n', 'helper', 'I finished without replying. Then more.'))
+    ).toBeNull();
+    expect(turnEndNotice(ask('$n'))).toBeNull();
+  });
+
+  it('matches the text the host posts', () => {
+    const source = readFileSync(
+      join(__dirname, '../../../../../packages/agent-providers/src/host/session-host.ts'),
+      'utf8'
+    );
+    expect(source).toContain(`'${UNPOSTED_REPLY_MESSAGE}'`);
+    expect(source).toContain(`\`${UNPOSTED_REPLY_MESSAGE} \${failure}\``);
+    expect(source).toContain(`\`${TURN_FAILED_PHRASE}\${reason}\``);
+    expect(source).toContain(`\`${TURN_INTERRUPTED_PHRASE}\${reason}\``);
+    expect(source).toContain("? `: ${cap(detail.trim(), 1000)}` : '.'");
   });
 });
