@@ -63,7 +63,12 @@ class _FakeAdapter:
     conflict: str | None = None
     rename_error: str | None = None
     renamed: list[tuple[str, str]] = field(default_factory=list)
+    renamed_display_names: list[str | None] = field(default_factory=list)
     created: list[str] = field(default_factory=list)
+    updated: list[str | None] = field(default_factory=list)
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        self.updated.append(agent.display_name)
 
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         self.created.append(agent.name)
@@ -76,6 +81,7 @@ class _FakeAdapter:
         if self.rename_error is not None:
             raise RuntimeError(self.rename_error)
         self.renamed.append((old_name, agent.name))
+        self.renamed_display_names.append(agent.display_name)
 
 
 @dataclass
@@ -140,7 +146,9 @@ class TestRename:
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "flint-tracker", owner)
 
-        result = await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         assert (result.old_name, result.new_name) == ("flint-tracker", "flint-scout")
         assert result.bridge_failures == []
@@ -175,7 +183,9 @@ class TestRename:
         actor.set_agent(agent)
         svc.client_lifecycle.actors[agent.client_id] = actor  # type: ignore[attr-defined]
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         assert actor.agent.name == "flint-scout"
         assert actor.display_name == "flint-scout"
@@ -187,7 +197,9 @@ class TestRename:
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "flint-tracker", owner)
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         agent = await _agent(session_factory, agent_id)
         assert agent.icon_url == generated_icon_url("flint-tracker")
@@ -200,7 +212,9 @@ class TestRename:
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "flint-tracker", owner)
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         assert (await _agent(session_factory, agent_id)).icon_url is None
 
@@ -213,7 +227,9 @@ class TestRename:
             svc, "flint-tracker", owner, icon_url="https://example.com/i.png"
         )
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         agent = await _agent(session_factory, agent_id)
         assert agent.icon_url == "https://example.com/i.png"
@@ -226,7 +242,9 @@ class TestRename:
         agent_id = await register(svc, "flint-tracker", owner)
         room_id = await _room(session_factory, "ops", [agent_id])
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         async with session_factory() as session:
             assert agent_id in await RoomStore().get_agent_ids(session, room_id)
@@ -244,7 +262,9 @@ class TestRename:
             run_control={"state": "paused", "paused_agent_name": "flint-tracker"},
         )
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         async with session_factory() as session:
             room = await session.get(Room, room_id)
@@ -276,7 +296,9 @@ class TestRename:
                 )
             await session.commit()
 
-        result = await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         assert result.templates_mentioning_old_name == ["uses-it"]
 
@@ -287,7 +309,9 @@ class TestRename:
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "flint-tracker", owner)
 
-        result = await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
 
         assert result.bridge_failures == ["slack: Slack is down"]
         assert (await _agent(session_factory, agent_id)).name == "flint-scout"
@@ -300,8 +324,95 @@ class TestRename:
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "flint-tracker", owner)
 
-        await svc.rename_agent(agent_id=agent_id, new_name="flint-tracker")
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-tracker", display_name=None
+        )
 
+        assert adapter.renamed == []
+
+
+class TestDisplayName:
+    async def test_the_display_name_changes_with_the_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        adapter = _FakeAdapter()
+        svc = _service(session_factory, adapter)
+        owner = await make_owner(session_factory)
+        agent_id = await register(
+            svc, "notes-helper", owner, display_name="Notes Helper"
+        )
+
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="notes-writer", display_name="Notes Writer"
+        )
+
+        agent = await _agent(session_factory, agent_id)
+        assert (agent.name, agent.display_name) == ("notes-writer", "Notes Writer")
+        assert result.display_name == "Notes Writer"
+        assert adapter.renamed == [("notes-helper", "notes-writer")]
+        assert adapter.renamed_display_names == ["Notes Writer"]
+
+    async def test_passing_the_current_display_name_keeps_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory, _FakeAdapter())
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "notes-helper", owner, display_name="Scribe")
+
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="notes-writer", display_name="Scribe"
+        )
+
+        assert (await _agent(session_factory, agent_id)).display_name == "Scribe"
+
+    async def test_a_blank_display_name_clears_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory, _FakeAdapter())
+        owner = await make_owner(session_factory)
+        agent_id = await register(
+            svc, "notes-helper", owner, display_name="Notes Helper"
+        )
+
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="notes-writer", display_name="  "
+        )
+
+        assert (await _agent(session_factory, agent_id)).display_name is None
+
+    async def test_only_the_display_name_can_change(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        adapter = _FakeAdapter()
+        svc = _service(session_factory, adapter)
+        owner = await make_owner(session_factory)
+        agent_id = await register(
+            svc, "notes-helper", owner, display_name="Notes Helper"
+        )
+
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="notes-helper", display_name="Note Taker"
+        )
+
+        assert (await _agent(session_factory, agent_id)).display_name == "Note Taker"
+        assert adapter.renamed == []
+        assert adapter.updated == ["Note Taker"]
+        assert result.bridge_failures == []
+
+    async def test_an_unsafe_display_name_refuses_before_anything_changes(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        adapter = _FakeAdapter()
+        svc = _service(session_factory, adapter)
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "notes-helper", owner)
+
+        with pytest.raises(ValueError):
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="notes-writer", display_name="Bad\nName"
+            )
+
+        assert (await _agent(session_factory, agent_id)).name == "notes-helper"
         assert adapter.renamed == []
 
 
@@ -315,7 +426,7 @@ class TestRefusals:
         agent_id = await register(svc, "flint-tracker", owner)
 
         with pytest.raises(ValueError, match="Invalid agent name"):
-            await svc.rename_agent(agent_id=agent_id, new_name=bad)
+            await svc.rename_agent(agent_id=agent_id, new_name=bad, display_name=None)
 
     async def test_a_reserved_name(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -325,7 +436,9 @@ class TestRefusals:
         agent_id = await register(svc, "flint-tracker", owner)
 
         with pytest.raises(ValueError, match="reserved"):
-            await svc.rename_agent(agent_id=agent_id, new_name="everyone")
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="everyone", display_name=None
+            )
 
     async def test_another_agents_name(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -336,7 +449,9 @@ class TestRefusals:
         await register(svc, "flint-scout", owner)
 
         with pytest.raises(AgentExistsError):
-            await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="flint-scout", display_name=None
+            )
 
     async def test_another_agents_alias_in_a_shared_room(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -351,7 +466,9 @@ class TestRefusals:
             await session.commit()
 
         with pytest.raises(AgentRenameRefused, match="alias in room 'ops'"):
-            await svc.rename_agent(agent_id=agent_id, new_name="scout")
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="scout", display_name=None
+            )
 
     async def test_a_role_name_in_its_room(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -367,7 +484,9 @@ class TestRefusals:
             await session.commit()
 
         with pytest.raises(AgentRenameRefused, match="role in room 'ops'"):
-            await svc.rename_agent(agent_id=agent_id, new_name="manager")
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="manager", display_name=None
+            )
 
     async def test_a_platform_handle_clash_refuses_before_anything_changes(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -378,7 +497,9 @@ class TestRefusals:
         agent_id = await register(svc, "flint-tracker", owner)
 
         with pytest.raises(AgentRenameRefused, match="@designers"):
-            await svc.rename_agent(agent_id=agent_id, new_name="designers")
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="designers", display_name=None
+            )
 
         assert (await _agent(session_factory, agent_id)).name == "flint-tracker"
         assert adapter.renamed == []
@@ -392,9 +513,13 @@ class TestRefusals:
         child_id = await register(svc, "parent.child", owner, parent_agent_id=parent_id)
 
         with pytest.raises(AgentRenameRefused, match="subagent"):
-            await svc.rename_agent(agent_id=child_id, new_name="other")
+            await svc.rename_agent(
+                agent_id=child_id, new_name="other", display_name=None
+            )
         with pytest.raises(AgentRenameRefused, match="has subagents"):
-            await svc.rename_agent(agent_id=parent_id, new_name="other")
+            await svc.rename_agent(
+                agent_id=parent_id, new_name="other", display_name=None
+            )
 
     async def test_a_server_connector_agent(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -406,7 +531,9 @@ class TestRefusals:
         )
 
         with pytest.raises(AgentRenameRefused, match="server connector"):
-            await svc.rename_agent(agent_id=agent_id, new_name="other")
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="other", display_name=None
+            )
 
     async def test_no_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -417,7 +544,9 @@ class TestRefusals:
 
         with no_tenant():
             with pytest.raises(RuntimeError, match="bound tenant"):
-                await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+                await svc.rename_agent(
+                    agent_id=agent_id, new_name="flint-scout", display_name=None
+                )
 
         async with session_factory() as session:
             names = (await session.execute(select(Agent.name))).scalars().all()

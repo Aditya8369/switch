@@ -2352,7 +2352,9 @@ async def update_agent_detail(
 
     Any agent:
         name: Rename it: the identifier people type and mention (lowercase
-            letters, digits, '.', '-', '_'). Rooms, roles, aliases and
+            letters, digits, '.', '-', '_'). Pass `display_name` with it when
+            the label is the name written out ("Notes Writer" for
+            notes-writer); otherwise the label stays. Rooms, roles, aliases and
             credentials follow; its handle on each chat platform is renamed
             too. Refused for a name in use, one that clashes with an alias or
             role in its rooms or a handle on a chat platform, a subagent or a
@@ -2423,7 +2425,12 @@ async def update_agent_detail(
     )
     renamed: dict[str, Any] | None = None
     if name is not None:
-        result = await protocol.rename_agent(agent_id=agent_id, new_name=name)
+        current = await protocol.get_agent_detail(caller_id, agent_id)
+        result = await protocol.rename_agent(
+            agent_id=agent_id,
+            new_name=name,
+            display_name=current.display_name if display_name is None else display_name,
+        )
         if result.old_name != result.new_name:
             renamed = {
                 "old_name": result.old_name,

@@ -274,6 +274,7 @@ class AgentRenameResult:
     agent_id: str
     old_name: str
     new_name: str
+    display_name: str | None
     bridge_failures: list[str]
     templates_mentioning_old_name: list[str]
 
@@ -1054,8 +1055,17 @@ class AgentCore:
                 failures.append(f"{collaboration_core.bridge_type}: {exc}")
         return failures
 
-    async def rename_agent(self, *, agent_id: str, new_name: str) -> AgentRenameResult:
-        """Change an agent's name: the identifier people type and mention.
+    async def rename_agent(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> AgentRenameResult:
+        """Change an agent's name, the identifier people type and mention, and
+        its display name, the label people read, in one step.
+
+        `display_name` is what the label becomes: pass the current one to keep
+        it, and None or a blank string to clear it. The two travel together
+        because a label is usually the name written out ("Notes Helper" for
+        notes-helper), and renaming one without the other leaves the agent
+        reading under its old name everywhere it is shown.
 
         Everything that points at the agent by id (rooms, roles, aliases,
         tasks, credentials) follows on its own. What carries the name is
@@ -1072,7 +1082,8 @@ class AgentCore:
         write is reported in the result, not raised: the rename stands.
 
         Raises:
-            ValueError: the name is malformed or reserved, or no such agent.
+            ValueError: the name is malformed or reserved, the display name is
+                unsafe to render (InvalidDisplayName), or no such agent.
             AgentExistsError: another agent has the name.
             AgentRenameRefused: a clash in a room or on a platform, or an agent
                 that cannot be renamed (a subagent, a parent of subagents, or
@@ -1085,6 +1096,7 @@ class AgentCore:
                 "Use only lowercase letters, digits, dots, hyphens, and underscores."
             )
         reject_reserved_mention_name(new_name, kind="Agent name")
+        new_display_name = normalise_display_name(display_name)
         tenant_id = current_tenant_id()
         if tenant_id is None:
             raise RuntimeError("rename_agent requires a bound tenant")
@@ -1094,8 +1106,26 @@ class AgentCore:
             if agent is None:
                 raise ValueError(f"Agent not found: {agent_id}")
             old_name = agent.name
+            old_display_name = agent.display_name
             if old_name == new_name:
-                return AgentRenameResult(agent_id, old_name, new_name, [], [])
+                if old_display_name == new_display_name:
+                    return AgentRenameResult(
+                        agent_id, old_name, new_name, new_display_name, [], []
+                    )
+                await self.agent_store.update(
+                    session, agent_id, display_name=new_display_name
+                )
+                await session.commit()
+        if old_name == new_name:
+            failures = await self.update_bridge_identities(agent_id)
+            return AgentRenameResult(
+                agent_id, old_name, new_name, new_display_name, failures, []
+            )
+
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {agent_id}")
             await self._check_renamable(session, agent, new_name)
 
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
@@ -1112,7 +1142,10 @@ class AgentCore:
             if agent is None:
                 raise ValueError(f"Agent not found: {agent_id}")
             await self._check_renamable(session, agent, new_name)
-            columns: dict[str, object] = {"name": new_name}
+            columns: dict[str, object] = {
+                "name": new_name,
+                "display_name": new_display_name,
+            }
             # Only where avatars are generated at all: with third-party
             # avatars off there is no generated face to keep.
             if agent.icon_url is None and self.config.third_party_avatars_enabled:
@@ -1151,6 +1184,7 @@ class AgentCore:
             agent_id=agent_id,
             old_name=old_name,
             new_name=new_name,
+            display_name=new_display_name,
             bridge_failures=bridge_failures,
             templates_mentioning_old_name=templates,
         )

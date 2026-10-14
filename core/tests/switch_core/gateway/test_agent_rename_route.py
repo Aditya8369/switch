@@ -35,22 +35,27 @@ class _Protocol:
     ) -> None:
         self._session_factory = session_factory
         self._error = error
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, str | None]] = []
 
-    async def rename_agent(self, *, agent_id: str, new_name: str) -> AgentRenameResult:
-        self.calls.append((agent_id, new_name))
+    async def rename_agent(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> AgentRenameResult:
+        self.calls.append((agent_id, new_name, display_name))
         if self._error is not None:
             raise self._error
         async with self._session_factory() as session:
             agent = await _AGENT_STORE.get(session, agent_id)
             assert agent is not None
             old = agent.name
-            await _AGENT_STORE.update(session, agent_id, name=new_name)
+            await _AGENT_STORE.update(
+                session, agent_id, name=new_name, display_name=display_name
+            )
             await session.commit()
         return AgentRenameResult(
             agent_id=agent_id,
             old_name=old,
             new_name=new_name,
+            display_name=display_name,
             bridge_failures=["slack: Slack is down"],
             templates_mentioning_old_name=["weekly"],
         )
@@ -67,7 +72,7 @@ class TestRenameAgentRoute:
 
             response = await rename_agent(
                 agent.id,
-                RenameAgentRequest(name="switch-dev"),
+                RenameAgentRequest(name="switch-dev", display_name="Switch Dev"),
                 session,
                 _AGENT_STORE,
                 protocol,  # type: ignore[arg-type]
@@ -76,6 +81,8 @@ class TestRenameAgentRoute:
             )
 
         assert response.agent.name == "switch-dev"
+        assert response.agent.display_name == "Switch Dev"
+        assert protocol.calls == [(agent.id, "switch-dev", "Switch Dev")]
         assert response.old_name == "switchdev"
         assert response.bridge_failures == ["slack: Slack is down"]
         assert response.templates_mentioning_old_name == ["weekly"]
@@ -92,7 +99,7 @@ class TestRenameAgentRoute:
             with pytest.raises(HTTPException) as exc:
                 await rename_agent(
                     agent.id,
-                    RenameAgentRequest(name="mine-now"),
+                    RenameAgentRequest(name="mine-now", display_name=None),
                     session,
                     _AGENT_STORE,
                     protocol,  # type: ignore[arg-type]
@@ -125,7 +132,7 @@ class TestRenameAgentRoute:
             with pytest.raises(HTTPException) as exc:
                 await rename_agent(
                     agent.id,
-                    RenameAgentRequest(name="taken"),
+                    RenameAgentRequest(name="taken", display_name=None),
                     session,
                     _AGENT_STORE,
                     protocol,  # type: ignore[arg-type]
@@ -146,7 +153,7 @@ class TestRenameAgentRoute:
             with pytest.raises(HTTPException) as exc:
                 await rename_agent(
                     "no-such-agent",
-                    RenameAgentRequest(name="x"),
+                    RenameAgentRequest(name="x", display_name=None),
                     session,
                     _AGENT_STORE,
                     protocol,  # type: ignore[arg-type]

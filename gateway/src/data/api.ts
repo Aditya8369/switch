@@ -40,6 +40,9 @@ export interface RoomSummary {
 export interface AgentSummary {
   id: string;
   name: string;
+  // The label people read ("Notes Helper"); null when none was chosen and the
+  // name is shown instead.
+  display_name: string | null;
   description: string;
   connector_type: string;
   connection_model: string | null;
@@ -643,11 +646,17 @@ export interface RenameAgentResult {
   templates_mentioning_old_name: string[];
 }
 
+// Renames the agent and sets its display name in one step. Pass the current
+// display name to keep it, and null to clear it.
 export async function renameAgent(
   agentId: string,
   name: string,
+  displayName: string | null,
 ): Promise<RenameAgentResult> {
-  return jsonRequest<RenameAgentResult>(`/agents/${agentId}/name`, "PUT", { name });
+  return jsonRequest<RenameAgentResult>(`/agents/${agentId}/name`, "PUT", {
+    name,
+    display_name: displayName,
+  });
 }
 
 export async function updateAgentAddressingPolicy(

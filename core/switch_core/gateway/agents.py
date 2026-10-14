@@ -492,7 +492,8 @@ async def rename_agent(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RenameAgentResponse:
-    """Rename an agent: change the identifier people type and mention.
+    """Rename an agent: change the identifier people type and mention, and
+    its display name with it.
 
     Only its owner (or an admin) may. Refused with 400 for a malformed or
     reserved name, or a clash with an alias, a role, or a handle on a chat
@@ -513,7 +514,9 @@ async def rename_agent(
     # Not held across the rename, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
-        result = await protocol.rename_agent(agent_id=agent_id, new_name=req.name)
+        result = await protocol.rename_agent(
+            agent_id=agent_id, new_name=req.name, display_name=req.display_name
+        )
     except AgentExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (AgentRenameRefused, ValueError) as exc:

@@ -214,6 +214,15 @@ export default function AgentDetailPage() {
   );
 }
 
+// "notes-helper" -> "Notes Helper": the label a name usually reads as.
+export function labelFromName(name: string): string {
+  return name
+    .split(/[-_.]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function RenameAgentDialog({
   open,
   agent,
@@ -225,26 +234,51 @@ function RenameAgentDialog({
   onClose: () => void;
   onRenamed: (lines: string[], severity: "success" | "warning") => void;
 }) {
+  const currentLabel = agent.display_name ?? "";
+  // The label follows the name while it is still the name written out; once
+  // someone edits it, or it was something else all along, it is left alone.
+  const labelFollowsName =
+    currentLabel !== "" && currentLabel === labelFromName(agent.name);
   const [name, setName] = useState(agent.name);
+  const [displayName, setDisplayName] = useState(currentLabel);
+  const [labelEdited, setLabelEdited] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setName(agent.name);
+      setDisplayName(agent.display_name ?? "");
+      setLabelEdited(false);
       setError(null);
     }
-  }, [open, agent.name]);
+  }, [open, agent.name, agent.display_name]);
 
   const trimmed = name.trim();
-  const unchanged = trimmed === agent.name;
+  const trimmedLabel = displayName.trim();
+  const unchanged = trimmed === agent.name && trimmedLabel === currentLabel;
+  const suggested = labelFollowsName && !labelEdited && trimmed !== agent.name;
+
+  const changeName = (value: string) => {
+    setName(value);
+    if (labelFollowsName && !labelEdited) {
+      setDisplayName(labelFromName(value.trim()));
+    }
+  };
 
   const submit = async () => {
     setSaving(true);
     setError(null);
     try {
-      const result = await renameAgent(agent.id, trimmed);
-      const lines = [`Renamed "${result.old_name}" to "${result.agent.name}".`];
+      const result = await renameAgent(agent.id, trimmed, trimmedLabel || null);
+      const label = result.agent.display_name;
+      const lines =
+        result.old_name === result.agent.name
+          ? [`Display name is now ${label ? `"${label}"` : "cleared"}.`]
+          : [
+              `Renamed "${result.old_name}" to "${result.agent.name}"` +
+                (label ? `, shown as "${label}".` : "."),
+            ];
       if (result.bridge_failures.length > 0) {
         lines.push(
           `Not yet updated on: ${result.bridge_failures.join("; ")}. ` +
@@ -269,27 +303,47 @@ function RenameAgentDialog({
     }
   };
 
+  const submitOnEnter = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !unchanged && trimmed && !saving) void submit();
+  };
+
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="xs">
       <DialogTitle>Rename agent</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
-          The name is what people type to mention the agent. Its rooms, roles
-          and history stay with it, and its handle on connected chat platforms
-          is renamed too.
+          The name is what people type to mention the agent; the display name is
+          what they read. Its rooms, roles and history stay with it, and
+          connected chat platforms are updated too.
         </DialogContentText>
-        <TextField
-          autoFocus
-          fullWidth
-          label="New name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !unchanged && trimmed && !saving) void submit();
-          }}
-          helperText="Lowercase letters, digits, dots, hyphens and underscores."
-          inputProps={{ "aria-label": "New name" }}
-        />
+        <Stack spacing={2}>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Name"
+            value={name}
+            onChange={(e) => changeName(e.target.value)}
+            onKeyDown={submitOnEnter}
+            helperText="Lowercase letters, digits, dots, hyphens and underscores."
+            inputProps={{ "aria-label": "New name" }}
+          />
+          <TextField
+            fullWidth
+            label="Display name"
+            value={displayName}
+            onChange={(e) => {
+              setDisplayName(e.target.value);
+              setLabelEdited(true);
+            }}
+            onKeyDown={submitOnEnter}
+            helperText={
+              suggested
+                ? "Suggested from the new name. Change it if you like."
+                : "Leave blank to show the name instead."
+            }
+            inputProps={{ "aria-label": "Display name" }}
+          />
+        </Stack>
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}
@@ -305,7 +359,7 @@ function RenameAgentDialog({
           onClick={() => void submit()}
           disabled={saving || unchanged || !trimmed}
         >
-          {saving ? "Renaming…" : "Rename"}
+          {saving ? "Saving…" : "Rename"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -346,6 +400,7 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
       {agent.description && (
         <Typography variant="body2">{agent.description}</Typography>
       )}
+      <InfoLine label="Display name" value={agent.display_name} />
       {agent.owner_name ? (
         <InfoLine label="Owner" value={agent.owner_name} />
       ) : (

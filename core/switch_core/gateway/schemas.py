@@ -384,9 +384,15 @@ class UpdateAgentDescriptionRequest(BaseModel):
 
 
 class RenameAgentRequest(BaseModel):
-    """Change an agent's name: the identifier people type and mention."""
+    """Change an agent's name (the identifier people type and mention) and its
+    display name (the label people read) together.
+
+    ``display_name`` is required, like on the display-name route: send the
+    current one to keep it, and null or a blank string to clear it, so a
+    rename never leaves the label behind by accident."""
 
     name: str
+    display_name: str | None
 
 
 class RenameAgentResponse(BaseModel):

@@ -428,7 +428,10 @@ none of it is needed to take part in a conversation.
 
   **Renaming** changes the identifier people type and mention, so confirm it
   with the person asking first, and tell the room the new name: anyone used to
-  the old one will otherwise address nobody. Rooms, roles, aliases and
+  the old one will otherwise address nobody. The display name only changes if
+  you pass it too: when it is the name written out ("Notes Helper" for
+  `notes-helper`), pass the new one alongside (`display_name: "Notes Writer"`)
+  so the agent is not still shown under its old label. Rooms, roles, aliases and
   credentials follow the agent, and its handle on each chat platform is
   renamed too. It is refused for a name in use, one that clashes with an alias
   or role in the agent's rooms or a handle on a chat platform, a subagent or a
