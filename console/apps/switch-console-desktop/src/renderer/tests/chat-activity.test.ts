@@ -500,6 +500,31 @@ describe('AgentActivities', () => {
     activities.release(reopened);
   });
 
+  it('keeps the request id of a command still sending when the chat closes', async () => {
+    const { api, controls } = fakeApi([]);
+    const activities = new AgentActivities(api);
+    const sent = () => (controls as { requestId: string }[]).map((input) => input.requestId);
+    let fail!: (error: unknown) => void;
+    api.control = (input) => {
+      controls.push(input);
+      return new Promise((_resolve, reject) => (fail = reject));
+    };
+    const first = activities.acquire('server', null, 'room-1', 'agent-a');
+    const pending = first.control('reset');
+    activities.release(first);
+    fail(rpcError('GatewayError', 'socket hang up', { kind: 'network' }));
+    await pending;
+    const reopened = activities.acquire('server', null, 'room-1', 'agent-a');
+    expect(reopened.controls[0]).toMatchObject({ state: 'unknown' });
+    api.control = async (input) => {
+      controls.push(input);
+      return 'cmd-1';
+    };
+    await reopened.control('reset');
+    expect(new Set(sent()).size).toBe(1);
+    activities.release(reopened);
+  });
+
   it('drops rows and settled requests a snapshot no longer has, keeping live ones from during the read', async () => {
     const { api } = fakeApi([
       { items: [row('t1', 'turn')], approvals: [approval('t1', { state: 'answered' })] },
