@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
 import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import { ChatRow } from '@renderer/features/chats/components/chat-row';
+import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
@@ -71,13 +72,15 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const roomId = params.roomId ?? direct[0]?.roomId ?? null;
   const open = (id: string) => setParams({ roomId: id });
-  const newChat = () =>
-    showModal('newChatModal', { serverId, agentId, onSuccess: (chat) => open(chat.roomId) });
+  const newChat = async () => {
+    const chat = await directChats.start(serverId, agentId);
+    if (chat) open(chat.roomId);
+  };
 
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
-        <Section title="Direct chats" addLabel="New chat" onAdd={newChat}>
+        <Section title="Direct chats" addLabel="New chat" onAdd={() => void newChat()}>
           {chatsStore.listError && <Note>{chatsStore.listError}</Note>}
           {direct.map((chat) => (
             <ChatRow
@@ -126,7 +129,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           <EmptyState
             label="No chat open"
             description="Start a chat with this agent, or open one of its rooms."
-            action={<Button onClick={newChat}>Start a chat</Button>}
+            action={<Button onClick={() => void newChat()}>Start a chat</Button>}
           />
         )}
       </div>

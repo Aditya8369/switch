@@ -1,8 +1,4 @@
-import {
-  ChatMembersModal,
-  NewChatModal,
-  RenameChatModal,
-} from '@renderer/features/chats/components/chat-modals';
+import { ChatMembersModal, RenameChatModal } from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
@@ -120,7 +116,6 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteRoomModal: createModal(DeleteRoomModal, { size: 'sm', dismissOnOutsideClick: false }),
-  newChatModal: createModal(NewChatModal, { size: 'md', dismissOnOutsideClick: false }),
   renameChatModal: createModal(RenameChatModal, { size: 'xs', dismissOnOutsideClick: false }),
   chatMembersModal: createModal(ChatMembersModal, { size: 'md' }),
   // oxlint-disable-next-line typescript/no-explicit-any

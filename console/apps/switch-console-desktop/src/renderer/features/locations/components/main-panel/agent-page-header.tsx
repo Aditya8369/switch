@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
@@ -32,7 +33,6 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
     params: { locationId, agentName },
   } = useParams('location');
   const showCreateSessionModal = useShowModal('sessionModal');
-  const showNewChat = useShowModal('newChatModal');
   const { navigate } = useNavigate();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
 
@@ -124,7 +124,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
           )}
           {chatsEnabled && agent?.serverId && agent.switchAgentId && (
             <Button
-              onClick={() => {
+              onClick={async () => {
                 const serverId = agent.serverId as string;
                 const switchAgentId = agent.switchAgentId as string;
                 if (chatsTab) {
@@ -132,12 +132,9 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
                   navigate('managedAgent', { serverId, agentId: switchAgentId, name: title });
                   return;
                 }
-                showNewChat({
-                  serverId,
-                  agentId: switchAgentId,
-                  onSuccess: (chat) =>
-                    navigate('chat', { serverId, roomId: chat.roomId, agentId: switchAgentId }),
-                });
+                const chat = await directChats.start(serverId, switchAgentId);
+                if (chat)
+                  navigate('chat', { serverId, roomId: chat.roomId, agentId: switchAgentId });
               }}
             >
               New chat

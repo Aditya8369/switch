@@ -49,9 +49,13 @@ const drafts = new Map<string, string>();
 
 /** Chats just created here, whose composer takes focus when it first shows. */
 const focusOnOpen = new Set<string>();
+/** Composers on screen by chat; a chat's stream event can open it before its create returns. */
+const mountedFocus = new Map<string, () => void>();
 
 export function focusComposerWhenOpened(roomId: string): void {
-  focusOnOpen.add(roomId);
+  const focus = mountedFocus.get(roomId);
+  if (focus) focus();
+  else focusOnOpen.add(roomId);
 }
 
 /** Why Stop cannot be used on the running turn, or null when it can. */
@@ -132,8 +136,13 @@ export const ChatComposer = observer(function ChatComposer({
   const picker = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    // After the modal's own focus restore, which also runs on the next frame.
-    if (focusOnOpen.delete(timeline.roomId)) requestAnimationFrame(() => input.current?.focus());
+    const roomId = timeline.roomId;
+    const focus = () => requestAnimationFrame(() => input.current?.focus());
+    if (focusOnOpen.delete(roomId)) focus();
+    mountedFocus.set(roomId, focus);
+    return () => {
+      if (mountedFocus.get(roomId) === focus) mountedFocus.delete(roomId);
+    };
   }, [timeline.roomId]);
   // Typing anywhere else in the chat goes to the composer, as in Slack.
   useEffect(() => {

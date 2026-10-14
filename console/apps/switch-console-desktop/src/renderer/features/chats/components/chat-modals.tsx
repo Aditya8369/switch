@@ -1,14 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Loader2, UserMinus } from 'lucide-react';
+import { Loader2, UserMinus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -19,156 +16,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
-import { cn } from '@renderer/utils/utils';
-import type { ChatSummary } from '@shared/core/chats/chats';
-import { chatFailure } from '../stores/chat-errors';
-import { chatsStore, chatTitler } from '../stores/chats';
-import { focusComposerWhenOpened } from './chat-composer';
-
-/**
- * Start a chat with one agent: a private direct room owned by the person. One
- * request id per opening of the dialog, so pressing Create again after a
- * failure that may have landed resumes that chat rather than making another.
- */
-export const NewChatModal = observer(function NewChatModal({
-  serverId,
-  agentId: initialAgentId,
-  onSuccess,
-  onClose,
-}: BaseModalProps<ChatSummary> & { serverId: string; agentId: string | null }) {
-  const [requestId] = useState(() => crypto.randomUUID());
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const agents = useWorkspaceAgents(workspaceId);
-  const [agentId, setAgentId] = useState<string | null>(initialAgentId);
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
-  const listed = useMemo(
-    () =>
-      (agents.data ?? [])
-        .filter((agent) =>
-          `${agent.displayName ?? ''} ${agent.name}`.toLowerCase().includes(filter.toLowerCase())
-        )
-        .sort((a, b) => (a.displayName ?? a.name).localeCompare(b.displayName ?? b.name)),
-    [agents.data, filter]
-  );
-  const create = async () => {
-    if (!agentId || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const chat = await rpc.chats.create({
-        serverId,
-        agentIds: [agentId],
-        name: name.trim() || null,
-        requestId,
-      });
-      chatsStore.add(serverId, chat);
-      chatTitler.created(chat, Boolean(name.trim()));
-      focusComposerWhenOpened(chat.roomId);
-      onSuccess(chat);
-    } catch (caught) {
-      const failure = chatFailure(caught);
-      setError(
-        failure.kind === 'other' && failure.uncertain
-          ? `${failure.message} Press Create again: it resumes the same chat rather than making another.`
-          : failure.message
-      );
-      setBusy(false);
-    }
-  };
-  return (
-    <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>New chat</DialogTitle>
-      </DialogHeader>
-      <DialogContentArea className="pt-0">
-        <FieldGroup>
-          <Field>
-            <FieldLabel>Agent</FieldLabel>
-            <Input
-              placeholder="Find an agent"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              autoFocus={initialAgentId === null}
-            />
-            <div
-              role="listbox"
-              aria-label="Agent"
-              className="mt-2 max-h-60 overflow-y-auto rounded-md border border-border"
-            >
-              {agents.isLoading && (
-                <p className="flex items-center gap-2 p-3 text-sm text-foreground-muted">
-                  <Loader2 className="size-3.5 animate-spin" /> Loading agents…
-                </p>
-              )}
-              {agents.error && (
-                <p role="alert" className="p-3 text-sm text-foreground-destructive">
-                  {failureText(agents.error, 'The agents could not be listed.')}
-                </p>
-              )}
-              {listed.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  role="option"
-                  aria-selected={agent.id === agentId}
-                  onClick={() => setAgentId(agent.id)}
-                  className={cn(
-                    'flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--sel-soft)]',
-                    agent.id === agentId && 'bg-[var(--sel)] font-medium'
-                  )}
-                >
-                  <Check className={cn('size-3.5 shrink-0', agent.id !== agentId && 'invisible')} />
-                  <AgentAvatar
-                    name={agent.name}
-                    iconUrl={agent.iconUrl}
-                    serverId={serverId}
-                    size={18}
-                  />
-                  <span className="min-w-0 truncate">{agent.displayName ?? agent.name}</span>
-                  {agent.ownerName && (
-                    <span className="ml-auto shrink-0 text-xs text-foreground-muted">
-                      {agent.ownerName}
-                    </span>
-                  )}
-                </button>
-              ))}
-              {agents.data && listed.length === 0 && (
-                <p className="p-3 text-sm text-foreground-muted">No agent matches.</p>
-              )}
-            </div>
-          </Field>
-          <Field>
-            <FieldLabel>Name (optional)</FieldLabel>
-            <Input
-              value={name}
-              placeholder="What is this chat about?"
-              onChange={(event) => setName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void create();
-              }}
-            />
-          </Field>
-          {error && (
-            <p role="alert" className="text-xs text-destructive">
-              {error}
-            </p>
-          )}
-        </FieldGroup>
-      </DialogContentArea>
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          Cancel
-        </Button>
-        <ConfirmButton onClick={() => void create()} disabled={!agentId || busy}>
-          {busy ? 'Creating…' : 'Create'}
-        </ConfirmButton>
-      </DialogFooter>
-    </>
-  );
-});
+import { chatsStore } from '../stores/chats';
 
 /** Rename a chat: its room's name, for everyone in it. */
 export function RenameChatModal({
