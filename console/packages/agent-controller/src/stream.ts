@@ -15,10 +15,6 @@ import {
   agentApprovalOutcomeFrameSchema,
   type AgentAttachedFrame,
   agentAttachedFrameSchema,
-  type AgentControlCancelFrame,
-  agentControlCancelFrameSchema,
-  type AgentControlFrame,
-  agentControlFrameSchema,
   type AgentCursor,
   type AgentDetachedFrame,
   agentDetachedFrameSchema,
@@ -52,8 +48,6 @@ export const STREAM_FRAME_SCHEMAS = {
   'agent.attached': agentAttachedFrameSchema,
   'agent.detached': agentDetachedFrameSchema,
   'agent.rooms': agentRoomsFrameSchema,
-  'agent.control': agentControlFrameSchema,
-  'agent.control_cancel': agentControlCancelFrameSchema,
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
@@ -69,8 +63,6 @@ export type ControllerFrame =
   | { type: 'agent.attached'; data: AgentAttachedFrame }
   | { type: 'agent.detached'; data: AgentDetachedFrame }
   | { type: 'agent.rooms'; data: AgentRoomsFrame }
-  | { type: 'agent.control'; data: AgentControlFrame }
-  | { type: 'agent.control_cancel'; data: AgentControlCancelFrame }
   | { type: 'assignment.changed'; data: { revision: number } }
   | { type: 'operation.pending'; data: OperationPending }
   | { type: 'credential.revoked'; data: Record<string, never> };

@@ -69,9 +69,7 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
 }) {
   const working = activities.some((activity) => activity.working);
   const stream = STREAM_LABEL[chatsStore.streamState];
-  const sessionActivities = activities.filter(
-    (activity) => activity.target?.kind === 'session' && activity.target.target !== 'controller'
-  );
+  const sessionActivities = activities.filter((activity) => activity.target?.kind === 'session');
   return (
     <div className="flex shrink-0 items-center gap-3 text-sm">
       {working && (

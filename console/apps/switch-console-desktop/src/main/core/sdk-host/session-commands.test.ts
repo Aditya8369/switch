@@ -3,7 +3,6 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   local: { request: vi.fn() },
   sidecar: { request: vi.fn() },
-  relay: { request: vi.fn() },
   sshHost: null as string | null,
   running: true,
   hydrate: vi.fn(async () => {}),
@@ -27,10 +26,6 @@ vi.mock('@main/core/agents/agent-location', () => ({
 vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
 vi.mock('./sidecar-control', () => ({
   withSidecar: async (_agentId: string, call: (client: unknown) => unknown) => call(mocks.sidecar),
-}));
-vi.mock('./controller-control', () => ({
-  isControllerAgent: (agentId: string) => agentId.startsWith('controller:'),
-  controllerControl: async () => mocks.relay,
 }));
 vi.mock('@main/core/sessions/operations/hydrateSession', () => ({
   hydrateSession: mocks.hydrate,
@@ -143,19 +138,4 @@ it('starts a session whose host failed again when the user sends it something', 
     .mockResolvedValueOnce(applied);
   expect(await submitSessionCommand('agent', command)).toEqual(applied);
   expect(mocks.hydrate).toHaveBeenCalledWith('session');
-});
-
-it('sends a controller agent’s command through the relay, and never starts its session', async () => {
-  const key = 'controller:server:agent=switch-agent';
-  mocks.relay.request.mockResolvedValueOnce(applied);
-  expect(await submitSessionCommand(key, command)).toEqual(applied);
-  expect(mocks.relay.request).toHaveBeenCalledWith(
-    'session',
-    expect.objectContaining({ type: 'command' })
-  );
-
-  mocks.relay.request.mockRejectedValueOnce(new Unavailable('Session is not running.'));
-  await expect(submitSessionCommand(key, command)).rejects.toBeInstanceOf(Unavailable);
-  expect(mocks.hydrate).not.toHaveBeenCalled();
-  expect(mocks.local.request).not.toHaveBeenCalled();
 });

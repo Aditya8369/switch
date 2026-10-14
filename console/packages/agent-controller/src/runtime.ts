@@ -6,10 +6,8 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
-  AttachmentTransfers,
   bundleIdentity,
   clearTakenOver,
-  ControlError,
   commandLineNames,
   ensureSharedProcess,
   hostedCredentialSchema,
@@ -42,7 +40,6 @@ import {
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
-import type { LocalControl } from './relay-control';
 import type { Isolation, Provider } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 
@@ -147,8 +144,6 @@ export interface AgentRuntime extends AgentRunner {
   ): Promise<ProviderReadiness>;
   /** The agent host's state root as the agent host sees it: where a given login's files go. */
   agentStateRoot(agentId: string): string;
-  /** How a relay reaches the agent's host when it runs in this process; null when it does not. */
-  localControl(agentId: string): LocalControl | null;
 }
 
 /**
@@ -367,7 +362,6 @@ type RunningAgentHost = {
   done: Promise<void>;
   control: WatcherControl;
   sessions: Supervision & { close: () => Promise<void> };
-  local: LocalControl;
 };
 
 /**
@@ -550,10 +544,8 @@ export class InProcessRuntime implements AgentRuntime {
     const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
     // For `status`, which runs in another process and reads only disk.
     const stopRecording = recordWatcherHealth(root, control, null);
-    const transfers = new AttachmentTransfers(root);
     const done = (async () => {
       try {
-        await transfers.clear();
         await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
       } finally {
         stopRecording();
@@ -571,19 +563,7 @@ export class InProcessRuntime implements AgentRuntime {
         if (this.hosts.get(agentId)?.done === done) this.hosts.delete(agentId);
         if (again) this.start(agentId, root, config);
       });
-    const local: LocalControl = {
-      context: {
-        agentId,
-        links: this.links,
-        ensure: () => {
-          throw new ControlError('refused_message', 'Only the agent’s watcher starts a session.');
-        },
-        watcher: control,
-        transfers,
-      },
-      closed: done,
-    };
-    this.hosts.set(agentId, { stop, done, control, sessions, local });
+    this.hosts.set(agentId, { stop, done, control, sessions });
     this.deps.log.info('Agent host started', { agentId });
   }
 
@@ -671,10 +651,6 @@ export class InProcessRuntime implements AgentRuntime {
 
   agentStateRoot(agentId: string): string {
     return this.deps.layout.watcherRoot(agentId);
-  }
-
-  localControl(agentId: string): LocalControl | null {
-    return this.hosts.get(agentId)?.local ?? null;
   }
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {

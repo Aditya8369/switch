@@ -14,7 +14,6 @@ import {
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
-import { controllerControl, isControllerAgent } from './controller-control';
 import { localSessionLinks } from './local-host';
 import { withSidecar } from './sidecar-control';
 
@@ -25,8 +24,7 @@ import { withSidecar } from './sidecar-control';
  * the agent's sidecar, which Console reaches over SSH. Either way the command
  * goes down the host's IPC pipe and the host answers with what it recorded. A
  * host that parked itself after sitting idle is started again and the command
- * sent once it is back. A managed agent's session on its controller is asked
- * through the Switch relay, and is never started from here.
+ * sent once it is back.
  */
 
 export class CommandNotRecordedError extends Error {
@@ -51,8 +49,6 @@ export async function askHost(
   sessionId: string,
   request: SessionRequest
 ): Promise<unknown> {
-  if (isControllerAgent(agentId))
-    return (await controllerControl(agentId)).request(sessionId, request);
   if (await isLocal(agentId)) {
     const root = sharedSessionRoot(sessionId);
     // Waits for a host that is starting, not for one nothing is running.
@@ -87,7 +83,6 @@ export async function submitSessionCommand(
     // user asking for it, and whatever stopped it may have been fixed.
     if (!(error instanceof SessionUnavailableError || error instanceof SessionHostFailedError))
       throw error;
-    if (isControllerAgent(agentId)) throw error;
   }
   const notRestarted = 'The session is not running and could not be started again: ';
   try {

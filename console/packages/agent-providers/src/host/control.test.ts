@@ -219,7 +219,8 @@ it('never reads or commands a session of another agent', async () => {
           () => {}
         )
       ).rejects.toThrow(refused);
-    await expect(console.send({ journal: id })).rejects.toThrow(refused);
+    // No public method sends these two; the port must still refuse them.
+    await expect(console['call']({ journal: id })).rejects.toThrow(refused);
     const chunk = {
       transferId: 't1',
       sessionId: id,
@@ -231,7 +232,7 @@ it('never reads or commands a session of another agent', async () => {
       count: 1,
       chunk: 'YQ==',
     };
-    await expect(console.send({ attachment: chunk })).rejects.toThrow(refused);
+    await expect(console['call']({ attachment: chunk })).rejects.toThrow(refused);
     await expect(console.place(id, 'room')).rejects.toThrow(refused);
     if (id === 'theirs') await expect(console.forget(id)).rejects.toThrow(refused);
     await expect(console.reasoning(id, null)).rejects.toThrow(refused);

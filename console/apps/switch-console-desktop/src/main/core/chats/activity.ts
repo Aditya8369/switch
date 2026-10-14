@@ -48,7 +48,5 @@ export async function resolveChatActivity(
     target: local.ssh ? 'ssh' : 'local',
     hostAgentKey: local.id,
     sessionId,
-    controllerId: null,
-    generation: null,
   };
 }

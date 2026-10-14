@@ -169,23 +169,6 @@ export {
 } from './providers/registry';
 export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/registry';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
-export {
-  type ControlContext,
-  type ControlMessage,
-  controlMessageSchema,
-  ControlPeer,
-  type ControlPush,
-  handleControlMessage,
-  serveControl,
-} from './host/control';
-export { AttachmentTransfers, ControlError } from './host/attachment-transfers';
-export {
-  RELAY_TIMEOUT_MS,
-  RelayClient,
-  RelayClosedError,
-  RelayError,
-  type RelayFetch,
-} from './host/relay-client';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
