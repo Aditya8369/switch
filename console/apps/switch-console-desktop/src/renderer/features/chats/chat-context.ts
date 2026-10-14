@@ -1,34 +1,4 @@
-import type {
-  Item,
-  Session,
-  SessionContext,
-  SnapshotNotice,
-} from '@switch-console/shared/session-v1';
-
-const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
-const tokens = (count: number) => compact.format(count).replace('K', 'k');
-
-export type ContextMeter = {
-  label: string;
-  used: string;
-  fraction: number | null;
-  warning: boolean;
-};
-
-/** How full the agent's context window is, or null when its host has not said. */
-export function contextMeter(context: SessionContext | null | undefined): ContextMeter | null {
-  if (!context) return null;
-  const used = tokens(context.usedTokens);
-  if (!context.windowTokens)
-    return { label: `Context ${used} used`, used, fraction: null, warning: false };
-  const fraction = Math.min(1, context.usedTokens / context.windowTokens);
-  return {
-    label: `Context ${used} / ${tokens(context.windowTokens)} (${Math.round(fraction * 100)}%)`,
-    used,
-    fraction,
-    warning: fraction >= 0.8,
-  };
-}
+import type { Item, Session, SnapshotNotice } from '@switch-console/shared/session-v1';
 
 /** Why Compact and Reset cannot be used now, or null when they can. */
 export function contextBlocker(state: {

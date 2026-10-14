@@ -34,6 +34,20 @@ export class EmptyChatFinder {
       return timeline.messages.every((msg) => msg.sender.userId !== userId);
     }
 
-    return chat.lastMessage === null;
+    if (chat.lastMessage === null) return true;
+
+    const defaultName = this.defaultChatName(chat);
+    const lastMessageFromAgent = chat.agents.some(
+      (agent) =>
+        chat.lastMessage?.senderName === agent.name ||
+        chat.lastMessage?.senderName === agent.displayName
+    );
+
+    return chat.name === defaultName && lastMessageFromAgent;
+  }
+
+  private defaultChatName(chat: ChatSummary): string {
+    const agentNames = chat.agents.map((agent) => agent.displayName || agent.name).join(', ');
+    return `Chat with ${agentNames}`;
   }
 }

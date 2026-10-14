@@ -217,4 +217,110 @@ describe('EmptyChatFinder', () => {
 
     expect(finder.find('agent-1')).toBe(chat);
   });
+
+  it('returns chat with default name and agent greeting when timeline not loaded', () => {
+    const chat = makeChat({
+      roomId: 'room-1',
+      name: 'Chat with Agent',
+      agents: [{ id: 'agent-1', name: 'Agent', displayName: null, iconUrl: null, provider: null }],
+      lastMessage: {
+        seq: 1,
+        sentAt: '2024-01-01T00:00:00Z',
+        preview: 'Hello',
+        senderName: 'Agent',
+      },
+    });
+    const finder = new EmptyChatFinder({
+      chatsOfAgent: () => [chat],
+      userId: () => 'user-1',
+      timeline: () => undefined,
+    });
+
+    expect(finder.find('agent-1')).toBe(chat);
+  });
+
+  it('returns chat with default name using displayName and agent greeting', () => {
+    const chat = makeChat({
+      roomId: 'room-1',
+      name: 'Chat with Ada',
+      agents: [{ id: 'agent-1', name: 'ada', displayName: 'Ada', iconUrl: null, provider: null }],
+      lastMessage: {
+        seq: 1,
+        sentAt: '2024-01-01T00:00:00Z',
+        preview: 'Hello',
+        senderName: 'Ada',
+      },
+    });
+    const finder = new EmptyChatFinder({
+      chatsOfAgent: () => [chat],
+      userId: () => 'user-1',
+      timeline: () => undefined,
+    });
+
+    expect(finder.find('agent-1')).toBe(chat);
+  });
+
+  it('returns null when chat has default name but last message from user', () => {
+    const chat = makeChat({
+      roomId: 'room-1',
+      name: 'Chat with Agent',
+      lastMessage: {
+        seq: 1,
+        sentAt: '2024-01-01T00:00:00Z',
+        preview: 'Hello',
+        senderName: 'User',
+      },
+    });
+    const finder = new EmptyChatFinder({
+      chatsOfAgent: () => [chat],
+      userId: () => 'user-1',
+      timeline: () => undefined,
+    });
+
+    expect(finder.find('agent-1')).toBeNull();
+  });
+
+  it('returns null when chat has custom name even with agent greeting', () => {
+    const chat = makeChat({
+      roomId: 'room-1',
+      name: 'My Custom Chat',
+      lastMessage: {
+        seq: 1,
+        sentAt: '2024-01-01T00:00:00Z',
+        preview: 'Hello',
+        senderName: 'Agent',
+      },
+    });
+    const finder = new EmptyChatFinder({
+      chatsOfAgent: () => [chat],
+      userId: () => 'user-1',
+      timeline: () => undefined,
+    });
+
+    expect(finder.find('agent-1')).toBeNull();
+  });
+
+  it('handles multi-agent chat default name', () => {
+    const chat = makeChat({
+      roomId: 'room-1',
+      name: 'Chat with Ada, Bob',
+      agents: [
+        { id: 'agent-1', name: 'ada', displayName: 'Ada', iconUrl: null, provider: null },
+        { id: 'agent-2', name: 'bob', displayName: 'Bob', iconUrl: null, provider: null },
+      ],
+      lastMessage: {
+        seq: 1,
+        sentAt: '2024-01-01T00:00:00Z',
+        preview: 'Hello',
+        senderName: 'Ada',
+      },
+    });
+    const finder = new EmptyChatFinder({
+      chatsOfAgent: () => [chat],
+      userId: () => 'user-1',
+      timeline: () => undefined,
+    });
+
+    expect(finder.find('agent-1')).toBe(chat);
+  });
 });
