@@ -486,7 +486,14 @@ export class ControlClient {
     stream.on('error', (error: Error) => fail(error));
     stream.on('close', () => fail(new SidecarConnectionClosedError()));
     lines(stream, (line) => {
-      const message = serverMessageSchema.safeParse(JSON.parse(line));
+      let json: unknown;
+      try {
+        json = JSON.parse(line);
+      } catch {
+        stream.destroy(new Error('The control port sent a line that is not JSON.'));
+        return;
+      }
+      const message = serverMessageSchema.safeParse(json);
       if (!message.success) return;
       const data = message.data;
       if ('authenticated' in data) authenticate();
