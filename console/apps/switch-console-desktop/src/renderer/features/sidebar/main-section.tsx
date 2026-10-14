@@ -3,8 +3,8 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
@@ -38,7 +38,7 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
   const [tab, setTab] = useState<MainTab>(storedTab);
   const agents = useManagedAgents(switchServersStore.activeServerId);
   const flags = useFeatureFlags(switchServersStore.activeServerId);
-  const rooms = switchRoomsStore.listedRoomsInActiveScope;
+  const rooms = useListedRoomsInActiveScope();
   const count = tab === 'agents' ? (agents.data?.length ?? 0) : rooms.length;
 
   return (

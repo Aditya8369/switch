@@ -10,6 +10,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
@@ -18,6 +19,7 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
+import { isConsoleDirectChat } from './room-filters';
 import { ServerPage, ServerTableEmpty } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -39,13 +41,18 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const showCreateRoomModal = useShowModal('createRoomModal');
   const [filter, setFilter] = useState('');
+  const flags = useFeatureFlags(serverId);
 
   useEffect(() => {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const rooms = workspaceId === null ? [] : switchRoomsStore.readableRoomsInWorkspace(workspaceId);
+  const allRooms =
+    workspaceId === null ? [] : switchRoomsStore.readableRoomsInWorkspace(workspaceId);
+  const rooms = flags.agent_chats
+    ? allRooms.filter((room) => !isConsoleDirectChat(room))
+    : allRooms;
   const signedOut = switchRoomsStore.workspacesNotSignedIn.some((w) => w.id === workspaceId);
   const failed = switchRoomsStore.workspacesThatFailedToLoad.some((w) => w.id === workspaceId);
 
