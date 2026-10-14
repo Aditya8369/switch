@@ -38,7 +38,7 @@ class _RecordingClient:
         self.transport_user_id = "@recorded:test"
         self._seen = seen
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         self._seen.append(current_tenant_id())
         self.room_seen = current_log_context().room_id
 

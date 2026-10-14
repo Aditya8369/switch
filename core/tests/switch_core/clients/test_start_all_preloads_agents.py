@@ -26,7 +26,7 @@ class _Consumer:
     def preload_agent(self, agent: Agent) -> None:
         self.preloaded = agent
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         return None
 
     async def stop(self) -> None:

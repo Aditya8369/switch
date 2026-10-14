@@ -267,7 +267,7 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
     class _Client:
         client_id = ""
 
-        async def start(self) -> None:
+        async def start(self, progress: object) -> None:
             seen["client"] = current_tenant_id()
 
     workspace_consumer = _Client()

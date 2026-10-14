@@ -29,6 +29,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.signals import SignalBus
 from switch_core.transport import InboundMessage, TransportHandlers
+from switch_core.transport.cursors import FromHead
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
@@ -127,7 +128,7 @@ async def two_processes(
         _process(postgres_url, session_factory, client_id, user_id) for _ in range(2)
     ]
     tasks = [
-        asyncio.create_task(process.transport.receive_forever())
+        asyncio.create_task(process.transport.receive_forever(FromHead(MessageStore())))
         for process in processes
     ]
     for process in processes:
@@ -367,7 +368,9 @@ class TestRecheck:
         room_id, _, client_id, user_id, _ = room_and_client
         # The bus is never started, so no signal reaches this process.
         process = _process(postgres_url, session_factory, client_id, user_id)
-        task = asyncio.create_task(process.transport.receive_forever())
+        task = asyncio.create_task(
+            process.transport.receive_forever(FromHead(MessageStore()))
+        )
         try:
             await _eventually(lambda: room_id in process.transport._watching)
             async with session_factory() as session:
@@ -394,7 +397,9 @@ class TestRecheck:
         make the client miss hearing itself join."""
         room_id, _, client_id, user_id, _ = room_and_client
         process = _process(postgres_url, session_factory, client_id, user_id)
-        task = asyncio.create_task(process.transport.receive_forever())
+        task = asyncio.create_task(
+            process.transport.receive_forever(FromHead(MessageStore()))
+        )
         try:
             await _eventually(lambda: room_id in process.transport._watching)
             process.transport._unwatch(next(iter(process.transport._watching.values())))

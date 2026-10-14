@@ -28,7 +28,7 @@ class _FlakyClient:
         self._error = error
         self.running = asyncio.Event()
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         self.starts += 1
         if self.starts <= self._failures:
             raise self._error

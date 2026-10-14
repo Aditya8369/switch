@@ -84,6 +84,10 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
         def begin_shutdown(self) -> None:
             calls.append("controllers told")
 
+    class _Ownership:
+        async def stop(self) -> None:
+            calls.append("owned work handed over")
+
     class _Exited(Exception):
         pass
 
@@ -100,6 +104,7 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
     with pytest.raises(_Exited):
         await _shutdown(
             server=server,
+            ownership=_Ownership(),  # type: ignore[arg-type]
             controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
@@ -111,6 +116,9 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
         )
 
     assert calls.index("bridges stopped") < calls.index("teams app closed")
+    # The work this process owns is handed over before anything it runs is
+    # stopped, so the other processes take it over at once.
+    assert calls.index("owned work handed over") < calls.index("bridges stopped")
     assert server.should_exit is True
 
 

@@ -58,6 +58,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
@@ -66,6 +67,7 @@ from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
+from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
 from tests.db_buffer import db_buffer_on
 from tests.switch_core.connections.fake_vendor import FakeVendor
@@ -162,6 +164,9 @@ class Harness:
     # Mounted at `/gateway` on `app`, for a test to add routes to.
     gateway_app: FastAPI
     management: Management
+    # This process's lease, which `main` claims for every deployment and the
+    # management module records its controllers' connections under.
+    lease: ProcessLease
     protocol: AgentCore
     cache: ApiKeyCache
     controller_auth_cache: ControllerAuthCache
@@ -207,6 +212,11 @@ def build_harness(
         ttl_seconds=controller_auth_ttl_seconds, max_entries=64
     )
     protocol = protocol_service(session_factory, cache)
+    # Never started: one process, so every nudge is delivered locally and
+    # what it would publish to other processes goes nowhere.
+    signal_bus = SignalBus(
+        session_factory, _no_listening_engine, process_id=str(uuid.uuid4())
+    )
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
@@ -215,11 +225,7 @@ def build_harness(
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
         clock=clock,
-        # Never started: one process, so every nudge is delivered locally and
-        # what it would publish to other processes goes nowhere.
-        signal_bus=SignalBus(
-            session_factory, _no_listening_engine, process_id=str(uuid.uuid4())
-        ),
+        signal_bus=signal_bus,
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:
@@ -268,6 +274,11 @@ def build_harness(
         app=agent_app,
         gateway_app=gateway_app,
         management=management,
+        lease=ProcessLease(
+            process_id=signal_bus.process_id,
+            session_factory=session_factory,
+            processes=SwitchCoreProcessStore(),
+        ),
         protocol=protocol,
         cache=cache,
         controller_auth_cache=controller_auth_cache,
@@ -557,7 +568,7 @@ async def connect(
     conn = presence.current_connection(controller.controller_id)
     assert conn is not None
     presence.attach_stream(conn)
-    await harness.management.start()
+    await harness.lease.renew()
     await harness.management.ledger.flush_all()
     return opened
 
@@ -573,7 +584,7 @@ async def ensure_connected(
     if conn is None or not conn.stream_attached:
         await connect(client, controller)
         return
-    await harness.management.start()
+    await harness.lease.renew()
     await harness.management.ledger.flush_all()
 
 

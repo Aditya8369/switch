@@ -58,7 +58,7 @@ class _FailingClient:
 
     client_id = "bridge-client"
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         raise RuntimeError("the room client is down")
 
 

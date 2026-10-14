@@ -615,6 +615,14 @@ class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
     __table_args__ = (
         Index("ix_client_rooms_tenant_id", "tenant_id"),
+        # What a membership's delivery cursor refers to, tenant included, as
+        # every reference between scoped tables does (`DeliveryCursor`).
+        UniqueConstraint(
+            "tenant_id",
+            "client_id",
+            "room_id",
+            name="uq_client_rooms_tenant_client_room",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],
@@ -2141,14 +2149,14 @@ class TelemetrySnapshotWatermark(Base):
 
 
 class SwitchCoreProcess(Base):
-    """A running switch-core process's lease (`management/process_lease.py`).
+    """A running switch-core process's lease (`process_lease.py`).
 
-    Each process holding controller sockets claims a row at startup, renews
-    `beat_at` every few seconds, and sets `stopped_at` as it shuts down. A
-    controller connection whose holding process's lease is stale, stopped or
-    gone reads as offline, which is how a process that died without writing
-    its connections' closings is noticed. One write per process per renewal,
-    however many machines it holds.
+    Every process claims a row at startup, renews `beat_at` every few
+    seconds, and sets `stopped_at` as it shuts down. A controller connection
+    whose holding process's lease is stale, stopped or gone reads as offline,
+    which is how a process that died without writing its connections'
+    closings is noticed, and work it owned (`OwnershipLease`) may be taken
+    over. One write per process per renewal, however much it holds.
 
     Not tenant-scoped: a process serves every tenant. Rows long stale are
     pruned by the live processes.
@@ -2165,6 +2173,44 @@ class SwitchCoreProcess(Base):
     )
     stopped_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class OwnershipLease(Base):
+    """Which switch-core process runs a piece of work that must run once.
+
+    One row per piece of work: `kind` says what it is (a client's consumer, a
+    collaboration bridge's platform connection) and `key` which one (the
+    client's or the bridge's id). `process_id` is the holder, null once it
+    has let go. A holder counts only while its own lease in
+    `switch_core_processes` holds, so a process that dies loses everything it
+    held when that lease lapses, with no write of its own (`ownership.py`).
+
+    `token` grows by one with every claim, and the holder's writes that must
+    not outlive its hold name it (`DeliveryCursorStore.advance`), so a holder
+    that was taken over without knowing it is refused rather than obeyed.
+
+    Not tenant-scoped: one process holds work for every tenant at once, and a
+    row names only which process runs which id.
+    """
+
+    __tablename__ = "ownership_leases"
+    __table_args__ = (Index("ix_ownership_leases_process_id", "process_id"),)
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    process_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "switch_core_processes.id",
+            name="fk_ownership_leases_process",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    token: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -2318,48 +2364,47 @@ class MessageAttachment(TenantScoped, Base):
 
 
 class DeliveryCursor(TenantScoped, Base):
-    """How far one agent has been delivered in one room.
+    """How far one client's consumer has handled one room it is a member of.
 
-    The cursor it replaces lived in memory in the event buffer, so a restart
-    resumed from wherever that buffer happened to be rather than from what the
-    agent had actually been given. Persisting it makes "what has this agent
-    seen" outlive the process, which is what lets delivery be driven from the
-    table instead of from a live connection.
+    A consumer reads its rooms from these rows, so whichever switch-core
+    process owns the client (`ownership.py`) resumes where the last owner
+    stopped, after a restart or a hand-over, instead of at the room's newest
+    row. Every row the consumer reads moves its cursor, whether or not the
+    row did anything; that is what lets an agent's reader treat a room row as
+    decided once the cursor of the agent's consumer has passed it
+    (`EventBuffer.read_conversation`).
 
-    `last_seq` is a position in the room, not a count: `seq` is a per-room
-    total order, so "everything up to n" is unambiguous and re-reading from it
-    is idempotent. It is only ever advanced, never rewound — a cursor that
-    could go backwards would redeliver, and a redelivered message is
-    indistinguishable to a reader from a new one.
+    `last_seq` is a position in the room (`messages.seq`), only ever moved
+    forward: a cursor that went back would hand its consumer rows it had
+    already acted on. Only the owner moves it, checked against its lease
+    token in the same statement (`DeliveryCursorStore.advance`).
+
+    Keyed by the membership and deleted with it, so a client taken out of a
+    room and added back starts from its new arrival, never from where it had
+    got to before. `RoomStore.add_client` writes the first value, the room's
+    newest row, in the transaction that writes the membership.
     """
 
     __tablename__ = "delivery_cursors"
     __table_args__ = (
         Index("ix_delivery_cursors_tenant_id", "tenant_id"),
-        UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
         ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_delivery_cursors_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_delivery_cursors_room",
+            ["tenant_id", "client_id", "room_id"],
+            [
+                "client_rooms.tenant_id",
+                "client_rooms.client_id",
+                "client_rooms.room_id",
+            ],
+            name="fk_delivery_cursors_membership",
             ondelete="CASCADE",
         ),
     )
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
+    client_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

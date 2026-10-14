@@ -27,7 +27,7 @@ class _BlockingClient:
         self.transport_user_id = "@blocking:test"
         self.stopped = False
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         await asyncio.Event().wait()
 
     async def stop(self) -> None:

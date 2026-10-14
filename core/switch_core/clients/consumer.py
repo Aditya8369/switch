@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
     from switch_core.clients.actor import Actor
     from switch_core.db.stores.client_store import ClientStore
+    from switch_core.transport.cursors import DeliveryProgress
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,9 @@ class Consumer[ActorT: Actor[Any]]:
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
-    async def start(self) -> None:
+    async def start(self, progress: DeliveryProgress) -> None:
+        """Read the actor's rooms until stopped, starting each room where
+        `progress` says and recording through it how far it got."""
         self._startup_ts = int(time.time() * 1000)
         self._running = True
 
@@ -113,7 +116,7 @@ class Consumer[ActorT: Actor[Any]]:
         retries = 0
         while self._running:
             try:
-                await self._transport.receive_forever()
+                await self._transport.receive_forever(progress)
                 retries = 0
             except Exception:
                 if not self._running:

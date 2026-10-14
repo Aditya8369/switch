@@ -44,6 +44,7 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.deeplinks import gateway_url_warning
@@ -58,6 +59,7 @@ from switch_core.telemetry.deployment import (
 )
 from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
+from switch_core.transport.cursors import FromHead
 from switch_core.trust.client import NullTrustClient, TrustClient
 
 if TYPE_CHECKING:
@@ -1216,7 +1218,9 @@ class CollaborationBridgeLifecycleService:
                 connected = True
                 self._connected.add(bridge_id)
                 await self._report_connector_up(bridge_id, platform, configured_at)
-                await workspace_consumer.start()
+                # Every process runs every bridge, so each reads the bridge's
+                # rooms from their newest rows.
+                await workspace_consumer.start(FromHead(MessageStore()))
             except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
                 self._bridges.pop(bridge_id, None)

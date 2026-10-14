@@ -1,13 +1,16 @@
 """This switch-core process's lease, and reading every process's.
 
-A controller's socket lives in the memory of the one process holding it, and
-that process writes the connection's transitions to the controller's row
-(`connection_ledger.py`). A process that dies writes no closing, so each
-process also holds a lease in `switch_core_processes`: it claims it at
-startup, renews it every `RENEW_INTERVAL`, and marks it stopped as it shuts
-down. A connection reads as online only while its holding process's lease is
-held: renewed within `LEASE_TTL` and not stopped. One write per process per
-renewal, however many machines it holds.
+Every switch-core process holds a lease in `switch_core_processes`, whatever
+features it runs: it claims it at startup, renews it every `RENEW_INTERVAL`,
+and marks it stopped as it shuts down. Two things lean on it. A controller's
+socket lives in the memory of the one process holding it, and that process
+writes the connection's transitions to the controller's row
+(`management/connection_ledger.py`); a process that dies writes no closing,
+so a connection reads as online only while its holding process's lease is
+held: renewed within `LEASE_TTL` and not stopped. And the work that must run
+once (a client's consumer, a bridge's platform connection) is owned through
+`ownership.py`, whose leases are valid only while their holder's process lease
+is held. One write per process per renewal, however much it holds.
 
 Leases are written and compared on the database's clock, never a host's.
 Leases not renewed for `PRUNE_AFTER` are deleted by whichever process renews
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -96,19 +100,48 @@ class ProcessLease:
         self.process_id = process_id
         self._session_factory = session_factory
         self._processes = processes
+        # This process's monotonic clock when the last renewal that succeeded
+        # was sent, or None before the first and after `stop`. Sent, not
+        # answered: the database stamped the lease at some moment after this,
+        # so a deadline counted from here can only be early.
+        self._renewed_at: float | None = None
+
+    def surely_held(self) -> bool:
+        """Whether no other process can yet read this lease as lapsed.
+
+        Another process takes over this one's work once the lease is
+        `LEASE_TTL` old by the database's clock. This answers from half that,
+        on this process's own clock and from when the last good renewal was
+        sent, so the work stops here well before anyone else may start it,
+        however far the two clocks have drifted.
+        """
+        held_until = self.held_until()
+        return held_until is not None and time.monotonic() < held_until
+
+    def held_until(self) -> float | None:
+        """On this process's monotonic clock, when `surely_held` turns false
+        unless the lease is renewed first. None before the first renewal and
+        after `stop`."""
+        if self._renewed_at is None:
+            return None
+        return self._renewed_at + LEASE_TTL.total_seconds() / 2
 
     async def renew(self) -> None:
         """Claim or renew the lease, and prune leases long dead."""
+        sent_at = time.monotonic()
         async with self._session_factory() as session:
             await self._processes.renew(session, self.process_id)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
+        self._renewed_at = sent_at
         if pruned:
             logger.info("Pruned %d switch-core process lease(s) long stale", pruned)
 
     async def stop(self) -> None:
         """Mark the lease stopped: every connection this process still shows
-        open reads as offline from now."""
+        open reads as offline from now, and the work it owned may be taken
+        over at once."""
+        self._renewed_at = None
         async with self._session_factory() as session:
             await self._processes.stop(session, self.process_id)
             await session.commit()
@@ -117,7 +150,8 @@ class ProcessLease:
     async def run(self) -> None:
         """Renew every `RENEW_INTERVAL_SECONDS` until cancelled. A failed
         renewal is logged and retried at the next; three in a row and this
-        process's machines read offline elsewhere."""
+        process's machines read offline elsewhere, and its owned work passes
+        to the other processes."""
         while True:
             await asyncio.sleep(RENEW_INTERVAL_SECONDS)
             try:

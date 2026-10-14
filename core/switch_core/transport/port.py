@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from switch_core.transport.types import (
     DownloadResult,
@@ -23,6 +23,9 @@ from switch_core.transport.types import (
     SendResult,
     UploadResult,
 )
+
+if TYPE_CHECKING:
+    from switch_core.transport.cursors import DeliveryProgress
 
 Handler = Callable[[Any, Any], Awaitable[None]]
 
@@ -65,8 +68,10 @@ class MessageTransport(Protocol):
         """Bind inbound callbacks. Call before `receive_forever`."""
         ...
 
-    async def receive_forever(self) -> None:
-        """Deliver inbound events to the registered handlers until closed."""
+    async def receive_forever(self, progress: DeliveryProgress) -> None:
+        """Deliver inbound events to the registered handlers until closed,
+        starting each room where `progress` says and recording through it how
+        far the client got."""
         ...
 
     # ── Outbound ──────────────────────────────────────────────────────────────

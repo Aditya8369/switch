@@ -9,16 +9,15 @@ serves. `install` also hands Core the agent-facing side
 (`ManagementAgentOperations`), which is what makes the agent operations on
 machines and managed agents exist.
 
-Each process also holds a lease (`process_lease.py`) and writes its
-controllers' connection transitions (`connection_ledger.py`): `start` claims
-the lease before the bridge serves, `run` renews it and writes transitions
-until cancelled, and `stop` writes what is left and marks the lease stopped.
+Each process writes its controllers' connection transitions
+(`connection_ledger.py`) under the lease every switch-core process holds
+(`switch_core.process_lease`, claimed and renewed by the core wiring in
+`main.py`): `run` writes transitions until cancelled, and `stop` writes what
+is left, before the core wiring marks the lease stopped.
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -51,12 +50,9 @@ from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
-from switch_core.management.process_lease import ProcessLease
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.signals import SignalBus
-
-logger = logging.getLogger(__name__)
 
 GATEWAY_PREFIX = "/management"
 
@@ -71,7 +67,6 @@ class Management:
     authenticator: ManagementAuthenticator
     agent_operations: ManagementAgentOperations
     session_factory: async_sessionmaker[AsyncSession]
-    lease: ProcessLease
     ledger: ControllerConnectionLedger
 
     def install(
@@ -95,25 +90,15 @@ class Management:
         async with tenant_session(self.session_factory, tenant_id) as session:
             await self.service.forget_deleted_agent(session, tenant_id, agent_id)
 
-    async def start(self) -> None:
-        """Claim this process's lease, so the connections it records read as
-        held. Raises when the database refuses: a process that cannot hold a
-        lease would show every machine it connects as offline."""
-        await self.lease.renew()
-        logger.info("Claimed switch-core process lease %s", self.lease.process_id)
-
     async def run(self) -> None:
-        """Renew the lease and write connection transitions, until cancelled."""
-        await asyncio.gather(self.lease.run(), self.ledger.run())
+        """Write connection transitions, until cancelled."""
+        await self.ledger.run()
 
     async def stop(self) -> None:
-        """Write the transitions still queued, then mark the lease stopped.
-        The lease is marked stopped even when the writes fail, so the
-        machines this process held read offline either way."""
-        try:
-            await self.ledger.flush_all()
-        finally:
-            await self.lease.stop()
+        """Write the transitions still queued. The core wiring marks the
+        process's lease stopped after this, whether it succeeds or not, so
+        the machines this process held read offline either way."""
+        await self.ledger.flush_all()
 
     async def load_bindings(self) -> int:
         return await load_bindings(
@@ -189,11 +174,6 @@ def build_management(
             service=service, session_factory=session_factory
         ),
         session_factory=session_factory,
-        lease=ProcessLease(
-            process_id=process_id,
-            session_factory=session_factory,
-            processes=processes,
-        ),
         ledger=ledger,
     )
 

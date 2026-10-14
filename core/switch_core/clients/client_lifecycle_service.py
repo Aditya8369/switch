@@ -18,11 +18,13 @@ from switch_core.db.models import Agent, Client, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
+from switch_core.transport.cursors import FromHead
 
 if TYPE_CHECKING:
     from switch_core.clients.client_signals import ClientSignals
@@ -585,7 +587,9 @@ class ClientLifecycleService:
                 while True:
                     try:
                         if consumer is not None:
-                            await consumer.start()
+                            # Every process runs every client's consumer, so
+                            # each reads its rooms from their newest rows.
+                            await consumer.start(FromHead(MessageStore()))
                         else:
                             await actor.connect()
                         return

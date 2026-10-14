@@ -194,7 +194,7 @@ class _StubClient:
         self.display_name = record.display_name
         self._stopped = asyncio.Event()
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         await self._stopped.wait()
 
     async def stop(self) -> None:

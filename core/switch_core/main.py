@@ -136,6 +136,7 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
@@ -144,6 +145,7 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -153,6 +155,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -179,6 +182,8 @@ from switch_core.observability.pool import (
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.outbound import guarded_async_client
+from switch_core.ownership import Ownership
+from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -194,6 +199,7 @@ from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
@@ -301,17 +307,35 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
 
 
 # Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
-# writes is what lets every other process see this one's machines go offline
-# now rather than when its lease lapses.
+# writes is what lets every other process see this one's machines go offline,
+# and take over the work it owned, now rather than when its lease lapses.
 _MANAGEMENT_STOP_SECONDS = 1.0
 
 
-async def _stop_management(management: Management) -> None:
-    """Record the controller sockets that went and mark this process's lease
-    stopped. Never raises: if it fails, the lease lapses on its own."""
+async def _stop_management(
+    ownership: Ownership, management: Management | None, lease: ProcessLease
+) -> None:
+    """Stop the work this process owns, record the controller sockets that
+    went, and mark this process's lease stopped, in that order: the lease
+    must not lapse while owned work still runs here, or another process
+    would start it beside this one. Never raises: if it fails, the lease
+    lapses on its own."""
+    try:
+        await ownership.stop()
+    except Exception:
+        logger.warning(
+            "Stopping this process's owned work at shutdown failed; the other "
+            "processes take it over once its lease lapses.",
+            exc_info=True,
+        )
+        return
     try:
         async with asyncio.timeout(_MANAGEMENT_STOP_SECONDS):
-            await management.stop()
+            try:
+                if management is not None:
+                    await management.stop()
+            finally:
+                await lease.stop()
     except TimeoutError:
         logger.warning(
             "Gave up recording controller disconnections after %.1fs; their "
@@ -526,6 +550,30 @@ async def run(config: SwitchConfig) -> None:
         session_factory,
         lambda: create_unpooled_engine(config),
         process_id=str(uuid.uuid4()),
+    )
+    # This process's lease, held whatever features it runs (`process_lease.py`).
+    # Its id is the signal bus's, so a signal's sender and a lease's holder are
+    # named alike.
+    lease = ProcessLease(
+        process_id=signal_bus.process_id,
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+    )
+    # Which of the work that must run once this process runs (`ownership.py`).
+    # With one process, all of it.
+    ownership = Ownership(
+        lease=lease,
+        session_factory=session_factory,
+        bus=signal_bus,
+        store=OwnershipLeaseStore(),
+        processes=SwitchCoreProcessStore(),
+    )
+    # Every consumer's progress, written in batches (`transport/cursors.py`).
+    cursor_writer = CursorWriter(
+        session_factory=session_factory,
+        cursors=DeliveryCursorStore(),
+        leases=OwnershipLeaseStore(),
+        process_id=lease.process_id,
     )
 
     # Invitations for the Postgres transport, which has no durable one of its
@@ -981,6 +1029,13 @@ async def run(config: SwitchConfig) -> None:
         tags=["bridge-webhooks"],
     )
 
+    # Before anything is owned or recorded: work is claimed, and connections
+    # read as held elsewhere, only while this lease holds. Raises when the
+    # database refuses, since a process that cannot hold a lease can own
+    # nothing and would show every machine it connects as offline.
+    await lease.renew()
+    logger.info("Claimed switch-core process lease %s", lease.process_id)
+
     if management is not None:
         management.install(
             agent_bridge_app=agent_bridge_app,
@@ -990,7 +1045,6 @@ async def run(config: SwitchConfig) -> None:
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
-        await management.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
@@ -1074,6 +1128,9 @@ async def run(config: SwitchConfig) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
+            lease_task = asyncio.create_task(lease.run())
+            ownership_task = asyncio.create_task(ownership.run())
+            cursor_writer_task = asyncio.create_task(cursor_writer.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1100,10 +1157,12 @@ async def run(config: SwitchConfig) -> None:
                 service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
-                if management is not None:
-                    assert management_task is not None
+                if management_task is not None:
                     management_task.cancel()
-                    await _stop_management(management)
+                ownership_task.cancel()
+                lease_task.cancel()
+                await _stop_management(ownership, management, lease)
+                cursor_writer_task.cancel()
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
@@ -1183,6 +1242,10 @@ async def run(config: SwitchConfig) -> None:
             _run_telegram_app(telegram_app), name="telegram-app"
         )
 
+    # Start the work this process owns, before it serves: with one process,
+    # all of it.
+    await ownership.start()
+
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
     # just-started clients accept the invites on their first sync.
@@ -1212,6 +1275,7 @@ async def run(config: SwitchConfig) -> None:
             lambda: asyncio.create_task(
                 _shutdown(
                     server,
+                    ownership,
                     connections.controllers,
                     client_lifecycle,
                     collab_lifecycle,
@@ -1697,6 +1761,7 @@ def _distributed_teams_app(
 
 async def _shutdown(
     server: uvicorn.Server,
+    ownership: Ownership,
     controllers: ControllerPresence,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
@@ -1715,6 +1780,17 @@ async def _shutdown(
     # closed by the server.
     controllers.begin_shutdown()
     server.should_exit = True
+    # First, so the other processes take over this one's consumers and bridges
+    # as they stop here rather than once its lease lapses. The lifespan's
+    # teardown waits for this before it marks the lease stopped.
+    try:
+        await ownership.stop()
+    except Exception:
+        logger.warning(
+            "Stopping this process's owned work failed; the other processes "
+            "take it over once its lease lapses.",
+            exc_info=True,
+        )
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
     # Cancel the supervised connect/retry loop before closing the socket, so a

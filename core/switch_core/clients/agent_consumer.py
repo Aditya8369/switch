@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from switch_core.telemetry.messages import MessageTelemetry
+    from switch_core.transport.cursors import DeliveryProgress
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,7 @@ class AgentConsumer(Consumer[AgentActor]):
             self.actor.set_agent(fresh)
         return self.agent
 
-    async def start(self) -> None:
+    async def start(self, progress: DeliveryProgress) -> None:
         """Resolve the agent this client is, then run.
 
         This runs at the top of the client's own task, which binds nothing, so
@@ -424,7 +425,7 @@ class AgentConsumer(Consumer[AgentActor]):
         if agent is None:
             raise RuntimeError(f"No agent found for client: {self.client_id}")
         self.actor.set_agent(agent)
-        await super().start()
+        await super().start(progress)
 
     def preload_agent(self, agent: Agent) -> None:
         """Hand `start` the agent row read in bulk at boot, so it needs no
