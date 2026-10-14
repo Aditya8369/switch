@@ -28,6 +28,7 @@ import { ChatTimelines, type TimelineApi } from './chat-timeline-store';
 
 export type ChatsApi = {
   connect: (serverId: string) => Promise<{ state: ChatStreamState; detail: string | null }>;
+  disconnect: (serverId: string) => Promise<void>;
   list: (serverId: string) => Promise<ChatSummary[]>;
   identity: (serverId: string) => Promise<{ userId: string; tenantId: string | null }>;
   timeline: (serverId: string) => TimelineApi;
@@ -92,6 +93,7 @@ export class ChatsStore {
 
   async connect(serverId: string | null): Promise<void> {
     if (serverId !== this.serverId) {
+      if (this.serverId) void this.api.disconnect(this.serverId);
       runInAction(() => {
         this.serverId = serverId;
         this.chats = new Map();
@@ -111,7 +113,10 @@ export class ChatsStore {
         this.api.identity(serverId),
         this.api.list(serverId),
       ]);
-      if (serverId !== this.serverId) return;
+      if (serverId !== this.serverId) {
+        void this.api.disconnect(serverId);
+        return;
+      }
       runInAction(() => {
         this.streamState = state.state;
         this.streamDetail = state.detail;

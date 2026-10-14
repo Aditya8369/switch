@@ -9,6 +9,7 @@ import { ChatsStore, chatsEventsFrom } from './chats-store';
 export const chatsStore = new ChatsStore(
   {
     connect: (serverId) => rpc.chats.connect(serverId),
+    disconnect: (serverId) => rpc.chats.disconnect(serverId),
     list: (serverId) => rpc.chats.list(serverId),
     identity: (serverId) => rpc.chats.identity(serverId),
     timeline: (serverId) => ({

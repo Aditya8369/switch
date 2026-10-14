@@ -51,6 +51,7 @@ function setup(list: () => Promise<ChatSummary[]>, timeline: Partial<TimelineApi
   };
   const api: ChatsApi = {
     connect: async () => ({ state: 'live', detail: null }),
+    disconnect: vi.fn(async () => {}),
     list: vi.fn(list),
     identity: async () => ({ userId: 'u', tenantId: 't' }),
     timeline: () => timeline as TimelineApi,
@@ -60,6 +61,26 @@ function setup(list: () => Promise<ChatSummary[]>, timeline: Partial<TimelineApi
 }
 
 describe('ChatsStore', () => {
+  it('stops the feed of the server it no longer follows', async () => {
+    const { store, api } = setup(async () => []);
+    await store.connect('s1');
+    expect(api.disconnect).not.toHaveBeenCalled();
+    await store.connect('s2');
+    expect(api.disconnect).toHaveBeenCalledWith('s1');
+    await store.connect(null);
+    expect(api.disconnect).toHaveBeenLastCalledWith('s2');
+    expect(api.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops a feed that came up after the store moved on', async () => {
+    const { store, api } = setup(async () => []);
+    const pending = store.connect('s1');
+    await store.connect(null);
+    await pending;
+    expect(api.disconnect).toHaveBeenNthCalledWith(1, 's1');
+    expect(api.disconnect).toHaveBeenNthCalledWith(2, 's1');
+  });
+
   it('brings a hidden chat back when a message arrives in it', async () => {
     let chats = [summary('r1', 1), summary('r2', 1)];
     const { store, api, emit } = setup(async () => chats);
