@@ -23,6 +23,8 @@ from sqlalchemy import delete, func, select
 from switch_core.addressing import owner_only_policy
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
+    ApprovalRequest,
     ChatOperation,
     ChatOwnerGrant,
     Client,
@@ -38,8 +40,10 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.chats import (
+    chat_activity_events,
     chat_events,
 )
+from switch_core.session_activity.listener import Change
 from tests.switch_core.gateway.conftest import _Harness
 
 
@@ -1419,3 +1423,187 @@ async def test_an_owner_who_created_the_chat_keeps_it_when_the_agent_goes(
     await chats.room_service.remove_agents_from_room(room_id, [helper.id])
 
     assert await _reads(chats, chats.alice, room_id) == 200
+
+
+# ── Turn activity and approval requests ──────────────────────────────────────
+
+
+async def _step(
+    chats: _Harness, agent: Agent, room_id: str, turn_id: str, item_id: str, rev: int
+) -> None:
+    async with chats.factory() as session:
+        await session.merge(
+            AgentSessionActivityItem(
+                tenant_id="00000000-0000-0000-0000-000000000000",
+                agent_id=agent.id,
+                session_id="s1",
+                turn_id=turn_id,
+                item_id=item_id,
+                kind="turn" if item_id == "turn" else "tool-activity",
+                revision=rev,
+                status="running" if item_id == "turn" else "in-progress",
+                title=f"{item_id} r{rev}",
+                text="",
+                room_id=room_id,
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+
+async def _request(
+    chats: _Harness, agent: Agent, room_id: str, request_id: str, state: str
+) -> None:
+    async with chats.factory() as session:
+        session.add(
+            ApprovalRequest(
+                tenant_id="00000000-0000-0000-0000-000000000000",
+                agent_id=agent.id,
+                session_id="s1",
+                request_id=request_id,
+                turn_id="t1",
+                kind="approval",
+                room_id=room_id,
+                title="Run it?",
+                options=[{"id": "y", "label": "Yes", "decision": "accept"}],
+                questions=[],
+                state=state,
+                answer="y" if state == "answered" else None,
+            )
+        )
+        await session.commit()
+
+
+def _turn_change(agent: Agent, turn_id: str) -> Change:
+    return Change(
+        kind="activity",
+        tenant_id="00000000-0000-0000-0000-000000000000",
+        agent_id=agent.id,
+        session_id="s1",
+        key=turn_id,
+        row=None,
+    )
+
+
+def _activity_stream(chats: _Harness, user: User, queue_max: int = 64) -> _Events:
+    return _Events(
+        chat_activity_events(
+            chats.service,
+            "00000000-0000-0000-0000-000000000000",
+            user,
+            ping_seconds=60.0,
+            queue_max=queue_max,
+        )
+    )
+
+
+async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    mine = await chats.new_chat(chats.alice, agent, "c1")
+    other_agent = await chats.agent("other", owner=chats.bob)
+    other = await chats.new_chat(chats.bob, other_agent, "c2")
+    await _step(chats, agent, mine, "t1", "turn", 1)
+    await _step(chats, agent, mine, "t1", "tool-1", 2)
+    await _step(chats, other_agent, other, "t9", "turn", 1)
+    await _request(chats, agent, mine, "r-open", "open")
+    await _request(chats, agent, mine, "r-done", "answered")
+    await _request(chats, other_agent, other, "r-other", "open")
+
+    response = await chats.client.get(
+        f"/chats/{mine}/activity", headers=chats.as_user(chats.alice)
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [(i["turnId"], i["itemId"], i["revision"]) for i in body["items"]] == [
+        ("t1", "turn", 1),
+        ("t1", "tool-1", 2),
+    ]
+    assert {(a["requestId"], a["state"]) for a in body["approvals"]} == {
+        ("r-open", "open"),
+        ("r-done", "answered"),
+    }
+
+    refused = await chats.client.get(
+        f"/chats/{mine}/activity", headers=chats.as_user(chats.bob)
+    )
+    assert refused.status_code == 403
+
+
+async def test_the_activity_stream_sends_only_readable_rooms_and_moved_steps(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    other_agent = await chats.agent("other", owner=chats.alice)
+    hidden = await chats.new_chat(chats.alice, other_agent, "c2")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _activity_stream(chats, chats.bob)
+    assert (await events.next())[0] == "ready"
+
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    await chats.activity.change(_turn_change(agent, "t1"))
+    name, item = await events.next()
+    assert name == "activity" and item["roomId"] == room_id and item["revision"] == 1
+
+    # A reread of the turn resends only the step that moved.
+    await _step(chats, agent, room_id, "t1", "tool-1", 1)
+    await chats.activity.change(_turn_change(agent, "t1"))
+    name, item = await events.next()
+    assert (name, item["itemId"]) == ("activity", "tool-1")
+
+    # A room the reader is not in is never sent: the next frame is the request.
+    await _step(chats, other_agent, hidden, "t2", "turn", 1)
+    await chats.activity.change(_turn_change(other_agent, "t2"))
+    await _request(chats, agent, room_id, "r1", "answered")
+    await chats.activity.change(
+        Change(
+            kind="approval.answered",
+            tenant_id="00000000-0000-0000-0000-000000000000",
+            agent_id=agent.id,
+            session_id="s1",
+            key="r1",
+            row=None,
+        )
+    )
+    name, request = await events.next()
+    assert (name, request["requestId"], request["state"]) == (
+        "approval",
+        "r1",
+        "answered",
+    )
+
+    removed = await chats.client.delete(
+        f"/chats/{room_id}/members/{chats.bob.id}", headers=chats.as_user(chats.alice)
+    )
+    assert removed.status_code == 204
+    await _step(chats, agent, room_id, "t1", "turn", 2)
+    await chats.activity.change(_turn_change(agent, "t1"))
+    with pytest.raises(TimeoutError):
+        await events.next(timeout=0.3)
+    await events.stream.aclose()  # type: ignore[attr-defined]
+    assert chats.activity.subscribers == []
+
+
+async def test_the_activity_stream_says_resync_when_changes_may_be_lost(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+
+    events = _activity_stream(chats, chats.alice, queue_max=2)
+    assert (await events.next())[0] == "ready"
+
+    await chats.activity.resync()
+    assert await events.next() == ("resync", {})
+
+    # Falling behind drops what was queued and asks for a reload instead.
+    for _ in range(3):
+        await chats.activity.change(_turn_change(agent, "t1"))
+    assert await events.next() == ("resync", {})
+    with pytest.raises(TimeoutError):
+        await events.next(timeout=0.3)
+    await events.stream.aclose()  # type: ignore[attr-defined]

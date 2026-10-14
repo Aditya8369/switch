@@ -2703,7 +2703,7 @@ class ChatOperation(TenantScoped, Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "kind IN ('create_chat', 'send', 'upload')",
+            "kind IN ('create_chat', 'send', 'upload', 'control')",
             name="ck_chat_operations_kind",
         ),
         CheckConstraint(

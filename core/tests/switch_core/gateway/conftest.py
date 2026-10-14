@@ -36,6 +36,7 @@ from switch_core.gateway.chats import (
 )
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.session_activity.listener import Change
 from switch_core.transport.invites import InviteBus
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
@@ -74,12 +75,33 @@ class _FakeListener:
             await waker(room_id)
 
 
+class _FakeActivityListener:
+    """The session-activity listener; a test delivers changes by hand."""
+
+    def __init__(self) -> None:
+        self.subscribers: list[tuple[Any, Any]] = []
+
+    def subscribe(self, tenant_id: str, on_change: Any, on_resync: Any) -> Any:
+        entry = (on_change, on_resync)
+        self.subscribers.append(entry)
+        return lambda: self.subscribers.remove(entry)
+
+    async def change(self, change: Change) -> None:
+        for on_change, _ in list(self.subscribers):
+            await on_change(change)
+
+    async def resync(self) -> None:
+        for _, on_resync in list(self.subscribers):
+            await on_resync()
+
+
 class _Harness(SimpleNamespace):
     client: httpx.AsyncClient
     factory: async_sessionmaker[AsyncSession]
     service: ChatService
     room_service: RoomService
     listener: _FakeListener
+    activity: _FakeActivityListener
     lifecycle: _FakeLifecycle
     alice: User
     bob: User
@@ -201,11 +223,13 @@ async def chats(
         room_cache=MagicMock(),
     )
     listener = _FakeListener()
+    activity = _FakeActivityListener()
     service = ChatService(
         session_factory=session_factory,
         room_service=room_service,
         provisioning=provisioning,
         listener=listener,  # type: ignore[arg-type]
+        activity_listener=activity,  # type: ignore[arg-type]
         room_store=room_store,
         agent_store=AgentStore(),
         user_store=UserStore(),
@@ -239,6 +263,7 @@ async def chats(
             service=service,
             room_service=room_service,
             listener=listener,
+            activity=activity,
             lifecycle=lifecycle,
             alice=alice,
             bob=bob,

@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import (
@@ -31,7 +32,12 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.chats.service import ChatError, ChatService, RemovalReason
+from switch_core.chats.service import (
+    ChatError,
+    ChatService,
+    RemovalReason,
+    RoomControl,
+)
 from switch_core.chats.views import (
     CamelModel,
     ChatMember,
@@ -40,15 +46,23 @@ from switch_core.chats.views import (
     chat_messages,
     chat_summary,
 )
-from switch_core.db.models import Room, User, require_tenant_id
+from switch_core.db.models import (
+    AgentSessionActivityItem,
+    Room,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.session_scope import tenant_session
+from switch_core.gateway.agent_sessions import ApprovalRequestView
 from switch_core.gateway.auth import get_current_user
+from switch_core.session_activity.listener import Change
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 PING_SECONDS = 20.0
+ACTIVITY_QUEUE_MAX = 256
 RECHECK_SECONDS = 30.0
 _CATCH_UP_PAGE = 200
 MAX_PAGE = 200
@@ -108,6 +122,19 @@ class SendRequest(CamelModel):
     mention_agent_id: str | None = None
 
 
+class ControlRequest(CamelModel):
+    request_id: str
+    agent_id: str
+    command: RoomControl
+
+
+class ControlAccepted(CamelModel):
+    """The command is posted, not done: the agent answers it in the room,
+    in a thread rooted at `commandId`."""
+
+    command_id: str
+
+
 class SentMessages(CamelModel):
     messages: list[ChatMessage]
 
@@ -126,6 +153,53 @@ class MemberList(CamelModel):
 
 class AddMemberRequest(CamelModel):
     user_id: str
+
+
+class ActivityItemView(CamelModel):
+    """One step of a turn; `revision` only grows, so a lower one is stale."""
+
+    agent_id: str
+    session_id: str
+    turn_id: str
+    item_id: str
+    kind: str
+    revision: int
+    status: str
+    title: str
+    text: str
+    command_id: str | None
+    room_id: str | None
+    thread_id: str | None
+    message_id: str | None
+    occurred_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, row: AgentSessionActivityItem) -> ActivityItemView:
+        return cls(
+            agent_id=row.agent_id,
+            session_id=row.session_id,
+            turn_id=row.turn_id,
+            item_id=row.item_id,
+            kind=row.kind,
+            revision=row.revision,
+            status=row.status,
+            title=row.title,
+            text=row.text,
+            command_id=row.command_id,
+            room_id=row.room_id,
+            thread_id=row.thread_id,
+            message_id=row.message_id,
+            occurred_at=row.occurred_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+class RoomActivity(CamelModel):
+    items: list[ActivityItemView]
+    approvals: list[ApprovalRequestView]
 
 
 Service = Annotated[ChatService, Depends(get_chat_service)]
@@ -209,6 +283,38 @@ async def chat_events_stream(
     )
 
 
+@router.get("/activity/events")
+async def chat_activity_stream(
+    user: CurrentUser, service: Service
+) -> StreamingResponse:
+    tenant_id = require_tenant_id()
+    return StreamingResponse(
+        chat_activity_events(
+            service,
+            tenant_id,
+            user,
+            ping_seconds=PING_SECONDS,
+            queue_max=ACTIVITY_QUEUE_MAX,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/{room_id}/activity", response_model=RoomActivity)
+async def room_activity(
+    room_id: str, user: CurrentUser, service: Service
+) -> RoomActivity:
+    tenant_id = require_tenant_id()
+    async with tenant_session(service.session_factory, tenant_id) as session:
+        room, _ = await service.require_member(session, tenant_id, user, room_id)
+        items, approvals = await service.room_activity(session, room.id)
+        return RoomActivity(
+            items=[ActivityItemView.of(row) for row in items],
+            approvals=[ApprovalRequestView.of(row) for row in approvals],
+        )
+
+
 @router.get("/{room_id}/messages", response_model=MessagePage)
 async def list_messages(
     room_id: str,
@@ -274,6 +380,21 @@ async def send_message(
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return SentMessages(messages=await chat_messages(session, room, posted))
+
+
+@router.post("/{room_id}/controls", response_model=ControlAccepted, status_code=202)
+async def send_control(
+    room_id: str, req: ControlRequest, user: CurrentUser, service: Service
+) -> ControlAccepted:
+    command_id = await service.control(
+        require_tenant_id(),
+        user,
+        room_id,
+        request_id=req.request_id,
+        agent_id=req.agent_id,
+        command=req.command,
+    )
+    return ControlAccepted(command_id=command_id)
 
 
 @router.get("/{room_id}/media")
@@ -553,3 +674,93 @@ async def chat_events(
     finally:
         service.unwatch_memberships(tenant_id, user.id, stream.on_memberships)
         stream.close()
+
+
+async def chat_activity_events(
+    service: ChatService,
+    tenant_id: str,
+    user: User,
+    *,
+    ping_seconds: float,
+    queue_max: int,
+) -> AsyncIterator[bytes]:
+    """Turn steps and approval requests of the rooms the caller may read, as SSE.
+
+    Says `ready` once subscribed, so a snapshot fetched after it misses
+    nothing. Readability is checked on every change, so leaving a room stops
+    its frames at once. `resync` means changes may have been missed (the
+    listener reconnected, or this connection fell behind): reload snapshots.
+    """
+    queue: asyncio.Queue[Change | None] = asyncio.Queue(maxsize=queue_max)
+
+    def resync() -> None:
+        while not queue.empty():
+            queue.get_nowait()
+        queue.put_nowait(None)
+
+    async def on_change(change: Change) -> None:
+        try:
+            queue.put_nowait(change)
+        except asyncio.QueueFull:
+            resync()
+
+    async def on_resync() -> None:
+        resync()
+
+    unsubscribe = service.activity_listener.subscribe(tenant_id, on_change, on_resync)
+    # Per-connection, so a turn reread on every change resends only moved steps.
+    sent: dict[tuple[str, str, str, str], int] = {}
+    try:
+        await service.sync_owned_rooms(tenant_id, user.id)
+        yield _frame("ready", {})
+        while True:
+            try:
+                change = await asyncio.wait_for(queue.get(), timeout=ping_seconds)
+            except TimeoutError:
+                yield b": ping\n\n"
+                continue
+            if change is None:
+                sent.clear()
+                yield _frame("resync", {})
+                continue
+            for frame in await _activity_frames(service, tenant_id, user, change, sent):
+                yield frame
+    finally:
+        unsubscribe()
+
+
+async def _activity_frames(
+    service: ChatService,
+    tenant_id: str,
+    user: User,
+    change: Change,
+    sent: dict[tuple[str, str, str, str], int],
+) -> list[bytes]:
+    """Frames for one change, limited to the rooms the caller may read now."""
+    async with tenant_session(service.session_factory, tenant_id) as session:
+        if change.kind == "activity":
+            rows = await service.turn_items(
+                session, change.agent_id, change.session_id, change.key
+            )
+            if not any(row.room_id for row in rows):
+                return []
+            readable = await service.readable_room_ids(session, tenant_id, user.id)
+            frames = []
+            for row in rows:
+                key = (row.agent_id, row.session_id, row.turn_id, row.item_id)
+                if row.room_id in readable and sent.get(key, -1) < row.revision:
+                    sent[key] = row.revision
+                    view = ActivityItemView.of(row)
+                    frames.append(
+                        _frame("activity", view.model_dump(mode="json", by_alias=True))
+                    )
+            return frames
+        request = await service.approval(
+            session, change.agent_id, change.session_id, change.key
+        )
+        if request is None or request.room_id not in await service.readable_room_ids(
+            session, tenant_id, user.id
+        ):
+            return []
+        approval = ApprovalRequestView.of(request)
+        return [_frame("approval", approval.model_dump(mode="json", by_alias=True))]

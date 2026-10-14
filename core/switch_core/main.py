@@ -885,6 +885,7 @@ async def run(config: SwitchConfig) -> None:
         room_service=room_service,
         provisioning=provisioning,
         listener=message_listener,
+        activity_listener=session_activity_listener,
         room_store=room_store,
         agent_store=agent_store,
         user_store=user_store,

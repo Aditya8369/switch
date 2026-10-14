@@ -83,6 +83,20 @@ class ApprovalRequestStore:
         )
         return list(result.scalars())
 
+    async def for_room(
+        self, session: AsyncSession, room_id: str, since: datetime
+    ) -> list[ApprovalRequest]:
+        """Requests in `room_id`, in every state, changed since `since`; oldest first."""
+        result = await session.execute(
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.room_id == room_id,
+                ApprovalRequest.updated_at >= since,
+            )
+            .order_by(ApprovalRequest.created_at)
+        )
+        return list(result.scalars())
+
     async def expire_due(
         self, session: AsyncSession, now: datetime
     ) -> list[ApprovalRequest]:
@@ -196,6 +210,22 @@ class AgentSessionActivityStore:
                 AgentSessionActivityItem.item_id == TURN_ITEM_ID,
             )
             .order_by(AgentSessionActivityItem.created_at)
+        )
+        return list(result.scalars())
+
+    async def for_room(
+        self, session: AsyncSession, room_id: str, since: datetime
+    ) -> list[AgentSessionActivityItem]:
+        """Steps placed in `room_id` changed since `since`, in first-reported order."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.updated_at >= since,
+            )
+            .order_by(
+                AgentSessionActivityItem.created_at, AgentSessionActivityItem.item_id
+            )
         )
         return list(result.scalars())
 

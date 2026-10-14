@@ -26,6 +26,7 @@ import uuid
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 import markdown
@@ -49,6 +50,8 @@ from switch_core.chats.views import MESSAGE_EVENT_TYPE
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
+    ApprovalRequest,
     ChatHidden,
     ChatOperation,
     ChatOwnerGrant,
@@ -65,17 +68,27 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import (
+    AgentSessionActivityStore,
+    ApprovalRequestStore,
+)
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.delivery.addressing import AddressingResolver
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
 from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
+from switch_core.session_activity.listener import AgentSessionActivityListener
+from switch_core.session_activity.maintenance import ACTIVITY_RETENTION
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
@@ -107,6 +120,8 @@ class StagedUpload:
 
 
 RemovalReason = Literal["access", "unlisted"]
+RoomControl = Literal["interrupt", "reset", "compact"]
+COMMAND_EVENT_TYPE = "com.switch.command"
 
 
 def _hash(payload: dict[str, object]) -> str:
@@ -129,6 +144,7 @@ class ChatService:
         room_service: RoomService,
         provisioning: Provisioning,
         listener: MessageListener,
+        activity_listener: AgentSessionActivityListener,
         room_store: RoomStore,
         agent_store: AgentStore,
         user_store: UserStore,
@@ -142,6 +158,9 @@ class ChatService:
         self.session_factory = session_factory
         self.agent_chats_enabled = agent_chats_enabled
         self.listener = listener
+        self.activity_listener = activity_listener
+        self._activity_store = AgentSessionActivityStore()
+        self._approval_store = ApprovalRequestStore()
         self._room_service = room_service
         self._provisioning = provisioning
         self._room_store = room_store
@@ -156,6 +175,15 @@ class ChatService:
             weakref.WeakValueDictionary()
         )
         self._membership_watchers: dict[tuple[str, str], set[Callable[[], None]]] = {}
+        self._addressing = AddressingResolver(
+            room_store=room_store,
+            room_role_store=RoomRoleStore(),
+            client_store=ClientStore(),
+            agent_store=agent_store,
+            external_user_store=ExternalUserStore(),
+            # Only role mentions consult liveness; a permission check never does.
+            live_connection_ids=set,
+        )
 
     # ── Membership signals ───────────────────────────────────────────────────
 
@@ -505,6 +533,35 @@ class ChatService:
             .order_by(Room.created_at)
         )
         return list(result.scalars().all())
+
+    async def readable_room_ids(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> set[str]:
+        if not await self.has_tenant_role(session, tenant_id, user_id):
+            return set()
+        return {room.id for room in await self.readable_rooms(session, user_id)}
+
+    async def room_activity(
+        self, session: AsyncSession, room_id: str
+    ) -> tuple[list[AgentSessionActivityItem], list[ApprovalRequest]]:
+        """The room's turn steps and approval requests (every state) within retention."""
+        since = datetime.now(UTC) - ACTIVITY_RETENTION
+        return (
+            await self._activity_store.for_room(session, room_id, since),
+            await self._approval_store.for_room(session, room_id, since),
+        )
+
+    async def turn_items(
+        self, session: AsyncSession, agent_id: str, session_id: str, turn_id: str
+    ) -> list[AgentSessionActivityItem]:
+        return await self._activity_store.turn(session, agent_id, session_id, turn_id)
+
+    async def approval(
+        self, session: AsyncSession, agent_id: str, session_id: str, request_id: str
+    ) -> ApprovalRequest | None:
+        return await self._approval_store.get(
+            session, agent_id, session_id, request_id, for_update=False
+        )
 
     async def removal_reason(
         self, session: AsyncSession, user_id: str, room_id: str
@@ -1092,6 +1149,92 @@ class ChatService:
                 {"kind": "media" if "url" in content else "message", "actor": "human"},
             )
         return room, posted
+
+    async def control(
+        self,
+        tenant_id: str,
+        user: User,
+        room_id: str,
+        *,
+        request_id: str,
+        agent_id: str,
+        command: RoomControl,
+    ) -> str:
+        """Post `!<command> @agent` as the user; the command's event id.
+
+        Written as the `com.switch.command` event a platform bridge writes for
+        a typed `!interrupt`, so the agents' own command handling, addressing
+        gate and in-room acknowledgement apply unchanged. The addressing check
+        here only turns a refusal into an answer instead of a room message.
+        """
+        payload_hash = _hash(
+            {"roomId": room_id, "agentId": agent_id, "command": command}
+        )
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room, client = await self.require_member(session, tenant_id, user, room_id)
+            operation = await self._operation(session, user.id, request_id)
+            if operation is not None:
+                self._require_same(operation, "control", payload_hash)
+                return str((operation.result or {})["commandId"])
+
+            if agent_id not in await self._room_store.get_agent_ids(session, room.id):
+                raise ChatError(
+                    422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat."
+                )
+            agent = await self._agent_store.get(session, agent_id)
+            assert agent is not None
+            decision = await self._addressing.permitted(
+                session, agent=agent, room_id=room.id, sender=client.transport_user_id
+            )
+            if not decision.allowed:
+                raise ChatError(403, "AGENT_NOT_ALLOWED", decision.refusal)
+
+            if not await self._claim(
+                session,
+                tenant_id=tenant_id,
+                user_id=user.id,
+                request_id=request_id,
+                kind="control",
+                payload_hash=payload_hash,
+                state="done",
+                room_id=room.id,
+            ):
+                operation = await self._operation(session, user.id, request_id)
+                assert operation is not None
+                self._require_same(operation, "control", payload_hash)
+                return str((operation.result or {})["commandId"])
+
+            command_id = new_event_id()
+            await self._message_store.create(
+                session,
+                message_row(
+                    room_id=room.id,
+                    event_id=command_id,
+                    sender_id=client.transport_user_id,
+                    sender_client_id=client.id,
+                    sender_name=user.name,
+                    event_type=COMMAND_EVENT_TYPE,
+                    content={
+                        "command": command,
+                        "args": f"@{agent.name}",
+                        "user_id": client.transport_user_id,
+                        "user_name": user.name,
+                    },
+                    client_txn_id=request_id,
+                ),
+                [],
+            )
+            await session.execute(
+                update(ChatOperation)
+                .where(
+                    ChatOperation.tenant_id == tenant_id,
+                    ChatOperation.user_id == user.id,
+                    ChatOperation.request_id == request_id,
+                )
+                .values(result={"commandId": command_id})
+            )
+            await session.commit()
+        return command_id
 
     async def _posted(
         self, session: AsyncSession, room: Room, operation: ChatOperation
