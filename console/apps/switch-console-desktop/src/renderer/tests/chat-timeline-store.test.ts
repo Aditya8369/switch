@@ -73,7 +73,6 @@ const file = (name: string): ChatFile => ({
 const input = (files: ChatFile[] = []) => ({
   body: 'hello',
   threadRootId: null,
-  mentionAgentId: null,
   files,
 });
 

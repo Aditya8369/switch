@@ -1,9 +1,8 @@
 import { Lock, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
-import { ROOM_ONLY } from '../addressee';
 import { agentActivities } from '../stores/activities';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline } from '../stores/chat-timeline-store';
@@ -69,17 +68,13 @@ const Notice = ({ icon, title, body }: { icon: React.ReactNode; title: string; b
 export const ChatPanel = observer(function ChatPanel({
   serverId,
   roomId,
-  agentId,
 }: {
   serverId: string;
   roomId: string;
-  /** The agent the chat was opened for, preselected in a room with several. */
-  agentId: string | null;
 }) {
   const timeline = chatsStore.timelines.get(serverId, roomId);
   const chat = chatsStore.chat(roomId);
   const activities = useAgentActivities(serverId, chat);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(agentId);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const lost = timeline.accessLost || chatsStore.removed.has(roomId);
 
@@ -125,16 +120,6 @@ export const ChatPanel = observer(function ChatPanel({
     const timer = setInterval(() => read(true), REASONING_MS);
     return () => clearInterval(timer);
   }, [activities, working, messageCount, turnIdsKey, activeTurnsKey]);
-
-  // Room-only addresses no agent; the controls then act on the chat's own.
-  const controlledAgentId =
-    selectedAgentId === ROOM_ONLY
-      ? (agentId ?? chat?.agents[0]?.id)
-      : (selectedAgentId ?? chat?.agents[0]?.id);
-  const selectedActivity = useMemo(
-    () => activities.find((activity) => activity.agentId === controlledAgentId) ?? null,
-    [activities, controlledAgentId]
-  );
 
   if (lost)
     return (
@@ -199,9 +184,7 @@ export const ChatPanel = observer(function ChatPanel({
         serverId={serverId}
         timeline={timeline}
         agents={chat?.agents ?? []}
-        activity={selectedActivity}
-        selectedAgentId={selectedAgentId}
-        onSelectAgent={setSelectedAgentId}
+        activity={activities[0] ?? null}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
         disabled={

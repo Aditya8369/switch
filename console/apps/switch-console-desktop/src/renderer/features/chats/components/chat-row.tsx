@@ -9,7 +9,6 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { RelativeTime } from '@renderer/lib/ui/relative-time';
 import type { ChatSummary } from '@shared/core/chats/chats';
-import { chatRowLabel } from '../agent-conversations';
 import { agentActivities } from '../stores/activities';
 import { chatsStore } from '../stores/chats';
 import { ChatActionItems, chatActions } from './chat-actions';
@@ -38,7 +37,6 @@ export const ChatRow = observer(function ChatRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const busy = chatBusy(serverId, chat);
-  const label = chatRowLabel(chat);
   return (
     <SidebarMenuRow className="group/row justify-between" isActive={isActive} onClick={onOpen}>
       <div className="flex h-6 min-w-0 flex-1 items-center gap-1">
@@ -46,10 +44,7 @@ export const ChatRow = observer(function ChatRow({
           <MessageSquare className="size-4 text-foreground-muted" />
         </span>
         <SidebarMenuAction aria-label={`Open chat ${chat.name}`} className="overflow-hidden">
-          <span className="min-w-0 truncate">{label.name}</span>
-          {label.platform && (
-            <span className="shrink-0 text-xs text-foreground-muted">· {label.platform}</span>
-          )}
+          <span className="min-w-0 truncate">{chat.name}</span>
         </SidebarMenuAction>
       </div>
       <div className="ml-2 flex min-w-6 shrink-0 items-center justify-end gap-1">

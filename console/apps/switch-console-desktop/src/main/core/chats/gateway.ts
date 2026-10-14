@@ -1,9 +1,7 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 import { GatewayError, gatewayFetch } from '@main/core/switch-servers/gateway-client';
 import { log } from '@main/lib/logger';
 import {
-  type ChatMember,
-  chatMembersSchema,
   type ChatMessage,
   type ChatMessagesPage,
   chatMessagesPageSchema,
@@ -131,7 +129,6 @@ export async function sendChatMessage(
     body: string;
     threadRootId: string | null;
     uploadIds: string[];
-    mentionAgentId: string | null;
   }
 ): Promise<ChatMessage[]> {
   return (
@@ -168,73 +165,12 @@ export async function fetchChatMedia(
   };
 }
 
-export async function fetchChatMembers(
-  server: SwitchServer,
-  roomId: string
-): Promise<ChatMember[]> {
-  return (await json(server, `${room(roomId)}/members`, chatMembersSchema)).members;
-}
-
-export async function inviteChatMember(
-  server: SwitchServer,
-  roomId: string,
-  userId: string
-): Promise<ChatMember[]> {
-  return (
-    await json(server, `${room(roomId)}/members`, chatMembersSchema, {
-      method: 'POST',
-      body: { userId },
-    })
-  ).members;
-}
-
-export async function removeChatMember(
-  server: SwitchServer,
-  roomId: string,
-  userId: string
-): Promise<void> {
-  await call(server, `${room(roomId)}/members/${encodeURIComponent(userId)}`, {
-    method: 'DELETE',
-  });
-}
-
 export async function setChatHidden(
   server: SwitchServer,
   roomId: string,
   hidden: boolean
 ): Promise<void> {
   await call(server, `${room(roomId)}/hidden`, { method: hidden ? 'PUT' : 'DELETE' });
-}
-
-export async function archiveChat(server: SwitchServer, roomId: string): Promise<void> {
-  await call(server, `${room(roomId)}/archive`, { method: 'POST' });
-}
-
-/**
- * The synthetic account that owns agents registered with the deployment's
- * bootstrap key (`BOOTSTRAP_OWNER_EMAIL` in core's `registration_bootstrap.py`).
- * It never signs in, so it is nobody to invite. Core holds this address fixed
- * and refuses to start if any other account claims it.
- */
-const BOOTSTRAP_OWNER_EMAIL = 'agent-bootstrap@switch.local';
-
-const tenantMembersSchema = z.array(
-  z.object({ user_id: z.string(), name: z.string(), email: z.string() })
-);
-
-/** The workspace's people, whom a chat's managers may invite. */
-export async function fetchTenantMembers(
-  server: SwitchServer,
-  tenantId: string
-): Promise<{ userId: string; name: string }[]> {
-  const members = await json(
-    server,
-    `/tenants/${encodeURIComponent(tenantId)}/members`,
-    tenantMembersSchema
-  );
-  return members
-    .filter((member) => member.email !== BOOTSTRAP_OWNER_EMAIL)
-    .map((member) => ({ userId: member.user_id, name: member.name || member.email }));
 }
 
 /** Rename uses the room route: a chat's name is its room's name. */

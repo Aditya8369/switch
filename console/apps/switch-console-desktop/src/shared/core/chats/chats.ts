@@ -70,13 +70,6 @@ export const chatMessageSchema = z.object({
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
-export const chatMemberSchema = z.object({
-  userId: z.string(),
-  name: z.string(),
-  isOwner: z.boolean(),
-});
-export type ChatMember = z.infer<typeof chatMemberSchema>;
-
 export const chatListSchema = z.object({ chats: z.array(z.unknown()) });
 export const chatCreatedSchema = z.object({ chat: chatSummarySchema });
 export const chatMessagesPageSchema = z.object({
@@ -94,7 +87,6 @@ export const chatUploadSchema = z.object({
   size: z.number(),
 });
 export type ChatUpload = z.infer<typeof chatUploadSchema>;
-export const chatMembersSchema = z.object({ members: z.array(chatMemberSchema) });
 /**
  * `access`: the person lost the room (membership, workspace role, archive).
  * `unlisted`: still a member, but the room no longer qualifies for the list.
@@ -124,7 +116,6 @@ export type ChatSendInput = {
   body: string;
   threadRootId: string | null;
   uploadIds: string[];
-  mentionAgentId: string | null;
 };
 
 export type ChatUploadInput = {

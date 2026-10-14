@@ -75,7 +75,6 @@ const ChatMainPanel = observer(function ChatMainPanel(): React.JSX.Element | nul
       key={`${params.serverId}:${params.roomId}`}
       serverId={params.serverId}
       roomId={params.roomId}
-      agentId={params.agentId}
     />
   );
 });

@@ -41,7 +41,6 @@ export type PendingSend = {
   requestId: string;
   body: string;
   threadRootId: string | null;
-  mentionAgentId: string | null;
   files: PendingFile[];
   state: 'sending' | 'failed' | 'conflict';
   error: string | null;
@@ -54,7 +53,6 @@ export type PendingSend = {
 export type SendInput = {
   body: string;
   threadRootId: string | null;
-  mentionAgentId: string | null;
   files: ChatFile[];
 };
 
@@ -71,7 +69,6 @@ export type TimelineApi = {
       body: string;
       threadRootId: string | null;
       uploadIds: string[];
-      mentionAgentId: string | null;
     }
   ) => Promise<ChatMessage[]>;
   newId: () => string;
@@ -167,7 +164,6 @@ export class ChatTimeline {
       requestId: this.api.newId(),
       body: input.body,
       threadRootId: input.threadRootId,
-      mentionAgentId: input.mentionAgentId,
       files: input.files.map((file) => ({
         id: this.api.newId(),
         uploadId: this.api.newId(),
@@ -283,7 +279,6 @@ export class ChatTimeline {
         body: send.body,
         threadRootId: send.threadRootId,
         uploadIds: send.files.map((file) => file.uploadId),
-        mentionAgentId: send.mentionAgentId,
       });
       runInAction(() => {
         for (const message of messages) this.apply(message);

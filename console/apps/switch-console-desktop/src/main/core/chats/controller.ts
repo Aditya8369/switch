@@ -16,7 +16,6 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import { log } from '@main/lib/logger';
 import type { ChatActivityTarget } from '@shared/core/chats/activity';
 import type {
-  ChatMember,
   ChatMessage,
   ChatMessagesPage,
   ChatSendInput,
@@ -35,15 +34,10 @@ import {
 } from './chat-streams';
 import { generateChatTitle } from './chat-title';
 import {
-  archiveChat,
   createChat,
   fetchChatMedia,
-  fetchChatMembers,
   fetchChatMessages,
-  fetchTenantMembers,
-  inviteChatMember,
   listChats,
-  removeChatMember,
   renameChat,
   sendChatMessage,
   setChatHidden,
@@ -195,7 +189,6 @@ export const chatsController = createRPCController({
         body: input.body,
         threadRootId: input.threadRootId,
         uploadIds: input.uploadIds,
-        mentionAgentId: input.mentionAgentId,
       })
     ),
   upload: (input: ChatUploadInput): Promise<ChatUpload> =>
@@ -218,26 +211,10 @@ export const chatsController = createRPCController({
     );
     return { mimeType: media.mimeType, data: Buffer.from(media.bytes).toString('base64') };
   },
-  members: (serverId: string, roomId: string): Promise<ChatMember[]> =>
-    onServer(serverId, (server) => fetchChatMembers(server, roomId)),
-  /** The workspace's members, for a manager's Invite. */
-  tenantMembers: async (serverId: string): Promise<{ userId: string; name: string }[]> => {
-    const workspace = await requireWorkspaceForServer(serverId);
-    if (!workspace.tenantId)
-      throw new Error('This workspace has not been matched to a tenant yet.');
-    const tenantId = workspace.tenantId;
-    return onServer(serverId, (server) => fetchTenantMembers(server, tenantId));
-  },
-  invite: (serverId: string, roomId: string, userId: string): Promise<ChatMember[]> =>
-    onServer(serverId, (server) => inviteChatMember(server, roomId, userId)),
-  removeMember: (serverId: string, roomId: string, userId: string): Promise<void> =>
-    onServer(serverId, (server) => removeChatMember(server, roomId, userId)),
   hide: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, (server) => setChatHidden(server, roomId, true)),
   unhide: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, (server) => setChatHidden(server, roomId, false)),
-  archive: (serverId: string, roomId: string): Promise<void> =>
-    onServer(serverId, (server) => archiveChat(server, roomId)),
   rename: (serverId: string, roomId: string, name: string): Promise<void> =>
     onServer(serverId, (server) => renameChat(server, roomId, name)),
   /** A short chat name from its first message, from the user's local Claude CLI. */

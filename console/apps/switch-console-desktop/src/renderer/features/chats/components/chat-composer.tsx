@@ -1,22 +1,13 @@
 import type { Command } from '@switch-console/shared/session-v1';
-import { ChevronDown, Loader2, Minimize2, Plus, RotateCcw, Users, X } from 'lucide-react';
+import { ChevronDown, Loader2, Minimize2, Plus, RotateCcw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
-import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
 import { contextBlocker, isCompacting } from '../chat-context';
 import { snippetOf } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
@@ -70,16 +61,13 @@ function stopBlocker(activity: AgentActivity | null): string | null {
 /**
  * The chat's composer. Sending posts the message to the room and nothing
  * else: which session answers, and starting or waking it, is up to the
- * agent's host. The model picker and Stop act on the selected agent's own
- * session, and are offered only as far as that session says they work.
+ * agent's host. Stop and the context actions act on the agent's own session, and are offered only as far as that session says they work.
  */
 export const ChatComposer = observer(function ChatComposer({
   serverId,
   timeline,
   agents,
   activity,
-  selectedAgentId,
-  onSelectAgent,
   replyTo,
   onClearReply,
   disabled,
@@ -87,11 +75,7 @@ export const ChatComposer = observer(function ChatComposer({
   serverId: string;
   timeline: ChatTimeline;
   agents: ChatAgent[];
-  /** The selected agent's activity, or the chat's own agent's when room-only. */
   activity: AgentActivity | null;
-  /** An agent id, `ROOM_ONLY`, or null for the chat's first agent. */
-  selectedAgentId: string | null;
-  onSelectAgent: (agentId: string) => void;
   replyTo: ChatMessage | null;
   onClearReply: () => void;
   disabled: string | null;
@@ -136,10 +120,7 @@ export const ChatComposer = observer(function ChatComposer({
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
-  const roomOnly = agents.length > 1 && selectedAgentId === ROOM_ONLY;
-  const selected = roomOnly
-    ? null
-    : (agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null);
+  const agent = agents[0] ?? null;
   const session = activity?.session ?? null;
   const runningTurn = activity?.runningTurn ?? null;
 
@@ -155,7 +136,6 @@ export const ChatComposer = observer(function ChatComposer({
     timeline.send({
       body,
       threadRootId: replyTo?.messageId ?? null,
-      mentionAgentId: mentionAgentIdFor(agents, selectedAgentId),
       files: files.map(({ file }) => chatFile(file)),
     });
     void chatTitler.sent(serverId, timeline.roomId, body);
@@ -266,10 +246,8 @@ export const ChatComposer = observer(function ChatComposer({
             <PromptInputTextarea
               ref={input}
               className="min-h-0 px-1 py-1.5"
-              aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the room'}`}
-              placeholder={
-                disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the room'}...`
-              }
+              aria-label={`Message ${agent ? chatAgentLabel(agent) : 'the agent'}`}
+              placeholder={disabled ?? `Message ${agent ? chatAgentLabel(agent) : 'the agent'}...`}
               value={draft}
               disabled={disabled !== null}
               onChange={(event) => setDraft(event.target.value)}
@@ -283,50 +261,7 @@ export const ChatComposer = observer(function ChatComposer({
             />
           </div>
         </PromptInput>
-        <div className="mt-1.5 flex min-h-7 items-center justify-between gap-1 px-2">
-          <div className="flex min-w-0 items-center gap-1">
-            {agents.length > 1 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={<Button variant="ghost" size="sm" />}
-                  className="h-7 gap-1.5 px-2 text-xs font-normal text-foreground-muted"
-                  aria-label="Agent to address"
-                >
-                  {selected ? (
-                    <>
-                      <AgentAvatar
-                        name={chatAgentLabel(selected)}
-                        iconUrl={selected.iconUrl}
-                        serverId={serverId}
-                        size={14}
-                      />
-                      {chatAgentLabel(selected)}
-                    </>
-                  ) : (
-                    <>
-                      <Users className="size-3.5" />
-                      Room only
-                    </>
-                  )}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  <DropdownMenuRadioGroup
-                    value={selected?.id ?? ROOM_ONLY}
-                    onValueChange={(value) => onSelectAgent(String(value))}
-                  >
-                    {agents.map((agent) => (
-                      <DropdownMenuRadioItem key={agent.id} value={agent.id}>
-                        {chatAgentLabel(agent)}
-                      </DropdownMenuRadioItem>
-                    ))}
-                    <DropdownMenuRadioItem value={ROOM_ONLY}>
-                      Room only (no agent)
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
+        <div className="mt-1.5 flex min-h-7 items-center justify-end gap-1 px-2">
           {session && activity?.client && (
             <Popover
               open={contextOpen}

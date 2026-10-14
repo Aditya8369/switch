@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentConversations, chatRowLabel } from '@renderer/features/chats/agent-conversations';
+import { agentConversations } from '@renderer/features/chats/agent-conversations';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 
@@ -65,30 +65,5 @@ describe('agentConversations', () => {
       { roomId: 'team', roomName: 'team', archived: false, status: 'live', roomRole: null },
       { roomId: 'group', roomName: 'Try me' },
     ]);
-  });
-});
-
-describe('chatRowLabel', () => {
-  it('names a messaging-app channel by its channel, with the app', () => {
-    expect(
-      chatRowLabel(
-        summary({
-          name: 'Acme: general',
-          channelType: 'channel_public',
-          bridgeType: 'slack',
-          channelName: 'general',
-        })
-      )
-    ).toEqual({ name: '#general', platform: 'Slack' });
-  });
-
-  it('names a messaging-app DM without a hash', () => {
-    expect(
-      chatRowLabel(summary({ name: 'DM with Dana', bridgeType: 'discord', channelName: 'Dana' }))
-    ).toEqual({ name: 'Dana', platform: 'Discord' });
-  });
-
-  it('names an internal chat by its own name', () => {
-    expect(chatRowLabel(summary({}))).toEqual({ name: 'Chat with helper', platform: null });
   });
 });

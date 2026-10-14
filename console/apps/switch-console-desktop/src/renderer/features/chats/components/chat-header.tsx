@@ -1,10 +1,7 @@
-import { ExternalLink, MoreVertical, RotateCw } from 'lucide-react';
+import { MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { Fragment, type ReactNode } from 'react';
-import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import type { ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -35,7 +32,7 @@ async function restartSession(activity: AgentActivity): Promise<void> {
   await activity.client?.connect();
 }
 
-/** Who and where: the chat's agents, its name and its channel. */
+/** Who and where: the chat's agent and its name. */
 export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: ChatSummary }) {
   const agent = chat.agents[0] ?? null;
   return (
@@ -48,25 +45,17 @@ export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: Ch
           size={18}
         />
       )}
-      {chat.agents.map((each, index) => (
-        <Fragment key={each.id}>
-          {index > 0 && <span className="text-foreground-muted">,</span>}
-          <span className="truncate text-foreground-muted">{chatAgentLabel(each)}</span>
-        </Fragment>
-      ))}
+      {agent && <span className="truncate text-foreground-muted">{chatAgentLabel(agent)}</span>}
       <span className="text-foreground-passive">/</span>
       <span className="truncate font-medium">{chat.name}</span>
-      {chat.channelName && (
-        <span className="truncate text-foreground-passive">· #{chat.channelName}</span>
-      )}
     </div>
   );
 }
 
 /**
- * Whether an agent is working, the live feed's state, and the chat's menu —
- * its members, the room actions the person may take, and the agent's session
- * for those who can reach it, then any `children` after a separator.
+ * Whether the agent is working, the live feed's state, and the chat's menu —
+ * the chat actions the person may take, and the agent's session for those who
+ * can reach it, then any `children` after a separator.
  */
 export const ChatHeaderControls = observer(function ChatHeaderControls({
   serverId,
@@ -84,7 +73,6 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
   const sessionActivities = activities.filter(
     (activity) => activity.target?.kind === 'session' && activity.target.target !== 'controller'
   );
-  const channelUrl = switchRoomsStore.roomChannelUrl(chat.roomId);
   return (
     <div className="flex shrink-0 items-center gap-3 text-sm">
       {working && (
@@ -115,37 +103,24 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <ChatActionItems actions={chatActions(serverId, chat)} />
-          {channelUrl && (
-            <DropdownMenuItem onClick={() => openRoomChannel(chat.roomId)}>
-              <ExternalLink className="size-4" />
-              Open in {bridgePlatformLabel(chat.bridgeType)}
-            </DropdownMenuItem>
-          )}
           {sessionActivities.length > 0 && <DropdownMenuSeparator />}
-          {sessionActivities.map((activity) => {
-            const label =
-              chat.agents.length > 1
-                ? ` (${chatAgentLabel(chat.agents.find((each) => each.id === activity.agentId) ?? { name: activity.agentId, displayName: null })})`
-                : '';
-            return (
-              <DropdownMenuItem
-                key={`restart:${activity.agentId}`}
-                disabled={activity.working}
-                onClick={() =>
-                  void restartSession(activity).catch((error: unknown) =>
-                    toast({
-                      title: failureText(error, 'Could not restart the session.'),
-                      variant: 'destructive',
-                    })
-                  )
-                }
-              >
-                <RotateCw className="size-4" />
-                {activity.session?.status === 'stopped' ? 'Resume session' : 'Restart session'}
-                {label}
-              </DropdownMenuItem>
-            );
-          })}
+          {sessionActivities.map((activity) => (
+            <DropdownMenuItem
+              key={`restart:${activity.agentId}`}
+              disabled={activity.working}
+              onClick={() =>
+                void restartSession(activity).catch((error: unknown) =>
+                  toast({
+                    title: failureText(error, 'Could not restart the session.'),
+                    variant: 'destructive',
+                  })
+                )
+              }
+            >
+              <RotateCw className="size-4" />
+              {activity.session?.status === 'stopped' ? 'Resume session' : 'Restart session'}
+            </DropdownMenuItem>
+          ))}
           {children && <DropdownMenuSeparator />}
           {children}
         </DropdownMenuContent>
