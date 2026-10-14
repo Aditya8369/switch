@@ -33,6 +33,7 @@ from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
     add_member,
+    add_room,
     build_harness,
     cookies_for,
     enroll_console,
@@ -170,6 +171,82 @@ class TestAccess:
 
         assert refused.status_code == 400
         assert refused.json()["error"]["code"] == "refused_message"
+        assert relays_of(harness).pending_control_relays(controller.controller_id) == 0
+
+    async def test_warm_is_relayed_for_a_room_the_agent_is_in(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            controller, agent_id, stream = await live_agent(harness, client)
+            room_id = await add_room(harness.session_factory, agent_id)
+            asking = asyncio.create_task(
+                ask(client, controller, agent_id, {"warm": {"roomId": room_id}})
+            )
+            ((_, frame),) = await take(stream, 1)
+            await reply(
+                client, controller, frame["relay_id"], {"ok": True, "result": "s"}
+            )
+            response = await asking
+        await stream.aclose()
+
+        assert frame["message"] == {"warm": {"roomId": room_id}}
+        assert response.status_code == 200, response.text
+        assert response.json()["value"] == "s"
+
+    async def test_warm_is_refused_unsent_for_a_room_the_agent_is_not_in(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            controller, agent_id, stream = await live_agent(harness, client)
+            other_room = await add_room(harness.session_factory)
+            outside = await ask(
+                client, controller, agent_id, {"warm": {"roomId": other_room}}
+            )
+            missing = await ask(
+                client, controller, agent_id, {"warm": {"roomId": "no-such-room"}}
+            )
+        await stream.aclose()
+
+        for response in (outside, missing):
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "not_a_member"
+        assert relays_of(harness).pending_control_relays(controller.controller_id) == 0
+
+    async def test_warm_carrying_anything_but_a_room_is_refused_unsent(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            controller, agent_id, stream = await live_agent(harness, client)
+            room_id = await add_room(harness.session_factory, agent_id)
+            refused = [
+                await ask(client, controller, agent_id, message)
+                for message in (
+                    {"warm": {"roomId": room_id, "config": {}}},
+                    {"warm": {}},
+                    {"warm": room_id},
+                    {"warm": {"roomId": room_id}, "ensure": {}},
+                )
+            ]
+        await stream.aclose()
+
+        for response in refused:
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "refused_message"
+        assert relays_of(harness).pending_control_relays(controller.controller_id) == 0
+
+    async def test_another_users_agent_cannot_be_warmed(self, harness: Harness) -> None:
+        async with harness.client() as client:
+            controller, agent_id, stream = await live_agent(harness, client)
+            room_id = await add_room(harness.session_factory, agent_id)
+            stranger = await add_member(harness.session_factory, "mallory")
+            asked = await client.post(
+                f"/gateway/management/agents/{agent_id}/control",
+                json={"message": {"warm": {"roomId": room_id}}, "timeout_ms": 1000},
+                cookies=cookies_for(stranger),
+            )
+        await stream.aclose()
+
+        assert asked.status_code == 404
         assert relays_of(harness).pending_control_relays(controller.controller_id) == 0
 
     async def test_an_oversized_request_is_refused(self, harness: Harness) -> None:

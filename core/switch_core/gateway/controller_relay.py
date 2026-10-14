@@ -4,7 +4,9 @@ controller, and live views of its sessions.
 For an agent whose definition places it on a controller. The request goes out
 on that controller's stream as `agent.control` and the controller answers it
 over the management routes (`ControlRelays`). A session is never started from
-here, and a machine that is offline or asleep is reported, not woken.
+here with a caller's config: `warm` only asks the agent's own watcher to start
+the session a message to one of its rooms would start. A machine that is
+offline or asleep is reported, not woken.
 
 Owner only: an agent that is not the caller's reads as not found, so its
 existence does not leak. Nothing relayed is written to the database or the
@@ -37,11 +39,13 @@ from switch_core.bridges.agent.protocol.control_relay import (
     RelayError,
     classify_message,
     subscribe_message,
+    warm_room_id,
 )
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE_INTERVAL_SECONDS
 from switch_core.db.models import AgentDefinition, User, require_tenant_id
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
 
@@ -266,6 +270,15 @@ def controller_relay_router(relays: ControlRelays) -> APIRouter:
         presence = protocol.connections.controllers
         try:
             classify_message(body.message)
+            room_id = warm_room_id(body.message)
+            if room_id is not None:
+                found = await RoomStore().get_with_membership(
+                    session, room_id, agent_id
+                )
+                if found is None or not found[1]:
+                    raise RelayError(
+                        "not_a_member", "The agent is not a member of that room.", 403
+                    )
             controller_id = control_target(presence, relays, row)
             await session.rollback()
             relay = relays.dispatch(

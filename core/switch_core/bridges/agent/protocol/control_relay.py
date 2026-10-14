@@ -41,7 +41,7 @@ CONSOLE_VIEW_BYTES = 4 * 1024 * 1024
 HEALTH_SUBSCRIPTION = "health"
 
 MUTATING_MESSAGES = frozenset(
-    {"command", "place", "forget", "attachment", "attachmentCancel"}
+    {"command", "place", "forget", "attachment", "attachmentCancel", "warm"}
 )
 REFUSED_MESSAGES = frozenset({"room", "approvals", "ensure"})
 READ_ONLY_MESSAGES = frozenset(
@@ -103,6 +103,8 @@ def classify_message(message: dict[str, Any]) -> MessageKind:
             "refused_message", "A relayed message names exactly one request.", 400
         )
     (name,) = message
+    if name == "warm":
+        warm_room_id(message)
     if name in REFUSED_MESSAGES:
         raise RelayError("refused_message", f"{name!r} cannot be relayed.", 400)
     if name in MUTATING_MESSAGES:
@@ -110,6 +112,27 @@ def classify_message(message: dict[str, Any]) -> MessageKind:
     if name in READ_ONLY_MESSAGES:
         return "read_only"
     raise RelayError("refused_message", f"Unknown relayed message {name!r}.", 400)
+
+
+def warm_room_id(message: dict[str, Any]) -> str | None:
+    """The room a `warm` message names, or None for any other message.
+
+    `warm` starts the session a message to the room would start, so it names
+    the room and nothing else: no config, no session.
+    """
+    if "warm" not in message:
+        return None
+    warm = message["warm"]
+    if (
+        not isinstance(warm, dict)
+        or set(warm) != {"roomId"}
+        or not isinstance(warm["roomId"], str)
+        or not warm["roomId"]
+    ):
+        raise RelayError(
+            "refused_message", "A warm request carries a roomId only.", 400
+        )
+    return warm["roomId"]
 
 
 def frame_size(data: dict[str, Any]) -> int:
