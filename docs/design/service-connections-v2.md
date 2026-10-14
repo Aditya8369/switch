@@ -457,12 +457,21 @@ needs configuring on the server. To roll back, add `atlassian` to
 
 ## Airtable
 
-Built like Atlassian, from a sign-in run against a free Airtable account:
+Built from sign-in runs against free Airtable accounts; the operator's setup
+is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
 
-- Airtable offers dynamic registration, so Core registers a public client,
-  and its MCP server's 401 names the metadata discovery starts from. Airtable
-  matches the loopback port exactly, so the entry reuses Atlassian's five
-  ports; each vendor registers its own client.
+- Each server's operator registers an Airtable OAuth integration and names it
+  in `AIRTABLE_CLIENT_CONFIG_PATH`. Airtable offers dynamic registration, but
+  files the registered client under the Builder Hub of the first person to
+  authorize it. There it stays limited to development, so Airtable refuses
+  everyone else ("cannot be used outside of development"), and deleting it
+  leaves Core with a client Airtable refuses on its own consent page, where
+  Core never sees the error. An integration the operator owns and publishes
+  (support email, privacy policy, terms of service) avoids both.
+- The endpoints are discovered from the MCP server, whose 401 names its
+  metadata. Airtable accepts the client secret in the token request's body,
+  and also takes none (PKCE alone). Airtable matches the loopback port
+  exactly, so the entry reuses Atlassian's five ports.
 - Airtable's consent screen chooses bases, interfaces and workspaces, not
   scopes: a person cannot leave the write scopes out, at sign-in or later. So
   every connection is granted the write level, and what an agent reaches is
@@ -478,14 +487,15 @@ Built like Atlassian, from a sign-in run against a free Airtable account:
   offer, so a connection is named by its account id.
 - Airtable has no revocation endpoint. Disconnecting tells the person to
   remove Switch under Integrations in their Airtable account menu.
-- On Enterprise plans an admin may allowlist third-party clients by client id.
-  Core's registered client differs per deployment; its id is
-  `service_oauth_clients.oauth_client_id` for `airtable`. Not tried: no
-  Enterprise account was at hand.
+- `list_secrets` is account-wide and returns each automation secret's id, name
+  and creation time, never its value.
+- On Enterprise plans an admin may allowlist third-party clients by client id:
+  the operator's integration has one, the same for everyone on the server. Not
+  tried: no Enterprise account was at hand.
 
-To connect: Settings, Connections in Switch Console, then Airtable. Nothing
-needs configuring on the server. To roll back, add `airtable` to
-`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+To connect: Settings, Connections in Switch Console, then Airtable. To roll
+back, add `airtable` to `DISABLED_SERVICES`, unset
+`AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
 
 ## Google Workspace
 

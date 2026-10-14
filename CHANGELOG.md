@@ -48,13 +48,15 @@ version of their own to them without also giving them a release of their own.
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
-  person, through Airtable's MCP server. Nothing is configured on the server:
-  Core registers its own client with Airtable. Airtable offers no read-only
-  sign-in, so every connection can write; changing tables and fields is not
-  asked for, and Airtable refuses it. On Enterprise plans an Airtable admin may
-  have to allowlist the client. Airtable cannot revoke a sign-in, so
-  disconnecting says so and points to Airtable's own settings, as any OAuth
-  service without revocation now does rather than reporting a failed revoke.
+  person, through Airtable's MCP server. Each server's operator registers and
+  publishes an Airtable OAuth integration and names it in
+  `AIRTABLE_CLIENT_CONFIG_PATH` (Helm: `switchCore.airtableClientSecret`; see
+  `docs/old/airtable-setup.md`); without it, Airtable is listed as not set up.
+  Airtable offers no read-only sign-in, so every connection can write;
+  changing tables and fields is not asked for, and Airtable refuses it.
+  Airtable cannot revoke a sign-in, so disconnecting says so and points to
+  Airtable's own settings, as any OAuth service without revocation now does
+  rather than reporting a failed revoke.
 
 ### [0.31.0] - 2026-10-20
 

@@ -176,11 +176,14 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     definition = CATALOG["airtable"].definition
     oauth = definition.auth.oauth
     assert oauth is not None
+    # Airtable keeps a client it registered dynamically in one person's
+    # account, usable by them alone, so each server's operator registers one.
     assert (definition.adapter, oauth.registration, oauth.redirect) == (
         "oauth",
-        "dynamic",
+        "static",
         ["loopback"],
     )
+    assert oauth.client_settings == "AIRTABLE"
     # Airtable matches a loopback redirect's port, so the ports are fixed.
     assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
     # Airtable has no revocation endpoint.

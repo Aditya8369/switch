@@ -1,0 +1,117 @@
+# Airtable on a self-hosted server
+
+Agents can read and update records and comments in their owners' Airtable
+bases once the server's operator registers an Airtable OAuth integration. Each
+person then connects their own Airtable account from Switch Console, choosing
+which bases and workspaces to share, and turns Airtable on for the agents they
+choose. How it works is in
+[`docs/design/service-connections-v2.md`](../design/service-connections-v2.md),
+under Airtable.
+
+Without the integration, Airtable is listed on the server as not set up.
+
+## What you need
+
+- An **Airtable account** to own the integration. Use one that belongs to the
+  organization rather than to one person: whoever owns the integration can
+  edit or delete it, and deleting it stops every connection on the server.
+- A **support email, privacy policy URL and terms of service URL** to publish
+  with it. Until all three are set, Airtable keeps the integration "limited to
+  development use": only its owner can authorize it, and anyone else is
+  refused with "This OAuth application cannot be used outside of
+  development."
+
+No public address is needed: sign-ins return to Switch Console on the
+person's own computer.
+
+## Register the integration
+
+In Airtable, open **Builder Hub**, then **OAuth integrations**, then
+**Register new OAuth integration**:
+
+1. **Name** it as people should see it on Airtable's consent page, for example
+   "Switch".
+2. **OAuth redirect URLs**: all five, exactly. Airtable matches the port.
+   ```
+   http://127.0.0.1:39231/switch-services/callback
+   http://127.0.0.1:39232/switch-services/callback
+   http://127.0.0.1:39233/switch-services/callback
+   http://127.0.0.1:39234/switch-services/callback
+   http://127.0.0.1:39235/switch-services/callback
+   ```
+3. **Scopes**: exactly these six.
+   - `data.records:read`, `data.records:write`
+   - `data.recordComments:read`, `data.recordComments:write`
+   - `schema.bases:read`
+   - `workspacesAndBases:read`
+
+   Leave out `schema.bases:write`: without it Airtable refuses agents'
+   attempts to create or change tables and fields.
+4. **Generate a client secret**.
+5. **Support information**: fill in the support email, privacy policy URL and
+   terms of service URL, so that people other than the owner can authorize it.
+
+## Give Switch the client
+
+Write the integration's client id and secret to a JSON file on the server,
+readable by switch-core alone and never committed anywhere:
+
+```json
+{"client_id": "<client id>", "client_secret": "<client secret>"}
+```
+
+The file must hold exactly those two keys. Then point switch-core at it with
+an absolute path and restart it:
+
+```bash
+AIRTABLE_CLIENT_CONFIG_PATH=/etc/switch/airtable-client.json
+```
+
+With the Helm chart, put `client.json` in a Secret and name it in
+`switchCore.airtableClientSecret`.
+
+If the variable is set but the file cannot be read or holds anything else,
+switch-core does not start, and says why.
+
+## Airtable Enterprise
+
+An Enterprise admin may restrict third-party integrations to an allowlist, or
+block API access to the organization's bases. Give the admin the
+integration's client id to allowlist under Admin Panel, Settings,
+Integrations & development.
+
+## What people do
+
+1. In Switch Console: Settings, Connections, Airtable, Connect. The browser
+   opens Airtable's consent page and comes back to Switch Console.
+2. On Airtable's page the person picks everything they can reach, or chosen
+   bases, interfaces and workspaces. They cannot leave out the write
+   permissions, so every connection can write; what an agent reaches is
+   narrowed by the bases shared and by the person's own role in each base.
+   They can change the bases later under Integrations in their Airtable
+   account menu.
+3. On an agent's page (in Switch Console or the dashboard), the agent's owner
+   turns Airtable on. The agent acts as its owner: records and comments it
+   creates, changes or deletes show in Airtable as done by them.
+
+Airtable has no way for Switch to revoke a sign-in. Disconnecting in Switch
+forgets it and says so; to end it at Airtable too, the person removes the
+integration under Integrations in their Airtable account menu.
+
+## Switching it off
+
+Any of these lists Airtable as unavailable, with its reason, and stops agents'
+next token requests:
+
+- add it to `DISABLED_SERVICES`, e.g.
+  `DISABLED_SERVICES='{"airtable": "Paused while we review access."}'`;
+- unset `AIRTABLE_CLIENT_CONFIG_PATH`.
+
+## Limits worth knowing
+
+- Access tokens last an hour. A sign-in unused for 60 days lapses, and shows
+  as needing reconnection under Connections.
+- A granted agent's token is its owner's own, shared by every agent they
+  grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
+  its sessions within an hour; disconnecting stops every agent at once.
+- Development bases refuse every call from Airtable's MCP server.

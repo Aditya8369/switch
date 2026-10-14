@@ -10,9 +10,14 @@ auth:
   # stops working at once.
   refresh: rotating
   oauth:
-    # Airtable offers dynamic registration, so Core registers its client. On
-    # Enterprise plans an admin may have to allowlist that client id.
-    registration: dynamic
+    # Each server's operator registers an Airtable OAuth integration and names
+    # its settings in AIRTABLE_CLIENT_CONFIG_PATH. Airtable offers dynamic
+    # registration too, but files the client under the Builder Hub of the
+    # first person to authorize it, where it stays limited to development
+    # (only they can authorize it) and they can delete it from under everyone.
+    # On Enterprise plans an admin may have to allowlist the client id.
+    registration: static
+    client_settings: AIRTABLE
     # Airtable matches a loopback redirect exactly, port included.
     redirect: [loopback]
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
