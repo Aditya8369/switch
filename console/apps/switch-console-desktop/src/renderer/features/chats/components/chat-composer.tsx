@@ -1,14 +1,5 @@
 import type { Command } from '@switch-console/shared/session-v1';
-import {
-  ChevronDown,
-  Loader2,
-  Minimize2,
-  Paperclip,
-  RotateCcw,
-  SlidersHorizontal,
-  Users,
-  X,
-} from 'lucide-react';
+import { ChevronDown, Loader2, Minimize2, Plus, RotateCcw, Users, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -23,6 +14,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { cn } from '@renderer/utils/utils';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
 import { type ContextMeter, contextBlocker, contextMeter, isCompacting } from '../chat-context';
@@ -34,10 +26,8 @@ import {
   PromptInput,
   PromptInputAttachments,
   PromptInputButton,
-  PromptInputFooter,
   PromptInputSubmit,
   PromptInputTextarea,
-  PromptInputTools,
 } from '../ui/prompt-input';
 
 async function toBase64(file: File): Promise<string> {
@@ -230,192 +220,198 @@ export const ChatComposer = observer(function ChatComposer({
           addFiles(Array.from(event.clipboardData.files));
         }}
       >
-        <PromptInput onSubmit={send}>
+        <PromptInput onSubmit={send} className="rounded-3xl">
           <PromptInputAttachments
             items={files.map(({ id, file }) => ({ id, name: file.name, mediaType: file.type }))}
             onRemove={(id) => setFiles((current) => current.filter((each) => each.id !== id))}
           />
-          <PromptInputTextarea
-            aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the room'}`}
-            placeholder={
-              disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the room'}...`
-            }
-            value={draft}
-            disabled={disabled !== null}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <PromptInputFooter>
-            <PromptInputTools>
-              {agents.length > 1 && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={<Button variant="ghost" size="sm" />}
-                    className="h-7 gap-1.5 px-2 text-xs font-normal text-foreground-muted"
-                    aria-label="Agent to address"
-                  >
-                    {selected ? (
-                      <>
-                        <AgentAvatar
-                          name={chatAgentLabel(selected)}
-                          iconUrl={selected.iconUrl}
-                          size={14}
-                        />
-                        {chatAgentLabel(selected)}
-                      </>
-                    ) : (
-                      <>
-                        <Users className="size-3.5" />
-                        Room only
-                      </>
-                    )}
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <DropdownMenuRadioGroup
-                      value={selected?.id ?? ROOM_ONLY}
-                      onValueChange={(value) => onSelectAgent(String(value))}
-                    >
-                      {agents.map((agent) => (
-                        <DropdownMenuRadioItem key={agent.id} value={agent.id}>
-                          {chatAgentLabel(agent)}
-                        </DropdownMenuRadioItem>
-                      ))}
-                      <DropdownMenuRadioItem value={ROOM_ONLY}>
-                        Room only (no agent)
-                      </DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-              {session && activity?.client && (
-                <Popover
-                  open={contextOpen}
-                  onOpenChange={(open) => {
-                    setContextOpen(open);
-                    setConfirmReset(false);
-                  }}
-                >
-                  <PopoverTrigger
-                    render={<Button variant="ghost" size="sm" />}
-                    className="h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted"
-                    aria-label="Context actions"
-                  >
-                    {compacting ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : meter ? (
-                      <ContextDonut meter={meter} />
-                    ) : (
-                      <SlidersHorizontal className="size-3.5" />
-                    )}
-                    {compacting ? 'Compacting…' : 'Context'}
-                    <ChevronDown className="size-3" />
-                  </PopoverTrigger>
-                  <PopoverContent
-                    side="top"
-                    align="start"
-                    className="w-80 max-w-[calc(100vw-2rem)] gap-2 p-3"
-                  >
-                    <PopoverTitle>
-                      {confirmReset ? 'Start a fresh conversation?' : 'Conversation context'}
-                    </PopoverTitle>
-                    {confirmReset ? (
-                      <>
-                        <p className="text-xs text-foreground-muted">
-                          The agent starts with a fresh context. Earlier messages stay in the
-                          transcript as history.
-                        </p>
-                        <div className="flex justify-end gap-2 pt-2">
-                          <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
-                            Cancel
-                          </Button>
-                          <Button
-                            size="sm"
-                            disabled={contextBlocked !== null || !session.capabilities.reset}
-                            onClick={() => {
-                              setContextOpen(false);
-                              setConfirmReset(false);
-                              void execute({ type: 'session.reset' });
-                            }}
-                          >
-                            Start fresh
-                          </Button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <Button
-                          variant="ghost"
-                          disabled={contextBlocked !== null || !session.capabilities.compact}
-                          className="h-auto justify-start gap-3 px-2 py-2 text-left"
-                          onClick={() => {
-                            setContextOpen(false);
-                            void execute({ type: 'session.compact' });
-                          }}
-                        >
-                          <Minimize2 className="size-4 shrink-0" />
-                          <span>
-                            <span className="block">Compact context</span>
-                            <span className="block text-xs font-normal text-foreground-muted">
-                              {session.capabilities.compact
-                                ? 'Free up space in this conversation'
-                                : 'Native compaction is unavailable'}
-                            </span>
-                          </span>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={contextBlocked !== null || !session.capabilities.reset}
-                          className="h-auto justify-start gap-3 px-2 py-2 text-left"
-                          onClick={() => setConfirmReset(true)}
-                        >
-                          <RotateCcw className="size-4 shrink-0" />
-                          <span>
-                            <span className="block">Reset context...</span>
-                            <span className="block text-xs font-normal text-foreground-muted">
-                              {session.capabilities.reset
-                                ? 'Start fresh and keep transcript history'
-                                : 'Reset is unavailable for this session'}
-                            </span>
-                          </span>
-                        </Button>
-                        {contextBlocked && (
-                          <p className="text-xs text-foreground-muted">{contextBlocked}</p>
-                        )}
-                        <p className="border-t border-border pt-2 text-xs text-foreground-muted">
-                          Skills and MCP load from the execution host. Restart the host while idle
-                          after changing their configuration.
-                        </p>
-                      </>
-                    )}
-                  </PopoverContent>
-                </Popover>
-              )}
-              <PromptInputButton
-                tooltip="Attach files"
-                disabled={disabled !== null}
-                onClick={() => picker.current?.click()}
-              >
-                <Paperclip className="size-3.5" />
-              </PromptInputButton>
-              <input
-                ref={picker}
-                type="file"
-                multiple
-                className="hidden"
-                aria-label="Choose attachments"
-                onChange={(event) => {
-                  addFiles(Array.from(event.target.files ?? []));
-                  event.target.value = '';
-                }}
-              />
-            </PromptInputTools>
+          <div className="flex items-end gap-1 p-1.5">
+            <PromptInputButton
+              tooltip="Attach files"
+              className="size-8 rounded-full"
+              disabled={disabled !== null}
+              onClick={() => picker.current?.click()}
+            >
+              <Plus className="size-4" />
+            </PromptInputButton>
+            <input
+              ref={picker}
+              type="file"
+              multiple
+              className="hidden"
+              aria-label="Choose attachments"
+              onChange={(event) => {
+                addFiles(Array.from(event.target.files ?? []));
+                event.target.value = '';
+              }}
+            />
+            <PromptInputTextarea
+              className="min-h-0 px-1 py-1.5"
+              aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the room'}`}
+              placeholder={
+                disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the room'}...`
+              }
+              value={draft}
+              disabled={disabled !== null}
+              onChange={(event) => setDraft(event.target.value)}
+            />
             <PromptInputSubmit
               status={status}
+              className="h-8 min-w-8 rounded-full"
               onStop={() => void stop()}
               stopDisabledReason={blocker}
               disabled={disabled !== null || (!showStop && !draft.trim() && !files.length)}
             />
-          </PromptInputFooter>
+          </div>
         </PromptInput>
+        <div className="mt-1.5 flex min-h-7 items-center justify-between gap-1 px-2">
+          <div className="flex min-w-0 items-center gap-1">
+            {agents.length > 1 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={<Button variant="ghost" size="sm" />}
+                  className="h-7 gap-1.5 px-2 text-xs font-normal text-foreground-muted"
+                  aria-label="Agent to address"
+                >
+                  {selected ? (
+                    <>
+                      <AgentAvatar
+                        name={chatAgentLabel(selected)}
+                        iconUrl={selected.iconUrl}
+                        size={14}
+                      />
+                      {chatAgentLabel(selected)}
+                    </>
+                  ) : (
+                    <>
+                      <Users className="size-3.5" />
+                      Room only
+                    </>
+                  )}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuRadioGroup
+                    value={selected?.id ?? ROOM_ONLY}
+                    onValueChange={(value) => onSelectAgent(String(value))}
+                  >
+                    {agents.map((agent) => (
+                      <DropdownMenuRadioItem key={agent.id} value={agent.id}>
+                        {chatAgentLabel(agent)}
+                      </DropdownMenuRadioItem>
+                    ))}
+                    <DropdownMenuRadioItem value={ROOM_ONLY}>
+                      Room only (no agent)
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
+          {session && activity?.client && (
+            <Popover
+              open={contextOpen}
+              onOpenChange={(open) => {
+                setContextOpen(open);
+                setConfirmReset(false);
+              }}
+            >
+              <PopoverTrigger
+                render={<Button variant="ghost" size="sm" />}
+                className={cn(
+                  'h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted',
+                  meter?.warning && 'text-foreground-warning'
+                )}
+                aria-label="Context actions"
+              >
+                {compacting ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  meter && <ContextDonut meter={meter} />
+                )}
+                {compacting ? 'Compacting…' : meter ? `Context ${meter.used}` : 'Context'}
+                <ChevronDown className="size-3" />
+              </PopoverTrigger>
+              <PopoverContent
+                side="top"
+                align="end"
+                className="w-80 max-w-[calc(100vw-2rem)] gap-2 p-3"
+              >
+                <PopoverTitle>
+                  {confirmReset ? 'Start a fresh conversation?' : 'Conversation context'}
+                </PopoverTitle>
+                {confirmReset ? (
+                  <>
+                    <p className="text-xs text-foreground-muted">
+                      The agent starts with a fresh context. Earlier messages stay in the transcript
+                      as history.
+                    </p>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={contextBlocked !== null || !session.capabilities.reset}
+                        onClick={() => {
+                          setContextOpen(false);
+                          setConfirmReset(false);
+                          void execute({ type: 'session.reset' });
+                        }}
+                      >
+                        Start fresh
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant="ghost"
+                      disabled={contextBlocked !== null || !session.capabilities.compact}
+                      className="h-auto justify-start gap-3 px-2 py-2 text-left"
+                      onClick={() => {
+                        setContextOpen(false);
+                        void execute({ type: 'session.compact' });
+                      }}
+                    >
+                      <Minimize2 className="size-4 shrink-0" />
+                      <span>
+                        <span className="block">Compact context</span>
+                        <span className="block text-xs font-normal text-foreground-muted">
+                          {session.capabilities.compact
+                            ? 'Free up space in this conversation'
+                            : 'Native compaction is unavailable'}
+                        </span>
+                      </span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={contextBlocked !== null || !session.capabilities.reset}
+                      className="h-auto justify-start gap-3 px-2 py-2 text-left"
+                      onClick={() => setConfirmReset(true)}
+                    >
+                      <RotateCcw className="size-4 shrink-0" />
+                      <span>
+                        <span className="block">Reset context...</span>
+                        <span className="block text-xs font-normal text-foreground-muted">
+                          {session.capabilities.reset
+                            ? 'Start fresh and keep transcript history'
+                            : 'Reset is unavailable for this session'}
+                        </span>
+                      </span>
+                    </Button>
+                    {contextBlocked && (
+                      <p className="text-xs text-foreground-muted">{contextBlocked}</p>
+                    )}
+                    <p className="border-t border-border pt-2 text-xs text-foreground-muted">
+                      Skills and MCP load from the execution host. Restart the host while idle after
+                      changing their configuration.
+                    </p>
+                  </>
+                )}
+              </PopoverContent>
+            </Popover>
+          )}
+        </div>
       </div>
     </div>
   );

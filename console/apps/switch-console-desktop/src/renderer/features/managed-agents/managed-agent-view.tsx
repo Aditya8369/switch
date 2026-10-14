@@ -53,20 +53,10 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId) ?? null;
   const server = switchServersStore.servers.find((s) => s.id === params.serverId) ?? null;
   const label = agent ? managedAgentLabel(agent) : params.name;
-  const { navigate } = useNavigate();
   const tabbed = useFeatureFlags(params.serverId).agent_chats;
   const breadcrumb = (
     <TitlebarBreadcrumb
       crumbs={[
-        ...(tabbed
-          ? [
-              {
-                key: 'agents',
-                label: 'Your Agents',
-                onClick: () => navigate('serverAgents', { serverId: params.serverId }),
-              },
-            ]
-          : []),
         {
           key: 'agent',
           icon: (
@@ -85,6 +75,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   );
   return (
     <Titlebar
+      className={tabbed ? 'border-b border-border' : undefined}
       leftSlot={
         tabbed ? (
           <div className="flex min-w-0 items-center gap-3">

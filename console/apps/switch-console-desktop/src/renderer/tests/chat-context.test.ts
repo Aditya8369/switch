@@ -39,6 +39,7 @@ describe('contextMeter', () => {
   it('shows used against the window', () => {
     expect(contextMeter({ usedTokens: 134_000, windowTokens: 1_000_000, updatedAt })).toEqual({
       label: 'Context 134k / 1M (13%)',
+      used: '134k',
       fraction: 0.134,
       warning: false,
     });
@@ -47,6 +48,7 @@ describe('contextMeter', () => {
   it('shows only what is used when the window is unknown', () => {
     expect(contextMeter({ usedTokens: 134_000, windowTokens: null, updatedAt })).toEqual({
       label: 'Context 134k used',
+      used: '134k',
       fraction: null,
       warning: false,
     });
