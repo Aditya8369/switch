@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
 import type { TemplateRoom } from '@main/core/room-templates/controller';
 import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -201,10 +202,12 @@ export function AgentSlotCard({
   const existingName = slot.existingName;
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
   const shownName = existing ? existingName || 'Pick an agent' : (slot.createdName ?? wantedName);
+  const serverId =
+    lists.workspaceId === null ? null : workspacesStore.serverIdFor(lists.workspaceId);
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
-        <AgentAvatar name={shownName || 'agent'} iconUrl={null} size={28} />
+        <AgentAvatar name={shownName || 'agent'} iconUrl={null} serverId={serverId} size={28} />
         <div className="min-w-0 flex-1">
           <div
             className={cn(

@@ -1182,21 +1182,82 @@ export async function updateCanManageAgents(
   });
 }
 
+/** Whether a server generates and forwards third-party avatar URLs — DiceBear
+ * for an agent with no icon, `ui-avatars.com` for a relayed platform user — or
+ * has turned that off (`THIRD_PARTY_AVATARS_ENABLED` on the server). */
+export type AvatarSettings = { thirdPartyAvatarsEnabled: boolean };
+
+/** How long a server's answer to `GET /agents/avatar-settings` is reused. The
+ * avatars, the picker, the new-agent default and the icon backfill all ask
+ * within a few seconds of a workspace loading, and this answers them with one
+ * request. It is not kept for the session: the setting changes when the
+ * server restarts, which a running Console outlives, and an operator who
+ * turns it off should not wait for every Console to restart. */
+const AVATAR_SETTINGS_TTL_MS = 60_000;
+
+/** Evicted on failure, so a transient network error is asked again rather
+ * than answered from the cache. */
+const avatarSettingsCache = new Map<string, { at: number; request: Promise<AvatarSettings> }>();
+
+/**
+ * Whether `server` allows a third-party avatar URL to be generated or sent
+ * anywhere (`GET /agents/avatar-settings`).
+ *
+ * A 404 is a server predating the setting: every such server always generated
+ * and forwarded these URLs, so absence reads as enabled — the same behavior as
+ * before the setting existed, and the same pattern as every other
+ * predates-the-capability field in this file. Any other failure propagates.
+ */
+export function fetchAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  const cached = avatarSettingsCache.get(server.id);
+  if (cached && Date.now() - cached.at < AVATAR_SETTINGS_TTL_MS) return cached.request;
+  const request: Promise<AvatarSettings> = requestAvatarSettings(server).catch((cause) => {
+    if (avatarSettingsCache.get(server.id)?.request === request) {
+      avatarSettingsCache.delete(server.id);
+    }
+    throw cause;
+  });
+  avatarSettingsCache.set(server.id, { at: Date.now(), request });
+  return request;
+}
+
+async function requestAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/agents/avatar-settings', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { thirdPartyAvatarsEnabled: true };
+    }
+    throw cause;
+  }
+  const json = (await res.json()) as { third_party_avatars_enabled: boolean };
+  return { thirdPartyAvatarsEnabled: json.third_party_avatars_enabled };
+}
+
 /**
  * One page of the icons the server generates for an agent called `name`
  * (`GET /agents/icon-choices`): page 0 leads with the one an agent of that
- * name gets when nobody picks an icon.
+ * name gets when nobody picks an icon. `choices` is empty on a server that
+ * disables third-party avatars — callers that already know that from
+ * {@link fetchAvatarSettings} should not call this at all, but the server
+ * answers consistently either way.
  */
 export async function fetchAgentIconChoices(
   server: SwitchServer,
   name: string,
   page: number
-): Promise<string[]> {
+): Promise<{ choices: string[]; thirdPartyAvatarsEnabled: boolean }> {
   const query = new URLSearchParams({ name, page: String(page) });
   const res = await gatewayFetch(server, `/agents/icon-choices?${query.toString()}`, {
     authenticated: true,
   });
-  return ((await res.json()) as { choices: string[] }).choices;
+  const json = (await res.json()) as { choices: string[]; third_party_avatars_enabled?: boolean };
+  // Absent on a server predating the setting, which always generated them.
+  return {
+    choices: json.choices,
+    thirdPartyAvatarsEnabled: json.third_party_avatars_enabled ?? true,
+  };
 }
 
 /**
@@ -3135,6 +3196,11 @@ const serviceFlows = (service: string) =>
  * Begin signing in to `service` through Switch's generic OAuth flow. The URL
  * the browser is sent to is checked: Core's own authorize step on this server,
  * or the vendor's page returning to this Console's listener with this state.
+ *
+ * Core's authorize step is at its public address (`GATEWAY_PUBLIC_URL`), the
+ * host the vendor returns the browser to and whose cookie ties that return to
+ * the browser. A server that serves its gateway and its API on two hosts has it
+ * on the API's, so either of the server's own origins is accepted, over HTTPS.
  */
 export async function startServiceConnection(
   server: SwitchServer,
@@ -3158,7 +3224,8 @@ export async function startServiceConnection(
     !url.username &&
     !url.password &&
     (value.mode === 'core'
-      ? url.origin === new URL(server.gatewayUrl).origin &&
+      ? url.protocol === 'https:' &&
+        [server.gatewayUrl, server.apiUrl].some((own) => new URL(own).origin === url.origin) &&
         url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
         url.searchParams.get('state') === value.id
       : url.protocol === 'https:' &&
