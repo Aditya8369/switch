@@ -1135,6 +1135,52 @@ async def test_an_agent_owner_is_not_joined_to_bridged_rooms_holding_their_agent
     assert await _grants(chats) == 0
 
 
+async def _grant_as_before(chats: _Harness, user: User, room_id: str) -> None:
+    """An owner membership made by the earlier, wider rule."""
+    client = await chats.service.member_actor(TENANT, user)
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        session.add(ChatOwnerGrant(tenant_id=TENANT, user_id=user.id, room_id=room_id))
+        await session.commit()
+    await chats.service._join(TENANT, room, client)
+
+
+async def _in_room(chats: _Harness, user: User, room_id: str) -> bool:
+    async with chats.factory() as session:
+        client = await chats.service.member_client(session, user.id)
+        assert client is not None
+        return await chats.service._is_in_room(session, client.id, room_id)
+
+
+async def test_an_owner_grant_on_a_bridged_room_is_taken_back(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    channel = await _room(chats, [agent], name="general", bridge="slack")
+    await _grant_as_before(chats, chats.alice, channel)
+    assert await _in_room(chats, chats.alice, channel)
+
+    assert await _listed(chats, chats.alice) == {}
+    assert not await _in_room(chats, chats.alice, channel)
+    assert await _reads(chats, chats.alice, channel) == 403
+    assert await _grants(chats) == 0
+
+
+async def test_with_agent_chats_off_owner_grants_are_taken_back(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await _left_chat(chats, chats.alice)
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    assert await _grants(chats) == 1
+
+    chats.service.agent_chats_enabled = False
+    assert await _listed(chats, chats.alice) == {}
+    assert not await _in_room(chats, chats.alice, room_id)
+    assert await _grants(chats) == 0
+
+
 async def test_an_agent_owner_is_not_joined_to_someone_elses_chat(
     chats: _Harness,
 ) -> None:

@@ -29,7 +29,16 @@ from dataclasses import dataclass
 from typing import Literal
 
 import markdown
-from sqlalchemy import ColumnElement, and_, delete, exists, false, select, update
+from sqlalchemy import (
+    ColumnElement,
+    and_,
+    delete,
+    exists,
+    false,
+    func,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -297,16 +306,16 @@ class ChatService:
 
     async def sync_owned_rooms(self, tenant_id: str, user_id: str) -> None:
         """Put the user in every live chat they started that holds an agent
-        they own, and take back each membership held only for that once they
-        no longer own an agent there. Does nothing with `agent_chats` off.
+        they own, and take back each membership held only for that once it no
+        longer satisfies that rule. With `agent_chats` off nothing satisfies
+        it: no one joins, and every such membership is taken back.
 
         Such a membership is marked by a `ChatOwnerGrant`; being invited,
         creating the chat or joining as a manager removes the mark, and the
         membership then stays when the agent goes. Cheap when nothing changed:
         two queries.
         """
-        if not self.agent_chats_enabled:
-            return
+        kept = _owner_joins(user_id) if self.agent_chats_enabled else false()
         async with self._lock("owned", tenant_id, user_id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 if not await self.has_tenant_role(session, tenant_id, user_id):
@@ -327,7 +336,7 @@ class ChatService:
                             .where(
                                 Room.tenant_id == tenant_id,
                                 Room.archived_at.is_(None),
-                                _owner_joins(user_id),
+                                kept,
                                 ~joined,
                             )
                             .order_by(Room.created_at)
@@ -343,7 +352,8 @@ class ChatService:
                             .join(ChatOwnerGrant, ChatOwnerGrant.room_id == Room.id)
                             .where(
                                 ChatOwnerGrant.user_id == user_id,
-                                ~_owns_agent_in_room(user_id),
+                                # A room with no creator makes `kept` NULL, not false.
+                                ~func.coalesce(kept, false()),
                             )
                         )
                     )

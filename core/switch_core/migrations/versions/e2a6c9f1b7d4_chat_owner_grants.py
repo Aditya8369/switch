@@ -1,8 +1,9 @@
 """chat owner grants: memberships held only through owning an agent in the room
 
-A person who owns an agent in a room is put in it as a chat member; this
-table marks the memberships that exist for that reason alone, so they can be
-taken back when the person no longer owns an agent there.
+With the `agent_chats` feature flag on, a person is put as a chat member in
+each chat they started through the chats API that holds an agent they own.
+This table marks the memberships that exist for that reason alone, so they
+can be taken back once that no longer holds, or once the flag is off.
 
 The row-level-security DDL is a verbatim copy of `switch_core/db/rls_ddl.py`
 as it stood when this migration was written, copied rather than imported for
