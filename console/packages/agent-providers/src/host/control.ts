@@ -66,6 +66,8 @@ export const controlMessageSchema = z.union([
   /** Console's "Reconnect to room": move a room's messages to this session. */
   z.object({ place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }) }),
   z.object({ forget: z.string().min(1) }),
+  /** Start the session a message to this room would start, before the message is sent. */
+  z.object({ warm: z.object({ roomId: z.string().min(1) }) }),
   /**
    * A session's buffered reasoning, from its host. It rides on a `health`
    * message because a sidecar that predates it closes the connection on any
@@ -205,6 +207,7 @@ export async function handleControlMessage(
   }
   if ('place' in message) return watcher.place(message.place.sessionId, message.place.roomId);
   if ('forget' in message) return watcher.forget(message.forget);
+  if ('warm' in message) return watcher.warm(message.warm.roomId);
   if ('reasoning' in message)
     return links.reasoning(
       sharedSessionRoot(message.reasoning.sessionId),
@@ -562,6 +565,14 @@ export class ControlClient {
   /** Tell the sidecar's room watcher a session was deleted. */
   async forget(sessionId: string): Promise<void> {
     await this.call({ forget: sessionId });
+  }
+
+  /** Start the session a message to this room would start, through the sidecar's room watcher. */
+  async warm(roomId: string): Promise<string | null> {
+    return z
+      .string()
+      .nullable()
+      .parse(await this.call({ warm: { roomId } }));
   }
 
   /** The sidecar's room watcher: its connection state and placements. */

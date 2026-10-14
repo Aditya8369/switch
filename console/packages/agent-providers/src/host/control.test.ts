@@ -204,7 +204,7 @@ it('never reads or commands a session of another agent', async () => {
   child.emit('message', { kind: 'ready' });
   const placed = vi.fn();
   const forgot = vi.fn();
-  const unbind = watcher.bind({ place: placed, forget: forgot });
+  const unbind = watcher.bind({ place: placed, forget: forgot, warm: vi.fn() });
 
   const console = client();
   await console.ready;
@@ -249,7 +249,7 @@ it('never reads or commands a session of another agent', async () => {
 it('forgets a session with no config and waits on one until its config is saved', async () => {
   const { base, links, stop, serving, client, watcher } = await started();
   const forgot = vi.fn();
-  const unbind = watcher.bind({ place: vi.fn(), forget: forgot });
+  const unbind = watcher.bind({ place: vi.fn(), forget: forgot, warm: vi.fn() });
   const console = client();
   await console.ready;
 
@@ -317,9 +317,12 @@ it('moves a room to a session through the watcher, and says why when it cannot',
     displaced: 'other',
   }));
   const forgot = vi.fn(async () => {});
-  const unbind = watcher.bind({ place: placed, forget: forgot });
+  const warmed = vi.fn(async (roomId: string) => `session-for-${roomId}`);
+  const unbind = watcher.bind({ place: placed, forget: forgot, warm: warmed });
   await console.forget('gone');
   expect(forgot).toHaveBeenCalledWith('gone');
+  expect(await console.warm('room')).toBe('session-for-room');
+  expect(warmed).toHaveBeenCalledWith('room');
   expect(await console.place('session', 'room')).toEqual({
     sessionId: 'session',
     roomId: 'room',

@@ -246,6 +246,14 @@ export class RelayClient {
     return snapshotSchema.parse(await this.paged({ journal: sessionId }));
   }
 
+  /** Start the session a message to this room would start, through the agent's room watcher. */
+  async warm(roomId: string): Promise<string | null> {
+    return z
+      .string()
+      .nullable()
+      .parse(await this.call({ warm: { roomId } }));
+  }
+
   /** The agent's room watcher: its connection state and placements. */
   async health(): Promise<WatcherHealth> {
     return watcherHealthSchema.parse(await this.call({ health: true }));

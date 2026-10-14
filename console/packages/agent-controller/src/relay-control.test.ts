@@ -531,6 +531,20 @@ describe('relaying to an agent host in the controller’s process', () => {
     expect(host.dispatched).toHaveLength(1);
   });
 
+  it('warms a room through the agent’s own watcher, and refuses an agent not assigned here', async () => {
+    const host = await inProcess();
+    const warm = vi.fn(async (roomId: string) => `session-for-${roomId}`);
+    host.watcher.bind({ place: vi.fn(), forget: vi.fn(), warm });
+    expect(await relay(host.control, { warm: { roomId: 'r' } })).toMatchObject({
+      ok: true,
+      result: 'session-for-r',
+    });
+    expect(warm).toHaveBeenCalledWith('r');
+    const foreign = relayControl({ assigned: () => false });
+    expect(failed(await relay(foreign, { warm: { roomId: 'r' } }))).toBe('not_assigned');
+    expect(warm).toHaveBeenCalledTimes(1);
+  });
+
   it('falls back to the control port once the agent host stops', async () => {
     const host = await inProcess();
     await relay(host.control, { health: true });
