@@ -16,19 +16,6 @@ function key(workspaceId: string, switchAgentId: string): string {
 }
 
 /**
- * Renderer cache of per-agent room membership, queried live from the gateway
- * (the server is the source of truth — we do not mirror rooms into SQLite).
- * Entries are cached in memory and re-fetched on demand or on window focus, so
- * the "connect to room" picker and the room-focused sidebar grouping render the
- * last-known set instantly while a refresh runs.
- *
- * Everything here is keyed by workspace, because that is what a room belongs
- * to: one server can host several, and the same server answers with a different
- * set of rooms in each. Where a fact is about the gateway rather than about the
- * rooms — whether it is reachable, who is signed in, what its web app's URL is
- * — the server is resolved from the workspace and asked for that alone.
- */
-/**
  * The messaging-app values worth offering as a room filter for these rooms:
  * the bridge types actually in use, plus the unbridged sentinel when some room
  * has no messaging app. Offering a platform with no rooms behind it would be a
@@ -47,6 +34,19 @@ export function bridgeFilterValues(rooms: readonly RemoteRoomSummary[]): string[
   });
 }
 
+/**
+ * Renderer cache of per-agent room membership, queried live from the gateway
+ * (the server is the source of truth — we do not mirror rooms into SQLite).
+ * Entries are cached in memory and re-fetched on demand or on window focus, so
+ * the "connect to room" picker and the room-focused sidebar grouping render the
+ * last-known set instantly while a refresh runs.
+ *
+ * Everything here is keyed by workspace, because that is what a room belongs
+ * to: one server can host several, and the same server answers with a different
+ * set of rooms in each. Where a fact is about the gateway rather than about the
+ * rooms — whether it is reachable, who is signed in, what its web app's URL is
+ * — the server is resolved from the workspace and asked for that alone.
+ */
 export class SwitchRoomsStore {
   /** Membership per `${workspaceId}:${switchAgentId}`. */
   private readonly roomsByAgent = new Map<string, RemoteAgentRoom[]>();
