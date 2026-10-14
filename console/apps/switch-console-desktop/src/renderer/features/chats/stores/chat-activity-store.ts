@@ -304,6 +304,9 @@ export class AgentActivities {
   private readonly watches = new Map<string, () => void>();
   /** Rooms whose snapshot is due, read once per room however many agents asked. */
   private readonly due = new Set<string>();
+  /** The newest snapshot read of each room; an older or dropped read's answer is ignored. */
+  private readonly latestLoad = new Map<string, number>();
+  private loads = 0;
 
   constructor(private readonly api: ActivityApi) {}
 
@@ -340,17 +343,23 @@ export class AgentActivities {
   }
 
   async loadRoom(serverId: string, roomId: string): Promise<void> {
+    const key = JSON.stringify([serverId, roomId]);
+    const load = ++this.loads;
+    this.latestLoad.set(key, load);
+    const current = () => this.latestLoad.get(key) === load;
     const marks = new Map(
       this.inRoom(serverId, roomId).map((activity) => [activity, activity.mark])
     );
     try {
       const snapshot = await this.api.roomActivity(serverId, roomId);
+      if (!current()) return;
       runInAction(() => {
         // An activity acquired while the snapshot was read held nothing older than it.
         for (const activity of this.inRoom(serverId, roomId))
           activity.applySnapshot(snapshot, marks.get(activity) ?? 0);
       });
     } catch (error) {
+      if (!current()) return;
       const message = failureText(error, "The agents' activity in this chat could not be read.");
       runInAction(() => {
         for (const activity of this.inRoom(serverId, roomId)) activity.feedError = message;
@@ -461,6 +470,11 @@ export class AgentActivities {
     for (const [key, { activity }] of this.entries)
       if (activity.serverId === serverId && (roomId === null || activity.roomId === roomId))
         runInAction(() => this.entries.delete(key));
+    for (const key of this.latestLoad.keys()) {
+      const [loadServer, loadRoom] = JSON.parse(key) as [string, string];
+      if (loadServer === serverId && (roomId === null || loadRoom === roomId))
+        this.latestLoad.delete(key);
+    }
     for (const key of this.parked.keys()) {
       const [parkedServer, , parkedRoom] = JSON.parse(key) as [string, string | null, string];
       if (parkedServer === serverId && (roomId === null || parkedRoom === roomId))

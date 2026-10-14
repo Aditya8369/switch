@@ -545,6 +545,40 @@ describe('AgentActivities', () => {
     }
   });
 
+  it('ignores the answer of a snapshot read that a newer read or a drop superseded', async () => {
+    const { api } = fakeApi([]);
+    const activities = new AgentActivities(api);
+    const running: RoomActivity = { items: [row('t1', 'turn')], approvals: [] };
+    const empty: RoomActivity = { items: [], approvals: [] };
+    const first = activities.acquire('server', null, 'room-1', 'agent-a');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const pending: { resolve: (a: RoomActivity) => void; reject: (e: unknown) => void }[] = [];
+    api.roomActivity = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
+
+    // A newer read answers first: the older one's answer and error are both ignored.
+    const older = activities.loadRoom('server', 'room-1');
+    const failing = activities.loadRoom('server', 'room-1');
+    const newer = activities.loadRoom('server', 'room-1');
+    pending[2].resolve(empty);
+    await newer;
+    pending[0].resolve(running);
+    pending[1].reject(new Error('late failure'));
+    await Promise.all([older, failing]);
+    expect(first.working).toBe(false);
+    expect(first.feedError).toBeNull();
+
+    // A read from before a drop never reaches the activity acquired after it.
+    const beforeDrop = activities.loadRoom('server', 'room-1');
+    activities.drop('server', null);
+    api.roomActivity = async () => empty;
+    const current = activities.acquire('server', null, 'room-1', 'agent-a');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    pending[3].resolve(running);
+    await beforeDrop;
+    expect(current.items.size).toBe(0);
+    activities.release(current);
+  });
+
   it('drops rows and settled requests a snapshot no longer has, keeping live ones from during the read', async () => {
     const { api } = fakeApi([
       { items: [row('t1', 'turn')], approvals: [approval('t1', { state: 'answered' })] },
