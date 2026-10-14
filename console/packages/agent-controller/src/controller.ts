@@ -71,6 +71,13 @@ export const DEFAULT_TIMING: ControllerTiming = {
   eventBufferLimit: 5_000,
 };
 
+/**
+ * How long an agent host restarted onto this controller's shared-host bundle
+ * is left before it is restarted again, when the restart failed or it still
+ * runs another bundle.
+ */
+export const OUTDATED_RESTART_RETRY_MS = 10 * 60 * 1000;
+
 export type ControllerDeps = {
   store: ControllerStore;
   secrets: SecretStore;
@@ -550,6 +557,61 @@ export async function runController(
     });
   };
 
+  /** When each outdated agent host was last restarted onto this controller's bundle. */
+  const outdatedRestarts = new Map<string, number>();
+  let outdatedQueued = false;
+  /**
+   * Restarts each agent host that outlived this controller on another
+   * shared-host bundle (`AgentObservation.outdated`) onto this controller's,
+   * once none of its sessions is mid-turn: idle sessions restart with it and
+   * resume their conversations. An agent host already restarted for it is
+   * left for `OUTDATED_RESTART_RETRY_MS` before another try.
+   */
+  const restartOutdated = (): Promise<void> => {
+    if (outdatedQueued) return Promise.resolve();
+    outdatedQueued = true;
+    return queue.run(async () => {
+      outdatedQueued = false;
+      if (!assignment || stop.signal.aborted) return;
+      try {
+        for (const entry of assignment.agents) {
+          if (entry.desired_state !== 'running' || definitionProblem(entry)) continue;
+          const agentId = entry.agent_id;
+          const observation = await runtime.observe(agentId);
+          if (!observation.alive || !observation.outdated) continue;
+          const last = outdatedRestarts.get(agentId);
+          if (last !== undefined && deps.now() - last < OUTDATED_RESTART_RETRY_MS) continue;
+          if (!noSessionMidTurn([observation])) continue;
+          if (last !== undefined)
+            log.error(
+              'An agent host restarted onto this controller’s shared-host bundle is still on another (the restart failed, or it came back on another bundle); restarting it again',
+              { agentId, restartedAt: new Date(last).toISOString() }
+            );
+          outdatedRestarts.set(agentId, deps.now());
+          log.warn(
+            'Restarting an agent host that outlived this controller on another shared-host bundle, now that none of its sessions is mid-turn',
+            { agentId, version: deps.version }
+          );
+          await startAgent(
+            {
+              kind: 'start',
+              agentId,
+              entry,
+              restart: true,
+              replaceIdentity: false,
+              clearTakenOver: false,
+              relaunch: true,
+              why: 'agent host on another shared-host bundle',
+            },
+            reconcileDeps
+          );
+        }
+      } catch (error) {
+        failed('Restarting outdated agent hosts', error);
+      }
+    });
+  };
+
   const onFrame = async (frame: ControllerFrame): Promise<void> => {
     switch (frame.type) {
       case 'connection_state':
@@ -617,6 +679,7 @@ export async function runController(
     // A turn ending changes nothing reported, so it would otherwise wait for
     // the next periodic report to let the update through.
     if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
+    void restartOutdated();
   }, timing.statusPollMs);
 
   let ending: ControllerExit = 'stopped';

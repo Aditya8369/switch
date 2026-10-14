@@ -719,6 +719,53 @@ describe('the release Switch names', () => {
   });
 });
 
+describe('an agent host that outlived the controller on another bundle', () => {
+  const restarts = () =>
+    runtime.launches('agent-1').filter((call) => call.options.restart === true);
+
+  it('is restarted onto this controller’s bundle once none of its sessions is mid-turn, and only once', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const observation = runtime.observation('agent-1');
+    observation.outdated = true;
+    observation.health!.placements = { 'session-1': 'room-a' };
+    observation.health!.busy = ['session-1'];
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toEqual([]);
+
+    observation.health!.busy = [];
+    await waitFor(() => restarts().length === 1, 'the outdated agent host restarted');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toHaveLength(1);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('is not restarted again while it stays on another bundle, within the retry wait', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    runtime.observation('agent-1').outdated = true;
+    await waitFor(() => restarts().length === 1, 'the outdated agent host restarted');
+    runtime.observation('agent-1').outdated = true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toHaveLength(1);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('is left alone when it runs this controller’s bundle', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toEqual([]);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+});
+
 describe('ensureRelayCredentials', () => {
   const login = {
     status: 'connected' as const,

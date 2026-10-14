@@ -3516,6 +3516,15 @@ tags; see RELEASING.md.
   their conversations; agents running in a process of their own keep running
   through it. An agent host too old to report busy sessions still holds the
   update while it has any session.
+- **Agents running in a process of their own move onto the release the
+  controller updated to.** Such an agent host (detached, or a systemd unit with
+  separate users, as on Switch cloud machines) outlives the controller and kept
+  the shared-host bundle it started with, so a fix in it reached the agent only
+  when the agent was restarted by hand. Each agent host now records the bundle
+  it runs (by SHA-256) in its `health.json`, and the controller restarts one on
+  another bundle, or too old to say, once none of its sessions is mid-turn;
+  idle sessions resume their conversations. A host that comes back still
+  outdated is tried again after 10 minutes.
 - **A refusal that cannot pass stops the controller instead of retrying it
   forever.** The server answers `protocol_unsupported` when it no longer speaks
   the controller's protocol and `invalid_credential` when it knows no controller
