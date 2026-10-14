@@ -97,7 +97,7 @@ from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import InboundMedia, InboundMembership, InboundMessage
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -338,12 +338,12 @@ class EventBuffer:
         settle_seconds: float = CONVERSATION_SETTLE_SECONDS,
     ) -> None:
         self._session_factory = session_factory
-        # `sequence_base` comes from a database sequence that advances on every
-        # boot (`main.py`), so it is above every number an earlier boot handed
-        # out. An agent's first own event is numbered from it. A client still holding
-        # a number from before the agent had any own events here therefore holds a
-        # number below `sequence_floor`, and is recognised as older than every
-        # own event. Later own events are numbered from the agent's row in
+        # `sequence_base` is `numbering_base()`: above every number a process
+        # that kept agents' events in memory handed out. An agent's first own
+        # event is numbered from it. A client still holding a number from before
+        # the agent had any own events here therefore holds a number below
+        # `sequence_floor`, and is recognised as older than every own event.
+        # Later own events are numbered from the agent's row in
         # `agent_event_heads`, so their numbers survive restarts.
         self.sequence_floor = sequence_base + 1
         self._retention_seconds = retention_seconds
@@ -1836,6 +1836,17 @@ class EventBuffer:
                 )
             )
         return max(dropped_through or 0, (oldest or 0) - 1, 0)
+
+
+async def numbering_base(connection: AsyncConnection) -> int:
+    """Where a new agent's own event numbers start: the current value of the
+    `agent_event_boot` sequence, shifted left 32 bits.
+
+    Read, not drawn. Every process reads the same value, and restarts do not
+    use up the sequence. See migration `d7a3f9c2e4b8`.
+    """
+    boot = await connection.scalar(text("SELECT last_value FROM agent_event_boot"))
+    return int(boot) << 32
 
 
 def _transient(exc: BaseException) -> bool:

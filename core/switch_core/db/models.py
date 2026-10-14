@@ -49,9 +49,12 @@ from switch_core.db.session_activity_notify_ddl import (
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
 
-#: The highest boot number `agent_event_boot` hands out. An agent's own event
-#: numbers start at the boot number shifted left 32 bits, so they stay below
+#: The highest value `agent_event_boot` hands out. A new agent's own event
+#: numbers start at the sequence's current value shifted left 32 bits
+#: (`EventBuffer.numbering_base`), so they stay below
 #: `(AGENT_EVENT_BOOT_MAX + 1) << 32`, the first ticket id (`TICKET_FLOOR`).
+#: The sequence was drawn on every start while agents' events were kept in
+#: memory; since migration `d7a3f9c2e4b8` it is only read.
 AGENT_EVENT_BOOT_MAX = 2097150
 
 #: The first id of `agent_position_tickets`. Every own event number is below it
