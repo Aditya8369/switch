@@ -388,6 +388,18 @@ async def _event_stream(
                 for item in pending
             ]
             tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
+            # The unread counts sent with the events below, counted for the
+            # whole batch at once, so that catching up on a few hundred events
+            # costs a few statements per room rather than several per event.
+            missed = await buffer.unread_batch(
+                tenant,
+                agent_id,
+                [
+                    (item.room_id, item.room_seq)
+                    for item, send in zip(pending, covered, strict=True)
+                    if send and item.notifiable
+                ],
+            )
             delivered = False
             index = -1
             for item, send in zip(pending, covered, strict=True):
@@ -407,9 +419,7 @@ async def _event_stream(
                     # woken for anyway. A count of its own would be a wake
                     # spent on "you may have missed something you may not care
                     # about".
-                    unread = await buffer.unread(
-                        tenant, agent_id, item.room_id, item.room_seq
-                    )
+                    unread = missed[(item.room_id, item.room_seq)]
                     payload["missed"] = {
                         "count": unread.count,
                         "reason": unread.reason,
