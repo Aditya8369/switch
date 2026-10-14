@@ -2,10 +2,11 @@ import {
   Bot,
   Boxes,
   CircleAlert,
-  Clock,
   DoorOpen,
   FileText,
   Loader2,
+  MoreVertical,
+  Trash2,
   Upload,
   UserRound,
 } from 'lucide-react';
@@ -22,16 +23,20 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
-import { cn } from '@renderer/utils/utils';
-import { runMatches } from './template-runs';
-import { RECENT_ROW, TemplateRunRow, useTemplateRuns } from './template-runs-list';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -170,6 +175,7 @@ function TemplateCard({
   busy,
   onOpen,
   onUse,
+  onDelete,
 }: {
   workspaceId: string | null;
   item: TemplateListEntry;
@@ -177,6 +183,8 @@ function TemplateCard({
   busy: boolean;
   onOpen: () => void;
   onUse: () => void;
+  /** Null when the signed-in user may not delete it. */
+  onDelete: (() => void) | null;
 }) {
   const Icon = KIND_ICON[item.kind];
   const summary = useTemplateSummary(workspaceId, item);
@@ -191,7 +199,7 @@ function TemplateCard({
         onClick={onOpen}
       />
       <div className="pointer-events-none flex flex-1 flex-col gap-2 p-4">
-        <div className="flex items-center gap-2">
+        <div className={`flex items-center gap-2${onDelete ? ' pr-7' : ''}`}>
           <Icon className="size-4.5 shrink-0 text-foreground-muted" />
           <h3 className="min-w-0 truncate font-medium text-foreground">{item.name}</h3>
           {official && (
@@ -211,6 +219,30 @@ function TemplateCard({
           {!official && <OwnerRow name={item.server.creator} mine={mine} />}
         </div>
       </div>
+      {onDelete && (
+        <div className="absolute top-2.5 right-2.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="size-7 p-0"
+                  aria-label={`${item.name} actions`}
+                >
+                  <MoreVertical className="size-4" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                <Trash2 className="size-4" />
+                Delete template…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
       {/* On top of the overlay: the one action that does not need the page. */}
       <div className="absolute right-3 bottom-3">
         <Button size="sm" variant="outline" onClick={onUse} disabled={busy}>
@@ -218,56 +250,6 @@ function TemplateCard({
         </Button>
       </div>
     </div>
-  );
-}
-
-/**
- * The runs on this workspace: the rooms agents created from templates, run by
- * run, where a run can be stopped, or a paused one let continue. Shown only
- * while there is one.
- */
-function RunsSection({
-  workspaceId,
-  kind,
-  query,
-}: {
-  workspaceId: string | null;
-  kind: KindFilter;
-  query: string;
-}) {
-  const { runs, replace: replaceRun } = useTemplateRuns(workspaceId);
-  const needle = query.trim().toLowerCase();
-  // A run creates rooms, so an agents-only listing leaves them out.
-  const shownRuns = kind === 'agent' ? [] : runs.filter((r) => runMatches(r, needle));
-  if (workspaceId === null || shownRuns.length === 0) return null;
-  return (
-    <section>
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-        <Clock className="size-3.5 text-foreground-muted" />
-        Runs
-      </h3>
-      <p className="mt-0.5 mb-3 text-xs text-foreground-muted">
-        The rooms agents created from templates on this workspace, run by run. A run's owner can
-        stop it, or let a paused one continue.
-      </p>
-      <div className="divide-y divide-border rounded-md border border-border">
-        <div className={cn(RECENT_ROW, 'text-[11px] font-medium text-foreground-passive')}>
-          <span>Name</span>
-          <span>Status</span>
-          <span>Size</span>
-          <span>When</span>
-          <span />
-        </div>
-        {shownRuns.map((run) => (
-          <TemplateRunRow
-            key={run.rootRoomId}
-            workspaceId={workspaceId}
-            run={run}
-            onChanged={replaceRun}
-          />
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -377,6 +359,36 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     return onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t)));
   }, [templates, searchHits, query, kind, onlyMine, meId]);
 
+  const confirm = useShowModal('confirmActionModal');
+  const me = switchServersStore.statusFor(serverId)?.user ?? null;
+  // The server says who may delete; an older server leaves it out, and the owner-or-admin guess stands in.
+  const canDelete = (item: TemplateListEntry) =>
+    !item.server.official &&
+    (item.server.canManage ??
+      ((meId !== null && item.server.ownerId === meId) || me?.role === 'admin'));
+  const deleteTemplate = (item: TemplateListEntry) =>
+    confirm({
+      title: `Delete ${item.name}?`,
+      description: 'It is removed from this workspace for everyone. This cannot be undone.',
+      confirmLabel: 'Delete',
+      onSuccess: () => {
+        if (workspaceId === null) return;
+        rpc.workspaces
+          .deleteTemplate({ workspaceId, templateId: item.id })
+          .then(() => {
+            toast({ title: `"${item.name}" deleted` });
+            reload();
+          })
+          .catch((e: unknown) =>
+            toast({
+              title: `Could not delete "${item.name}"`,
+              description: failureText(e, 'Check the server connection and try again.'),
+              variant: 'destructive',
+            })
+          );
+      },
+    });
+
   const handleUse = (item: TemplateListEntry) =>
     navigate('templateUse', { serverId, templateId: item.id });
 
@@ -406,6 +418,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       busy={false}
       onOpen={() => open(item)}
       onUse={() => handleUse(item)}
+      onDelete={canDelete(item) ? () => deleteTemplate(item) : null}
     />
   );
 
@@ -535,8 +548,6 @@ const TemplatesPanel = observer(function TemplatesPanel() {
                 </Button>
               </div>
             )}
-
-            <RunsSection workspaceId={workspaceId} kind={kind} query={query} />
           </div>
         )}
       </div>

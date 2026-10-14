@@ -31,7 +31,8 @@ export const bundledTemplates: BundledTemplate[] = [
   {
     id: 'bundled:switch-expert',
     name: 'Switch expert',
-    description: 'Knows Switch inside out. Ask it how to set things up or why something is off.',
+    description:
+      'An agent that knows Switch inside out. Ask it how to set things up or why something is off.',
     kind: 'agent',
     creator: 'Switch',
     yamlText: switchExpertTemplate,

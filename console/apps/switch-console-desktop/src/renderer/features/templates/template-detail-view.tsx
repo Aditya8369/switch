@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   Bot,
   Check,
+  CircleAlert,
   Copy,
   DoorOpen,
   Download,
@@ -22,6 +23,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
+import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
@@ -366,11 +368,28 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                     : 'Remove from workspace'}
               </Button>
             )}
-            <Button type="button" size="sm" onClick={use} disabled={busy !== null}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={use}
+              disabled={busy !== null || loaded.problem !== null}
+            >
               Use template
             </Button>
           </div>
         </PageHeader>
+
+        {loaded.problem && (
+          <Alert variant="destructive">
+            <CircleAlert />
+            <AlertDescription>
+              This template cannot be used. {loaded.problem}{' '}
+              {canEdit || canManage
+                ? 'Edit it to fix the document, or remove it.'
+                : 'Ask whoever saved it to fix it.'}
+            </AlertDescription>
+          </Alert>
+        )}
 
         <section className="flex flex-col gap-2.5">
           <h2 className="text-sm font-semibold text-foreground">What it creates</h2>

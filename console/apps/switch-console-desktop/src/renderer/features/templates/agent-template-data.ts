@@ -5,6 +5,7 @@ import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { bundledYamlFor, findBundledTemplate } from './bundled-templates';
 
@@ -139,6 +140,8 @@ export type LoadedTemplate = {
   summary: TemplateSummary;
   /** The full document with agent instructions inlined, as stored or as it would be stored. */
   document: string;
+  /** Why the document cannot be read, when it cannot. The page still opens, so it can be edited or deleted. */
+  problem: string | null;
 };
 
 /** Load one template by the id the listing gave it. */
@@ -149,26 +152,33 @@ export async function loadTemplateById(
   const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId });
   const { definition: document, ...server } = detail;
   const { name, description } = detail;
-  const kind = await rpc.agentTemplates.kind({ yamlText: document });
-  const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
-  // Every param, the Console's own types included, so the Inputs table lists
-  // what the Use page asks for and what the card counts.
-  const coreYaml = await rpc.agentTemplates.serverDocument({
-    yamlText: document,
-    keepConsoleParams: true,
-  });
-  const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
   const summary = await rpc.agentTemplates.summarize({ yamlText: document });
-  return {
-    name,
-    description,
-    kind,
-    server,
-    agents,
-    room,
-    summary,
-    document,
-  };
+  try {
+    const kind = await rpc.agentTemplates.kind({ yamlText: document });
+    const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
+    // Every param, the Console's own types included, so the Inputs table lists
+    // what the Use page asks for and what the card counts.
+    const coreYaml = await rpc.agentTemplates.serverDocument({
+      yamlText: document,
+      keepConsoleParams: true,
+    });
+    const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
+    return { name, description, kind, server, agents, room, summary, document, problem: null };
+  } catch (e) {
+    const kind: TemplateKind =
+      server.kind === 'agent' || server.kind === 'group' ? server.kind : 'room';
+    return {
+      name,
+      description,
+      kind,
+      server,
+      agents: [],
+      room: null,
+      summary: { ...summary, creates: [] },
+      document,
+      problem: failureText(e, 'Its document could not be read.'),
+    };
+  }
 }
 
 /** A readable listing name from a file name: no extension, no `.template`, words not dashes. */

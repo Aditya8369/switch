@@ -59,8 +59,8 @@ _SHIPPED = (
         slug="switch-expert",
         name="Switch expert",
         description=(
-            "Knows Switch inside out. Ask it how to set things up or why "
-            "something is off."
+            "An agent that knows Switch inside out. Ask it how to set things "
+            "up or why something is off."
         ),
         kind="agent",
     ),
