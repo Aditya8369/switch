@@ -1,3 +1,16 @@
+"""Every client running in this process, and the consumers it reads with.
+
+Every switch-core process runs an actor for each client (`clients/actor.py`),
+because any process may be asked to write as any client: the admin answering
+in a room created there, an agent posting through the API. A consumer is
+different when what it does must happen once: the admin's `CommandConsumer`
+answers commands and posts warnings, so it runs in the one process that owns
+its client (`ownership.py`), reading from the client's stored cursors and
+stopped when the ownership moves. A consumer that may run everywhere
+(`Consumer.read_by_one_process`) runs in every process, reading each room from
+its newest row.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,16 +31,22 @@ from switch_core.db.models import Agent, Client, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
-from switch_core.transport.cursors import FromHead
+from switch_core.transport.cursors import ConsumerCursors, CursorWriter, FromHead
 
 if TYPE_CHECKING:
     from switch_core.clients.client_signals import ClientSignals
+    from switch_core.ownership import Fence, Ownership
+
+# The kind of owned work a client's consumer is, where only one process may
+# run it (`ownership.py`), keyed by client id.
+CLIENT_CONSUMERS = "client"
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +93,12 @@ class ClientLifecycleService:
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         tenants_isolated: bool,
+        ownership: Ownership,
+        cursor_writer: CursorWriter,
     ) -> None:
         self._provisioning = provisioning
+        self._cursor_writer = cursor_writer
+        self._cursor_store = DeliveryCursorStore()
         self._tenants_isolated = tenants_isolated
         self._client_store = client_store
         self._tenant_store = tenant_store
@@ -95,6 +118,9 @@ class ClientLifecycleService:
         # wants without reaching into the objects. See `get_by_type`.
         self._client_tenants: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # The read loops of the consumers this process owns, by client id.
+        # Their actors' tasks are in `_tasks` like every other.
+        self._owned_tasks: dict[str, asyncio.Task[None]] = {}
         # Clients stopped here on purpose (an agent being deleted stops its
         # client before its row goes) or whose task crashed on a bug.
         # `reconcile_tenant` leaves them stopped, as a crash always has, until
@@ -103,6 +129,11 @@ class ClientLifecycleService:
         # Keyed by client id, to the client's tenant.
         self._left_stopped: dict[str, str] = {}
         self._signals: ClientSignals | None = None
+        self._owned = ownership.kind(
+            CLIENT_CONSUMERS,
+            start=self._start_owned_consumer,
+            stop=self._stop_owned_consumer,
+        )
 
     def use_signals(self, signals: ClientSignals) -> None:
         """Where a client started or deleted here is announced, so every
@@ -403,14 +434,21 @@ class ClientLifecycleService:
 
     def _register(self, record: Client) -> Actor[ClientConfig]:
         self._left_stopped.pop(record.id, None)
-        actor, consumer = self._client_factory.create(record)
+        actor = self._client_factory.create_actor(record)
         self._clients[record.id] = actor
+        self._client_types[record.id] = record.type
+        self._client_tenants[record.id] = record.tenant_id
+        if self._client_factory.read_by_one_process(record.type):
+            # The actor here, the consumer where this process owns the client.
+            self._consumers.pop(record.id, None)
+            self._start_task(record.id, actor, None)
+            self._owned.want(record.id)
+            return actor
+        consumer = self._client_factory.create_consumer(record.type, actor)
         if consumer is not None:
             self._consumers[record.id] = consumer
         else:
             self._consumers.pop(record.id, None)
-        self._client_types[record.id] = record.type
-        self._client_tenants[record.id] = record.tenant_id
         self._start_task(record.id, actor, consumer)
         return actor
 
@@ -435,6 +473,10 @@ class ClientLifecycleService:
         if actor is None:
             logger.warning("Cannot stop unknown client %s", client_id)
             return
+        if self._owned.wants(client_id):
+            # Its consumer, where this process owns it, and its lease with it.
+            await self._owned.drop(client_id)
+            await self._stop_owned_consumer(client_id)
         consumer = self._consumers.pop(client_id, None)
         if consumer is not None:
             await consumer.stop()
@@ -451,6 +493,10 @@ class ClientLifecycleService:
 
     async def stop_all(self) -> None:
         logger.info("Stopping all %d clients", len(self._clients))
+        # The ownership has stopped and released the consumers it held
+        # (`Ownership.stop`); whatever still runs here goes the same way.
+        for client_id in list(self._owned_tasks):
+            await self._stop_owned_consumer(client_id)
         for client_id, actor in self._clients.items():
             consumer = self._consumers.get(client_id)
             if consumer is not None:
@@ -492,12 +538,18 @@ class ClientLifecycleService:
         return self._clients.get(client_id)
 
     def running_count(self) -> int:
-        """Consumers believed to be running right now: the read loops.
+        """Consumers believed to be running in this process right now: the
+        read loops.
 
-        A crashed consumer removes itself and its actor, so this falling is the
-        only signal. Actors with no consumer have no loop to crash.
+        A crashed consumer removes itself, so this falling is the only signal.
+        Actors with no consumer have no loop to crash, and a consumer another
+        process owns is counted there.
         """
         return len(self._consumers)
+
+    def owns(self, client_id: str) -> bool:
+        """Whether this process holds the client's consumer lease."""
+        return self._owned.fence(client_id) is not None
 
     def get_by_agent_id(self, agent_id: str) -> AgentActor | None:
         for actor in self._clients.values():
@@ -527,6 +579,103 @@ class ClientLifecycleService:
             if self._client_types.get(client_id) == client_type
             and self._client_tenants.get(client_id) == tenant_id
         ]
+
+    async def _start_owned_consumer(self, client_id: str, fence: Fence) -> None:
+        """This process now owns the client: run its consumer here, a fresh
+        one for this hold, reading from the client's stored cursors."""
+        actor = self._clients.get(client_id)
+        client_type = self._client_types.get(client_id)
+        if actor is None or client_type is None:
+            logger.warning(
+                "Owning client %s, which is not running here; its consumer "
+                "waits for it",
+                client_id,
+            )
+            return
+        consumer = self._client_factory.create_consumer(client_type, actor)
+        if consumer is None:
+            return
+        cursors = ConsumerCursors(
+            writer=self._cursor_writer,
+            store=self._cursor_store,
+            tenant_id=actor.tenant_id,
+            client_id=client_id,
+            fence=fence,
+            actor_role=actor.role,
+            on_lost=self._owned.lost,
+        )
+        self._consumers[client_id] = consumer
+        self._owned_tasks[client_id] = asyncio.create_task(
+            self._run_owned_consumer(client_id, consumer, cursors)
+        )
+
+    async def _stop_owned_consumer(self, client_id: str) -> None:
+        """Stop the client's consumer here after the row in hand, and store
+        how far it got, so the process that owns the client next starts where
+        it ended. A progress write that fails is logged: the next owner then
+        handles the last rows again, and writes their replies once."""
+        task = self._owned_tasks.pop(client_id, None)
+        if task is None:
+            return
+        consumer = self._consumers.pop(client_id, None)
+        if consumer is not None:
+            await consumer.stop()
+        await asyncio.gather(task, return_exceptions=True)
+        try:
+            await self._cursor_writer.flush()
+        except Exception:
+            logger.warning(
+                "Could not store client %s's progress as its consumer stopped; "
+                "whoever reads for it next handles its last rows again",
+                client_id,
+                exc_info=True,
+            )
+
+    async def _run_owned_consumer(
+        self, client_id: str, consumer: Consumer[Any], cursors: ConsumerCursors
+    ) -> None:
+        """An owned consumer's read loop, ambient-free for the reasons
+        `_run_client` gives. A crash ends the consumer and leaves its actor:
+        the client is still written as here, and is read nowhere until its
+        ownership moves or the process restarts, as a crashed client always
+        was."""
+        actor = consumer.actor
+        with no_tenant(), log_context(room_id=None):
+            try:
+                attempt = 0
+                while True:
+                    try:
+                        await consumer.start(cursors)
+                        return
+                    except _TRANSIENT_START_ERRORS:
+                        attempt += 1
+                        delay = random.uniform(
+                            0,
+                            min(
+                                CLIENT_RETRY_BASE_SECONDS * 2 ** (attempt - 1),
+                                CLIENT_RETRY_CAP_SECONDS,
+                            ),
+                        )
+                        logger.warning(
+                            "Client %s (%s) failed on the database or network "
+                            "(attempt %d); retrying in %.0fs",
+                            actor.display_name,
+                            actor.transport_user_id,
+                            attempt,
+                            delay,
+                            exc_info=True,
+                        )
+                        await asyncio.sleep(delay)
+            except Exception:
+                logger.exception(
+                    "Client %s (%s) crashed",
+                    actor.display_name,
+                    actor.transport_user_id,
+                )
+                if self._consumers.get(client_id) is consumer:
+                    del self._consumers[client_id]
+                if self._owned_tasks.get(client_id) is asyncio.current_task():
+                    del self._owned_tasks[client_id]
 
     def _start_task(
         self,

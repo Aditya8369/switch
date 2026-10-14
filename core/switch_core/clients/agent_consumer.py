@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
@@ -330,6 +330,11 @@ class AgentConsumer(Consumer[AgentActor]):
     its event buffer for the SSE stream, and posts the replies an agent cannot
     give itself (greetings, offline and refusal notices) through its actor.
     """
+
+    # Run in every process. What it stores in the agent's own events is stored
+    # once per source whichever process writes it (`EventBuffer.enqueue`), and
+    # a reply written while handling a row once (`PostgresTransport._send`).
+    read_by_one_process: ClassVar[bool] = False
 
     def __init__(
         self,

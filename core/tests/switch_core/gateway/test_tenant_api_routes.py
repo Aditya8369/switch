@@ -64,6 +64,7 @@ from switch_core.gateway.invite_mail import (
 )
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
+from tests.ownership import NeverOwned
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -446,6 +447,8 @@ class TestCreateTenant:
             session_factory=session_factory,
             config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
             tenants_isolated=False,
+            ownership=NeverOwned(),  # type: ignore[arg-type]
+            cursor_writer=MagicMock(),
         )
 
         app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")

@@ -66,6 +66,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.room_service import RoomService
 from switch_core.tenant_context import current_tenant_id, tenant_scope
+from tests.ownership import NeverOwned
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -202,10 +203,17 @@ class _StubClient:
 
 
 class _StubFactory:
-    def create(self, record: Client) -> Any:
-        # The stub reads for itself: it is the actor and its own consumer.
-        client = _StubClient(record)
-        return client, client
+    """The stub reads for itself: it is the actor and its own consumer, and
+    runs in every process."""
+
+    def create_actor(self, record: Client) -> Any:
+        return _StubClient(record)
+
+    def create_consumer(self, client_type: str, actor: Any) -> Any:
+        return actor
+
+    def read_by_one_process(self, client_type: str) -> bool:
+        return False
 
 
 def _registry(
@@ -226,6 +234,8 @@ def _registry(
         session_factory=session_factory,
         config=SimpleNamespace(id_server_name="switch.local"),  # type: ignore[arg-type]
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
     for tenant_id, client_id, transport_user_id in running:
         service.start_client(

@@ -15,6 +15,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from switch_core.clients import client_lifecycle_service as lifecycle
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from tests.ownership import NeverOwned
 
 
 class _FlakyClient:
@@ -48,6 +49,8 @@ def _service() -> ClientLifecycleService:
         session_factory=MagicMock(),
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 

@@ -80,15 +80,23 @@ class ClientFactory:
         """
         self._registry[client_type] = (actor_cls, consumer_cls, consumer_kwargs)
 
-    def create(
-        self, record: Client
-    ) -> tuple[Actor[ClientConfig], Consumer[Any] | None]:
+    def read_by_one_process(self, client_type: str) -> bool:
+        """Whether a client of this type has a consumer that must run in one
+        process only, the one that owns the client (`ownership.py`)."""
+        entry = self._registry.get(client_type)
+        if entry is None:
+            raise ValueError(f"Unknown client type: {client_type!r}")
+        consumer_cls = entry[1]
+        return consumer_cls is not None and consumer_cls.read_by_one_process
+
+    def create_actor(self, record: Client) -> Actor[ClientConfig]:
+        """The actor a `clients` row becomes."""
         entry = self._registry.get(record.type)
         if entry is None:
             raise ValueError(f"Unknown client type: {record.type!r}")
-        actor_cls, consumer_cls, consumer_kwargs = entry
+        actor_cls = entry[0]
         config = actor_cls.config_class.model_validate(record.config or {})
-        actor = actor_cls(
+        return actor_cls(
             client_id=record.id,
             # Straight off the row this client *is*. `create_client` writes
             # that row inside a session with the tenant bound and the factory
@@ -103,9 +111,19 @@ class ClientFactory:
             config=config,
             transport_factory=self.transport_for,
         )
+
+    def create_consumer(
+        self, client_type: str, actor: Actor[ClientConfig]
+    ) -> Consumer[Any] | None:
+        """A fresh consumer around `actor`, or None for a type that reads
+        nothing."""
+        entry = self._registry.get(client_type)
+        if entry is None:
+            raise ValueError(f"Unknown client type: {client_type!r}")
+        _, consumer_cls, consumer_kwargs = entry
         if consumer_cls is None:
-            return actor, None
-        return actor, consumer_cls(actor=actor, **consumer_kwargs)
+            return None
+        return consumer_cls(actor=actor, **consumer_kwargs)
 
     def transport_for(self, client: Actor[Any]) -> MessageTransport:
         """The transport every client in the process runs on.

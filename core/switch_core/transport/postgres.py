@@ -38,8 +38,11 @@ the kind: any process may write as any client.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -172,6 +175,44 @@ def new_event_id() -> str:
     decoration for humans — no code may branch on it.
     """
     return f"sw_{uuid.uuid4().hex}"
+
+
+def derived_event_id(client_id: str, source_event_id: str, ordinal: int) -> str:
+    """The id of the `ordinal`-th row a client writes while handling the row
+    `source_event_id`: the same every time that row is handled. Shaped like
+    `new_event_id`, so nothing can tell the two apart."""
+    digest = hashlib.sha256(
+        f"{client_id}\x1f{source_event_id}\x1f{ordinal}".encode()
+    ).hexdigest()
+    return f"sw_{digest[:32]}"
+
+
+@dataclass
+class _Handling:
+    """The row a client's handler is handling, while it does.
+
+    A consumer may handle a row twice: an owner that stopped between acting
+    on a row and recording its progress leaves the row to the next owner, and
+    a consumer that every process runs is handed the row in each. Every row
+    the handling client writes meanwhile is given an id derived from the row
+    and how many it has written so far, and `messages.transport_event_id` is
+    unique, so a second handling finds the first's writes and writes nothing.
+
+    In a context variable, so a task the handler starts carries it too and
+    its writes count as the row's.
+    """
+
+    client_id: str
+    source_event_id: str
+    written: int = field(default=0)
+
+    def next_event_id(self) -> str:
+        event_id = derived_event_id(self.client_id, self.source_event_id, self.written)
+        self.written += 1
+        return event_id
+
+
+_HANDLING: ContextVar[_Handling | None] = ContextVar("handling", default=None)
 
 
 class PostgresTransport:
@@ -870,7 +911,13 @@ class PostgresTransport:
             metrics().observe(
                 DELIVERY_LAG, {"kind": kind, "actor": self._actor_role}, lag_ms
             )
-        await handler(room, event)
+        handling = _HANDLING.set(
+            _Handling(client_id=self.client_id, source_event_id=row.transport_event_id)
+        )
+        try:
+            await handler(room, event)
+        finally:
+            _HANDLING.reset(handling)
 
     def _handler_for(self, event: InboundEvent) -> Handler | None:
         if isinstance(event, InboundMedia):
@@ -962,9 +1009,20 @@ class PostgresTransport:
         row as part of it, so no subscriber can be woken for a row that a later
         rollback removes.
         """
-        result = SendResult(
-            event_id=new_event_id(), event_type=event_type, content=content
-        )
+        # A row this client writes while handling one it was handed gets an
+        # id derived from that row, so handling it again writes nothing new.
+        handling = _HANDLING.get()
+        if (
+            handling is not None
+            and handling.client_id == self.client_id
+            and event_type not in EPHEMERAL
+        ):
+            derived: _Handling | None = handling
+            event_id = handling.next_event_id()
+        else:
+            derived = None
+            event_id = new_event_id()
+        result = SendResult(event_id=event_id, event_type=event_type, content=content)
         kind = _sent_kind(event_type, content)
         if event_type in EPHEMERAL:
             # Presence-like state, replaced by its own next value. Storing it
@@ -1004,9 +1062,20 @@ class PostgresTransport:
                     thread_root_event_id=thread_root_of(content),
                     content=content,
                 )
-                await self._message_store.create(
+                if derived is None:
+                    await self._message_store.create(
+                        session, message, attachments_in(content)
+                    )
+                elif not await self._message_store.create_unless_stored(
                     session, message, attachments_in(content)
-                )
+                ):
+                    logger.info(
+                        "Client %s already wrote %s while handling this row; "
+                        "not writing it again",
+                        self.user_id,
+                        result.event_id,
+                    )
+                    return result
                 if metered and kind in _METERED_KINDS:
                     await self._usage_store.record(
                         session,

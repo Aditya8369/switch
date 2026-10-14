@@ -28,6 +28,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.logging_context import current_log_context, log_context
 from switch_core.tenant_context import current_tenant_id, tenant_scope
+from tests.ownership import NeverOwned
 
 
 class _RecordingClient:
@@ -58,6 +59,8 @@ def _service(
         session_factory=session_factory,
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 
@@ -122,10 +125,10 @@ async def test_start_all_binds_nothing_around_starting_each_client(
 
     seen: list[str | None] = []
     client_factory = MagicMock()
-    client_factory.create.side_effect = lambda record: (
-        (recording := _RecordingClient(seen)),
-        recording,
-    )
+    # Each client reads for itself, in every process.
+    client_factory.create_actor.side_effect = lambda record: _RecordingClient(seen)
+    client_factory.create_consumer.side_effect = lambda client_type, actor: actor
+    client_factory.read_by_one_process.return_value = False
 
     service = _service(session_factory, client_factory)
     await service.start_all()

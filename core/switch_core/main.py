@@ -761,6 +761,8 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         tenants_isolated=tenants_isolated,
+        ownership=ownership,
+        cursor_writer=cursor_writer,
     )
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).

@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
+from tests.ownership import NeverOwned
 
 
 class _BlockingClient:
@@ -43,6 +44,8 @@ def _service() -> ClientLifecycleService:
         session_factory=MagicMock(),
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 

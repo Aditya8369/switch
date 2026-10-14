@@ -112,3 +112,32 @@ async def start_holder(session_factory: async_sessionmaker[AsyncSession]) -> Hol
         writer=writer,
         task=asyncio.create_task(writer.run()),
     )
+
+
+class NeverOwned:
+    """An ownership under which this process claims nothing, for tests of a
+    lifecycle that are not about which process owns what: work is wanted and
+    dropped as the code under test asks, and never started."""
+
+    def kind(self, name: str, *, start: object, stop: object) -> _NeverOwnedKind:
+        return _NeverOwnedKind()
+
+
+class _NeverOwnedKind:
+    def __init__(self) -> None:
+        self._wanted: set[str] = set()
+
+    def want(self, key: str) -> None:
+        self._wanted.add(key)
+
+    def wants(self, key: str) -> bool:
+        return key in self._wanted
+
+    async def drop(self, key: str) -> None:
+        self._wanted.discard(key)
+
+    def fence(self, key: str) -> Fence | None:
+        return None
+
+    def lost(self, fence: Fence) -> None:
+        return None

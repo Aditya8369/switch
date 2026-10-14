@@ -52,6 +52,7 @@ from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.observer import IgnoreParticipantMessages
+from tests.ownership import NeverOwned
 
 
 def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory:
@@ -90,7 +91,7 @@ class TestTheFactoryReadsItOffTheRow:
     ) -> None:
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
 
-        client, _ = _factory(session_factory).create(_record(tenant_id))
+        client = _factory(session_factory).create_actor(_record(tenant_id))
 
         assert client.tenant_id == tenant_id
 
@@ -104,7 +105,7 @@ class TestTheFactoryReadsItOffTheRow:
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         factory = _factory(session_factory)
 
-        client, _ = factory.create(_record(tenant_id))
+        client = factory.create_actor(_record(tenant_id))
         transport = factory.transport_for(client)
 
         assert transport.tenant_id == tenant_id  # type: ignore[attr-defined]
@@ -155,6 +156,8 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
             session_factory=session_factory,
             config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
             tenants_isolated=True,
+            ownership=NeverOwned(),  # type: ignore[arg-type]
+            cursor_writer=MagicMock(),
         )
 
         with tenant_scope(tenant_id):
@@ -177,6 +180,8 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
             session_factory=session_factory,
             config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
             tenants_isolated=True,
+            ownership=NeverOwned(),  # type: ignore[arg-type]
+            cursor_writer=MagicMock(),
         )
 
         record = await service.create_client(

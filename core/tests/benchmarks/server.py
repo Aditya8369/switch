@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import uuid
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -58,6 +59,9 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.main import (
@@ -68,6 +72,8 @@ from switch_core.main import (
 )
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.ownership import Ownership
+from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
@@ -75,10 +81,12 @@ from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService, SwitchUser
 from switch_core.sessions.contract import ApprovalResult
+from switch_core.signals import SignalBus
 from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
@@ -557,6 +565,14 @@ async def _serve(
     client_factory.register("user", HumanActor)
     client_factory.register("bridge", Actor)
 
+    # This process's lease and what it owns, as `main` wires them. Only agent
+    # clients run here, and every process runs their consumers, so nothing
+    # is ever claimed; the signal bus is never started.
+    lease = ProcessLease(
+        process_id=str(uuid.uuid4()),
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+    )
     client_lifecycle = ClientLifecycleService(
         provisioning=provisioning,
         client_store=session_env.client_store,
@@ -565,6 +581,23 @@ async def _serve(
         session_factory=session_factory,
         config=config,
         tenants_isolated=True,
+        ownership=Ownership(
+            lease=lease,
+            session_factory=session_factory,
+            bus=SignalBus(
+                session_factory,
+                lambda: create_unpooled_engine(config),
+                process_id=lease.process_id,
+            ),
+            store=OwnershipLeaseStore(),
+            processes=SwitchCoreProcessStore(),
+        ),
+        cursor_writer=CursorWriter(
+            session_factory=session_factory,
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=lease.process_id,
+        ),
     )
 
     room_service = RoomService(
