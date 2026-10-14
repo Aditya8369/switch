@@ -158,7 +158,7 @@ export const ChatPanel = observer(function ChatPanel({
     );
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+    <div data-chat-panel className="flex h-full min-h-0 flex-col bg-background text-foreground">
       {showHeader && chat && (
         <div className="relative z-10 flex h-11 shrink-0 items-center bg-background px-4">
           <ChatHeader serverId={serverId} chat={chat} activities={activities} />
