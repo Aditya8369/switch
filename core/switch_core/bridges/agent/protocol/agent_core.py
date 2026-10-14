@@ -18,7 +18,12 @@ from switch_core.addressing import (
     parse_policy,
 )
 from switch_core.agent_display_name import normalise_display_name
-from switch_core.agent_icon import normalise_icon_url, prepare_icon_url
+from switch_core.agent_icon import (
+    drop_third_party_avatar,
+    normalise_icon_url,
+    prepare_icon_url,
+    refuse_third_party_avatar,
+)
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
@@ -137,6 +142,7 @@ if TYPE_CHECKING:
     from switch_core.clients.actor import Actor
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.config import SwitchConfig
+    from switch_core.connections.broker import ServiceBroker
     from switch_core.db.stores.agent_session_store import AgentSessionStore
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -157,6 +163,7 @@ logger = logging.getLogger(__name__)
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
 # trailing newline, which would let an identifier carry a line break.
 _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
+VALID_AGENT_NAME_RE = _VALID_NAME_RE
 
 # A hard ceiling on one read_context call, whatever limit the caller asks for.
 # History comes from a single indexed query now, so the only thing this guards
@@ -279,6 +286,9 @@ class AgentCore:
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
     _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # The credential broker, set by the process wiring when service
+    # connections are on; None means they are off, and nothing can be granted.
+    service_broker: ServiceBroker | None = None
 
     def __init__(
         self,
@@ -389,7 +399,8 @@ class AgentCore:
         ``icon_url`` is the agent's icon as an absolute https URL, or None for
         no icon. On re-registration None leaves any existing icon alone rather
         than clearing it, so re-registering an agent does not silently discard
-        a picture the owner chose.
+        a picture the owner chose. With third-party avatars off, an icon on
+        one of those services counts as None (`drop_third_party_avatar`).
 
         ``display_name`` is the human-readable label shown beside the machine
         identifier ``name``, or None for none. It behaves like ``icon_url`` on
@@ -422,7 +433,10 @@ class AgentCore:
                 "its bridge identities both belong to one"
             )
 
-        validated_icon_url = normalise_icon_url(icon_url)
+        validated_icon_url = drop_third_party_avatar(
+            normalise_icon_url(icon_url),
+            third_party_avatars=self.config.third_party_avatars_enabled,
+        )
         validated_display_name = normalise_display_name(display_name)
 
         tool_specs = tools or []
@@ -903,10 +917,14 @@ class AgentCore:
         an icon needs "remove it" to be sayable.
 
         Raises:
-            InvalidIconUrl: the URL is malformed or points somewhere unsafe.
+            InvalidIconUrl: the URL is malformed, points somewhere unsafe, or
+                is on an avatar service this server has turned off.
             ValueError: no agent with this id exists.
         """
-        validated = prepare_icon_url(icon_url) if icon_url is not None else None
+        validated = refuse_third_party_avatar(
+            prepare_icon_url(icon_url) if icon_url is not None else None,
+            third_party_avatars=self.config.third_party_avatars_enabled,
+        )
 
         async with self.session_factory() as session:
             agent = await self.agent_store.get(session, agent_id)
