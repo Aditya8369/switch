@@ -1186,9 +1186,9 @@ class ChatService:
             )
             if not decision.allowed:
                 raise ChatError(403, "AGENT_NOT_ALLOWED", decision.refusal)
-            # `!interrupt` stops the agent's current turn wherever it runs.
+            # `!interrupt` stops the agent's running turn wherever it runs; this check can race a turn change.
             if command == "interrupt":
-                turn = await self._activity_store.newest_unended_turn(session, agent.id)
+                turn = await self._activity_store.newest_running_turn(session, agent.id)
                 if turn is None or turn.room_id != room.id:
                     raise ChatError(
                         409,

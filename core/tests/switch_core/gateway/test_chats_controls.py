@@ -6,11 +6,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.clients.consumer import Consumer
-from switch_core.db.models import Agent, Message, User
+from switch_core.db.models import Agent, AgentSessionActivityItem, Message, User
 from switch_core.events import CommandEvent
 from switch_core.transport import RoomRef
 from switch_core.transport.stored import to_inbound
@@ -158,3 +158,27 @@ async def test_stop_refuses_unless_the_agents_current_turn_is_in_this_chat(
     stopped = await _control(chats, chats.alice, there, agent, "k3", "interrupt")
     assert stopped.status_code == 202, stopped.text
     assert len(await _commands(chats, there)) == 1
+
+
+async def test_stop_follows_the_running_turn_not_one_queued_behind_it(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    running_room = await chats.new_chat(chats.alice, agent, "c1")
+    queued_room = await chats.new_chat(chats.alice, agent, "c2")
+    await _step(chats, agent, running_room, "t1", "turn", 1)
+    await _step(chats, agent, queued_room, "t2", "turn", 1)
+    async with chats.factory() as session:
+        await session.execute(
+            update(AgentSessionActivityItem)
+            .where(AgentSessionActivityItem.turn_id == "t2")
+            .values(status="queued")
+        )
+        await session.commit()
+
+    queued = await _control(chats, chats.alice, queued_room, agent, "k1", "interrupt")
+    assert queued.status_code == 409
+    assert _code(queued) == "NOTHING_RUNNING_HERE"
+
+    running = await _control(chats, chats.alice, running_room, agent, "k2", "interrupt")
+    assert running.status_code == 202, running.text
