@@ -174,6 +174,11 @@ export async function sendChatControl(
   ).commandId;
 }
 
+/** Ask core to have the agent's controller start its session for the room; a hint, accepted at once. */
+export async function warmChatAgent(server: SwitchServer, roomId: string, agentId: string) {
+  await call(server, `${room(roomId)}/warm`, { method: 'POST', body: { agentId } });
+}
+
 /** Answer an agent's approval request as the signed-in person. */
 export async function answerChatApproval(
   server: SwitchServer,

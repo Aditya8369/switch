@@ -95,6 +95,24 @@ class _FakeActivityListener:
             await on_resync()
 
 
+class _FakeControllers:
+    """The controller presence, as far as warming a chat reads it."""
+
+    def __init__(self) -> None:
+        self.bound: set[str] = set()
+        self.live = True
+        self.warms: list[tuple[str, str]] = []
+
+    def is_bound(self, agent_id: str) -> bool:
+        return agent_id in self.bound
+
+    def relay_warm(self, agent_id: str, room_id: str) -> bool:
+        if not self.live:
+            return False
+        self.warms.append((agent_id, room_id))
+        return True
+
+
 class _Harness(SimpleNamespace):
     client: httpx.AsyncClient
     factory: async_sessionmaker[AsyncSession]
@@ -103,6 +121,7 @@ class _Harness(SimpleNamespace):
     listener: _FakeListener
     activity: _FakeActivityListener
     lifecycle: _FakeLifecycle
+    controllers: _FakeControllers
     alice: User
     bob: User
     carol: User
@@ -224,6 +243,7 @@ async def chats(
     )
     listener = _FakeListener()
     activity = _FakeActivityListener()
+    controllers = _FakeControllers()
     service = ChatService(
         session_factory=session_factory,
         room_service=room_service,
@@ -239,6 +259,7 @@ async def chats(
         id_server_name="switch.test",
         media_max_bytes=1024,
         agent_chats_enabled=True,
+        controllers=controllers,  # type: ignore[arg-type]
     )
     room_service.on_room_agents_changed(service.sync_room)
 
@@ -265,6 +286,7 @@ async def chats(
             listener=listener,
             activity=activity,
             lifecycle=lifecycle,
+            controllers=controllers,
             alice=alice,
             bob=bob,
             carol=carol,

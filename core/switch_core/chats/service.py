@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.authz import administers_tenant
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
@@ -157,8 +158,10 @@ class ChatService:
         id_server_name: str,
         media_max_bytes: int,
         agent_chats_enabled: bool,
+        controllers: ControllerPresence,
     ) -> None:
         self.session_factory = session_factory
+        self._controllers = controllers
         self.agent_chats_enabled = agent_chats_enabled
         self.listener = listener
         self.activity_listener = activity_listener
@@ -1242,6 +1245,38 @@ class ChatService:
             )
             await session.commit()
         return command_id
+
+    async def warm(
+        self, tenant_id: str, user: User, room_id: str, *, agent_id: str
+    ) -> None:
+        """Ask the controller of the user's own agent to start its session for
+        this chat before the first message. A hint: nothing waits for it, and
+        an agent no controller hosts is not warmed."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room, client = await self.require_member(session, tenant_id, user, room_id)
+            if agent_id not in await self._room_store.get_agent_ids(session, room.id):
+                raise ChatError(
+                    422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat."
+                )
+            agent = await self._agent_store.get(session, agent_id)
+            assert agent is not None
+            if agent.owner_id != user.id:
+                raise ChatError(
+                    403, "NOT_AGENT_OWNER", "Only the agent's owner can warm it."
+                )
+            decision = await self._addressing.permitted(
+                session, agent=agent, room_id=room.id, sender=client.transport_user_id
+            )
+            if not decision.allowed:
+                raise ChatError(403, "AGENT_NOT_ALLOWED", decision.refusal)
+        if not self._controllers.is_bound(agent_id):
+            return
+        if not self._controllers.relay_warm(agent_id, room.id):
+            logger.warning(
+                "Could not warm agent %s for room %s: its controller is not connected or it is stopped",
+                agent_id,
+                room.id,
+            )
 
     async def _posted(
         self, session: AsyncSession, room: Room, operation: ChatOperation

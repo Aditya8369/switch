@@ -44,6 +44,7 @@ import {
   sendChatMessage,
   setChatHidden,
   uploadChatAttachment,
+  warmChatAgent,
 } from './gateway';
 
 const onServer = withServerWorkspaceSession;
@@ -84,10 +85,10 @@ const activityDeps: ActivityDeps = {
 };
 
 /**
- * Asks the local or SSH host of the person's agent to start the session a
- * message to the room would start, ahead of the message. Does nothing for an
- * agent not hosted here; a failure is logged, never thrown, so it cannot get
- * in the way of sending.
+ * Asks the host of the person's agent to start the session a message to the
+ * room would start, ahead of the message: a local or SSH host directly, any
+ * other through core, which tells the agent's controller. A failure is
+ * logged, never thrown, so it cannot get in the way of sending.
  */
 async function warmChat(params: { serverId: string; agentId: string; roomId: string }) {
   const { serverId, agentId, roomId } = params;
@@ -95,7 +96,10 @@ async function warmChat(params: { serverId: string; agentId: string; roomId: str
     const local = (await activityDeps.localAgents(serverId)).find(
       (agent) => agent.switchAgentId === agentId
     );
-    if (!local) return;
+    if (!local) {
+      await onServer(serverId, (server) => warmChatAgent(server, roomId, agentId));
+      return;
+    }
     await (local.ssh
       ? withSidecar(local.id, (client) => client.warm(roomId))
       : localWatcherControl(agentId).warm(roomId));

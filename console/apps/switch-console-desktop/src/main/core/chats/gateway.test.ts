@@ -1,5 +1,7 @@
+import { gatewayFetch } from '@main/core/switch-servers/gateway-client';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { describe, expect, it, vi } from 'vitest';
-import { parseChatRows } from './gateway';
+import { parseChatRows, warmChatAgent } from './gateway';
 
 const warn = vi.hoisted(() => vi.fn());
 vi.mock('@main/lib/logger', () => ({ log: { warn } }));
@@ -35,5 +37,18 @@ describe('parseChatRows', () => {
       expect.any(String),
       expect.objectContaining({ roomId: 'room-bad' })
     );
+  });
+});
+
+describe('warmChatAgent', () => {
+  it('posts the agent to the room’s warm route', async () => {
+    const server = { id: 'server-1' } as SwitchServer;
+    vi.mocked(gatewayFetch).mockResolvedValueOnce(new Response(null, { status: 202 }));
+    await warmChatAgent(server, 'room/a', 'agent-1');
+    expect(gatewayFetch).toHaveBeenCalledWith(server, '/chats/room%2Fa/warm', {
+      authenticated: true,
+      method: 'POST',
+      body: { agentId: 'agent-1' },
+    });
   });
 });

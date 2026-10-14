@@ -399,6 +399,18 @@ async def send_control(
     return ControlAccepted(command_id=command_id)
 
 
+class WarmRequest(CamelModel):
+    agent_id: str
+
+
+@router.post("/{room_id}/warm", status_code=202)
+async def warm_agent(
+    room_id: str, req: WarmRequest, user: CurrentUser, service: Service
+) -> Response:
+    await service.warm(require_tenant_id(), user, room_id, agent_id=req.agent_id)
+    return Response(status_code=202)
+
+
 @router.get("/{room_id}/media")
 async def get_media(
     room_id: str,
