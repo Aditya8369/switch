@@ -1662,6 +1662,11 @@ class MessagingInstallState(TenantScoped, Base):
     decided_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The chat a claim-based install (Telegram) was put to when its state was
+    # redeemed; only an answer from that chat may decide it. In the row, not
+    # in the memory of the process that posted the proposal, because the
+    # admin's answer may reach any switch-core process.
+    proposed_chat_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class MessagingEventReceipt(TenantScoped, Base):
