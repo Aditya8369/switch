@@ -31,6 +31,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const {
     params: { locationId, agentName },
   } = useParams('location');
+  const showCreateSessionModal = useShowModal('sessionModal');
   const showNewChat = useShowModal('newChatModal');
   const { navigate } = useNavigate();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
@@ -59,9 +60,9 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const switchAgentId = agent?.switchAgentId ?? null;
   // The Chats tab is on a managed agent's page only.
   const managedAgents = useManagedAgents(agent?.serverId ?? null);
+  const chatsEnabled = useFeatureFlags(agent?.serverId).agent_chats;
   const chatsTab =
-    useFeatureFlags(agent?.serverId).agent_chats &&
-    (managedAgents.data ?? []).some((managed) => managed.agentId === switchAgentId);
+    chatsEnabled && (managedAgents.data ?? []).some((managed) => managed.agentId === switchAgentId);
 
   /** The icon is stored on the Switch server, not locally, so a change is a
    * request that can fail. It is reported rather than swallowed: a picture
@@ -112,7 +113,16 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
       description={description}
       actions={
         <>
-          {agent?.serverId && agent.switchAgentId && (
+          {!chatsEnabled && (
+            <Button
+              onClick={() =>
+                showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
+              }
+            >
+              New Session
+            </Button>
+          )}
+          {chatsEnabled && agent?.serverId && agent.switchAgentId && (
             <Button
               onClick={() => {
                 const serverId = agent.serverId as string;
