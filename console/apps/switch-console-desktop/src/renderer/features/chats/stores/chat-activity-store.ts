@@ -297,6 +297,8 @@ export class AgentActivities {
     {},
     { deep: false }
   );
+  /** Unsettled controls of activities no view holds, by entry key. */
+  private readonly parked = new Map<string, ControlRequest[]>();
   /** The activity feed's connection for each server, when it is down: why. Absent while live. */
   readonly feedDown = observable.map<string, string | null>({}, { deep: false });
   private readonly watches = new Map<string, () => void>();
@@ -399,6 +401,11 @@ export class AgentActivities {
         activity: new AgentActivity(serverId, tenantId, roomId, agentId, this.api),
         users: 0,
       };
+      const parked = this.parked.get(key);
+      if (parked) {
+        entry.activity.controls = parked;
+        this.parked.delete(key);
+      }
       const created = entry;
       runInAction(() => this.entries.set(key, created));
       this.syncWatches();
@@ -432,6 +439,11 @@ export class AgentActivities {
     if (!entry || entry.activity !== activity) return;
     entry.users -= 1;
     if (entry.users > 0) return;
+    // A command still sending or of unknown outcome outlives the view, so reopening reuses its request id.
+    const unsettled = activity.controls.filter(
+      (control) => control.state === 'sending' || control.state === 'unknown'
+    );
+    if (unsettled.length > 0) this.parked.set(key, unsettled);
     runInAction(() => this.entries.delete(key));
     this.syncWatches();
   }
