@@ -237,16 +237,29 @@ class SignalBus:
             batch, self._outbox = self._outbox, []
             if not batch:
                 continue
+            # Set once the batch's transaction has committed, which is when
+            # Postgres sends it: what fails after that (closing the session)
+            # did not stop it going, and keeping it would send it twice.
+            committed = False
             try:
                 async with self._session_factory() as session:
                     await session.execute(
                         _NOTIFY_MANY, {"channel": SIGNAL_CHANNEL, "payloads": batch}
                     )
                     await session.commit()
+                    committed = True
             except asyncio.CancelledError:
-                self._outbox = batch + self._outbox
+                if not committed:
+                    self._outbox = batch + self._outbox
                 raise
             except Exception:
+                if committed:
+                    logger.warning(
+                        "Sent %d signal(s), then closing the session failed",
+                        len(batch),
+                        exc_info=True,
+                    )
+                    continue
                 # The receivers' listening connections did not drop, so none
                 # of them will resync: a batch dropped here would be lost
                 # until the next re-check. Kept ahead of anything published
