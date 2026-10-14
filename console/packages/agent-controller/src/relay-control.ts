@@ -1,8 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { connect } from 'node:net';
-import { join } from 'node:path';
 import {
   ControlClient,
   type ControlContext,
@@ -14,7 +13,6 @@ import {
   handleControlMessage,
   SessionHostFailedError,
   SessionUnavailableError,
-  sharedSessionRoot,
   SidecarConnectionClosedError,
   type WatcherHealth,
 } from '@switch-console/agent-providers';
@@ -167,35 +165,6 @@ export type LocalControl = {
   closed: Promise<unknown>;
 };
 
-/** The session a message names, if it names one. */
-function namedSession(message: ControlMessage): string | null {
-  if ('request' in message) return message.sessionId;
-  if ('subscribe' in message) return message.subscribe;
-  if ('place' in message) return message.place.sessionId;
-  if ('forget' in message) return message.forget;
-  if ('journal' in message) return message.journal;
-  if ('reasoning' in message) return message.reasoning.sessionId;
-  if ('attachment' in message) return message.attachment.sessionId;
-  return null;
-}
-
-/** Refuses a session whose saved configuration does not name `agentId` as its agent. */
-export async function assertOwnSession(agentId: string, sessionId: string): Promise<void> {
-  let owner: unknown = null;
-  try {
-    const text = await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8');
-    owner = (JSON.parse(text) as { session?: { agentId?: unknown } } | null)?.session?.agentId;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError))
-      throw error;
-  }
-  if (owner !== agentId)
-    throw new ControlError(
-      'not_own_session',
-      `Session ${sessionId} is not a session of agent ${agentId}.`
-    );
-}
-
 /** An agent host in this process, answered directly; its live views push through `sink`. */
 class LocalTransport {
   private readonly peer: ControlPeer;
@@ -208,8 +177,6 @@ class LocalTransport {
   }
 
   private async handle(message: ControlMessage, dispatching: () => void): Promise<unknown> {
-    const sessionId = namedSession(message);
-    if (sessionId !== null) await assertOwnSession(this.local.context.agentId, sessionId);
     dispatching();
     return handleControlMessage(this.local.context, this.peer, message, () => {});
   }

@@ -52,10 +52,21 @@ function host() {
   return child;
 }
 
+/** Gives `sessionId` a saved configuration naming `agentId`, as its host's launch writes it. */
+async function saved(base: string, sessionId: string, agentId: string): Promise<void> {
+  await mkdir(join(base, sessionId), { recursive: true });
+  await writeFile(
+    join(base, sessionId, 'config.json'),
+    JSON.stringify({ session: { sessionId, agentId } })
+  );
+}
+
 async function started() {
   const base = await mkdtemp(join(tmpdir(), 'control-'));
   roots.push(base);
   paths.base = base;
+  for (const id of ['session', 'stopped', 'gone', 'elsewhere']) await saved(base, id, 'agent');
+  await saved(base, 'theirs', 'other');
   const links = new SessionLinks();
   const ensure = vi.fn(async () => ({ created: true }));
   const stop = new AbortController();
@@ -178,6 +189,57 @@ it('answers at once for a session nothing is running', async () => {
   const console = client();
   await console.ready;
   await expect(console.request('stopped', { type: 'snapshot' })).rejects.toThrow('not running');
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('never reads or commands a session of another agent', async () => {
+  const { base, links, stop, serving, client, watcher } = await started();
+  const sessionRoot = join(base, 'theirs');
+  await writeFile(join(sessionRoot, 'running'), 'yes');
+  const child = host();
+  const sent = vi.spyOn(child, 'send');
+  links.attach(sessionRoot, child as unknown as ChildProcess);
+  child.emit('message', { kind: 'ready' });
+  const placed = vi.fn();
+  const forgot = vi.fn();
+  const unbind = watcher.bind({ place: placed, forget: forgot });
+
+  const console = client();
+  await console.ready;
+  const refused = 'not a session of agent agent';
+  for (const id of ['theirs', 'unknown']) {
+    await expect(console.request(id, { type: 'snapshot' })).rejects.toThrow(refused);
+    await expect(
+      console.subscribe(
+        id,
+        () => {},
+        () => {}
+      )
+    ).rejects.toThrow(refused);
+    await expect(console.send({ journal: id })).rejects.toThrow(refused);
+    const chunk = {
+      transferId: 't1',
+      sessionId: id,
+      name: 'a.txt',
+      mimeType: 'text/plain',
+      size: 1,
+      sha256: '0'.repeat(64),
+      index: 0,
+      count: 1,
+      chunk: 'YQ==',
+    };
+    await expect(console.send({ attachment: chunk })).rejects.toThrow(refused);
+    await expect(console.place(id, 'room')).rejects.toThrow(refused);
+    await expect(console.forget(id)).rejects.toThrow(refused);
+    await expect(console.reasoning(id, null)).rejects.toThrow(refused);
+  }
+  expect(sent).not.toHaveBeenCalled();
+  expect(placed).not.toHaveBeenCalled();
+  expect(forgot).not.toHaveBeenCalled();
+
+  unbind();
   console.close();
   stop.abort();
   await serving;

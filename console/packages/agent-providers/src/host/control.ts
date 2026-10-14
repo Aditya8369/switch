@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
@@ -149,6 +149,9 @@ export async function handleControlMessage(
   dispatching: () => void
 ): Promise<unknown> {
   const { links, watcher } = context;
+  // The sessions directory is shared by every agent on the machine.
+  const named = namedSession(message);
+  if (named !== null) await assertOwnSession(context.agentId, named);
   if ('request' in message) {
     const sessionRoot = sharedSessionRoot(message.sessionId);
     if (message.request.type === 'reasoning')
@@ -240,6 +243,35 @@ export function ensureSessions(supervision: Supervision): EnsureSession {
       startSource: input.startSource ?? null,
     });
   };
+}
+
+/** The session a message names, if it names one. */
+function namedSession(message: ControlMessage): string | null {
+  if ('request' in message) return message.sessionId;
+  if ('subscribe' in message) return message.subscribe;
+  if ('place' in message) return message.place.sessionId;
+  if ('forget' in message) return message.forget;
+  if ('journal' in message) return message.journal;
+  if ('reasoning' in message) return message.reasoning.sessionId;
+  if ('attachment' in message) return message.attachment.sessionId;
+  return null;
+}
+
+/** Refuses a session whose saved configuration does not name `agentId` as its agent. */
+async function assertOwnSession(agentId: string, sessionId: string): Promise<void> {
+  let owner: unknown = null;
+  try {
+    const text = await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8');
+    owner = (JSON.parse(text) as { session?: { agentId?: unknown } } | null)?.session?.agentId;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError))
+      throw error;
+  }
+  if (owner !== agentId)
+    throw new ControlError(
+      'not_own_session',
+      `Session ${sessionId} is not a session of agent ${agentId}.`
+    );
 }
 
 /** How long a request waits for the session's host to be ready. */

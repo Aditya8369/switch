@@ -40,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const control of controls) control.close();
   for (const root of roots) await rm(root, { recursive: true, force: true });
 });
@@ -147,8 +148,18 @@ const sessionEvent = (sequence: number) => ({
   body: { type: 'notice', level: 'info', code: 'X', message: 'hi' },
 });
 
-/** A real control port, as an agent's host serves it. */
+/** Gives `sessionId` a saved configuration naming `agentId`, as its host's launch writes it. */
+async function savedSession(sessionId: string, agentId: string): Promise<void> {
+  const root = sharedSessionRoot(sessionId);
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, 'config.json'), JSON.stringify({ session: { sessionId, agentId } }));
+}
+
+/** A real control port, as an agent's host serves it, with `s1` its own session and `theirs` another agent's. */
 async function sidecar(root: string, links = fakeLinks()) {
+  vi.stubEnv('HOME', await tempRoot());
+  await savedSession('s1', AGENT);
+  await savedSession('theirs', 'agent-2');
   const watcher = new WatcherControl();
   const stop = new AbortController();
   const context: ControlContext = {
@@ -399,6 +410,33 @@ describe('relaying to an agent’s host', () => {
     await second.stop();
   });
 
+  it('never reads or commands a session of another agent through the control port', async () => {
+    const root = await tempRoot();
+    const dispatched: unknown[] = [];
+    const host = await sidecar(
+      root,
+      fakeLinks((request) => dispatched.push(request))
+    );
+    const control = relayControl({ controlFile: () => join(root, CONTROL_FILE) });
+    const command = { type: 'command', command: {}, requesterName: null };
+    for (const message of [
+      { sessionId: 'theirs', request: { type: 'snapshot' } },
+      { sessionId: 'theirs', request: command },
+      { sessionId: 'unknown', request: command },
+      { subscribe: 'theirs' },
+      { journal: 'theirs' },
+      { place: { sessionId: 'theirs', roomId: 'r' } },
+      { forget: 'theirs' },
+    ]) {
+      const reply = await relay(control, message);
+      expect(reply.ok).toBe(false);
+      expect(JSON.stringify(reply)).toContain('is not a session of agent agent-1');
+    }
+    expect(dispatched).toEqual([]);
+    expect(host.links.subscribers()).toBe(0);
+    await host.stop();
+  });
+
   it('answers agent_not_running when the host has no control port', async () => {
     const root = await tempRoot();
     const control = relayControl({
@@ -410,13 +448,6 @@ describe('relaying to an agent’s host', () => {
 
 describe('relaying to an agent host in the controller’s process', () => {
   const OTHER = 'agent-2';
-
-  /** Gives `sessionId` a saved configuration naming `agentId`, as its host's launch writes it. */
-  async function savedSession(sessionId: string, agentId: string): Promise<void> {
-    const root = sharedSessionRoot(sessionId);
-    await mkdir(root, { recursive: true });
-    await writeFile(join(root, 'config.json'), JSON.stringify({ session: { sessionId, agentId } }));
-  }
 
   /** Every in-process agent host shares one session registry: `links` serves both agents. */
   async function inProcess() {
@@ -450,10 +481,6 @@ describe('relaying to an agent host in the controller’s process', () => {
     };
     return { control, links, watcher, dispatched, stop };
   }
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
 
   it('answers in the process, with no control port, and pushes what it subscribed to', async () => {
     const host = await inProcess();
