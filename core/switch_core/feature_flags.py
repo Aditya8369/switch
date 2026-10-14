@@ -43,6 +43,13 @@ AGENT_MANAGEMENT = "agent_management"
 # connect routes stay.
 SERVICE_CONNECTIONS = "service_connections"
 
+# Follow the conversation: a person's message that mentions nobody reaches an
+# agent when it is a reply in a thread the agent is taking part in, the next
+# message in an exchange the agent has just answered, or a message in a room
+# whose main agent it is (`delivery/conversation.py`). With it off such
+# messages reach nobody, as before.
+FOLLOW_THE_CONVERSATION = "follow_the_conversation"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -51,5 +58,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         HOSTED_AGENTS,
         AGENT_MANAGEMENT,
         SERVICE_CONNECTIONS,
+        FOLLOW_THE_CONVERSATION,
     }
 )

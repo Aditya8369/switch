@@ -1,7 +1,7 @@
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Message, MessageAttachment
@@ -217,6 +217,53 @@ class MessageStore:
         if before is not None:
             query = query.where(Message.sent_at < before)
         result = await session.execute(query.order_by(Message.seq.desc()).limit(limit))
+        return list(result.scalars().all())
+
+    async def list_thread_before(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        thread_root_event_id: str,
+        before_seq: int,
+        limit: int,
+    ) -> list[Message]:
+        """A thread's messages from before `before_seq`, oldest first.
+
+        The thread's root is included, as the first row when it is in range,
+        so a caller reading only the first `limit` always sees the message
+        that started it.
+        """
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.room_id == room_id,
+                Message.seq < before_seq,
+                or_(
+                    Message.thread_root_event_id == thread_root_event_id,
+                    Message.transport_event_id == thread_root_event_id,
+                ),
+            )
+            .order_by(Message.seq)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_top_level_before(
+        self, session: AsyncSession, room_id: str, *, before_seq: int, limit: int
+    ) -> list[Message]:
+        """The room's newest top-level messages from before `before_seq`,
+        newest first. Replies inside threads are left out."""
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.room_id == room_id,
+                Message.seq < before_seq,
+                Message.thread_root_event_id.is_(None),
+            )
+            .order_by(Message.seq.desc())
+            .limit(limit)
+        )
         return list(result.scalars().all())
 
     async def list_by_transport_event_ids(

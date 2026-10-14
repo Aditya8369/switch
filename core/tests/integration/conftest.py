@@ -83,6 +83,7 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.delivery.conversation import ConversationSettings
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
@@ -635,6 +636,8 @@ async def harness(
             agent_session_store=session_env.agent_session_store,
             room_role_store=session_env.room_role_store,
             external_user_store=session_env.external_user_store,
+            message_store=session_env.message_store,
+            conversation_settings=ConversationSettings.from_config(config),
             connections=connections,
             frontend_base_url=config.frontend_base_url,
             message_telemetry=message_telemetry,

@@ -9,6 +9,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
+    ROOM_SETTINGS_MARKER,
     AdminMessageType,
     admin_extra_content,
 )
@@ -23,6 +24,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.document_store import DocumentStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -57,6 +59,7 @@ class CommandConsumer(Consumer[SystemActor]):
         agent_store: AgentStore,
         room_store: RoomStore,
         room_role_store: RoomRoleStore,
+        external_user_store: ExternalUserStore,
         connections: AgentConnectionRegistry,
         document_store: DocumentStore,
         reference_store: ReferenceStore,
@@ -68,6 +71,7 @@ class CommandConsumer(Consumer[SystemActor]):
         self._agent_store = agent_store
         self._room_store = room_store
         self._room_role_store = room_role_store
+        self._external_user_store = external_user_store
         self._connections = connections
         self._document_store = document_store
         self._reference_store = reference_store
@@ -120,6 +124,33 @@ class CommandConsumer(Consumer[SystemActor]):
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
+            metered=False,
+        )
+
+    async def announce_room_settings(
+        self,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id: str | None,
+        follow_ups_enabled: bool,
+        main_agent_id: str | None,
+    ) -> None:
+        """Post a command result that changed the room's follow-the-conversation
+        settings, carrying the new settings so agents' clients can update what
+        they cached about the room."""
+        await self.actor.send_message(
+            room_id,
+            body,
+            format="markdown",
+            thread_root_id=thread_root_id,
+            extra_content={
+                **admin_extra_content(AdminMessageType.COMMAND_RESULT),
+                ROOM_SETTINGS_MARKER: {
+                    "follow_ups": follow_ups_enabled,
+                    "main_agent_id": main_agent_id,
+                },
+            },
             metered=False,
         )
 

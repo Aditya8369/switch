@@ -30,9 +30,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.transport import InboundMessage, RoomRef
 
 TRANSPORT_ROOM_ID = "!r:test"
@@ -110,8 +112,14 @@ async def _seed(
         return room.id, agents
 
 
+_CONVERSATION_OFF = ConversationSettings(enabled=False, window_seconds=300)
+
+
 def _client(
-    counting: _CountingSessionFactory, agent: Agent, room_id: str
+    counting: _CountingSessionFactory,
+    agent: Agent,
+    room_id: str,
+    conversation: ConversationSettings = _CONVERSATION_OFF,
 ) -> AgentConsumer:
     """An AgentConsumer wired to the real stores, with its room-meta cache warm.
 
@@ -141,6 +149,12 @@ def _client(
         external_user_store=client._external_user_store,
         live_connection_ids=client._connections.live_connection_ids,
     )
+    client._conversation = ConversationRules(
+        settings=conversation,
+        addressing=client._addressing,
+        message_store=MessageStore(),
+        room_store=client._room_store,
+    )
     client._budget_guard = BudgetGuard(BudgetStore())
     client._message_telemetry = SimpleNamespace(  # type: ignore[assignment]
         agent_addressed=lambda **_k: None
@@ -156,6 +170,7 @@ def _client(
     }
     client._attachment_groups = {}
     client._attachment_group_timers = {}
+    client._last_top_level_post_ms = {}
     client.sent = []  # type: ignore[attr-defined]
 
     async def _send_message(transport_room_id: str, body: str, **kwargs: Any) -> str:
@@ -195,6 +210,25 @@ class TestInboundMessageCheckouts:
         room_id, agents = await _seed(session_factory, names=["member"])
         counting = _CountingSessionFactory(session_factory)
         client = _client(counting, agents["member"], room_id)
+
+        await client.on_message(_room(), _message("just talking amongst ourselves"))
+
+        assert counting.opened == 0
+
+    async def test_chatter_still_costs_nothing_with_follow_ups_on(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Following the conversation is on, but this agent has not posted here
+        # recently and is not the room's main agent: no rule could apply, so
+        # the free check settles it without a database read.
+        room_id, agents = await _seed(session_factory, names=["member"])
+        counting = _CountingSessionFactory(session_factory)
+        client = _client(
+            counting,
+            agents["member"],
+            room_id,
+            ConversationSettings(enabled=True, window_seconds=300),
+        )
 
         await client.on_message(_room(), _message("just talking amongst ourselves"))
 

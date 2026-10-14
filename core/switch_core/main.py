@@ -154,6 +154,7 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.delivery.conversation import ConversationSettings
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
@@ -645,6 +646,8 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
+        message_store=message_store,
+        conversation_settings=ConversationSettings.from_config(config),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
         message_telemetry=message_telemetry,
@@ -711,6 +714,7 @@ async def run(config: SwitchConfig) -> None:
         agent_store=agent_store,
         room_store=room_store,
         room_role_store=room_role_store,
+        external_user_store=external_user_store,
         document_store=document_store,
         reference_store=reference_store,
         agent_session_store=agent_session_store,

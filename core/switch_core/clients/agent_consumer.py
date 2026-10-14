@@ -37,8 +37,10 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.actor import AgentActor
 from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
+    ROOM_SETTINGS_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
@@ -62,15 +64,26 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_machine_store import owner_stopped
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import (
+    RoomStore,
+    follow_ups_enabled_in,
+    main_agent_in,
+)
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
     AddressingDecision,
     AddressingResolver,
     IncomingMessage,
+)
+from switch_core.delivery.conversation import (
+    ConversationMessage,
+    ConversationRules,
+    ConversationSettings,
+    may_follow,
 )
 from switch_core.events import (
     CommandEvent,
@@ -86,6 +99,7 @@ from switch_core.observability.catalogue import OBSERVER_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.observability.throttle import WarningThrottle
 from switch_core.transport import (
+    InboundEvent,
     InboundMedia,
     InboundMembership,
     InboundMessage,
@@ -336,6 +350,8 @@ class AgentConsumer(Consumer[AgentActor]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
+        message_store: MessageStore,
+        conversation_settings: ConversationSettings,
         connections: AgentConnectionRegistry,
         frontend_base_url: str | None,
         message_telemetry: MessageTelemetry,
@@ -367,6 +383,12 @@ class AgentConsumer(Consumer[AgentActor]):
             external_user_store=external_user_store,
             live_connection_ids=connections.live_connection_ids,
         )
+        self._conversation = ConversationRules(
+            settings=conversation_settings,
+            addressing=self._addressing,
+            message_store=message_store,
+            room_store=room_store,
+        )
         self._budget_guard = BudgetGuard(BudgetStore())
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
@@ -374,6 +396,11 @@ class AgentConsumer(Consumer[AgentActor]):
         # never-completed group cannot leak.
         self._attachment_groups: dict[str, _PendingAttachmentGroup] = {}
         self._attachment_group_timers: dict[str, asyncio.TimerHandle] = {}
+        # transport_room_id -> when this agent last posted a top-level message
+        # there (ms, from the event). Lets a channel follow-up be ruled out
+        # without a database read. Empty after a restart, which only ever
+        # means a follow-up is missed, never one invented.
+        self._last_top_level_post_ms: dict[str, int] = {}
 
     @property
     def agent(self) -> Agent:
@@ -528,10 +555,22 @@ class AgentConsumer(Consumer[AgentActor]):
             ),
         )
 
+    def _should_ignore(self, room: RoomRef, event: InboundEvent) -> bool:
+        if (
+            event.sender == self.transport_user_id
+            and isinstance(event, InboundMessage)
+            and event.thread_root_id is None
+            and AUTO_REPLY_FLAG not in event.content
+        ):
+            self._last_top_level_post_ms[room.room_id] = event.timestamp
+        return super()._should_ignore(room, event)
+
     async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
+        if ROOM_SETTINGS_MARKER in event.content:
+            self._apply_room_settings_notice(room, meta, event)
 
         thread_id = event.thread_root_id
         if platform_replies_in_channel(event.content):
@@ -567,6 +606,16 @@ class AgentConsumer(Consumer[AgentActor]):
                             unavailable = await self._reply_when_unavailable_here(
                                 session, agent, meta, self._sender_handle(event)
                             )
+        elif await self._follow_the_conversation(event, meta):
+            is_addressed = True
+            async with self.session_factory() as session:
+                agent = await self._fresh_agent(session)
+                if not self._triggered_by_auto_reply(event):
+                    agent_live = await self._is_available(session, agent, meta.room_id)
+                    if not agent_live:
+                        unavailable = await self._reply_when_unavailable_here(
+                            session, agent, meta, self._sender_handle(event)
+                        )
 
         text = event.body
 
@@ -1022,6 +1071,8 @@ class AgentConsumer(Consumer[AgentActor]):
             bridge_id=room.bridge_id,
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type=room.channel_type,
+            follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
+            main_agent_id=main_agent_in(room.metadata_),
         )
         self._room_meta[transport_room_id] = meta
         return meta
@@ -1449,6 +1500,101 @@ class AgentConsumer(Consumer[AgentActor]):
                     reason=event.reason,
                 ),
             ),
+        )
+
+    # ── Following the conversation ────────────────────────────────────────────
+
+    async def _follow_the_conversation(
+        self, event: InboundMessage, meta: RoomMeta
+    ) -> bool:
+        """Whether a message that mentions nobody reaches this agent anyway,
+        by one of the rules in `delivery/conversation.py`, and is permitted to.
+
+        A message the rules deliver from a sender the agent's policy does not
+        admit, or while the agent is over budget, is dropped without a
+        refusal: the sender did not ask this agent for anything, so telling
+        them off would be noise. Every outcome in a room the rules apply to is
+        logged, which is how each route can be followed in the server's log.
+        """
+        message = ConversationMessage(
+            event_id=event.event_id,
+            sender=event.sender,
+            body=event.body or "",
+            content=event.content,
+            thread_root_id=event.thread_root_id,
+        )
+        if not may_follow(
+            self._conversation.settings,
+            room_id=meta.room_id,
+            channel_type=meta.channel_type,
+            message=message,
+        ):
+            return False
+        if not self._might_follow(event, meta):
+            return False
+        async with self.session_factory() as session:
+            decision = await self._conversation.decide(
+                session,
+                agent=self.agent,
+                agent_user_id=self.transport_user_id,
+                room_id=meta.room_id,
+                channel_type=meta.channel_type,
+                message=message,
+            )
+            outcome = "nobody"
+            if decision.route is not None:
+                agent = await self._fresh_agent(session)
+                gate = await self._gate_addressed(session, agent, event, meta)
+                outcome = "delivered" if gate.addressed else "dropped_not_permitted"
+        logger.info(
+            "Follow the conversation: room=%s message=%s agent=%s route=%s "
+            "outcome=%s reason=%s",
+            meta.room_id,
+            event.event_id,
+            self.agent.name,
+            decision.route or "none",
+            outcome,
+            decision.reason
+            if outcome != "dropped_not_permitted"
+            else "the sender may not instruct this agent, or it is over budget",
+        )
+        return outcome == "delivered"
+
+    def _might_follow(self, event: InboundMessage, meta: RoomMeta) -> bool:
+        """Whether any rule could deliver this message, judged from memory.
+
+        Keeps a busy room's chatter free: without it every agent in the room
+        would read history for every message with no `@`. It only ever says
+        no when the rules would too; a yes is decided properly from history.
+        """
+        if meta.main_agent_id == self.agent.id:
+            return True
+        if not meta.follow_ups_enabled:
+            return False
+        if event.thread_root_id is not None:
+            return True
+        last_post = self._last_top_level_post_ms.get(event.room_id)
+        if last_post is None:
+            return False
+        window_ms = self._conversation.settings.window_seconds * 1000
+        return 0 <= event.timestamp - last_post <= window_ms
+
+    def _apply_room_settings_notice(
+        self, room: RoomRef, meta: RoomMeta, event: InboundMessage
+    ) -> None:
+        """Keep the cached room settings current when the Switch app announces
+        a change (`!follow-ups`, `!assign-agent`)."""
+        settings = event.content.get(ROOM_SETTINGS_MARKER)
+        if ADMIN_MARKER not in event.content or not isinstance(settings, dict):
+            return
+        main_agent_id = settings.get("main_agent_id")
+        self._room_meta[room.room_id] = meta.model_copy(
+            update={
+                "follow_ups_enabled": settings.get("follow_ups") is not False,
+                "main_agent_id": main_agent_id
+                if isinstance(main_agent_id, str)
+                else None,
+            }
         )
 
     # ── Mention detection ─────────────────────────────────────────────────────

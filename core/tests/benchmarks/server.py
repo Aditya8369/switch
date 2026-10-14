@@ -55,6 +55,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.delivery.conversation import ConversationSettings
 from switch_core.main import (
     _connection_sweep_loop,
     _runtime_state_sweep_loop,
@@ -529,6 +530,8 @@ async def _serve(
         agent_session_store=session_env.agent_session_store,
         room_role_store=session_env.room_role_store,
         external_user_store=session_env.external_user_store,
+        message_store=session_env.message_store,
+        conversation_settings=ConversationSettings.from_config(config),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
         message_telemetry=message_telemetry,

@@ -27,10 +27,14 @@ def _consumer(enqueued: list[AgentEvent]) -> SimpleNamespace:
             room_id="room-1", bridge_id=None, channel_type="channel_public"
         )
 
+    async def _follow_the_conversation(_event: object, _meta: object) -> bool:
+        return False
+
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="helper"),
         _resolve_room_meta=_resolve_room_meta,
         _addressed_without_lookup=lambda _event, _meta: False,
+        _follow_the_conversation=_follow_the_conversation,
         _event_buffer=SimpleNamespace(
             enqueue=lambda _agent, _room, event: enqueued.append(event)
         ),
