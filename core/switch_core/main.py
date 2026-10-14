@@ -6,7 +6,6 @@ import logging
 import os
 import signal
 import time
-import uuid
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -110,6 +109,7 @@ from switch_core.connections.maintenance import (
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
+from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
     create_engine_from_config,
     create_session_factory,
@@ -152,6 +152,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -162,6 +163,7 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
+from switch_core.management.process_lease import ProcessLease
 from switch_core.management.wiring import Management, create_management
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
@@ -178,6 +180,7 @@ from switch_core.observability.pool import (
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.outbound import guarded_async_client
+from switch_core.process_identity import new_process_id
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -301,25 +304,33 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
 # Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
 # writes is what lets every other process see this one's machines go offline
 # now rather than when its lease lapses.
-_MANAGEMENT_STOP_SECONDS = 1.0
+_RELEASE_SECONDS = 1.0
 
 
-async def _stop_management(management: Management) -> None:
-    """Record the controller sockets that went and mark this process's lease
-    stopped. Never raises: if it fails, the lease lapses on its own."""
+async def _release_process(management: Management | None, lease: ProcessLease) -> None:
+    """Record the controller sockets that went, then mark this process's lease
+    stopped. The lease is marked stopped even when the recording fails, so
+    the machines this process held read offline either way. Never raises: if
+    it all fails, the lease lapses on its own."""
     try:
-        async with asyncio.timeout(_MANAGEMENT_STOP_SECONDS):
-            await management.stop()
+        async with asyncio.timeout(_RELEASE_SECONDS):
+            try:
+                if management is not None:
+                    await management.flush()
+            finally:
+                await lease.stop()
     except TimeoutError:
         logger.warning(
-            "Gave up recording controller disconnections after %.1fs; their "
-            "machines read offline once this process's lease lapses.",
-            _MANAGEMENT_STOP_SECONDS,
+            "Gave up releasing switch-core process %s after %.1fs; its "
+            "controllers' machines read offline once its lease lapses.",
+            lease.process_id,
+            _RELEASE_SECONDS,
         )
     except Exception:
         logger.warning(
-            "Recording controller disconnections at shutdown failed; their "
-            "machines read offline once this process's lease lapses.",
+            "Releasing switch-core process %s at shutdown failed; its "
+            "controllers' machines read offline once its lease lapses.",
+            lease.process_id,
             exc_info=True,
         )
 
@@ -481,7 +492,7 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def run(config: SwitchConfig) -> None:
+async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
     # Switch's boot-time advisory lock, before this coroutine was ever started
@@ -491,6 +502,7 @@ async def run(config: SwitchConfig) -> None:
     encrypted_json.configure(config.keyring)
     engine = create_engine_from_config(config, poolclass=WaitTimedQueuePool)
     tenants_isolated = await _check_tenant_isolation(config, engine)
+    await check_connection_budget(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
     # keeps knowing nothing about observability. Unconditional: the listeners
@@ -523,8 +535,18 @@ async def run(config: SwitchConfig) -> None:
     signal_bus = SignalBus(
         session_factory,
         lambda: create_unpooled_engine(config),
-        process_id=str(uuid.uuid4()),
+        process_id=process_id,
     )
+    # This process's row in `switch_core_processes`, claimed before anything
+    # can record a connection against it and held until the process drains.
+    # What another process reads to know this one is alive.
+    process_lease = ProcessLease(
+        process_id=process_id,
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+    )
+    await process_lease.renew()
+    logger.info("Claimed switch-core process lease %s", process_id)
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
@@ -769,7 +791,7 @@ async def run(config: SwitchConfig) -> None:
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
     management = create_management(
-        config, session_factory, connections.controllers, signal_bus
+        config, session_factory, connections.controllers, signal_bus, process_lease
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
@@ -982,7 +1004,6 @@ async def run(config: SwitchConfig) -> None:
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
-        await management.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
@@ -992,6 +1013,8 @@ async def run(config: SwitchConfig) -> None:
     probes = RuntimeProbes(
         listener_connected=message_listener.connected.is_set,
         session_activity_listener_connected=session_activity_listener.connected.is_set,
+        agent_event_listener_connected=agent_event_listener.connected.is_set,
+        signal_bus_connected=signal_bus.connected.is_set,
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
@@ -1050,6 +1073,7 @@ async def run(config: SwitchConfig) -> None:
                 version=switch_core_version(),
                 session_factory=session_factory,
                 probes=probes,
+                process_id=process_id,
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
             asyncio.create_task(connector_lifecycle.start_all())
@@ -1066,6 +1090,7 @@ async def run(config: SwitchConfig) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
+            lease_task = asyncio.create_task(process_lease.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1092,10 +1117,10 @@ async def run(config: SwitchConfig) -> None:
                 service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
-                if management is not None:
-                    assert management_task is not None
+                lease_task.cancel()
+                if management_task is not None:
                     management_task.cancel()
-                    await _stop_management(management)
+                await _release_process(management, process_lease)
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
@@ -1825,7 +1850,7 @@ def migrate() -> None:
     """
     config = SwitchConfig()
     running_version = switch_core_version()
-    configure_logging(config, running_version)
+    configure_logging(config, running_version, new_process_id(config.pod_name))
 
     logger.info("Migrating switch-core %s", running_version or "(version unknown)")
 
@@ -1835,9 +1860,14 @@ def migrate() -> None:
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
-    configure_logging(config, running_version)
+    process_id = new_process_id(config.pod_name)
+    configure_logging(config, running_version, process_id)
 
-    logger.info("Starting switch-core %s", running_version or "(version unknown)")
+    logger.info(
+        "Starting switch-core %s as process %s",
+        running_version or "(version unknown)",
+        process_id,
+    )
     for warning in deprecated_env_names():
         logger.warning(warning)
 
@@ -1846,7 +1876,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config))
+    asyncio.run(run(config, process_id))
 
 
 if __name__ == "__main__":

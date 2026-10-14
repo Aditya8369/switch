@@ -719,7 +719,12 @@ postgresql:
   # past the server's TTL loses its connection — so under-sizing this shows up
   # as fleet-wide agent disconnects, not as database errors.
   # size + maxOverflow must stay under Postgres max_connections, remembering
-  # Mattermost and Keycloak share the same instance.
+  # Mattermost and Keycloak share the same instance. The pool is per pod: every
+  # replica holds its own, plus four LISTEN connections (and one for the
+  # database sampler when metrics are exported), and a rolling deploy of
+  # several replicas runs one extra pod. switch-core adds this up at boot
+  # against max_connections; over budget, several replicas refuse to start and
+  # one replica logs a warning.
   pool:
     size: 30
     maxOverflow: 10

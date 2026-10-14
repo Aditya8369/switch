@@ -2138,8 +2138,9 @@ class TelemetrySnapshotWatermark(Base):
 class SwitchCoreProcess(Base):
     """A running switch-core process's lease (`management/process_lease.py`).
 
-    Each process holding controller sockets claims a row at startup, renews
-    `beat_at` every few seconds, and sets `stopped_at` as it shuts down. A
+    Every process claims a row at startup under its process id
+    (`process_identity.py`), renews `beat_at` every few seconds, and sets
+    `stopped_at` as it shuts down. A
     controller connection whose holding process's lease is stale, stopped or
     gone reads as offline, which is how a process that died without writing
     its connections' closings is noticed. One write per process per renewal,

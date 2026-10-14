@@ -178,7 +178,7 @@ class TestTheMachineState:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
-            await harness.management.start()
+            await harness.management.lease.renew()
             await open_connection(client, controller)
             await _flush(harness)
             listed = await _listed(client, controller)
@@ -407,7 +407,7 @@ class TestTheProcessLease:
         async with holder.client() as client, other.client() as elsewhere:
             controller = await enroll_console(holder, client, owner)
             await connect(client, controller)
-            await other.management.start()
+            await other.management.lease.renew()
             online = await _listed(elsewhere, controller)
             await _age_lease(holder, LEASE_TTL.total_seconds() + 1)
             await other.management.lease.renew()
@@ -447,7 +447,8 @@ class TestTheProcessLease:
         async with holder.client() as client, other.client() as elsewhere:
             controller = await enroll_console(holder, client, owner)
             await connect(client, controller)
-            await holder.management.stop()
+            await holder.management.flush()
+            await holder.management.lease.stop()
             listed = await _listed(elsewhere, controller)
         assert listed["state"] == "offline"
         assert listed["connection"]["disconnect_reason"] == "server_shutdown"

@@ -682,6 +682,17 @@ the owner's password.
 {{- end }}
 - name: DB_MIGRATION_LOCK_TIMEOUT
   value: {{ .Values.postgresql.migrationLockTimeout | quote }}
+{{- /* The pod's own name names the process on its lease, its signals, its
+logs and its metrics, so one pod can be told from another. */}}
+- name: POD_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+{{- /* How many replicas share the database: sizes the connection budget
+switch-core checks at boot, and decides whether a dead LISTEN connection takes
+a pod out of service. */}}
+- name: CORE_REPLICAS
+  value: {{ .Values.switchCore.replicaCount | quote }}
 - name: AGENT_AUTH_CACHE_TTL_SECONDS
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
 - name: ID_SERVER_NAME

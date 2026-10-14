@@ -9,15 +9,15 @@ serves. `install` also hands Core the agent-facing side
 (`ManagementAgentOperations`), which is what makes the agent operations on
 machines and managed agents exist.
 
-Each process also holds a lease (`process_lease.py`) and writes its
-controllers' connection transitions (`connection_ledger.py`): `start` claims
-the lease before the bridge serves, `run` renews it and writes transitions
-until cancelled, and `stop` writes what is left and marks the lease stopped.
+Each process writes its controllers' connection transitions
+(`connection_ledger.py`), read against the lease the server holds for the
+process whether or not management is on (`process_lease.py`): `run` writes
+transitions until cancelled, and `flush` writes what is left as the process
+drains, before the server marks its lease stopped.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -95,25 +95,16 @@ class Management:
         async with tenant_session(self.session_factory, tenant_id) as session:
             await self.service.forget_deleted_agent(session, tenant_id, agent_id)
 
-    async def start(self) -> None:
-        """Claim this process's lease, so the connections it records read as
-        held. Raises when the database refuses: a process that cannot hold a
-        lease would show every machine it connects as offline."""
-        await self.lease.renew()
-        logger.info("Claimed switch-core process lease %s", self.lease.process_id)
-
     async def run(self) -> None:
-        """Renew the lease and write connection transitions, until cancelled."""
-        await asyncio.gather(self.lease.run(), self.ledger.run())
+        """Write connection transitions as they happen, until cancelled. The
+        process lease they are read against is the server's to renew."""
+        await self.ledger.run()
 
-    async def stop(self) -> None:
-        """Write the transitions still queued, then mark the lease stopped.
-        The lease is marked stopped even when the writes fail, so the
-        machines this process held read offline either way."""
-        try:
-            await self.ledger.flush_all()
-        finally:
-            await self.lease.stop()
+    async def flush(self) -> None:
+        """Write the transitions still queued. Called as the process drains,
+        before its lease is marked stopped, so the machines it held read as
+        closed by the server rather than lost with it."""
+        await self.ledger.flush_all()
 
     async def load_bindings(self) -> int:
         return await load_bindings(
@@ -134,8 +125,14 @@ def build_management(
     auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
     signal_bus: SignalBus,
+    lease: ProcessLease,
 ) -> Management:
-    process_id = signal_bus.process_id
+    process_id = lease.process_id
+    if signal_bus.process_id != process_id:
+        raise ValueError(
+            f"The signal bus speaks for process {signal_bus.process_id!r} and "
+            f"the lease for {process_id!r}; one process has one name."
+        )
     controllers = AgentControllerStore()
     operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
@@ -187,11 +184,7 @@ def build_management(
             service=service, session_factory=session_factory
         ),
         session_factory=session_factory,
-        lease=ProcessLease(
-            process_id=process_id,
-            session_factory=session_factory,
-            processes=processes,
-        ),
+        lease=lease,
         ledger=ledger,
     )
 
@@ -201,6 +194,7 @@ def create_management(
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     signal_bus: SignalBus,
+    lease: ProcessLease,
 ) -> Management | None:
     if not config.agent_management_enabled:
         return None
@@ -224,4 +218,5 @@ def create_management(
         ),
         clock=utc_now,
         signal_bus=signal_bus,
+        lease=lease,
     )
