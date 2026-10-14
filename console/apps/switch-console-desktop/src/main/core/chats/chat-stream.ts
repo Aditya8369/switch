@@ -1,3 +1,4 @@
+import { log } from '@main/lib/logger';
 import {
   type ChatMessage,
   chatMessageSchema,
@@ -75,6 +76,14 @@ export async function* sseFrames(
 }
 
 class StreamClosed extends Error {}
+
+function roomIdOf(data: string): unknown {
+  try {
+    return (JSON.parse(data) as { roomId?: unknown } | null)?.roomId ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export class ChatStream {
   private readonly cursors = new Map<string, number>();
@@ -189,7 +198,16 @@ export class ChatStream {
         armStall
       )) {
         if (this.stopped) return;
-        this.handle(frame);
+        try {
+          this.handle(frame);
+        } catch (error) {
+          log.warn('Skipped a live chat event that does not match the contract', {
+            event: 'chat_event_invalid',
+            frameEvent: frame.event,
+            roomId: roomIdOf(frame.data),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     } catch (error) {
       if (abort.signal.aborted && !this.stopped)

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { GatewayError, gatewayFetch } from '@main/core/switch-servers/gateway-client';
+import { log } from '@main/lib/logger';
 import {
   type ChatMember,
   chatMembersSchema,
@@ -11,6 +12,7 @@ import {
   chatListSchema,
   chatSentSchema,
   type ChatSummary,
+  chatSummarySchema,
   type ChatUpload,
   chatUploadSchema,
 } from '@shared/core/chats/chats';
@@ -75,8 +77,22 @@ async function json<T>(
 
 const room = (roomId: string) => `/chats/${encodeURIComponent(roomId)}`;
 
+/** Each row parsed alone: a row that fails the contract is skipped with a warning, not the list. */
+export function parseChatRows(rows: unknown[]): ChatSummary[] {
+  return rows.flatMap((row) => {
+    const parsed = chatSummarySchema.safeParse(row);
+    if (parsed.success) return [parsed.data];
+    log.warn('Skipped a chat that does not match the contract', {
+      event: 'chat_row_invalid',
+      roomId: (row as { roomId?: unknown } | null)?.roomId ?? null,
+      issues: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+    });
+    return [];
+  });
+}
+
 export async function listChats(server: SwitchServer): Promise<ChatSummary[]> {
-  return (await json(server, '/chats', chatListSchema)).chats;
+  return parseChatRows((await json(server, '/chats', chatListSchema)).chats);
 }
 
 /**

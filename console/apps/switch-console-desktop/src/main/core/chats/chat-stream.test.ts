@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, ChatStreamState, ChatSummary } from '@shared/core/chats/chats';
 import { ChatStream, type ChatStreamDeps, sseFrames } from './chat-stream';
 
+const warn = vi.hoisted(() => vi.fn());
+vi.mock('@main/lib/logger', () => ({ log: { warn } }));
+
 function summary(roomId: string, seq: number | null): ChatSummary {
   return {
     roomId,
@@ -171,6 +174,24 @@ describe('ChatStream', () => {
     h.feeds[0]!.send('chat.removed', { roomId: 'room-a', reason: 'unlisted' });
     await vi.waitFor(() => expect(h.removed).toEqual([['room-a', 'unlisted']]));
     expect(stream.cursor('room-a')).toBeUndefined();
+    stream.stop();
+  });
+
+  it('skips a malformed event with a warning and stays connected', async () => {
+    const h = harness([[summary('room-a', 1)]]);
+    const stream = new ChatStream(h.deps);
+    stream.start();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(1));
+    h.feeds[0]!.send('chat', { ...summary('room-bad', null), channelType: 'unknown' });
+    h.feeds[0]!.send('message', message('room-a', 2));
+    h.feeds[0]!.send('ready', {});
+    await vi.waitFor(() => expect(stream.state.state).toBe('live'));
+    expect(h.messages.map((each) => each.seq)).toEqual([2]);
+    expect(h.summaries.map((chat) => chat.roomId)).toEqual(['room-a']);
+    expect(warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ frameEvent: 'chat', roomId: 'room-bad' })
+    );
     stream.stop();
   });
 
