@@ -23,6 +23,7 @@ import { cn } from '@renderer/utils/utils';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { chatFailure } from '../stores/chat-errors';
 import { chatsStore, chatTitler } from '../stores/chats';
+import { focusComposerWhenOpened } from './chat-composer';
 
 /**
  * Start a chat with one agent: a private direct room owned by the person. One
@@ -65,6 +66,7 @@ export const NewChatModal = observer(function NewChatModal({
       });
       chatsStore.add(serverId, chat);
       chatTitler.created(chat, Boolean(name.trim()));
+      focusComposerWhenOpened(chat.roomId);
       onSuccess(chat);
     } catch (caught) {
       const failure = chatFailure(caught);

@@ -45,6 +45,13 @@ function chatFile(file: File): ChatFile {
 /** Drafts by chat, so a draft outlives navigating away. */
 const drafts = new Map<string, string>();
 
+/** Chats just created here, whose composer takes focus when it first shows. */
+const focusOnOpen = new Set<string>();
+
+export function focusComposerWhenOpened(roomId: string): void {
+  focusOnOpen.add(roomId);
+}
+
 /** Why Stop cannot be used on the running turn, or null when it can. */
 function stopBlocker(activity: AgentActivity | null): string | null {
   if (!activity?.session) return null;
@@ -121,6 +128,11 @@ export const ChatComposer = observer(function ChatComposer({
   const [confirmReset, setConfirmReset] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    // After the modal's own focus restore, which also runs on the next frame.
+    if (focusOnOpen.delete(timeline.roomId)) requestAnimationFrame(() => input.current?.focus());
+  }, [timeline.roomId]);
   const roomOnly = agents.length > 1 && selectedAgentId === ROOM_ONLY;
   const selected = roomOnly
     ? null
@@ -249,6 +261,7 @@ export const ChatComposer = observer(function ChatComposer({
               }}
             />
             <PromptInputTextarea
+              ref={input}
               className="min-h-0 px-1 py-1.5"
               aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the room'}`}
               placeholder={
