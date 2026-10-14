@@ -26,9 +26,7 @@ from switch_core.db.models import (
 from switch_core.transport import InboundMessage as TransportMessage
 from switch_core.transport import RoomRef
 from switch_core.trust.client import NullTrustClient
-from tests.switch_core.gateway.test_chats_routes import _Harness
-
-pytest_plugins = ["tests.switch_core.gateway.test_chats_routes"]
+from tests.switch_core.gateway.conftest import _Harness
 
 
 class _FakeCollabAdapter(PlatformAdapter):
