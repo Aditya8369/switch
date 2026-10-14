@@ -430,8 +430,9 @@ class RoomStore:
 
     async def add_client(
         self, session: AsyncSession, client_id: str, room_id: str
-    ) -> None:
-        """Record a membership, tolerating one that is already there.
+    ) -> bool:
+        """Record a membership, tolerating one that is already there, and
+        say whether this call recorded it.
 
         Membership has more than one writer. Over Matrix it effectively had
         one: an invitation was accepted later, over sync, long after the
@@ -447,13 +448,19 @@ class RoomStore:
         rather than a failure — the membership exists, which is what the
         caller asked for — and this also closes the check-then-insert race
         between two concurrent invitations.
+
+        Whoever recorded it writes the arrival that announces it, and nobody
+        else does: two writers racing for one membership must not greet the
+        room twice.
         """
-        await session.execute(
+        recorded = await session.scalar(
             pg_insert(ClientRoom)
             .values(client_id=client_id, room_id=room_id)
             .on_conflict_do_nothing(index_elements=["client_id", "room_id"])
+            .returning(ClientRoom.client_id)
         )
         await session.flush()
+        return recorded is not None
 
     async def remove_client(
         self, session: AsyncSession, client_id: str, room_id: str

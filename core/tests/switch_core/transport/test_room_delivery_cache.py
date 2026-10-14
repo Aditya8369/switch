@@ -32,6 +32,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.conftest import RLSHarness
+from tests.routing import router_on
 from tests.switch_core.transport.test_postgres_transport import (
     _FakeListener,
     _make_client,
@@ -427,7 +428,7 @@ class TestMembershipIsStillEachClients:
             session_factory=session_factory,
             room_store=RoomStore(),
             client_store=ClientStore(),
-            message_store=MessageStore(),
+            router=router_on(session_factory),
             invites=invites,
         )
         await provisioning.kick_user(room.transport_room_id, leaving.user_id)
@@ -469,7 +470,7 @@ class TestMembershipIsStillEachClients:
             session_factory=session_factory,
             room_store=RoomStore(),
             client_store=ClientStore(),
-            message_store=MessageStore(),
+            router=router_on(session_factory),
             invites=invites,
         )
         for member in room.members:

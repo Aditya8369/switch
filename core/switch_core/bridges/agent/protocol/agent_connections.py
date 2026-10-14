@@ -1179,6 +1179,17 @@ class AgentConnectionRegistry:
                 conn.rooms.discard(room_id)
                 conn.wake.set()
 
+    def claims_by_agent(self) -> dict[str, set[str]]:
+        """The rooms each agent's connections here have claimed, lapsed ones
+        included, for checking them against the agents' memberships."""
+        claims: dict[str, set[str]] = {}
+        for agent_id, ids in self._by_agent.items():
+            for cid in ids:
+                conn = self._by_id.get(cid)
+                if conn is not None and conn.rooms:
+                    claims.setdefault(agent_id, set()).update(conn.rooms)
+        return claims
+
     def claimant_of(self, agent_id: str, room_id: str) -> AgentConnection | None:
         """The connection that has explicitly claimed this room, if any.
 

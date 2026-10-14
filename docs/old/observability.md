@@ -237,10 +237,15 @@ handled in a way that leaves no trace.
   writes nothing, so the symptom is an absence, and an absence is what a quiet
   room looks like too.
 - **`switch.messages.observer_failures`** — reporting a message for product
-  telemetry raised, after the transport committed it or while an agent's
-  consumer was delivering it. Caught, because the message itself is fine: a
-  send that raised after its commit would be retried and posted twice. So the
-  only trace is a rate-limited log line.
+  telemetry raised, after the transport committed it or after the router
+  decided an agent was asked something in it. Caught, because the message
+  itself is fine: a send that raised after its commit would be retried and
+  posted twice. So the only trace is a rate-limited log line.
+- **`switch.messages.routing_failures`**: the router could not store one
+  agent's own event for a message it was writing, could not post a reply that
+  message owed (an offline notice, a refusal, a command's answer), or could not
+  decide a multi-file post it had given up waiting for. Each is caught so that
+  one agent cannot cost the room its message, so `stage` says which it was.
 - **`switch.agent.events_dropped`** — an agent's buffer discards events when it
   overflows or when they age out. The agent is *told* it missed them, so
   nothing is hidden from the agent; nothing told anybody else.

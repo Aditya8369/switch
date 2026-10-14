@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.clients.agent_consumer import AgentConsumer
+from switch_core.delivery.recipient import AgentRecipient
 
 
 def _claimed(bridge_id: str, username: str) -> SimpleNamespace:
@@ -39,7 +39,7 @@ class TestResolvingTheOwnersHandle:
     async def test_the_owners_account_on_this_bridge(self) -> None:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
-        handle = await AgentConsumer.owner_handle_in(
+        handle = await AgentRecipient.owner_handle_in(
             client, None, _agent("u1"), "slack-1"
         )
 
@@ -53,7 +53,7 @@ class TestResolvingTheOwnersHandle:
         )
 
         assert (
-            await AgentConsumer.owner_handle_in(
+            await AgentRecipient.owner_handle_in(
                 client, None, _agent("u1"), "telegram-1"
             )
             == "louisa"
@@ -65,7 +65,7 @@ class TestResolvingTheOwnersHandle:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
-            await AgentConsumer.owner_handle_in(
+            await AgentRecipient.owner_handle_in(
                 client, None, _agent("u1"), "telegram-1"
             )
             is None
@@ -75,7 +75,7 @@ class TestResolvingTheOwnersHandle:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
-            await AgentConsumer.owner_handle_in(client, None, _agent(None), "slack-1")
+            await AgentRecipient.owner_handle_in(client, None, _agent(None), "slack-1")
             is None
         )
 
@@ -84,7 +84,7 @@ class TestResolvingTheOwnersHandle:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
-            await AgentConsumer.owner_handle_in(client, None, _agent("u1"), None)
+            await AgentRecipient.owner_handle_in(client, None, _agent("u1"), None)
             is None
         )
 
@@ -93,10 +93,10 @@ class TestResolvingTheOwnersHandle:
         # between one message and the next.
         client = _client([_claimed("slack-1", "zoe"), _claimed("slack-1", "adam")])
 
-        first = await AgentConsumer.owner_handle_in(
+        first = await AgentRecipient.owner_handle_in(
             client, None, _agent("u1"), "slack-1"
         )
-        second = await AgentConsumer.owner_handle_in(
+        second = await AgentRecipient.owner_handle_in(
             client, None, _agent("u1"), "slack-1"
         )
 

@@ -63,6 +63,7 @@ from switch_core.transport.observer import (
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.conftest import RLSHarness
+from tests.routing import router_on
 
 # The room cache `_transport` hands out. One per session factory, because that
 # is what the process has: one, shared by every transport built on the same
@@ -248,6 +249,7 @@ def _transport(
         ephemeral=ephemeral or EphemeralBus(),
         room_cache=_room_cache(session_factory),
         message_observer=message_observer or IgnoreParticipantMessages(),
+        router=router_on(session_factory),
     )
 
 
@@ -827,6 +829,7 @@ class TestMedia:
                 ephemeral=EphemeralBus(),
                 room_cache=_room_cache(session_factory),
                 message_observer=IgnoreParticipantMessages(),
+                router=router_on(session_factory),
             )
 
 
@@ -1956,7 +1959,7 @@ class TestBeingRemovedFromARoom:
             session_factory=session_factory,
             room_store=RoomStore(),
             client_store=ClientStore(),
-            message_store=MessageStore(),
+            router=router_on(session_factory),
             invites=invites,
         )
 

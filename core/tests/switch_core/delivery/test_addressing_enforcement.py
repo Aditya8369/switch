@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.db.stores.budget_store import BudgetStanding
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
@@ -24,6 +23,7 @@ from switch_core.delivery.addressing import (
 from switch_core.delivery.addressing import (
     SenderPrincipal as _SenderPrincipal,
 )
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import InboundMessage, RoomRef
 
 
@@ -220,12 +220,16 @@ def _allowed_client(
     async def _claimed(_session, _user_id):  # type: ignore[no-untyped-def]
         return [SimpleNamespace(id=ext_id) for ext_id in claimed_external_ids]
 
-    return SimpleNamespace(
+    resolver = SimpleNamespace(
         agent=agent,
         resolve_sender=_resolve,
         _room_store=SimpleNamespace(get=_get_room),
         _external_user_store=SimpleNamespace(get_by_user=_claimed),
     )
+    # The real reads `permitted` makes through the stores above.
+    resolver.group_of = AddressingResolver.group_of.__get__(resolver)
+    resolver.claimed_accounts = AddressingResolver.claimed_accounts.__get__(resolver)
+    return resolver
 
 
 async def _decide(  # type: ignore[no-untyped-def]
@@ -561,9 +565,9 @@ def _gate_client(  # type: ignore[no-untyped-def]
         _addressing_allowed=_addressing_allowed,
         actor=SimpleNamespace(send_message=_send_message),
         _sender_handle=_sender_handle,
-        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
+        _triggered_by_auto_reply=AgentRecipient._triggered_by_auto_reply,
     )
-    client._post_auto_reply = AgentConsumer._post_auto_reply.__get__(client)
+    client._post_auto_reply = AgentRecipient._post_auto_reply.__get__(client)
     client.sent = sent  # type: ignore[attr-defined]
     return client
 
@@ -576,7 +580,7 @@ async def _gate(client: SimpleNamespace, event: SimpleNamespace):  # type: ignor
     """Run the gate and post whatever refusal it hands back, the way on_message
     does — the gate itself never touches Matrix, so that its caller can close
     the database session first."""
-    outcome = await AgentConsumer._gate_addressed(
+    outcome = await AgentRecipient._gate_addressed(
         client, None, client.agent, event, _meta()
     )
     if outcome.refusal is not None:
@@ -626,7 +630,7 @@ class TestGateAddressed:
         # session while the gate runs and must close it before talking to
         # Matrix.
         client = _gate_client(allowed=False)
-        outcome = await AgentConsumer._gate_addressed(
+        outcome = await AgentRecipient._gate_addressed(
             client, None, client.agent, _event(), _meta()
         )
         assert outcome.refusal == _ADDRESSING_DENIED_MESSAGE
@@ -707,7 +711,7 @@ class TestGateCommand:
 
     async def test_allowed_passes_through(self) -> None:
         client = _command_client(allowed=True, targets_me=True)
-        result = await AgentConsumer._gate_command(
+        result = await AgentRecipient._gate_command(
             client, _room(), _command(args="@fixer"), _meta()
         )
         assert result is True
@@ -715,7 +719,7 @@ class TestGateCommand:
 
     async def test_denied_and_explicitly_targeted_replies(self) -> None:
         client = _command_client(allowed=False, targets_me=True)
-        result = await AgentConsumer._gate_command(
+        result = await AgentRecipient._gate_command(
             client, _room(), _command(args="@fixer"), _meta()
         )
         assert result is False
@@ -729,7 +733,7 @@ class TestGateCommand:
         # `!reset-all-agents` (or a bare `!reset`) makes no claim about this
         # agent; answering every one would flood a room of restricted agents.
         client = _command_client(allowed=False, targets_me=False)
-        result = await AgentConsumer._gate_command(
+        result = await AgentRecipient._gate_command(
             client, _room(), _command(command="reset-all-agents", args=""), _meta()
         )
         assert result is False
@@ -752,7 +756,7 @@ class TestCommandTargetsMeExplicitly:
             _text_tags_my_alias=_tags_alias,
             _text_tags_my_role=_tags_role,
         )
-        client._args_tag_my_name = lambda text: AgentConsumer._args_tag_my_name(  # type: ignore[attr-defined]
+        client._args_tag_my_name = lambda text: AgentRecipient._args_tag_my_name(  # type: ignore[attr-defined]
             client, text
         )
         return client
@@ -760,7 +764,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_no_at_token_is_not_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentConsumer._command_targets_me_explicitly(
+            await AgentRecipient._command_targets_me_explicitly(
                 client, None, "", "room-1"
             )
             is False
@@ -769,7 +773,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_own_name_is_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentConsumer._command_targets_me_explicitly(
+            await AgentRecipient._command_targets_me_explicitly(
                 client, None, "@fixer", "room-1"
             )
             is True
@@ -778,7 +782,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_another_agents_name_is_not_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentConsumer._command_targets_me_explicitly(
+            await AgentRecipient._command_targets_me_explicitly(
                 client, None, "@someone-else", "room-1"
             )
             is False
@@ -787,7 +791,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_alias_is_explicit(self) -> None:
         client = self._client(alias=True)
         assert (
-            await AgentConsumer._command_targets_me_explicitly(
+            await AgentRecipient._command_targets_me_explicitly(
                 client, None, "@nickname", "room-1"
             )
             is True
@@ -796,7 +800,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_held_role_is_explicit(self) -> None:
         client = self._client(role=True)
         assert (
-            await AgentConsumer._command_targets_me_explicitly(
+            await AgentRecipient._command_targets_me_explicitly(
                 client, None, "@manager", "room-1"
             )
             is True
