@@ -155,6 +155,8 @@ def _client(
         addressing=client._addressing,
         message_store=MessageStore(),
         room_store=client._room_store,
+        agent_store=AgentStore(),
+        room_role_store=RoomRoleStore(),
     )
     client._budget_guard = BudgetGuard(BudgetStore())
     client._message_telemetry = SimpleNamespace(  # type: ignore[assignment]

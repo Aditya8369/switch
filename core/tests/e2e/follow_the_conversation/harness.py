@@ -487,13 +487,13 @@ SCENARIOS = [
     {
         "id": "S4",
         "room": "follow-ups",
-        "title": "Rule 1 now covers both agents taking part in the thread",
+        "title": "Rule 1: the agent that spoke last owns the thread",
         "steps": [
             (
                 "user",
-                "can you both double-check the tests?",
+                "can you double-check the tests?",
                 "thread:a1",
-                {"helper", "reviewer"},
+                {"reviewer"},
                 None,
             )
         ],

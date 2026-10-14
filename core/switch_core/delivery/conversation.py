@@ -5,9 +5,10 @@ for something?" from the message alone: a name, an alias, a role, a direct
 chat. A person in a conversation does not repeat a name on every message, so
 three rules extend it, each decided from the room's history:
 
-- **Thread follow-up.** A reply in a thread reaches the agents taking part in
-  it: an agent that has posted there, or that an earlier message in the
-  thread addressed.
+- **Thread follow-up.** A reply in a thread reaches the agent that owns it:
+  of the agents in the thread, the one that spoke most recently, or that a
+  person tagged most recently (all of them, when one message tagged several,
+  until one answers).
 - **Channel follow-up.** A top-level message reaches the agent the sender is
   in an unbroken exchange with: the sender addressed the agent, the agent has
   answered since, nobody else has posted in between, the agent's last answer
@@ -53,15 +54,17 @@ if TYPE_CHECKING:
 
     from switch_core.config import SwitchConfig
     from switch_core.db.models import Agent, Message
+    from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.message_store import MessageStore
+    from switch_core.db.stores.room_role_store import RoomRoleStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.delivery.addressing import AddressingResolver
 
 logger = logging.getLogger(__name__)
 
-# How many messages of a thread that mention someone are read when looking for
-# one that addressed the agent, oldest first so the thread's root always counts.
-THREAD_MENTION_LOOKBACK = 200
+# How many of a thread's most recent messages are read when looking for the
+# agent that spoke or was tagged last.
+THREAD_LOOKBACK = 200
 
 # How many of the channel's earlier top-level messages one walk reads. An
 # exchange longer than this still continues: see `_channel_follow_up`.
@@ -93,13 +96,18 @@ _TRAILING_PUNCTUATION = re.compile(r"[\s.!?,;:]+$")
 
 # A mention-shaped token: an `@` that starts a word, followed by name
 # characters. An email address (`ops@example.com`) is not one.
-_MENTION = re.compile(rf"(?<!{NAME_CHAR})@{NAME_CHAR}")
+_MENTION = re.compile(rf"(?<!{NAME_CHAR})@({NAME_CHAR}+)")
 
 
 def is_small_talk(body: str) -> bool:
     """True for thanks or praise ("thanks!", "great"), which ends an exchange
     rather than continuing it."""
     return _TRAILING_PUNCTUATION.sub("", body.strip().lower()) in _SMALL_TALK
+
+
+def mentioned_names(body: str) -> set[str]:
+    """The names @-mentioned in the text, lowercased."""
+    return {name.lower() for name in _MENTION.findall(body)}
 
 
 def mentions_anyone(body: str) -> bool:
@@ -112,6 +120,14 @@ def mentions_anyone(body: str) -> bool:
 # in the thread. Agents' clients remember threads that answered this way, so
 # later replies in them cost nothing.
 NOT_TAKING_PART = "the agent is not taking part in this thread"
+# A thread belongs to the agent that spoke or was tagged most recently in it.
+ANOTHER_AGENT_SPOKE = "another agent spoke more recently in this thread"
+ANOTHER_AGENT_TAGGED = "another agent was tagged more recently in this thread"
+# The reasons that mean this agent cannot get this thread's next reply until it
+# posts there or is tagged there, both of which its client sees.
+NOT_THIS_AGENTS_THREAD = frozenset(
+    {NOT_TAKING_PART, ANOTHER_AGENT_SPOKE, ANOTHER_AGENT_TAGGED}
+)
 
 
 class ConversationRoute(StrEnum):
@@ -209,11 +225,15 @@ class ConversationRules:
         addressing: AddressingResolver,
         message_store: MessageStore,
         room_store: RoomStore,
+        agent_store: AgentStore,
+        room_role_store: RoomRoleStore,
     ) -> None:
         self._settings = settings
         self._addressing = addressing
         self._message_store = message_store
         self._room_store = room_store
+        self._agent_store = agent_store
+        self._room_role_store = room_role_store
 
     @property
     def settings(self) -> ConversationSettings:
@@ -317,27 +337,38 @@ class ConversationRules:
         thread_root_id: str,
         before_seq: int,
     ) -> ConversationDecision:
-        if await self._message_store.posted_in_thread(
-            session,
-            room_id,
-            thread_root_event_id=thread_root_id,
-            sender_id=agent_user_id,
-            before_seq=before_seq,
-            excluding=(AUTO_REPLY_FLAG, ADMIN_MARKER),
-        ):
-            return ConversationDecision(
-                ConversationRoute.THREAD_FOLLOW_UP, "the agent posted in this thread"
-            )
-        rows = await self._message_store.list_thread_mentions_before(
+        """Whether this agent owns the thread: it spoke most recently, or a
+        person tagged it most recently, of all the agents in the thread.
+
+        Walks back from the reply, newest first, to the first message that is
+        an agent's post or a person tagging an agent. A message tagging several
+        agents gives the thread to all of them until one answers. A person
+        tagging another person doesn't move it.
+        """
+        rows = await self._message_store.list_thread_newest_first(
             session,
             room_id,
             thread_root_event_id=thread_root_id,
             before_seq=before_seq,
-            limit=THREAD_MENTION_LOOKBACK,
+            limit=THREAD_LOOKBACK,
         )
+        sender_kinds: dict[str, str | None] = {}
+        agent_names: set[str] | None = None
         for row in rows:
             if _is_automatic(row):
                 continue
+            if row.sender_id == agent_user_id:
+                return ConversationDecision(
+                    ConversationRoute.THREAD_FOLLOW_UP,
+                    "the agent spoke most recently in this thread",
+                )
+            if row.sender_id not in sender_kinds:
+                principal = await self._addressing.resolve_sender(
+                    session, row.sender_id, row.content or {}
+                )
+                sender_kinds[row.sender_id] = principal.kind if principal else None
+            if sender_kinds[row.sender_id] == "agent":
+                return ConversationDecision(None, ANOTHER_AGENT_SPOKE)
             if await self._addressed_agent(
                 session,
                 agent=agent,
@@ -348,9 +379,35 @@ class ConversationRules:
             ):
                 return ConversationDecision(
                     ConversationRoute.THREAD_FOLLOW_UP,
-                    "an earlier message in this thread addressed the agent",
+                    "the agent was tagged most recently in this thread",
                 )
+            names = mentioned_names(row.body or "")
+            if names:
+                if agent_names is None:
+                    agent_names = await self._room_agent_names(session, room_id)
+                if names & agent_names:
+                    return ConversationDecision(None, ANOTHER_AGENT_TAGGED)
         return ConversationDecision(None, NOT_TAKING_PART)
+
+    async def _room_agent_names(self, session: AsyncSession, room_id: str) -> set[str]:
+        """Every handle that reaches an agent in this room, lowercased: names,
+        room aliases and room roles."""
+        names: set[str] = set()
+        for agent_id in await self._room_store.get_agent_ids(session, room_id):
+            agent = await self._agent_store.get(session, agent_id)
+            if agent is not None:
+                names.add(agent.name.lower())
+        names.update(
+            alias.lower()
+            for alias in (
+                await self._room_store.list_aliases(session, room_id)
+            ).values()
+        )
+        names.update(
+            role.name.lower()
+            for role in await self._room_role_store.list_roles(session, room_id)
+        )
+        return names
 
     async def _channel_follow_up(
         self,

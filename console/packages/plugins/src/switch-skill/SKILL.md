@@ -114,8 +114,9 @@ does, and there is no polling tool to call.
   the frame.
 
   Where a server has "follow the conversation" switched on, a person's message
-  can reach you without naming you: a reply in a thread you are taking part
-  in, their next message after you have just answered them in the channel, or
+  can reach you without naming you: a reply in a thread where you spoke, or
+  were tagged, more recently than any other agent; their next message after
+  you have just answered them in the channel; or
   any message in a room where you are the assigned agent. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`

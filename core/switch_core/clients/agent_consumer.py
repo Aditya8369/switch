@@ -81,7 +81,7 @@ from switch_core.delivery.addressing import (
     IncomingMessage,
 )
 from switch_core.delivery.conversation import (
-    NOT_TAKING_PART,
+    NOT_THIS_AGENTS_THREAD,
     ConversationMessage,
     ConversationRoute,
     ConversationRules,
@@ -404,6 +404,8 @@ class AgentConsumer(Consumer[AgentActor]):
             addressing=self._addressing,
             message_store=message_store,
             room_store=room_store,
+            agent_store=agent_store,
+            room_role_store=room_role_store,
         )
         self._budget_guard = BudgetGuard(BudgetStore())
         self._room_meta: dict[str, RoomMeta | None] = {}
@@ -1595,7 +1597,9 @@ class AgentConsumer(Consumer[AgentActor]):
         if event.thread_root_id is not None:
             if decision.route == ConversationRoute.THREAD_FOLLOW_UP:
                 self._remember_thread(event.room_id, event.thread_root_id, True)
-            elif decision.reason == NOT_TAKING_PART:
+            elif decision.reason in NOT_THIS_AGENTS_THREAD:
+                # Only this agent posting there, or being tagged there, can
+                # give it the thread back, and its client sees both.
                 self._remember_thread(event.room_id, event.thread_root_id, False)
         logger.info(
             "Follow the conversation: room=%s message=%s agent=%s route=%s "

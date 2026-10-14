@@ -150,9 +150,7 @@ class TestThreadFollowUp:
 
         decision = await world.decide("helper", reply)
         assert decision.route == THREAD
-        assert (
-            decision.reason == "an earlier message in this thread addressed the agent"
-        )
+        assert decision.reason == "the agent was tagged most recently in this thread"
 
     async def test_a_mention_by_alias_counts(self, world: World) -> None:
         async with world.session_factory() as session:
@@ -189,14 +187,63 @@ class TestThreadFollowUp:
         assert await world.route("helper", reply) is None
         assert await world.route("reviewer", reply) is None
 
-    async def test_two_agents_taking_part_both_get_it(self, world: World) -> None:
+    async def test_the_agent_that_spoke_last_owns_the_thread(
+        self, world: World
+    ) -> None:
+        # helper answered first, then reviewer was tagged and answered: the
+        # next untagged reply is reviewer's alone.
         root = await world.post("alice", "@helper @reviewer thoughts?", at=0)
         await world.post("helper", "looks fine", at=10, thread=root)
+        await world.post("alice", "hey @reviewer, anything else?", at=15, thread=root)
         await world.post("reviewer", "one nit", at=20, thread=root)
         reply = await world.post("alice", "which nit?", at=60, thread=root)
 
-        assert await world.route("helper", reply) == THREAD
         assert await world.route("reviewer", reply) == THREAD
+        decision = await world.decide("helper", reply)
+        assert decision.route is None
+        assert decision.reason == "another agent spoke more recently in this thread"
+
+    async def test_tagging_another_agent_hands_the_thread_over(
+        self, world: World
+    ) -> None:
+        answer = await world.post("helper", "It starts the stack", at=0)
+        await world.post(
+            "alice", "hey @reviewer can you check this?", at=10, thread=answer
+        )
+        reply = await world.post(
+            "alice", "the tests are slow too", at=20, thread=answer
+        )
+
+        decision = await world.decide("helper", reply)
+        assert decision.route is None
+        assert (
+            decision.reason == "another agent was tagged more recently in this thread"
+        )
+        assert await world.route("reviewer", reply) == THREAD
+
+    async def test_several_tagged_agents_share_it_until_one_answers(
+        self, world: World
+    ) -> None:
+        root = await world.post("alice", "@helper @reviewer thoughts?", at=0)
+        first = await world.post("alice", "either of you?", at=10, thread=root)
+        assert await world.route("helper", first) == THREAD
+        assert await world.route("reviewer", first) == THREAD
+
+        await world.post("reviewer", "on it", at=20, thread=root)
+        after = await world.post("alice", "thanks, go ahead", at=30, thread=root)
+        assert await world.route("reviewer", after) == THREAD
+        assert await world.route("helper", after) is None
+
+    async def test_tagging_a_person_does_not_move_the_thread(
+        self, world: World
+    ) -> None:
+        answer = await world.post("helper", "It starts the stack", at=0)
+        await world.post("alice", "@bob what do you think?", at=10, thread=answer)
+        reply = await world.post(
+            "alice", "anyway, why two roles?", at=20, thread=answer
+        )
+
+        assert await world.route("helper", reply) == THREAD
 
     async def test_small_talk_in_a_thread_reaches_nobody(self, world: World) -> None:
         answer = await world.post("helper", "Done", at=0)
@@ -472,6 +519,8 @@ def _consumer(
         addressing=consumer._addressing,
         message_store=world.store,
         room_store=RoomStore(),
+        agent_store=AgentStore(),
+        room_role_store=RoomRoleStore(),
     )
     consumer._budget_guard = BudgetGuard(BudgetStore())
     consumer._last_top_level_post_ms = {}

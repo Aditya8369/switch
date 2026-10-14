@@ -109,6 +109,8 @@ class World:
             addressing=_resolver(),
             message_store=self.store,
             room_store=RoomStore(),
+            agent_store=AgentStore(),
+            room_role_store=RoomRoleStore(),
         )
 
     async def decide(

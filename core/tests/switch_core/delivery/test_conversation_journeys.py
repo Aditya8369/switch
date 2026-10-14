@@ -101,6 +101,8 @@ class Journey:
             addressing=client._addressing,
             message_store=self.world.store,
             room_store=client._room_store,
+            agent_store=AgentStore(),
+            room_role_store=RoomRoleStore(),
         )
         client._budget_guard = BudgetGuard(BudgetStore())
         client._message_telemetry = SimpleNamespace(  # type: ignore[assignment]
@@ -299,14 +301,16 @@ class TestJourneys:
 
         assert room.reached(told) == {"reviewer"}
 
-    async def test_4_two_agents_taking_part_both_get_it(self, room: Journey) -> None:
+    async def test_4_the_agent_that_spoke_last_owns_the_thread(
+        self, room: Journey
+    ) -> None:
         answer = await room.post("helper", "It starts the stack", at=0)
         await room.say("alice", "@reviewer what do you think?", at=10, thread=answer)
         await room.post("reviewer", "One nit", at=20, thread=answer)
 
         told = await room.say("alice", "which nit?", at=30, thread=answer)
 
-        assert room.reached(told) == {"helper", "reviewer"}
+        assert room.reached(told) == {"reviewer"}
 
     async def test_5_thanks_wakes_nobody(self, room: Journey) -> None:
         answer = await room.post("helper", "Done", at=0)

@@ -740,17 +740,17 @@ async def main() -> None:
                 await rec.set_caption(
                     cap(
                         "Follow-ups are back on. You reply in the thread again.",
-                        "Expected: the agents taking part in it answer again.",
+                        "Expected: reviewer answers. It spoke last in this thread, so it owns it.",
                     )
                 )
                 await hold(1)
                 t0 = await say("#reply_textbox", "and which tests are slow?")
-                await latest_from(fu["channel_id"], "[helper]", t0)
+                await latest_from(fu["channel_id"], "[reviewer]", t0)
                 await hold(1.5)
                 await rec.set_caption(
                     cap(
-                        "✓ helper answered again: “via a thread follow-up”.",
-                        "reviewer answered too: it's also taking part in this thread, since you mentioned it here earlier.",
+                        "✓ Only reviewer answered: “via a thread follow-up”.",
+                        "The agent that spoke or was tagged most recently owns the thread. helper stays quiet.",
                     )
                 )
                 await hold(4)
