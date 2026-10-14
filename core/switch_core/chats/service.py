@@ -415,7 +415,10 @@ class ChatService:
         """`sync_owned_rooms` for everyone a change to this room's agents may
         concern: the owners of its agents and the holders of owner grants.
         The room's other members are told too, as gaining or losing its
-        agents can move it into or out of their list."""
+        agents can move it into or out of their list. Does nothing with
+        `agent_chats` off."""
+        if not self.agent_chats_enabled:
+            return
         async with tenant_session(self.session_factory, tenant_id) as session:
             owners = set(
                 (
