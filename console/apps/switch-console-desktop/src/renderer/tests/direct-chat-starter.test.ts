@@ -4,12 +4,17 @@ import type { ChatSummary } from '@shared/core/chats/chats';
 
 const chat = { roomId: 'r1', channelType: 'direct' } as ChatSummary;
 
-function setup(create: () => Promise<ChatSummary>) {
+function setup(
+  create: () => Promise<ChatSummary>,
+  findEmpty: () => ChatSummary | null = () => null
+) {
   let id = 0;
   const deps = {
     create: vi.fn(create),
     created: vi.fn(),
+    opened: vi.fn(),
     failed: vi.fn(),
+    findEmpty: vi.fn(findEmpty),
     newId: () => `req-${++id}`,
   };
   return { deps, starter: new DirectChatStarter(deps) };
@@ -48,5 +53,28 @@ describe('DirectChatStarter', () => {
     deps.create.mockResolvedValueOnce(chat);
     await starter.start('s1', 'a1');
     expect(deps.create).toHaveBeenLastCalledWith(expect.objectContaining({ requestId: 'req-1' }));
+  });
+
+  it('reuses an existing empty chat', async () => {
+    const existing = { roomId: 'r2', channelType: 'direct' } as ChatSummary;
+    const { deps, starter } = setup(
+      async () => chat,
+      () => existing
+    );
+    await expect(starter.start('s1', 'a1')).resolves.toBe(existing);
+    expect(deps.findEmpty).toHaveBeenCalledWith('a1');
+    expect(deps.opened).toHaveBeenCalledWith(existing);
+    expect(deps.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a new chat when no empty chat exists', async () => {
+    const { deps, starter } = setup(
+      async () => chat,
+      () => null
+    );
+    await expect(starter.start('s1', 'a1')).resolves.toBe(chat);
+    expect(deps.findEmpty).toHaveBeenCalledWith('a1');
+    expect(deps.create).toHaveBeenCalled();
+    expect(deps.opened).not.toHaveBeenCalled();
   });
 });
