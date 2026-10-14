@@ -1,3 +1,5 @@
+import { reaction } from 'mobx';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
@@ -35,6 +37,15 @@ chatsStore.follow(() => {
   if (!serverId || agentChatsFlag(serverId) !== true) return { serverId: null, key: null };
   return { serverId, key: active ? `${active.id}:${active.tenantId}` : null };
 });
+
+// Server status is otherwise read again only on focus; until it is, the sidebar asks a server it thinks is down for no room names.
+reaction(
+  () => (chatsStore.streamState === 'live' ? chatsStore.serverId : null),
+  (serverId) => {
+    if (serverId && !switchServersStore.isConnected(serverId))
+      void switchServersStore.refreshStatus(serverId);
+  }
+);
 
 export const chatTitler = new ChatTitler({
   title: (message) => rpc.chats.title(message),

@@ -323,6 +323,12 @@ export class ChatTimelines {
     return this.timelines.get(`${serverId}\u0000${roomId}`);
   }
 
+  /** Load again each of the server's timelines whose last load failed. */
+  reloadFailed(serverId: string): void {
+    for (const [key, timeline] of this.timelines)
+      if (key.startsWith(`${serverId}\u0000`) && timeline.loadError) void timeline.load();
+  }
+
   /** Forget everything held for a server: signed out, or the tenant changed. */
   dropServer(serverId: string): void {
     for (const key of [...this.timelines.keys()])

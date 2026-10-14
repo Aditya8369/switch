@@ -37,8 +37,13 @@ function message(roomId: string, seq: number): ChatMessage {
   };
 }
 
-function setup(list: () => Promise<ChatSummary[]>, timeline: Partial<TimelineApi> = {}) {
+function setup(
+  list: () => Promise<ChatSummary[]>,
+  timeline: Partial<TimelineApi> = {},
+  identity: ChatsApi['identity'] = async () => ({ userId: 'u', tenantId: 't' })
+) {
   let onMessage: Parameters<ChatsEvents['onMessage']>[0] = () => {};
+  let onState: Parameters<ChatsEvents['onState']>[0] = () => {};
   const events: ChatsEvents = {
     onMessage: (cb) => {
       onMessage = cb;
@@ -46,18 +51,26 @@ function setup(list: () => Promise<ChatSummary[]>, timeline: Partial<TimelineApi
     },
     onSummary: () => () => {},
     onRemoved: () => () => {},
-    onState: () => () => {},
+    onState: (cb) => {
+      onState = cb;
+      return () => {};
+    },
     onReset: () => () => {},
   };
   const api: ChatsApi = {
     connect: async () => ({ state: 'live', detail: null }),
     disconnect: vi.fn(async () => {}),
     list: vi.fn(list),
-    identity: async () => ({ userId: 'u', tenantId: 't' }),
+    identity,
     timeline: () => timeline as TimelineApi,
   };
   const store = new ChatsStore(api, events);
-  return { store, api, emit: (m: ChatMessage) => onMessage({ serverId: 's1', message: m }) };
+  return {
+    store,
+    api,
+    emit: (m: ChatMessage) => onMessage({ serverId: 's1', message: m }),
+    live: () => onState({ serverId: 's1', state: 'live', detail: null }),
+  };
 }
 
 describe('ChatsStore', () => {
@@ -170,6 +183,33 @@ describe('ChatsStore', () => {
     await Promise.resolve();
     expect(api.list).toHaveBeenCalledTimes(1);
     expect(store.chat('r1')).toBeUndefined();
+  });
+
+  it('loads who the person is, their chats and a failed timeline once a feed down at start comes up', async () => {
+    let up = false;
+    const down = () => Promise.reject(new Error('Could not reach the server'));
+    const { store, live } = setup(
+      async () => (up ? [summary('r1', 1)] : down()),
+      {
+        messages: async () =>
+          up ? { messages: [message('r1', 1)], headSeq: 1, hasMore: false } : down(),
+      },
+      async () => (up ? { userId: 'u', tenantId: 't' } : down())
+    );
+    await store.connect('s1');
+    const timeline = store.timelines.get('s1', 'r1');
+    await timeline.load();
+    expect(store.userId).toBeNull();
+    expect(store.listError).not.toBeNull();
+    expect(timeline.loadError).not.toBeNull();
+
+    up = true;
+    live();
+    await vi.waitFor(() => expect(store.userId).toBe('u'));
+    await vi.waitFor(() => expect(timeline.loaded).toBe(true));
+    expect(store.chat('r1')?.name).toBe('r1');
+    expect(store.listError).toBeNull();
+    expect(timeline.loadError).toBeNull();
   });
 
   it('reads a chat once the person is let into it after a refused first load', async () => {
