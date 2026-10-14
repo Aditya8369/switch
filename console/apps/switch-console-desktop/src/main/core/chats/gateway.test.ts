@@ -1,6 +1,6 @@
+import { describe, expect, it, vi } from 'vitest';
 import { gatewayFetch } from '@main/core/switch-servers/gateway-client';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { describe, expect, it, vi } from 'vitest';
 import { parseChatRows, warmChatAgent } from './gateway';
 
 const warn = vi.hoisted(() => vi.fn());
