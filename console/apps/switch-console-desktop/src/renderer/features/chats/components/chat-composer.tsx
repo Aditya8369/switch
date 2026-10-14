@@ -4,6 +4,8 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
+import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -133,6 +135,25 @@ export const ChatComposer = observer(function ChatComposer({
     // After the modal's own focus restore, which also runs on the next frame.
     if (focusOnOpen.delete(timeline.roomId)) requestAnimationFrame(() => input.current?.focus());
   }, [timeline.roomId]);
+  // Typing anywhere else in the chat goes to the composer, as in Slack.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const textarea = input.current;
+      const target = event.target;
+      if (!textarea || textarea.disabled || event.defaultPrevented || event.isComposing) return;
+      if (event.key.length !== 1 || event.key === ' ') return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (modalStore.isOpen || isEditableTarget(target) || !textarea.checkVisibility()) return;
+      const panel = textarea.closest('[data-chat-panel]');
+      if (target !== document.body && !(target instanceof Node && panel?.contains(target))) return;
+      if (panel?.closest('[aria-hidden="true"]')) return;
+      // Focus moved during keydown: the browser types the key into the textarea.
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
   const roomOnly = agents.length > 1 && selectedAgentId === ROOM_ONLY;
   const selected = roomOnly
     ? null
@@ -143,6 +164,7 @@ export const ChatComposer = observer(function ChatComposer({
   const addFiles = (list: File[]) => {
     if (!list.length) return;
     setFiles((current) => [...current, ...list.map((file) => ({ id: crypto.randomUUID(), file }))]);
+    input.current?.focus();
   };
 
   const send = () => {
