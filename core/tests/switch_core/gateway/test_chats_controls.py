@@ -131,3 +131,7 @@ async def test_a_posted_control_is_shown_in_the_chat(chats: _Harness) -> None:
     assert page.status_code == 200, page.text
     [shown] = [m for m in page.json()["messages"] if m["messageId"] == command_id]
     assert shown["body"] == "!reset @helper"
+
+    listed = await chats.client.get("/chats", headers=chats.as_user(chats.alice))
+    [chat] = [c for c in listed.json()["chats"] if c["roomId"] == room_id]
+    assert chat["lastMessage"]["preview"] == "!reset @helper"

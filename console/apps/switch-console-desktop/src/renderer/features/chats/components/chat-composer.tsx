@@ -211,11 +211,10 @@ export const ChatComposer = observer(function ChatComposer({
   const showStop = Boolean(stopActivity) && !draft.trim() && !files.length;
   const stopping = stopActivity?.pendingControl?.command === 'interrupt';
   const status = stopping ? 'sending' : showStop ? 'running' : 'idle';
-  const contextBlocked = activity?.working
-    ? 'The agent is working — wait for it to finish.'
-    : activity?.pendingControl
-      ? 'Waiting for the previous command to be sent.'
-      : null;
+  // Not blocked while working: a turn whose host died stays running in the feed, and Reset is the way out.
+  const contextBlocked = activity?.pendingControl
+    ? 'Waiting for the previous command to be sent.'
+    : null;
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-5 pb-1.5">

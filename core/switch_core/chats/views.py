@@ -191,7 +191,7 @@ async def chat_summary(
             ChatLastMessage(
                 seq=last.seq,
                 sent_at=_iso(last.sent_at),
-                preview=(last.body or "")[:PREVIEW_CHARS],
+                preview=(last.body or _command_text(last))[:PREVIEW_CHARS],
                 sender_name=last.sender_name or "",
             )
             if last is not None
