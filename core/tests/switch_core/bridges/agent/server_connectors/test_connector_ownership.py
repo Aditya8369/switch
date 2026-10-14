@@ -287,8 +287,9 @@ class TestOneProcessRunsIt:
     ) -> None:
         holder, other = _holder(two, stored.connector_id)
 
+        # A connector taken over starts in a task of its own.
+        await _eventually(lambda: holder.connectors.running_count() == 1)
         assert len(server.connected) == 1
-        assert holder.connectors.running_count() == 1
         assert other.connectors.running_count() == 0
         assert other.connectors.expected_count() == 0
 
@@ -304,11 +305,12 @@ class TestOneProcessRunsIt:
     ) -> None:
         holder, other = _holder(two, stored.connector_id)
 
+        await _eventually(lambda: holder.connectors.running_count() == 1)
         await holder.stop()
         await other.ownership.balance()
 
         assert other.connectors.holds(stored.connector_id)
-        assert other.connectors.running_count() == 1
+        await _eventually(lambda: other.connectors.running_count() == 1)
         assert len(server.connected) == 1
 
 
@@ -335,9 +337,42 @@ class TestChangesMadeElsewhere:
         self, two: tuple[_Process, _Process], server: _Server, stored: _Stored
     ) -> None:
         holder, other = _holder(two, stored.connector_id)
+        await _eventually(lambda: len(server.connected) == 1)
 
         await other.connectors.remove(stored.connector_id)
 
         await _eventually(lambda: server.connected == [])
         assert not holder.connectors.holds(stored.connector_id)
         assert len(other.protocol.deleted) == 1
+
+
+class TestASlowServer:
+    async def test_it_holds_up_no_other_work_while_its_connector_starts(
+        self,
+        two: tuple[_Process, _Process],
+        server: _Server,
+        stored: _Stored,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A connector's start dials its server. One that hangs is taken over
+        and left starting in its own task: the next balance, and the
+        hand-over of anything else, go on meanwhile."""
+        holder, other = _holder(two, stored.connector_id)
+        await _eventually(lambda: len(server.connected) == 1)
+        release = asyncio.Event()
+
+        async def hanging_start(self: _Connector) -> None:
+            await release.wait()
+            self.server.connected.append(self)
+
+        monkeypatch.setattr(_Connector, "start", hanging_start)
+        await holder.stop()
+        async with asyncio.timeout(TIMEOUT):
+            await other.ownership.balance()
+            # Balancing again does not wait on the start either.
+            await other.ownership.balance()
+        assert other.connectors.holds(stored.connector_id)
+        assert other.connectors.running_count() == 0
+
+        release.set()
+        await _eventually(lambda: other.connectors.running_count() == 1)

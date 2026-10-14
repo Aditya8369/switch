@@ -13,6 +13,7 @@ claimed by whichever process should hold it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -35,7 +36,7 @@ from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_server_connec
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 from switch_core.telemetry import TelemetryService, emit_safely
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.server_connectors.signals import ConnectorSignals
@@ -81,8 +82,14 @@ class ServerSideConnectorLifecycleService:
         )
         self._signals: ConnectorSignals | None = None
         # Why the last take-over of each connector failed to start it, for
-        # `register` to raise: the ownership logs the failure and goes on.
+        # `register` to raise.
         self._failed_take_overs: dict[str, Exception] = {}
+        # Connectors this process has taken over and is still starting. A
+        # start dials the connector's server and registers each agent it
+        # finds, so it runs in a task of its own: the ownership takes work
+        # over one key at a time, and a server slow to answer would hold up
+        # every other hand-over in this process meanwhile.
+        self._starting: dict[str, asyncio.Task[None]] = {}
         self._api_key_store = api_key_store
         self._protocol = protocol
         self._session_factory = session_factory
@@ -205,10 +212,14 @@ class ServerSideConnectorLifecycleService:
         )
 
         # Started where it is held: here, or in the process that claims it
-        # once it hears of it.
+        # once it hears of it. A start here is waited for, so its failure
+        # reaches the caller as it did when registering started it directly.
         self._owned.want(record.id)
         await self._owned.settle()
         self._announce(record.id)
+        starting = self._starting.get(record.id)
+        if starting is not None:
+            await asyncio.shield(starting)
         failed = self._failed_take_overs.pop(record.id, None)
         if failed is not None:
             raise failed
@@ -268,7 +279,13 @@ class ServerSideConnectorLifecycleService:
             registration_token=registration_token,
             protocol=self._protocol,
         )
-        await core.start()
+        try:
+            await core.start()
+        except BaseException:
+            # Agents it registered before failing, or before being cancelled
+            # by a hand-over, are already being polled.
+            await core.stop()
+            raise
         self._cores[connector_id] = core
 
     async def stop(self, connector_id: str) -> None:
@@ -291,6 +308,11 @@ class ServerSideConnectorLifecycleService:
         return sum(1 for connector_id in self._expected if connector_id in self._cores)
 
     async def stop_all(self) -> None:
+        starting = list(self._starting.values())
+        self._starting.clear()
+        for task in starting:
+            task.cancel()
+        await asyncio.gather(*starting, return_exceptions=True)
         logger.info("Stopping all %d server-side connectors", len(self._cores))
         for connector_id in list(self._cores):
             await self.stop(connector_id)
@@ -381,19 +403,38 @@ class ServerSideConnectorLifecycleService:
     # ── Ownership ────────────────────────────────────────────────────────────
 
     async def _take_over(self, connector_id: str, fence: Fence) -> None:
-        """This process now holds the connector: start it here."""
+        """This process now holds the connector: start it here, in the
+        background (`_starting`)."""
         logger.info("Taking over server-side connector %s", connector_id)
         self._failed_take_overs.pop(connector_id, None)
         self._expected.add(connector_id)
+        self._starting[connector_id] = asyncio.create_task(
+            self._start_held(connector_id)
+        )
+
+    async def _start_held(self, connector_id: str) -> None:
         try:
-            await self.start(connector_id)
+            # Whoever's request led to the take-over, the connector acts as
+            # its own row's tenant (`start`).
+            with no_tenant():
+                await self.start(connector_id)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             self._failed_take_overs[connector_id] = exc
-            raise
+            logger.exception("Failed to start connector %s", connector_id)
+        finally:
+            if self._starting.get(connector_id) is asyncio.current_task():
+                del self._starting[connector_id]
 
     async def _hand_over(self, connector_id: str) -> None:
-        """This process no longer holds the connector: stop it here."""
+        """This process no longer holds the connector: stop it here, starting
+        or started."""
         logger.info("Handing server-side connector %s over", connector_id)
+        starting = self._starting.pop(connector_id, None)
+        if starting is not None and not starting.done():
+            starting.cancel()
+            await asyncio.gather(starting, return_exceptions=True)
         await self.stop(connector_id)
 
     def holds(self, connector_id: str) -> bool:
