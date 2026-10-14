@@ -128,12 +128,14 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   turn,
   agent,
   endReason,
+  serverId,
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
   agent: { name: string; iconUrl: string | null };
   /** Why the turn ended, from the host's notice in the room; null when it posted none. */
   endReason: string | null;
+  serverId: string;
 }) {
   const running = turn.status === 'queued' || turn.status === 'running';
   const reasoning = activity.reasoning.get(turn.turnId) ?? null;
@@ -148,7 +150,13 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
     return null;
   return (
     <div className="flex gap-3" data-turn-id={turn.turnId}>
-      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={28} className="mt-0.5" />
+      <AgentAvatar
+        name={agent.name}
+        iconUrl={agent.iconUrl}
+        serverId={serverId}
+        size={28}
+        className="mt-0.5"
+      />
       <div className="flex min-w-0 flex-1 flex-col pt-0.5">
         {label && (
           <Reasoning

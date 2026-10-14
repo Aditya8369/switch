@@ -121,7 +121,12 @@ export const NewChatModal = observer(function NewChatModal({
                   )}
                 >
                   <Check className={cn('size-3.5 shrink-0', agent.id !== agentId && 'invisible')} />
-                  <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={18} />
+                  <AgentAvatar
+                    name={agent.name}
+                    iconUrl={agent.iconUrl}
+                    serverId={serverId}
+                    size={18}
+                  />
                   <span className="min-w-0 truncate">{agent.displayName ?? agent.name}</span>
                   {agent.ownerName && (
                     <span className="ml-auto shrink-0 text-xs text-foreground-muted">

@@ -42,11 +42,18 @@ type HeaderProps = {
 };
 
 /** Who and where: the chat's agents, its name and its channel. */
-export function ChatHeaderTitle({ chat }: { chat: ChatSummary }) {
+export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: ChatSummary }) {
   const agent = chat.agents[0] ?? null;
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
-      {agent && <AgentAvatar name={chatAgentLabel(agent)} iconUrl={agent.iconUrl} size={18} />}
+      {agent && (
+        <AgentAvatar
+          name={chatAgentLabel(agent)}
+          iconUrl={agent.iconUrl}
+          serverId={serverId}
+          size={18}
+        />
+      )}
       {chat.agents.map((each, index) => (
         <Fragment key={each.id}>
           {index > 0 && <span className="text-foreground-muted">,</span>}
