@@ -139,8 +139,13 @@ secrets:
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
   # SMTP relay password for invitation e-mails (required when
-  # switchCore.smtp.enabled and switchCore.smtp.username is set).
+  # switchCore.smtp.enabled and a username is set, either way below).
   gatewaySmtpPassword: ""
+  # SMTP relay username, for switchCore.smtp.usernameFromSecret. Some relays
+  # issue usernames that are themselves credentials (an SES SMTP username is
+  # an access key id). With existingSecret, that Secret carries it as
+  # GATEWAY_SMTP_USERNAME instead.
+  gatewaySmtpUsername: ""
   # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
   # than beside the other observability settings because the documented use for
   # it is a collector's API key, and every other credential in this chart comes
@@ -264,9 +269,10 @@ switchCore:
   # Nothing that identifies anything inside the deployment is ever sent: no
   # room, tenant, agent, user or message id, no names, no message content, and
   # no free text of any kind. What is sent is counts (how many rooms, how many
-  # active users, how much traffic) and durations (how long from install to a
-  # working connector). The full list is in docs/old/telemetry-events.md and
-  # is enforced in code, not just documented.
+  # active users, how much traffic), durations (how long from install to a
+  # working connector) and values from closed sets (which platform, which agent
+  # runtime, success or failure). The full list is in
+  # docs/old/telemetry-events.md and is enforced in code, not just documented.
   telemetry:
     enabled: false
     # Base URL, no path — `/v1/logs` is appended, the same
@@ -281,6 +287,16 @@ switchCore:
     # Whether this is one of Flint's own deployments, so staff usage can be
     # told from adoption. Leave it false on any other deployment.
     internal: false
+
+  # Agents and people drawn by outside avatar services. An agent with no icon
+  # of its own wears a face from api.dicebear.com seeded with its name, and a
+  # person relayed from another platform a lettered badge from ui-avatars.com
+  # with their name in the URL. Chat clients load those images, so the services
+  # see the name and each reader's address. false sends no such URL, stored
+  # icons included: each platform shows its own default icon, new agents get no
+  # generated icon, and Switch Console stops drawing them for this server.
+  thirdPartyAvatars:
+    enabled: true
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
@@ -346,6 +362,22 @@ switchCore:
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
+  # The agents controller release switch-core tells every controller to run
+  # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
+  # which updates with Console. A controller that runs
+  # another version downloads the package from `url`, refuses it unless its
+  # SHA-256 is `sha256`, and installs it and restarts once no agent session
+  # is running on it. Set all three or none; with none, controllers are told
+  # nothing and keep the version they have. A chart from a Switch release
+  # ships with that release's controller package filled in here. To roll
+  # controllers back, point these at the previous release's package.
+  controllerRelease:
+    # x.y.z, or a dev build's x.y.z-<prerelease>.
+    version: ""
+    # An https URL to the switch-agent-controller-<version>.tgz package.
+    url: ""
+    # The package's SHA-256, 64 lowercase hex characters.
+    sha256: ""
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
   # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
@@ -374,6 +406,11 @@ switchCore:
     # Leave empty for a relay that needs no login; set it and
     # secrets.gatewaySmtpPassword otherwise.
     username: ""
+    # Read the username from the Secret (secrets.gatewaySmtpUsername, or
+    # GATEWAY_SMTP_USERNAME in secrets.existingSecret) rather than from
+    # `username` above, for a relay whose username should not sit in values.
+    # Mutually exclusive with `username`.
+    usernameFromSecret: false
     # The From address, e.g. "Switch <invites@your-domain>".
     from: ""
     # Addressed invitations one workspace may send per 24 hours. With sign-up

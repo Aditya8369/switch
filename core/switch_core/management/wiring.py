@@ -33,7 +33,7 @@ from switch_core.bridges.agent.operations.agent_management import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
-from switch_core.config import SwitchConfig
+from switch_core.config import ControllerRelease, SwitchConfig
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_operation_store import (
     AgentControllerOperationStore,
@@ -128,6 +128,8 @@ def build_management(
     token_secret: str,
     status_interval_seconds: int,
     server_url: str | None,
+    third_party_avatars: bool,
+    controller_release: ControllerRelease | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
@@ -149,6 +151,8 @@ def build_management(
             token_secret=token_secret,
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
+            third_party_avatars=third_party_avatars,
+            controller_release=controller_release,
         ),
         notifier=ControllerNotifier(),
         controllers=controllers,
@@ -201,6 +205,8 @@ def create_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
         server_url=config.gateway_public_url,
+        third_party_avatars=config.third_party_avatars_enabled,
+        controller_release=config.controller_release,
         session_factory=session_factory,
         presence=presence,
         # The agent API-key cache's bound: the longest a controller revoked

@@ -1182,21 +1182,82 @@ export async function updateCanManageAgents(
   });
 }
 
+/** Whether a server generates and forwards third-party avatar URLs — DiceBear
+ * for an agent with no icon, `ui-avatars.com` for a relayed platform user — or
+ * has turned that off (`THIRD_PARTY_AVATARS_ENABLED` on the server). */
+export type AvatarSettings = { thirdPartyAvatarsEnabled: boolean };
+
+/** How long a server's answer to `GET /agents/avatar-settings` is reused. The
+ * avatars, the picker, the new-agent default and the icon backfill all ask
+ * within a few seconds of a workspace loading, and this answers them with one
+ * request. It is not kept for the session: the setting changes when the
+ * server restarts, which a running Console outlives, and an operator who
+ * turns it off should not wait for every Console to restart. */
+const AVATAR_SETTINGS_TTL_MS = 60_000;
+
+/** Evicted on failure, so a transient network error is asked again rather
+ * than answered from the cache. */
+const avatarSettingsCache = new Map<string, { at: number; request: Promise<AvatarSettings> }>();
+
+/**
+ * Whether `server` allows a third-party avatar URL to be generated or sent
+ * anywhere (`GET /agents/avatar-settings`).
+ *
+ * A 404 is a server predating the setting: every such server always generated
+ * and forwarded these URLs, so absence reads as enabled — the same behavior as
+ * before the setting existed, and the same pattern as every other
+ * predates-the-capability field in this file. Any other failure propagates.
+ */
+export function fetchAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  const cached = avatarSettingsCache.get(server.id);
+  if (cached && Date.now() - cached.at < AVATAR_SETTINGS_TTL_MS) return cached.request;
+  const request: Promise<AvatarSettings> = requestAvatarSettings(server).catch((cause) => {
+    if (avatarSettingsCache.get(server.id)?.request === request) {
+      avatarSettingsCache.delete(server.id);
+    }
+    throw cause;
+  });
+  avatarSettingsCache.set(server.id, { at: Date.now(), request });
+  return request;
+}
+
+async function requestAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/agents/avatar-settings', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { thirdPartyAvatarsEnabled: true };
+    }
+    throw cause;
+  }
+  const json = (await res.json()) as { third_party_avatars_enabled: boolean };
+  return { thirdPartyAvatarsEnabled: json.third_party_avatars_enabled };
+}
+
 /**
  * One page of the icons the server generates for an agent called `name`
  * (`GET /agents/icon-choices`): page 0 leads with the one an agent of that
- * name gets when nobody picks an icon.
+ * name gets when nobody picks an icon. `choices` is empty on a server that
+ * disables third-party avatars — callers that already know that from
+ * {@link fetchAvatarSettings} should not call this at all, but the server
+ * answers consistently either way.
  */
 export async function fetchAgentIconChoices(
   server: SwitchServer,
   name: string,
   page: number
-): Promise<string[]> {
+): Promise<{ choices: string[]; thirdPartyAvatarsEnabled: boolean }> {
   const query = new URLSearchParams({ name, page: String(page) });
   const res = await gatewayFetch(server, `/agents/icon-choices?${query.toString()}`, {
     authenticated: true,
   });
-  return ((await res.json()) as { choices: string[] }).choices;
+  const json = (await res.json()) as { choices: string[]; third_party_avatars_enabled?: boolean };
+  // Absent on a server predating the setting, which always generated them.
+  return {
+    choices: json.choices,
+    thirdPartyAvatarsEnabled: json.third_party_avatars_enabled ?? true,
+  };
 }
 
 /**
@@ -2169,14 +2230,19 @@ export async function createRoomFromTemplate(
     method: 'POST',
     body: { yaml: yamlText, inputs, ...(templateName ? { template_name: templateName } : {}) },
   });
-  const json = (await res.json()) as
-    | RoomJson
-    | {
-        group_id: string;
-        group_name: string;
-        rooms?: RoomJson[];
-        errors?: Array<Record<string, unknown> & { error: string }>;
-      };
+  return toProvisionResult((await res.json()) as ProvisionJson);
+}
+
+type ProvisionJson =
+  | RoomJson
+  | {
+      group_id: string;
+      group_name: string;
+      rooms?: RoomJson[];
+      errors?: Array<Record<string, unknown> & { error: string }>;
+    };
+
+function toProvisionResult(json: ProvisionJson): ProvisionFromTemplateResult {
   if ('group_id' in json) {
     return {
       kind: 'group',
@@ -2187,6 +2253,171 @@ export async function createRoomFromTemplate(
     };
   }
   return { kind: 'room', ...toRoomResult(json) };
+}
+
+/** One agent a template run creates, resolved by the Use page, as the server takes it. */
+export type TemplateRunAgent = {
+  /** How the template names it, for matching a refusal to its card. */
+  slot: string;
+  name: string;
+  description: string;
+  displayName: string | null;
+  instructions: string;
+  provider: string;
+  /** One of the owner's machines on the server, by id or exact name. */
+  machine: string;
+  model: string | null;
+  advancedConfig: Record<string, unknown>;
+  isolation: 'shared' | 'isolated';
+  autoApprove: boolean;
+  /** May start with `{$agents_dir}`, the machine's own folder for agents; null for the agent's own workspace there. */
+  directory: string | null;
+  addressing: 'owner' | 'owner-agents' | 'anyone';
+  connections: { service: string; access: 'read' | 'write' | null; repos: string[] }[];
+};
+
+/** Why one agent of a run could not be created, with the server's reason code. */
+export type TemplateRunProblem = { slot: string; code: string; message: string };
+
+export type TemplateRunResult =
+  | {
+      kind: 'created';
+      createdAgents: {
+        slot: string;
+        agentId: string;
+        name: string;
+        machine: { id: string; name: string };
+        /** False when it was not taking events before its rooms were made: the kickoff may not have reached it. */
+        listening: boolean;
+      }[];
+      room: ProvisionFromTemplateResult | null;
+    }
+  | {
+      /** Nothing was kept: `agents_not_created` before anything existed, or
+       * `run_undone` when created agents were deleted again. */
+      kind: 'refused';
+      code: string;
+      message: string;
+      problems: TemplateRunProblem[];
+      /** Agents of the run that could not be deleted again. */
+      leftBehind: string[];
+    };
+
+const templateRunRefusalSchema = z.object({
+  detail: z.string(),
+  code: z.string(),
+  problems: z
+    .array(z.object({ slot: z.string(), code: z.string(), message: z.string() }))
+    .optional(),
+  left_behind: z.array(z.string()).optional(),
+});
+
+/**
+ * Run a template that creates agents, in one request: the agents as managed
+ * agents of the signed-in person on their machines, then the room half
+ * (`yamlText`, naming them by name; null for no room). The server checks
+ * everything first and keeps nothing when the run fails.
+ */
+export async function runTemplateWithAgents(
+  server: SwitchServer,
+  body: {
+    agents: TemplateRunAgent[];
+    yamlText: string | null;
+    inputs: Record<string, string | number | boolean>;
+    templateName: string;
+  }
+): Promise<TemplateRunResult> {
+  return postTemplateRun(server, '/rooms/from-template', {
+    agents: body.agents.map((a) => ({
+      slot: a.slot,
+      name: a.name,
+      description: a.description,
+      display_name: a.displayName,
+      instructions: a.instructions,
+      provider: a.provider,
+      machine: a.machine,
+      model: a.model,
+      advanced_config: a.advancedConfig,
+      isolation: a.isolation,
+      auto_approve: a.autoApprove,
+      directory: a.directory,
+      addressing: a.addressing,
+      connections: a.connections,
+    })),
+    yaml: body.yamlText,
+    inputs: body.inputs,
+    template_name: body.templateName,
+  });
+}
+
+/**
+ * Run a template from its document, in one request: the server works the
+ * agents and rooms out of the document and the inputs (a version 2
+ * document's conditions and references are the server's to resolve), checks
+ * everything, and keeps nothing when the run fails.
+ */
+export async function runTemplateDocument(
+  server: SwitchServer,
+  body: {
+    template: string;
+    inputs: Record<string, string | number | boolean>;
+    /** Existing agents standing in for slots that allow it, by resource key. */
+    filled: Record<string, string>;
+    templateName: string;
+  }
+): Promise<TemplateRunResult> {
+  return postTemplateRun(server, '/rooms/from-template-document', {
+    template: body.template,
+    inputs: body.inputs,
+    filled: body.filled,
+    template_name: body.templateName,
+  });
+}
+
+async function postTemplateRun(
+  server: SwitchServer,
+  path: string,
+  body: Record<string, unknown>
+): Promise<TemplateRunResult> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, path, { authenticated: true, method: 'POST', body });
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 409 && error.body) {
+      const parsed = templateRunRefusalSchema.safeParse(JSON.parse(error.body));
+      if (parsed.success) {
+        return {
+          kind: 'refused',
+          code: parsed.data.code,
+          message: parsed.data.detail,
+          problems: parsed.data.problems ?? [],
+          leftBehind: parsed.data.left_behind ?? [],
+        };
+      }
+    }
+    throw error;
+  }
+  const json = (await res.json()) as {
+    created_agents: {
+      slot: string;
+      agent_id: string;
+      name: string;
+      machine: { id: string; name: string };
+      listening: boolean;
+    }[];
+    room: ProvisionJson | null;
+  };
+  return {
+    kind: 'created',
+    createdAgents: json.created_agents.map((a) => ({
+      slot: a.slot,
+      agentId: a.agent_id,
+      name: a.name,
+      machine: a.machine,
+      listening: a.listening,
+    })),
+    room: json.room === null ? null : toProvisionResult(json.room),
+  };
 }
 
 // ── Template runs ───────────────────────────────────────────────────────────
@@ -2333,8 +2564,10 @@ export type StoredTemplateSummary = {
   description: string;
   kind: string;
   creator: string;
-  /** The owner's user id, so the Console can mark the signed-in user's own templates. */
+  /** The owner's user id, so the Console can mark the signed-in user's own templates. Null for one that comes with Switch. */
   ownerId: string | null;
+  /** Comes with Switch: served by the server itself, and nobody can change or delete it. */
+  official: boolean;
   /** Starts at 1 and goes up by one each time the document is changed. */
   version: number;
   /** `private` is seen by its owner and admins only. */
@@ -2357,7 +2590,7 @@ export type StoredTemplateDetail = StoredTemplateSummary & {
 
 type RegistryTemplateSummary = {
   id: string;
-  owner_id: string;
+  owner_id: string | null;
   owner_name: string | null;
   name: string;
   description: string;
@@ -2367,6 +2600,7 @@ type RegistryTemplateSummary = {
   write_visibility?: TemplateVisibility;
   can_edit?: boolean;
   can_manage?: boolean;
+  official?: boolean;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -2375,8 +2609,9 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     name: t.name,
     description: t.description,
     kind: t.kind,
-    creator: t.owner_name ?? t.owner_id,
+    creator: t.owner_name ?? t.owner_id ?? 'Switch',
     ownerId: t.owner_id,
+    official: t.official ?? false,
     // A server that does not report versions is read as being on the first.
     version: t.version ?? 1,
     // A server without visibility fields shares every template and lets its
