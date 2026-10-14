@@ -29,12 +29,11 @@ export function useListedRoomsInActiveScope(): RemoteRoomSummary[] {
 /**
  * Readable rooms in a workspace, filtered by the agent_chats flag when on.
  */
-export function useReadableRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
-  const flags = useFeatureFlags(workspacesStore.serverIdFor(workspaceId));
-  return computed(() =>
-    filterConsoleDirectChats(
-      switchRoomsStore.readableRoomsInWorkspace(workspaceId),
-      flags.agent_chats
-    )
-  ).get();
+export function useReadableRoomsInWorkspace(workspaceId: string | null): RemoteRoomSummary[] {
+  const flags = useFeatureFlags(workspaceId && workspacesStore.serverIdFor(workspaceId));
+  if (workspaceId === null) return [];
+  return filterConsoleDirectChats(
+    switchRoomsStore.readableRoomsInWorkspace(workspaceId),
+    flags.agent_chats
+  );
 }
