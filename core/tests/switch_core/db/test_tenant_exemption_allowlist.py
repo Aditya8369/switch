@@ -70,6 +70,11 @@ _ALLOWED_MODULES = {
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
     "switch_core.bridges.agent.protocol.agent_core",
+    # Each process keeps a copy of every other process's agent connections, so
+    # its periodic pass over the recorded rows reads every tenant's: enumerate
+    # the tenants, then read each one's rows under its own policy, the same
+    # shape as the runtime-state sweep.
+    "switch_core.bridges.agent.protocol.connection_rows",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
     # Agent-controller enrollment and token exchange carry their secret (a
@@ -83,6 +88,11 @@ _ALLOWED_MODULES = {
     # tenants, then read each one's definitions under its own policy, the same
     # boot-style fan-out `main` does.
     "switch_core.management.bindings",
+    # Each process keeps its own copy of which process holds each
+    # controller's socket, and reads every tenant's controllers again at
+    # startup, on resync and on each re-check in case a signal was lost: the
+    # same fan-out as the bindings.
+    "switch_core.management.signals",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
     # authentication module itself rather than on an injected store: a store

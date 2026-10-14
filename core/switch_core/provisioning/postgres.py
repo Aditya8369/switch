@@ -165,15 +165,18 @@ class PostgresProvisioning:
         the right one carried on reading a room it is not.
         """
         async with self._session_factory() as session:
-            switch_room_id, _, client_id, _ = await self._resolve(
+            switch_room_id, tenant_id, client_id, _ = await self._resolve(
                 session, room_id, user_id
             )
             await self._room_store.remove_client(session, client_id, switch_room_id)
             removed = await self._router.remove(
-                session, client_id=client_id, room_id=switch_room_id
+                session,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                room_id=switch_room_id,
             )
             await session.commit()
-        removed.committed()
+        await removed.committed()
         await self._invites.remove(client_id, room_id)
 
     async def delete_room(self, room_id: str) -> None:

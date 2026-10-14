@@ -228,10 +228,14 @@ def process_on(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     rooms: RoomAnnouncements | None = None,
+    connections: AgentConnectionRegistry | None = None,
 ) -> Process:
     """A process's routing on the test database: real stores, its own
-    registry and buffer, telemetry that records."""
-    connections = AgentConnectionRegistry()
+    registry and buffer, telemetry that records. A test of presence across
+    processes hands it a registry that sees the other processes'
+    connections (`connection_rows.SharedConnections`)."""
+    if connections is None:
+        connections = AgentConnectionRegistry()
     buffer = db_buffer_on(session_factory, rooms=rooms)
     telemetry = RecordedTelemetry()
     message_store = MessageStore()

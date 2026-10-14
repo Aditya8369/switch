@@ -77,3 +77,16 @@ async def test_a_preloaded_row_needs_no_read(
     assert scope.statements == []
     assert isinstance(actor.agent, Agent)
     assert actor.agent_id == agent.id
+
+
+async def test_an_agent_hears_its_rooms_without_waiting_for_its_client(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A template run waits for each new agent's client to take events before
+    it posts the kickoff. An agent's rows are decided as they are written,
+    so its client has nothing to start first: the answer is yes at once,
+    even before it connects."""
+    _, client = await make_agent(session_factory, "new-hire")
+    actor = _actor(session_factory, client.id)
+
+    assert await actor.wait_receiving(0)

@@ -243,6 +243,7 @@ class PostgresTransport:
         # its own arrival.
         self._joining: set[str] = set()
         self._receiving = False
+        self._receiving_event = asyncio.Event()
         self._closed = asyncio.Event()
         # Rooms this client has been told moved but has not read yet, and the
         # signal its delivery loop waits on. A set because a room that moved
@@ -284,6 +285,7 @@ class PostgresTransport:
             self._reconcile_membership,
         )
         self._receiving = True
+        self._receiving_event.set()
         try:
             rooms = await self.joined_rooms()
             if not rooms:
@@ -302,6 +304,7 @@ class PostgresTransport:
                 delivery.cancel()
         finally:
             self._receiving = False
+            self._receiving_event.clear()
             self._invites.unregister(
                 self.client_id,
                 self._on_invited,
@@ -309,6 +312,13 @@ class PostgresTransport:
                 self._reconcile_membership,
             )
             self._unwatch_all()
+
+    async def wait_receiving(self, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(self._receiving_event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
 
     async def _deliver_forever(self) -> None:
         """This client's own delivery loop: its rooms, one at a time.

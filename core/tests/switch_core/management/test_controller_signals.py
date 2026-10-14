@@ -20,6 +20,8 @@ from switch_core.db.stores.agent_controller_operation_store import (
 )
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
+from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.management.notifier import (
     ASSIGNMENT_CHANGED,
     CREDENTIAL_REVOKED,
@@ -68,6 +70,8 @@ def _process(
         controllers=AgentControllerStore(),
         definitions=AgentDefinitionStore(),
         operations=AgentControllerOperationStore(),
+        rooms=RoomStore(),
+        processes=SwitchCoreProcessStore(),
         clock=lambda: datetime.now(UTC),
     )
     return signals, registry, bus

@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_url,
     normalise_icon_url,
 )
@@ -39,8 +40,12 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExists
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
+    DISCONNECT_REVOKED,
+    ControllerConnection,
     ControllerPresence,
 )
+from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
+from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -81,6 +86,7 @@ from switch_core.management.schemas import (
     DefinitionV1,
     StatusReport,
     assignment_entry,
+    controller_release_view,
     controller_view,
     managed_agent_view,
     operation_view,
@@ -115,6 +121,12 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
+    # stores none rather than the generated one, which carries its name.
+    third_party_avatars: bool
+    # The controller release every controller is told to run; None when the
+    # deployment names none, and then controllers are told nothing.
+    controller_release: ControllerRelease | None
 
 
 @dataclass(frozen=True)
@@ -472,7 +484,80 @@ class ManagementService:
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
+            "controller_release": controller_release_view(
+                controller, self.settings.controller_release
+            ),
         }
+
+    async def record_opened(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        conn: ControllerConnection,
+    ) -> None:
+        """Record the connection the controller just opened and tell every
+        other process: its socket may attach through any of them, and a
+        connection another process holds for this controller has been taken
+        over."""
+        await self.controllers.record_opened(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=conn.id,
+            generation=conn.generation,
+            process_id=self.signals.process_id,
+            resume_cursors=conn.resume_cursors,
+        )
+        await session.commit()
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+
+    async def adopt_connection(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection | None:
+        """Hold here the connection the controller opened through another
+        process, when it is the one it last opened and nothing has ended it.
+        None when it is not, and the controller must open another."""
+        controller = await self.controllers.get(
+            session, principal.tenant_id, principal.controller_id
+        )
+        if controller is None or is_revoked(controller):
+            return None
+        if (
+            controller.open_connection_id != connection_id
+            or controller.open_generation != generation
+            # Recorded as held here, yet not held here: it ended here (its
+            # heartbeat lapsed, say), and ending is final, as it always was.
+            or controller.open_process_id == self.signals.process_id
+        ):
+            return None
+        if (
+            controller.connection_id == connection_id
+            and controller.disconnect_reason in _ENDING_REASONS
+        ):
+            return None
+        resume_cursors = _resume_cursors(controller.open_cursors)
+        if not await self.controllers.record_taken_up(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=connection_id,
+            process_id=self.signals.process_id,
+        ):
+            return None
+        await session.commit()
+        conn = self.presence.adopt(
+            controller_id=principal.controller_id,
+            tenant_id=principal.tenant_id,
+            connection_id=connection_id,
+            generation=generation,
+            resume_cursors=resume_cursors,
+        )
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+        return conn
 
     async def connection_state(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -630,7 +715,12 @@ class ManagementService:
         )
         leases = await self.leases(session)
         return [
-            controller_view(controller, self.state_of(controller, leases), leases)
+            controller_view(
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
+            )
             for controller in controllers
         ]
 
@@ -685,7 +775,10 @@ class ManagementService:
         if not details:
             leases = await self.leases(session)
             view = controller_view(
-                controller, self.state_of(controller, leases), leases
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
             )
             await session.commit()
             return view
@@ -704,7 +797,12 @@ class ManagementService:
             session, tenant_id, controller_id, changes
         )
         leases = await self.leases(session)
-        view = controller_view(controller, self.state_of(controller, leases), leases)
+        view = controller_view(
+            controller,
+            self.state_of(controller, leases),
+            leases,
+            self.settings.controller_release,
+        )
         await session.commit()
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
@@ -1077,6 +1175,28 @@ class ManagementService:
             )
         self.presence.bind(binding_of(tenant_id, row, controller))
 
+    async def check_new_managed_agent(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        request: CreateManagedAgentRequest,
+    ) -> None:
+        """The checks `create_managed_agent` makes before it registers
+        anything, raising as it would, with nothing created."""
+        await self._check_target(
+            session,
+            tenant_id,
+            owner_id,
+            request.controller_id,
+            request.definition.provider,
+            check_placement=True,
+        )
+        try:
+            normalise_icon_url(request.icon_url)
+        except InvalidIconUrl as exc:
+            raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
+
     async def create_managed_agent(
         self,
         session: AsyncSession,
@@ -1098,9 +1218,12 @@ class ManagementService:
         )
         definition = with_directory(request.definition, controller, request.name)
         try:
-            icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
-                request.name
+            icon_url = drop_third_party_avatar(
+                normalise_icon_url(request.icon_url),
+                third_party_avatars=self.settings.third_party_avatars,
             )
+            if icon_url is None and self.settings.third_party_avatars:
+                icon_url = generated_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)
@@ -1435,6 +1558,23 @@ class ManagementService:
             session, tenant_id, controller_ids, OPERATION_LIST_LIMIT
         )
         return [operation_view(operation) for operation in operations]
+
+
+# Why a connection ended for good: a socket going for any of these leaves
+# nothing to reattach to, and the controller opens another.
+_ENDING_REASONS = frozenset(
+    {HEARTBEAT_LAPSED.code, TAKEN_OVER.code, DISCONNECT_REVOKED}
+)
+
+
+def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
+    """The cursors recorded with a connection, as the presence holds them."""
+    if not recorded:
+        return {}
+    return {
+        agent_id: cursor if isinstance(cursor, int) else None
+        for agent_id, cursor in recorded.items()
+    }
 
 
 def placement_from(

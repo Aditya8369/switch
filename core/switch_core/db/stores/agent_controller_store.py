@@ -309,13 +309,17 @@ class AgentControllerStore:
         controller_id: str,
         *,
         connection_id: str,
+        process_id: str,
         disconnected_at: datetime,
         reason: str,
+        resume_cursors: dict[str, int | None],
     ) -> bool:
         """Record that the controller's socket on this connection went, and
-        why. Written only while the row still names this connection, so a
-        process closing a connection the controller has since replaced
-        through another process leaves the replacement standing. Returns
+        why. Written only while the row still names this connection held by
+        this process, so a process closing a connection the controller has
+        since replaced, or reattached through another process, leaves the
+        newer one standing. Where the connection's stream resumes each agent is
+        kept with it, for whichever process the socket reattaches to. Returns
         whether the row was written."""
         result = await session.execute(
             update(AgentController)
@@ -323,6 +327,7 @@ class AgentControllerStore:
                 AgentController.tenant_id == tenant_id,
                 AgentController.id == controller_id,
                 AgentController.connection_id == connection_id,
+                AgentController.connection_process_id == process_id,
             )
             .values(
                 disconnected_at=disconnected_at,
@@ -332,7 +337,93 @@ class AgentControllerStore:
             .returning(AgentController.id)
             .execution_options(synchronize_session=False)
         )
+        written = result.scalar_one_or_none() is not None
+        if written:
+            await session.execute(
+                update(AgentController)
+                .where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == controller_id,
+                    AgentController.open_connection_id == connection_id,
+                )
+                .values(
+                    open_cursors=resume_cursors,
+                    updated_at=AgentController.updated_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        return written
+
+    async def record_opened(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        generation: int,
+        process_id: str,
+        resume_cursors: dict[str, int | None],
+    ) -> None:
+        """Record the connection the controller just opened through this
+        process, so whichever process its socket reaches can hold it. Its
+        socket attaching is recorded separately (`record_connected`): opened
+        is not connected."""
+        await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .values(
+                open_connection_id=connection_id,
+                open_generation=generation,
+                open_process_id=process_id,
+                open_cursors=resume_cursors,
+                updated_at=AgentController.updated_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+    async def record_taken_up(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        process_id: str,
+    ) -> bool:
+        """Record that this process now holds the connection the controller
+        last opened. Written only while it is still that connection. Returns
+        whether it was."""
+        result = await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+                AgentController.open_connection_id == connection_id,
+            )
+            .values(open_process_id=process_id, updated_at=AgentController.updated_at)
+            .returning(AgentController.id)
+            .execution_options(synchronize_session=False)
+        )
         return result.scalar_one_or_none() is not None
+
+    async def list_with_connections(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[AgentController]:
+        """Every controller of the tenant that has opened a connection."""
+        result = await session.execute(
+            select(AgentController).where(
+                AgentController.tenant_id == tenant_id,
+                or_(
+                    AgentController.connection_id.is_not(None),
+                    AgentController.open_connection_id.is_not(None),
+                ),
+            )
+        )
+        return list(result.scalars().all())
 
     async def set_credential(
         self,

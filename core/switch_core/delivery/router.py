@@ -561,27 +561,47 @@ def _bind_command(
 
 
 class Removed:
-    """An agent taken out of a room, and what this process lets go of once
-    the removal has committed."""
+    """An agent taken out of a room, and what is let go of once the removal
+    has committed."""
 
-    def __init__(self, router: MessageRouter, agent_id: str | None, room_id: str):
+    def __init__(
+        self,
+        router: MessageRouter,
+        *,
+        tenant_id: str,
+        agent_id: str | None,
+        room_id: str,
+    ) -> None:
         self._router = router
+        self._tenant_id = tenant_id
         self._agent_id = agent_id
         self._room_id = room_id
 
-    def committed(self) -> None:
-        """Release the room from the agent's connections and controller here.
+    async def committed(self) -> None:
+        """Take the room off the agent's connections, whichever process holds
+        them, and off a controller streaming the agent from here
+        (`MessageRouter.release_room`).
 
-        Both are held in this process's memory. A claim outlives the
-        membership it was checked against (`require_room_member` runs when
-        the room is claimed and never again), and a controller streaming the
-        agent is told its rooms changed.
+        Never raises. The removal is committed by now, and a caller told it
+        failed would remove the agent again: a failure here is logged and
+        counted, and the process holding a connection that still claims the
+        room lets it go when the membership signal reaches it.
         """
         if self._agent_id is None:
             return
-        connections = self._router.services.connections
-        connections.release_room_everywhere(self._agent_id, self._room_id)
-        connections.controllers.room_left(self._agent_id, self._room_id)
+        try:
+            await self._router.release_room(
+                self._tenant_id, self._agent_id, self._room_id
+            )
+        except Exception:
+            metrics().increment(ROUTING_FAILURES, {"stage": "after_commit"})
+            logger.error(
+                "Could not release room %s from agent %s's connections after "
+                "the agent was removed from it",
+                self._room_id,
+                self._agent_id,
+                exc_info=True,
+            )
 
 
 @dataclass(frozen=True)
@@ -763,13 +783,15 @@ class MessageRouter:
         with a membership written by any process: `change` is the tenant, the
         client and the room of a `membership.changed` signal.
 
-        The membership's own consequences in the database (the greeting, the
-        arrival handed to the agents listening for joins, the agent's events
-        in a room it left) were taken care of once, by the process that wrote
-        it. What is left is per process: the room claims the agent's
-        connections hold here, and the rooms of a controller streaming it
-        from here, which only this process can change. The writer did both
-        for itself as it wrote, so for it this finds nothing to do.
+        The membership's own consequences (the greeting, the arrival handed
+        to the agents listening for joins, the agent's events in a room it
+        left, the room taken off the agent's connections wherever they are)
+        were taken care of once, by the process that wrote it. What is left
+        is per process: the rooms this process keeps for an agent run by a
+        controller, which say where the agent is present; and, should the
+        writer have failed to release them, the claims of the connections
+        this process holds. The writer did all of it as it wrote, so for it
+        this finds nothing to do.
         """
         tenant_id, client_id, room_id = change
         async with tenant_session(self.services.session_factory, tenant_id) as session:
@@ -795,9 +817,10 @@ class MessageRouter:
             if room_id not in controllers.rooms(agent_id):
                 controllers.room_joined(agent_id, room_id)
             return
-        connections.release_room_everywhere(agent_id, room_id)
         if room_id in controllers.rooms(agent_id):
             controllers.room_left(agent_id, room_id)
+        if any(room_id in conn.rooms for conn in connections.held_here(agent_id)):
+            await self._release_claims(tenant_id, agent_id, room_id)
 
     async def recheck_agent_rooms(self, tenant_id: str) -> None:
         """Compare what this process holds in memory for the tenant's agents
@@ -805,22 +828,21 @@ class MessageRouter:
         re-check behind `membership_changed`, for a signal that never came.
 
         A read and nothing more when nothing changed, and nothing at all when
-        this process holds no claim and streams no managed agent.
+        this process holds no claim and keeps no rooms for a managed agent.
         """
         connections = self.services.connections
         controllers = connections.controllers
-        held = connections.claims_by_agent()
+        claimed = connections.claims_held_here()
         kept = controllers.rooms_kept()
-        for agent_id, rooms in kept.items():
-            held.setdefault(agent_id, set()).update(rooms)
-        if not held:
+        agents = set(claimed) | set(kept)
+        if not agents:
             return
         async with tenant_session(self.services.session_factory, tenant_id) as session:
             rows = (
                 await session.execute(
                     select(Agent.id, ClientRoom.room_id)
                     .outerjoin(ClientRoom, ClientRoom.client_id == Agent.client_id)
-                    .where(Agent.id.in_(held))
+                    .where(Agent.id.in_(agents))
                 )
             ).all()
         memberships: dict[str, set[str]] = {}
@@ -831,20 +853,52 @@ class MessageRouter:
         # Only the agents of this tenant come back; the rest are another
         # tenant's to check.
         for agent_id, rooms in memberships.items():
-            for room_id in held[agent_id] - rooms:
-                connections.release_room_everywhere(agent_id, room_id)
-                if room_id in controllers.rooms(agent_id):
-                    controllers.room_left(agent_id, room_id)
+            for room_id in sorted(claimed.get(agent_id, set()) - rooms):
+                await self._release_claims(tenant_id, agent_id, room_id)
             if agent_id in kept:
+                for room_id in kept[agent_id] - rooms:
+                    controllers.room_left(agent_id, room_id)
                 for room_id in rooms - controllers.rooms(agent_id):
                     controllers.room_joined(agent_id, room_id)
 
+    async def release_room(self, tenant_id: str, agent_id: str, room_id: str) -> None:
+        """Take a room the agent is no longer in off a controller streaming
+        the agent from here, and off its connections, whichever process holds
+        them. The controller first: it is this process's memory and cannot
+        fail, and the claims are a write that can."""
+        self.services.connections.controllers.room_left(agent_id, room_id)
+        await self._release_claims(tenant_id, agent_id, room_id)
+
+    async def _release_claims(
+        self, tenant_id: str, agent_id: str, room_id: str
+    ) -> None:
+        """Take the room off every connection of the agent's that claims it.
+
+        A claim outlives the membership it was checked against
+        (`require_room_member` runs when the room is claimed and never again).
+        Claims are recorded for every process, so this is a recorded move
+        (`AgentConnectionRegistry.recorded`): the agent's claims are read
+        again from the rows, the room is taken off whichever connection holds
+        it, here or in another process, and the change is written and
+        signalled to the process holding that connection.
+        """
+        connections = self.services.connections
+        with tenant_scope(tenant_id):
+            async with (
+                connections.slots(agent_id),
+                connections.recorded(agent_id),
+            ):
+                connections.release_room_everywhere(agent_id, room_id)
+
     async def remove(
-        self, session: AsyncSession, *, client_id: str, room_id: str
+        self, session: AsyncSession, *, tenant_id: str, client_id: str, room_id: str
     ) -> Removed:
         """Forget an agent's own events in a room it is being taken out of,
         in the caller's transaction, the one that removes the membership.
-        Nothing to do for a client that is not an agent."""
+        Nothing to do for a client that is not an agent.
+
+        The caller commits, then calls `Removed.committed()`.
+        """
         agent_id = await session.scalar(
             select(Agent.id).where(Agent.client_id == client_id)
         )
@@ -852,7 +906,7 @@ class MessageRouter:
             await self.services.event_buffer.forget_room(
                 session, agent_id=agent_id, room_id=room_id
             )
-        return Removed(self, agent_id, room_id)
+        return Removed(self, tenant_id=tenant_id, agent_id=agent_id, room_id=room_id)
 
     # ── Deciding ──────────────────────────────────────────────────────────────
 

@@ -12,7 +12,7 @@ Expand only: a process from before this revision assembles posts in its agent
 consumers' memory and never reads this table.
 
 Revision ID: 87ebf9517271
-Revises: e5956cbd3bdc
+Revises: c8f2a6d4e1b9
 Create Date: 2026-10-14 18:00:00.000000
 
 """
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "87ebf9517271"
-down_revision: str | None = "e5956cbd3bdc"
+down_revision: str | None = "c8f2a6d4e1b9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

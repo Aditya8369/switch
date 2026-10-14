@@ -185,6 +185,27 @@ required keys are listed above the `secrets:` block in `values.yaml`.
 Bridge credentials are **not** among them. Those are entered in the gateway and
 stored in the database.
 
+## Avatars from outside services
+
+An agent with no icon of its own is drawn by api.dicebear.com with its name as
+the seed, and a person relayed from another platform by ui-avatars.com with their
+name in the URL. Slack, Discord and Teams clients load those images, so the
+services see the name and each reader's address; the Mattermost bridge loads them
+from switch-core. To send no such URL:
+
+```yaml
+switchCore:
+  thirdPartyAvatars:
+    enabled: false
+```
+
+Each platform then shows its own default icon (Slack the app's icon, Discord its
+default avatar, Teams no image), icons already stored on those services are
+withheld too, and new agents get no generated icon. Setting an icon on one of
+those services is refused with the reason. Switch Console asks the server and
+stops drawing them for its agents. An icon an owner set on any other host is
+unaffected.
+
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are
@@ -212,3 +233,26 @@ A deployment that set these variables with `kubectl set env` should remove them
 before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core
 AGENT_MANAGEMENT_ENABLED- CONTROLLER_TOKEN_SECRET-`). Otherwise Helm merges its
 `valueFrom` into the live `value` and the API server rejects the Deployment.
+
+### Controller updates
+
+`switchCore.controllerRelease` names the agents controller release switch-core
+tells every controller to run (cloud machines, and `switch-agent-controller`
+on SSH hosts and laptops; Switch Console's own controller updates with Console):
+
+```yaml
+switchCore:
+  controllerRelease:
+    version: "0.31.0"
+    url: "https://github.com/sandbox-quantum/switch/releases/download/switch-agent-controller-v0.31.0/switch-agent-controller-0.31.0.tgz"
+    sha256: "<sha256 of that file>"
+```
+
+A controller running another version downloads the package, refuses it unless
+its SHA-256 matches, and installs it and restarts once none of its agents has a
+session running. The chart published with a Switch release has these filled in
+with that release's controller package, so upgrading Switch upgrades the
+controllers too. Set all three or none (the chart refuses to render otherwise);
+with none, controllers are told nothing and keep their version. To roll
+controllers back, point the three values at the previous release's package and
+upgrade.

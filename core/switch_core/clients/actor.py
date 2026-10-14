@@ -127,6 +127,18 @@ class Actor[ConfigT: ClientConfig]:
     async def wait_ready(self) -> None:
         await self._ready.wait()
 
+    async def wait_receiving(self, timeout: float) -> bool:
+        """Block until this actor's client is taking events, so a room it is
+        added to from now on is one it reads from the start, up to `timeout`
+        seconds. False on timeout."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout)
+        except TimeoutError:
+            return False
+        return await self._transport.wait_receiving(max(0.0, deadline - loop.time()))
+
     async def set_display_name(self, display_name: str) -> None:
         """Change the name this actor shows under.
 
@@ -355,6 +367,13 @@ class AgentActor(Actor[ClientConfig]):
         """Hand `connect` the agent row read in bulk at boot, so it needs no
         query of its own."""
         self._agent = agent
+
+    async def wait_receiving(self, timeout: float) -> bool:
+        """True at once. An agent reads no room: each row written to a room it
+        is in is decided for it as the row is written, whether or not its
+        client has started, so a room it is added to is one it hears from the
+        start (`delivery/router.py`)."""
+        return True
 
     @property
     def agent(self) -> Agent:
