@@ -4,14 +4,17 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
+import { rpc } from '@renderer/lib/ipc';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { contextBlocker, isCompacting } from '../chat-context';
 import { snippetOf } from '../chat-threads';
+import { agentChatsFlag } from '../stores/agent-chats-flag';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
+import { createChatWarmer } from '../stores/chat-warmer';
 import { chatTitler } from '../stores/chats';
 import {
   PromptInput,
@@ -32,6 +35,12 @@ async function toBase64(file: File): Promise<string> {
 function chatFile(file: File): ChatFile {
   return { name: file.name, type: file.type, size: file.size, read: () => toBase64(file) };
 }
+
+/** Starts the agent's session while its user types, so the first message does not wait for it. */
+const warmChat = createChatWarmer(
+  (serverId, agentId, roomId) => rpc.chats.warm({ serverId, agentId, roomId }),
+  Date.now
+);
 
 /** Drafts by chat, so a draft outlives navigating away. */
 const drafts = new Map<string, string>();
@@ -250,7 +259,11 @@ export const ChatComposer = observer(function ChatComposer({
               placeholder={disabled ?? `Message ${agent ? chatAgentLabel(agent) : 'the agent'}...`}
               value={draft}
               disabled={disabled !== null}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                if (!draft && event.target.value && agent && agents.length === 1)
+                  if (agentChatsFlag(serverId)) void warmChat(serverId, agent.id, timeline.roomId);
+                setDraft(event.target.value);
+              }}
             />
             <PromptInputSubmit
               status={status}

@@ -4,6 +4,8 @@ import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { agentPlacements } from '@main/core/sdk-host/connection-health';
 import { controllerControl } from '@main/core/sdk-host/controller-control';
+import { localWatcherControl } from '@main/core/sdk-host/local-host';
+import { withSidecar } from '@main/core/sdk-host/sidecar-control';
 import {
   AgentManagementUnavailableError,
   fetchAgents,
@@ -138,6 +140,39 @@ const activityDeps: ActivityDeps = {
 };
 
 /**
+ * Asks the host of an agent the person owns to start the session a message to
+ * the room would start, ahead of the message. Does nothing for an agent that
+ * is not theirs or whose machine is offline; a failure is logged, never thrown,
+ * so it cannot get in the way of sending.
+ */
+async function warmChat(params: { serverId: string; agentId: string; roomId: string }) {
+  const { serverId, agentId, roomId } = params;
+  try {
+    const local = (await activityDeps.localAgents(serverId)).find(
+      (agent) => agent.switchAgentId === agentId
+    );
+    if (local) {
+      await (local.ssh
+        ? withSidecar(local.id, (client) => client.warm(roomId))
+        : localWatcherControl(agentId).warm(roomId));
+      return;
+    }
+    const managed = (await activityDeps.ownedManagedAgents(serverId))?.find(
+      (agent) => agent.agentId === agentId
+    );
+    if (!managed?.controllerId || !managed.controllerOnline) return;
+    await (await controllerControl(controllerAgentKey(serverId, agentId))).warm(roomId);
+  } catch (error) {
+    log.warn('Could not warm the agent’s session for a chat; its first message starts it', {
+      serverId,
+      agentId,
+      roomId,
+      error: String(error),
+    });
+  }
+}
+
+/**
  * The signed-in person's chats on a server: rooms they are a member of, read
  * and written through the gateway's `/chats` routes, kept live by one feed
  * per server and tenant. Sending only ever posts to the room — routing,
@@ -228,4 +263,7 @@ export const chatsController = createRPCController({
     agentId: string;
     roomId: string;
   }): Promise<ChatActivityTarget> => resolveChatActivity(activityDeps, params),
+  /** Start the agent's session for the chat while its user types, if the agent is theirs. */
+  warm: (params: { serverId: string; agentId: string; roomId: string }): Promise<void> =>
+    warmChat(params),
 });
