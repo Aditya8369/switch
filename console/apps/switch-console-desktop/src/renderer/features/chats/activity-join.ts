@@ -104,8 +104,10 @@ export function placeTurns(
 
 /**
  * The host's notices of turns that ended without a reply, each matched to the
- * turn it reports: the agent's last turn before it, when that turn shows the
- * same ending. Maps the notice's message id to the turn id.
+ * turn it reports: the agent's latest turn before it that shows the same
+ * ending and has no notice yet. A queued turn may have started in between.
+ * Only the session's own turns are bound, which keeps the search to it. Maps
+ * the notice's message id to the turn id.
  */
 export function foldTurnEndNotices(
   messages: readonly ChatMessage[],
@@ -113,13 +115,18 @@ export function foldTurnEndNotices(
   bound: ReadonlyMap<string, TurnActivity>
 ): Map<string, string> {
   const folded = new Map<string, string>();
+  const claimed = new Set<string>();
   messages.forEach((message, at) => {
     const notice = message.sender.agentId === agentId ? turnEndNotice(message) : null;
     if (!notice) return;
-    const started = messages.slice(0, at).findLast((each) => bound.has(each.messageId));
-    const turn = started ? bound.get(started.messageId) : undefined;
     const status = { failed: 'error', interrupted: 'interrupted', completed: null }[notice.outcome];
-    if (turn && turn.status === status) folded.set(message.messageId, turn.turnId);
+    const turn = messages
+      .slice(0, at)
+      .map((each) => bound.get(each.messageId))
+      .findLast((each) => each?.status === status && !claimed.has(each.turnId));
+    if (!turn) return;
+    claimed.add(turn.turnId);
+    folded.set(message.messageId, turn.turnId);
   });
   return folded;
 }
