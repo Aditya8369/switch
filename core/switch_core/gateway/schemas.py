@@ -359,6 +359,23 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class AvatarSettingsResponse(BaseModel):
+    """Whether this server lets icons drawn by outside avatar services through
+    (`THIRD_PARTY_AVATARS_ENABLED`). A client that draws agents itself follows
+    it, so turning it off covers the client as well as the bridges."""
+
+    third_party_avatars_enabled: bool
+
+
+class IconChoicesResponse(BaseModel):
+    """One page of generated icons to choose from. `choices` is empty when
+    `third_party_avatars_enabled` is false: the server generates none, rather
+    than having none to offer."""
+
+    choices: list[str]
+    third_party_avatars_enabled: bool
+
+
 class UpdateAgentDescriptionRequest(BaseModel):
     """Change what an agent is for. A description is required, so a blank one
     is refused rather than stored."""
@@ -1367,13 +1384,17 @@ class TemplateSummary(BaseModel):
     """
 
     id: str
-    owner_id: str
+    # None for an official template, which comes with Switch.
+    owner_id: str | None
     owner_name: str | None = None
     name: str
     description: str
     kind: str
     read_visibility: str
     write_visibility: str
+    # Comes with Switch: served by the server on every workspace, and changed
+    # by nobody (see `official_templates`).
+    official: bool = False
     # What the caller may do with it, so a client shows Edit and Remove only
     # where the server would say yes. Admin here means the tenant's, which a
     # client cannot tell from the user's global role.

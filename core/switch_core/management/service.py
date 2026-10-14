@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_url,
     normalise_icon_url,
 )
@@ -42,6 +43,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
     ControllerPresence,
 )
+from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -83,6 +85,7 @@ from switch_core.management.schemas import (
     DefinitionV1,
     StatusReport,
     assignment_entry,
+    controller_release_view,
     controller_view,
     managed_agent_view,
     operation_view,
@@ -115,6 +118,12 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
+    # stores none rather than the generated one, which carries its name.
+    third_party_avatars: bool
+    # The controller release every controller is told to run; None when the
+    # deployment names none, and then controllers are told nothing.
+    controller_release: ControllerRelease | None
 
 
 @dataclass(frozen=True)
@@ -471,6 +480,9 @@ class ManagementService:
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
+            "controller_release": controller_release_view(
+                controller, self.settings.controller_release
+            ),
         }
 
     async def connection_state(
@@ -629,7 +641,12 @@ class ManagementService:
         )
         leases = await self.leases(session)
         return [
-            controller_view(controller, self.state_of(controller, leases), leases)
+            controller_view(
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
+            )
             for controller in controllers
         ]
 
@@ -684,7 +701,10 @@ class ManagementService:
         if not details:
             leases = await self.leases(session)
             view = controller_view(
-                controller, self.state_of(controller, leases), leases
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
             )
             await session.commit()
             return view
@@ -703,7 +723,12 @@ class ManagementService:
             session, tenant_id, controller_id, changes
         )
         leases = await self.leases(session)
-        view = controller_view(controller, self.state_of(controller, leases), leases)
+        view = controller_view(
+            controller,
+            self.state_of(controller, leases),
+            leases,
+            self.settings.controller_release,
+        )
         await session.commit()
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
@@ -1076,6 +1101,28 @@ class ManagementService:
             )
         self.presence.bind(binding_of(tenant_id, row, controller))
 
+    async def check_new_managed_agent(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        request: CreateManagedAgentRequest,
+    ) -> None:
+        """The checks `create_managed_agent` makes before it registers
+        anything, raising as it would, with nothing created."""
+        await self._check_target(
+            session,
+            tenant_id,
+            owner_id,
+            request.controller_id,
+            request.definition.provider,
+            check_placement=True,
+        )
+        try:
+            normalise_icon_url(request.icon_url)
+        except InvalidIconUrl as exc:
+            raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
+
     async def create_managed_agent(
         self,
         session: AsyncSession,
@@ -1097,9 +1144,12 @@ class ManagementService:
         )
         definition = with_directory(request.definition, controller, request.name)
         try:
-            icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
-                request.name
+            icon_url = drop_third_party_avatar(
+                normalise_icon_url(request.icon_url),
+                third_party_avatars=self.settings.third_party_avatars,
             )
+            if icon_url is None and self.settings.third_party_avatars:
+                icon_url = generated_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)
