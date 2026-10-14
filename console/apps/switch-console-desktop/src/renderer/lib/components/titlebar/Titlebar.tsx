@@ -10,7 +10,15 @@ import { cn } from '@renderer/utils/utils';
 
 const isLinux = detectPlatform() === 'linux';
 
-export function Titlebar({ leftSlot, rightSlot }: { leftSlot?: ReactNode; rightSlot?: ReactNode }) {
+export function Titlebar({
+  leftSlot,
+  rightSlot,
+  className,
+}: {
+  leftSlot?: ReactNode;
+  rightSlot?: ReactNode;
+  className?: string;
+}) {
   const { setCollapsed, isLeftOpen } = useWorkspaceLayoutContext();
   return (
     <header
@@ -25,7 +33,8 @@ export function Titlebar({ leftSlot, rightSlot }: { leftSlot?: ReactNode; rightS
         // covers the views that render no titlebar at all.
         // Linux draws its own controls flush to the right corner (no native
         // frame); everywhere else keep the normal right padding.
-        isLinux ? 'pr-0' : 'pr-[18px]'
+        isLinux ? 'pr-0' : 'pr-[18px]',
+        className
       )}
     >
       <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1">

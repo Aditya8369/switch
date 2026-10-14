@@ -160,8 +160,12 @@ export const ChatPanel = observer(function ChatPanel({
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       {showHeader && chat && (
-        <div className="flex h-11 shrink-0 items-center border-b border-border px-4">
+        <div className="relative z-10 flex h-11 shrink-0 items-center bg-background px-4">
           <ChatHeader serverId={serverId} chat={chat} activities={activities} />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-full h-6 bg-linear-to-b from-background to-transparent"
+          />
         </div>
       )}
       {timeline.loadError && (

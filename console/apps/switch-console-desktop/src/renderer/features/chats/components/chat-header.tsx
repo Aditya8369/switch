@@ -1,4 +1,4 @@
-import { ExternalLink, MoreHorizontal, RotateCw } from 'lucide-react';
+import { ExternalLink, MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment } from 'react';
 import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
@@ -104,7 +104,7 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
           render={<Button variant="ghost" size="sm" className="size-7 p-0" />}
           aria-label={`Actions for ${chat.name}`}
         >
-          <MoreHorizontal className="size-4" />
+          <MoreVertical className="size-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <ChatActionItems actions={chatActions(serverId, chat)} />
@@ -145,11 +145,11 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
   );
 });
 
-/** The chat's header in one row: who and where on the left, its controls on the right. */
+/** The chat's header in one row: its name on the left, its controls on the right. */
 export const ChatHeader = observer(function ChatHeader(props: HeaderProps) {
   return (
     <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-      <ChatHeaderTitle chat={props.chat} />
+      <span className="truncate text-sm font-medium">{props.chat.name}</span>
       <ChatHeaderControls {...props} />
     </div>
   );
