@@ -234,6 +234,12 @@ class PostgresTransport:
         # the join, or it would watch from the head and the client would miss
         # its own arrival.
         self._joining: set[str] = set()
+        # Held while this client reads its rooms and compares them with the
+        # ones it watches: on its first read at start, and on every re-read
+        # after (`_reconcile_membership`). A re-read during the first read
+        # would find every room the client is already in unwatched, and hand
+        # each to `on_invite` as if someone had just added the client to it.
+        self._reading_rooms = asyncio.Lock()
         self._receiving = False
         self._receiving_event = asyncio.Event()
         self._closed = asyncio.Event()
@@ -279,18 +285,20 @@ class PostgresTransport:
         self._receiving = True
         self._receiving_event.set()
         try:
-            rooms = await self.joined_rooms()
-            if not rooms:
-                logger.error(
-                    "Client %s is receiving but is a member of no room: it will "
-                    "hear nothing until something adds it to one. Membership "
-                    "is the client_rooms table, so a client whose rows were "
-                    "never written is silent rather than broken",
-                    self.user_id,
-                )
             delivery = asyncio.create_task(self._deliver_forever())
             try:
-                await self._watch_joined(rooms)
+                async with self._reading_rooms:
+                    rooms = await self.joined_rooms()
+                    if not rooms:
+                        logger.error(
+                            "Client %s is receiving but is a member of no room: "
+                            "it will hear nothing until something adds it to "
+                            "one. Membership is the client_rooms table, so a "
+                            "client whose rows were never written is silent "
+                            "rather than broken",
+                            self.user_id,
+                        )
+                    await self._watch_joined(rooms)
                 await self._closed.wait()
             finally:
                 delivery.cancel()
@@ -416,8 +424,12 @@ class PostgresTransport:
         cannot have missed it; one joined during the read would otherwise look
         like a removal.
         """
-        if not self._receiving:
-            return
+        async with self._reading_rooms:
+            if self._receiving:
+                await self._compare_membership()
+
+    async def _compare_membership(self) -> None:
+        """`_reconcile_membership`'s read and comparison, under its lock."""
         read_before = dict(self._watching)
         async with tenant_session(self._session_factory, self.tenant_id) as session:
             memberships = await self._room_store.memberships_of(session, self.client_id)

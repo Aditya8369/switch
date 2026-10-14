@@ -407,3 +407,43 @@ class TestRecheck:
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    async def test_a_recheck_during_the_first_read_hands_on_no_room_already_joined(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        room_and_client: tuple[str, str, str, str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The signal connection comes up, or a re-check runs, while the
+        client is still reading the rooms it is in. Until that read is done it
+        watches none of them, and a re-read in between would hand each one to
+        `on_invite` as if someone had just added the client to it."""
+        room_id, _, client_id, user_id, _ = room_and_client
+        process = _process(postgres_url, session_factory, client_id, user_id)
+        read = asyncio.Event()
+        finish = asyncio.Event()
+        joined_rooms = PostgresTransport.joined_rooms
+
+        async def held_open(transport: PostgresTransport) -> list[str]:
+            rooms = await joined_rooms(transport)
+            read.set()
+            await finish.wait()
+            return rooms
+
+        monkeypatch.setattr(PostgresTransport, "joined_rooms", held_open)
+        task = asyncio.create_task(process.transport.receive_forever())
+        try:
+            await asyncio.wait_for(read.wait(), DELIVERY_TIMEOUT)
+            recheck = asyncio.create_task(process.membership.reconcile_all())
+            # Long enough for a re-read that does not wait for the first one
+            # to read the rows and hand the room on.
+            await asyncio.sleep(0.3)
+            finish.set()
+            await asyncio.wait_for(recheck, DELIVERY_TIMEOUT)
+            await _eventually(lambda: room_id in process.transport._watching)
+
+            assert process.invited_at == []
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
