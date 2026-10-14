@@ -183,7 +183,7 @@ export const ChatComposer = observer(function ChatComposer({
     activity?.view?.snapshot?.commandStatuses.filter((each) => each.status === 'unknown') ?? [];
 
   return (
-    <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
+    <div className="mx-auto w-full max-w-[860px] px-5 pb-1.5">
       {unknownCommands.length > 0 && (
         <p role="status" className="mb-2 text-xs text-foreground-muted">
           Not confirmed: Switch couldn't confirm whether an earlier action finished. It won't run
@@ -220,12 +220,15 @@ export const ChatComposer = observer(function ChatComposer({
           addFiles(Array.from(event.clipboardData.files));
         }}
       >
-        <PromptInput onSubmit={send} className="rounded-3xl">
+        <PromptInput
+          onSubmit={send}
+          className="rounded-3xl border-border/60 bg-background-1/50 shadow-(--composer-shadow) duration-200 focus-within:border-border-1"
+        >
           <PromptInputAttachments
             items={files.map(({ id, file }) => ({ id, name: file.name, mediaType: file.type }))}
             onRemove={(id) => setFiles((current) => current.filter((each) => each.id !== id))}
           />
-          <div className="flex items-end gap-1 p-1.5">
+          <div className="flex items-end gap-1 p-2">
             <PromptInputButton
               tooltip="Attach files"
               className="size-8 rounded-full"
