@@ -98,6 +98,7 @@ def _service(session_factory: async_sessionmaker[AsyncSession], adapter: _FakeAd
     svc.collab_lifecycle = _Bridges([_FakeBridge(adapter)])  # type: ignore[assignment]
     svc.room_store = RoomStore()
     svc.room_role_store = RoomRoleStore()
+    svc.config.third_party_avatars_enabled = True  # type: ignore[attr-defined]
     return svc
 
 
@@ -190,6 +191,18 @@ class TestRename:
 
         agent = await _agent(session_factory, agent_id)
         assert agent.icon_url == generated_icon_url("flint-tracker")
+
+    async def test_no_avatar_is_pinned_when_third_party_avatars_are_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory, _FakeAdapter())
+        svc.config.third_party_avatars_enabled = False  # type: ignore[attr-defined]
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+
+        await svc.rename_agent(agent_id=agent_id, new_name="flint-scout")
+
+        assert (await _agent(session_factory, agent_id)).icon_url is None
 
     async def test_a_chosen_avatar_is_left_alone(
         self, session_factory: async_sessionmaker[AsyncSession]
