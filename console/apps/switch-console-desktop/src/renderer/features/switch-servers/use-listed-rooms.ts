@@ -1,4 +1,5 @@
 import { computed } from 'mobx';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { isConsoleDirectChat } from './room-filters';
@@ -15,8 +16,8 @@ function filterConsoleDirectChats(
 
 /**
  * Rooms listed in the sidebar and on the Your Rooms page, filtered by the
- * agent_chats flag: when on, Console direct chats (direct + unbridged) are
- * hidden. Bridged DMs and multi-agent rooms stay visible.
+ * agent_chats flag: when on, 1-1 Console chats (see `isConsoleDirectChat`)
+ * are hidden. Bridged DMs and multi-agent rooms stay visible.
  */
 export function useListedRoomsInActiveScope(): RemoteRoomSummary[] {
   const flags = useFeatureFlags(switchServersStore.activeServerId);
@@ -29,7 +30,7 @@ export function useListedRoomsInActiveScope(): RemoteRoomSummary[] {
  * Readable rooms in a workspace, filtered by the agent_chats flag when on.
  */
 export function useReadableRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
-  const flags = useFeatureFlags(switchServersStore.activeServerId);
+  const flags = useFeatureFlags(workspacesStore.serverIdFor(workspaceId));
   return computed(() =>
     filterConsoleDirectChats(
       switchRoomsStore.readableRoomsInWorkspace(workspaceId),

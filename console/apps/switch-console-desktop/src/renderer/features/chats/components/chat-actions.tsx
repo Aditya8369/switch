@@ -1,5 +1,6 @@
 import { Archive, EyeOff, LogOut, Pencil, Users } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
+import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -47,6 +48,13 @@ function leaveIfOpen(roomId: string): void {
  * who owns one of its agents, since owning an agent keeps them in the room.
  */
 export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
+  const actions = allChatActions(serverId, chat);
+  if (!isConsoleDirectChatSummary(chat)) return actions;
+  // A 1-1 chat is the person's own conversation with the agent, not a room to manage.
+  return actions.filter((action) => !['members', 'archive', 'leave'].includes(action.key));
+}
+
+function allChatActions(serverId: string, chat: ChatSummary): ChatAction[] {
   const actions: ChatAction[] = [
     {
       key: 'members',
@@ -124,9 +132,9 @@ export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
 
 /** A chat's actions as dropdown menu items. */
 export function ChatActionItems({ actions }: { actions: ChatAction[] }) {
-  return actions.map((action) => (
+  return actions.map((action, index) => (
     <Fragment key={action.key}>
-      {action.separatorBefore && <DropdownMenuSeparator />}
+      {action.separatorBefore && index > 0 && <DropdownMenuSeparator />}
       <DropdownMenuItem
         variant={action.destructive ? 'destructive' : 'default'}
         disabled={action.disabled}

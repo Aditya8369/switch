@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { bridgeFilterValues } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
@@ -99,7 +99,7 @@ function bridgeLabel(value: string): string {
  * members, under a control that looks like it filters rooms.
  */
 const RoomFilterSections = observer(function RoomFilterSections() {
-  const bridgeValues = switchRoomsStore.bridgeFilterValuesInActiveScope;
+  const bridgeValues = bridgeFilterValues(useListedRoomsInActiveScope());
 
   return (
     <>
