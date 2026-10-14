@@ -181,7 +181,7 @@ class TestReconcile:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """Registration commits the client row before the agent row, and an
-        agent consumer started between the two would find no agent."""
+        agent actor started between the two would find no agent."""
         lifecycle = _lifecycle(session_factory)
         async with session_factory() as session:
             client = Client(

@@ -36,6 +36,7 @@ from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from tests.routing import router_on
 
 DELIVERY_TIMEOUT = 10.0
 
@@ -183,12 +184,15 @@ def _process(
             page=DELIVERY_PAGE,
         ),
         message_observer=IgnoreParticipantMessages(),
+        router=router_on(session_factory),
     )
     process = _Process(
         transport=transport,
         listener=listener,
         invites=invites,
-        membership=MembershipSignals(invites=invites, bus=bus),
+        membership=MembershipSignals(
+            invites=invites, bus=bus, router=router_on(session_factory)
+        ),
         bus=bus,
     )
 
@@ -223,7 +227,7 @@ def _provisioning(
         session_factory=session_factory,
         room_store=RoomStore(),
         client_store=ClientStore(),
-        message_store=MessageStore(),
+        router=router_on(session_factory),
         invites=invites,
     )
 
@@ -271,6 +275,7 @@ def _speaker(
             page=DELIVERY_PAGE,
         ),
         message_observer=IgnoreParticipantMessages(),
+        router=router_on(session_factory),
     )
 
 

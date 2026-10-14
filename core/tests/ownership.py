@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -20,10 +19,11 @@ from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
-from switch_core.ownership import Fence, Ownership, StartWork, StopWork
+from switch_core.ownership import Fence, StartWork, StopWork
+from switch_core.process_identity import new_process_id
 from switch_core.process_lease import LEASE_TTL, ProcessLease
-from switch_core.signals import SignalBus
 from switch_core.transport.cursors import ConsumerCursors, CursorWriter
+from tests.conftest import TEST_KEYRING
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,6 +33,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CLIENT = "client"
+
+
+def process_lease_on(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ProcessLease:
+    """A test process's lease, under a name of its own, as `main` claims one
+    for each switch-core process (`process_identity.py`)."""
+    return ProcessLease(
+        process_id=new_process_id("test-pod"),
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+        key_ids=[key.id for key in TEST_KEYRING.keys],
+    )
 
 
 @dataclass
@@ -98,11 +111,7 @@ class Holder:
 
 async def start_holder(session_factory: async_sessionmaker[AsyncSession]) -> Holder:
     """A process whose lease is claimed and whose cursor writer runs."""
-    lease = ProcessLease(
-        process_id=str(uuid.uuid4()),
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
+    lease = process_lease_on(session_factory)
     await lease.renew()
     writer = CursorWriter(
         session_factory=session_factory,
@@ -145,48 +154,6 @@ class _NeverOwnedKind:
 
     def lost(self, fence: Fence) -> None:
         return None
-
-
-def _never_listening() -> Any:
-    raise AssertionError("a test process's signal bus is never started")
-
-
-@dataclass
-class OwningProcess:
-    """A process's ownership as `main` wires it, for tests of a lifecycle
-    that owns work: its lease, its `Ownership` and its cursor writer. Work is
-    claimed when the test balances (`ownership.start()`), as `main` does at
-    boot, or when the code under test settles it."""
-
-    lease: ProcessLease
-    ownership: Ownership
-    writer: CursorWriter
-
-
-def owning_process(session_factory: async_sessionmaker[AsyncSession]) -> OwningProcess:
-    lease = ProcessLease(
-        process_id=str(uuid.uuid4()),
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
-    return OwningProcess(
-        lease=lease,
-        ownership=Ownership(
-            lease=lease,
-            session_factory=session_factory,
-            bus=SignalBus(
-                session_factory, _never_listening, process_id=lease.process_id
-            ),
-            store=OwnershipLeaseStore(),
-            processes=SwitchCoreProcessStore(),
-        ),
-        writer=CursorWriter(
-            session_factory=session_factory,
-            cursors=DeliveryCursorStore(),
-            leases=OwnershipLeaseStore(),
-            process_id=lease.process_id,
-        ),
-    )
 
 
 class SoleOwner:

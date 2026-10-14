@@ -16,7 +16,7 @@ refers to. Every existing membership starts at its room's newest row, which
 is where a consumer started reading before this.
 
 Revision ID: 340ead685ad6
-Revises: e5b2c8d1f7a3
+Revises: 87ebf9517271
 Create Date: 2026-10-14 12:00:00.000000
 
 """
@@ -27,7 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "340ead685ad6"
-down_revision: str | None = "e5b2c8d1f7a3"
+down_revision: str | None = "87ebf9517271"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

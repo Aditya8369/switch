@@ -46,6 +46,7 @@ from switch_core.outbound import OutboundPolicy
 from switch_core.ownership import Ownership
 from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
+from tests.ownership import process_lease_on
 from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 TIMEOUT = 10.0
@@ -153,11 +154,7 @@ class _Process:
 async def _process(
     postgres_url: str, session_factory: async_sessionmaker[AsyncSession]
 ) -> _Process:
-    lease = ProcessLease(
-        process_id=str(uuid.uuid4()),
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
+    lease = process_lease_on(session_factory)
     await lease.renew()
     bus = SignalBus(
         session_factory,

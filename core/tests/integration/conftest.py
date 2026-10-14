@@ -4,7 +4,7 @@ Unlike the unit suite (which fakes the transport), these fixtures boot a real
 database and wire up the subset of `switch_core.main:run()` the feature under
 test needs, in-process. Messaging, membership and provisioning all run against
 that database, so a test drives the genuine path RoomService → provisioning →
-AgentConsumer receive loop → EventBuffer (the agent_events tables).
+MessageRouter → EventBuffer (the agent_events tables).
 
 The container mirrors the `postgres` service in
 `deploy/local/docker-compose.yml` (see constants below — keep in sync). It gets
@@ -51,7 +51,6 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
@@ -67,6 +66,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
@@ -86,10 +86,11 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.delivery.recipient import RecipientServices
+from switch_core.delivery.router import MessageRouter
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
-from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -105,6 +106,7 @@ from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.client import NullTrustClient
+from tests.ownership import process_lease_on
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -336,9 +338,9 @@ class Harness:
     async def start_clients(self, timeout: float = 20.0) -> None:
         """Start every registered agent's client and await readiness.
 
-        `start_all` launches each client's receive loop as a background task; the
-        client only loads its Agent (so `get_by_agent_id` resolves) once that
-        task has run. Poll until each is present and ready before returning.
+        `start_all` connects each client's actor as a background task; the actor
+        only loads its Agent (so `get_by_agent_id` resolves) once that task has
+        run. Poll until each is present and ready before returning.
         """
         await self.client_lifecycle.start_all()
         await self.ownership.start()
@@ -346,7 +348,7 @@ class Harness:
             client = await self._await_client(agent_id, timeout)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, timeout: float) -> AgentConsumer:
+    async def _await_client(self, agent_id: str, timeout: float) -> AgentActor:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
@@ -355,7 +357,7 @@ class Harness:
             await asyncio.sleep(0.1)
         raise AssertionError(f"No running client for agent {agent_id} after {timeout}s")
 
-    def client_for(self, agent_id: str) -> AgentConsumer:
+    def client_for(self, agent_id: str) -> AgentActor:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise AssertionError(f"No running client for agent {agent_id}")
@@ -564,9 +566,14 @@ async def harness(
         # queued events themselves are rows, cleared by the truncation above.
         # No `AgentEventListener`: it wakes readers for rows another process
         # wrote, and everything here runs in this one.
+        # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
+        # nothing is delivered to a client until this connection is up.
+        message_listener = MessageListener(lambda: create_unpooled_engine(config))
+        await message_listener.start()
         event_buffer = EventBuffer(
             session_factory,  # type: ignore[arg-type]
             sequence_base=0,
+            rooms=message_listener,
             retention_seconds=config.agent_event_retention_seconds,
         )
         connections = AgentConnectionRegistry()
@@ -578,10 +585,6 @@ async def harness(
             lambda: create_unpooled_engine(config)
         )
 
-        # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
-        # nothing is delivered to a client until this connection is up.
-        message_listener = MessageListener(lambda: create_unpooled_engine(config))
-        await message_listener.start()
         invites = InviteBus()
         ephemeral = EphemeralBus()
 
@@ -594,11 +597,45 @@ async def harness(
             session_factory=session_factory,
         )
 
+        # Telemetry off: these flows are not about reporting, but the
+        # message hook must still be wired for the clients to build.
+        message_telemetry = MessageTelemetry(
+            telemetry=TelemetryService(
+                sink=NullSink(),
+                enabled=False,
+                client_id="",
+                version=None,
+                telemetry_environment="dev",
+                telemetry_internal=True,
+            ),
+            session_factory=session_factory,
+        )
+
+        router = MessageRouter(
+            services=RecipientServices(
+                session_factory=session_factory,  # type: ignore[arg-type]
+                event_buffer=event_buffer,
+                agent_store=session_env.agent_store,
+                room_store=session_env.room_store,
+                document_store=session_env.document_store,
+                reference_store=session_env.reference_store,
+                agent_session_store=session_env.agent_session_store,
+                room_role_store=session_env.room_role_store,
+                external_user_store=session_env.external_user_store,
+                connections=connections,
+                frontend_base_url=config.frontend_base_url,
+                message_telemetry=message_telemetry,
+            ),
+            message_store=session_env.message_store,
+            client_store=session_env.client_store,
+            budget_store=BudgetStore(),
+        )
+
         provisioning: Provisioning = PostgresProvisioning(
             session_factory=session_factory,
             room_store=session_env.room_store,
             client_store=session_env.client_store,
-            message_store=session_env.message_store,
+            router=router,
             invites=invites,
         )
 
@@ -611,22 +648,6 @@ async def harness(
                 max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
                 max_age_seconds=config.room_delivery_cache_max_age_seconds,
             ),
-        )
-
-        # Telemetry off: these flows are not about reporting, but the
-        # message hook must still be wired for the clients to build.
-        message_telemetry = MessageTelemetry(
-            telemetry=TelemetryService(
-                sink=NullSink(),
-                enabled=False,
-                client_id="",
-                service_name="switch-core",
-                version=None,
-                environment=None,
-                telemetry_environment="dev",
-                telemetry_internal=True,
-            ),
-            session_factory=session_factory,
         )
 
         client_factory = ClientFactory(
@@ -642,34 +663,15 @@ async def harness(
             ephemeral=ephemeral,
             room_cache=room_cache,
             message_observer=message_telemetry,
+            router=router,
         )
-        client_factory.register(
-            "agent",
-            AgentActor,
-            AgentConsumer,
-            event_buffer=event_buffer,
-            agent_store=session_env.agent_store,
-            room_store=session_env.room_store,
-            bridge_store=session_env.bridge_store,
-            document_store=session_env.document_store,
-            reference_store=session_env.reference_store,
-            agent_session_store=session_env.agent_session_store,
-            room_role_store=session_env.room_role_store,
-            external_user_store=session_env.external_user_store,
-            connections=connections,
-            frontend_base_url=config.frontend_base_url,
-            message_telemetry=message_telemetry,
-        )
+        client_factory.register("agent", AgentActor)
         client_factory.register("user", HumanActor)
         client_factory.register("bridge", Actor)
 
         # This process's lease and what it owns, as `main` wires them. The
         # signal bus is never started: there is no other process to tell.
-        lease = ProcessLease(
-            process_id=str(uuid.uuid4()),
-            session_factory=session_factory,  # type: ignore[arg-type]
-            processes=SwitchCoreProcessStore(),
-        )
+        lease = process_lease_on(session_factory)  # type: ignore[arg-type]
         ownership = Ownership(
             lease=lease,
             session_factory=session_factory,  # type: ignore[arg-type]

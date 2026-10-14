@@ -86,6 +86,16 @@ HTTP_REQUEST_DURATION = _spec(
     "route",
     "method",
 )
+# A caller that kept repeating a refused request, answered 429 from memory
+# (`refusal_breaker.py`). `route` is the template of the route that refused it.
+HTTP_REFUSALS_THROTTLED = _spec(
+    "switch.http.refusals_throttled",
+    "sum",
+    "{request}",
+    "Requests answered 429 without being served, because the same caller had "
+    "the same request refused repeatedly. By the route that refused it.",
+    "route",
+)
 
 # ── Database ─────────────────────────────────────────────────────────────────
 DB_POOL_IN_USE = _spec(
@@ -236,8 +246,8 @@ OBSERVER_FAILURES = _spec(
     "sum",
     "{failure}",
     "Reports about a message that raised: the transport telling its observer "
-    "after the commit, or an agent's consumer reporting a message addressed to "
-    "it. The message is unaffected and only the report is lost, so these are "
+    "after the commit, or the router reporting a message addressed to an agent "
+    "once it has committed. The message is unaffected and only the report is lost, so these are "
     "caught by design and invisible without a counter. `actor` is who was "
     "writing or reading.",
     "actor",
@@ -249,9 +259,21 @@ DELIVERY_BACKLOG_SKIPPED = _spec(
     "Room rows a consumer resuming from its stored cursor stepped over because "
     "they were too old to act on (`transport/cursors.py`, BACKLOG_MAX_AGE): "
     "rows written while no process read for that client, past the cap. They "
-    "stay in the room's history; their replies, inbox entries and platform "
-    "posts were never made. `actor` is whose consumer it was.",
+    "stay in the room's history; the command replies and platform posts they "
+    "would have caused were never made. `actor` is whose consumer it was.",
     "actor",
+)
+ROUTING_FAILURES = _spec(
+    "switch.messages.routing_failures",
+    "sum",
+    "{failure}",
+    "Work the router could not do for one agent while the message it was "
+    "routing still went out: storing the agent's own event for it "
+    "(`stage` store), a reply or report owed once it committed "
+    "(`stage` after_commit), or deciding a multi-file post given up on "
+    "(`stage` sweep). Each is caught so one agent cannot cost a room its "
+    "message, which is what makes it invisible without a counter.",
+    "stage",
 )
 DELIVERY_LAG = _spec(
     "switch.messages.delivery_lag",
@@ -552,9 +574,20 @@ RUNTIME_EVENT_LOOP_LAG = _spec(
     "switch.runtime.event_loop_lag",
     "gauge",
     "ms",
-    "How far past its deadline a fixed-interval task woke. The server is "
-    "single-threaded, so this is the one number that says whether anything is "
-    "being starved.",
+    "The longest the event loop was blocked since the last reading, measured "
+    "by a probe that wakes every 100 ms. The server is single-threaded, so "
+    "this is the one number that says whether anything is being starved.",
+)
+# Every stall the probe sees, not only the worst per interval: how often the
+# loop blocks and for how long. Below the threshold is ordinary scheduling
+# jitter and would only drown the stalls that matter.
+RUNTIME_EVENT_LOOP_STALLS = _spec(
+    "switch.runtime.event_loop_stalls",
+    "histogram",
+    "ms",
+    "Event-loop stalls of 50 ms or more, by how long the loop was blocked. "
+    "The count says how often, the buckets say how bad.",
+    bounds=(50.0, 100.0, 200.0, 300.0, 500.0, 750.0, 1000.0, 2000.0, 5000.0),
 )
 # One per process start, so a restart lines up against everything else on a
 # dashboard. The version is already on every series' resource.
@@ -601,6 +634,7 @@ CATALOGUE: dict[str, MetricSpec] = {
     for spec in (
         HTTP_REQUESTS,
         HTTP_REQUEST_DURATION,
+        HTTP_REFUSALS_THROTTLED,
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
@@ -616,6 +650,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         DELIVERY_FAILURES,
         OBSERVER_FAILURES,
         DELIVERY_BACKLOG_SKIPPED,
+        ROUTING_FAILURES,
         DELIVERY_LAG,
         DELIVERY_CACHE_READS,
         DELIVERY_CACHE_FILLS,
@@ -644,6 +679,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         RUNTIME_CPU_SECONDS,
         RUNTIME_OPEN_FDS,
         RUNTIME_EVENT_LOOP_LAG,
+        RUNTIME_EVENT_LOOP_STALLS,
         RUNTIME_STARTS,
         RUNTIME_GC_COLLECTIONS,
         RUNTIME_GC_PAUSE,

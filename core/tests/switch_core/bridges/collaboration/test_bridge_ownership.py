@@ -83,6 +83,8 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from tests.ownership import process_lease_on
+from tests.routing import router_on
 
 TIMEOUT = 10.0
 CHAT = "fakechat"
@@ -304,11 +306,7 @@ async def _process(
     listener = MessageListener(engine)
     await listener.start()
     await asyncio.wait_for(listener.connected.wait(), TIMEOUT)
-    lease = ProcessLease(
-        process_id=str(uuid.uuid4()),
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
+    lease = process_lease_on(session_factory)
     await lease.renew()
     bus = SignalBus(session_factory, engine, process_id=lease.process_id)
     ownership = Ownership(
@@ -325,7 +323,9 @@ async def _process(
         process_id=lease.process_id,
     )
     invites = InviteBus()
-    MembershipSignals(invites=invites, bus=bus)
+    # This process's own router: the rows it writes are routed here.
+    router = router_on(session_factory)
+    MembershipSignals(invites=invites, bus=bus, router=router)
     room_cache = RoomDeliveryCache(
         session_factory=session_factory,
         message_store=MessageStore(),
@@ -349,6 +349,7 @@ async def _process(
         ephemeral=EphemeralBus(),
         room_cache=room_cache,
         message_observer=IgnoreParticipantMessages(),
+        router=router,
     )
     factory.register("user", HumanActor)
     factory.register("bridge", Actor)
@@ -356,7 +357,7 @@ async def _process(
         session_factory=session_factory,
         room_store=RoomStore(),
         client_store=ClientStore(),
-        message_store=MessageStore(),
+        router=router,
         invites=invites,
     )
     clients = ClientLifecycleService(
@@ -826,6 +827,8 @@ class TestPeopleOnThePlatform:
         )
         copy = quiet.bridges.get(bridge.bridge_id)
         assert copy is not None
+        # The copy comes up in its own task, after it is started.
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
 
         # A webhook delivery reaching the quiet process: it mints the person.
         await copy.adapter.hear(_post(user_id="U7", text="first words", ref="m1"))  # type: ignore[attr-defined]

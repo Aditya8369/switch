@@ -163,9 +163,9 @@ class _AgentRegistry:
     The *system*-client half is the real service (`_registry` below), because
     that lookup is where the cross-tenant bug lived and a stand-in would have
     reimplemented the fix rather than exercised it. Resolving an agent to its
-    running client is not tenant-sensitive — an agent id is unique across the
-    deployment — and building real `AgentConsumer`s to say so would add a
-    transport and a sync loop to a test about bindings.
+    running client is not tenant-sensitive (an agent id is unique across the
+    deployment), and building real `AgentActor`s to say so would add a
+    transport to a test about bindings.
     """
 
     def __init__(self, agents: dict[str, _RunningClient]) -> None:

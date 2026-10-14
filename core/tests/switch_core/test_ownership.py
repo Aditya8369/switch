@@ -9,7 +9,6 @@ processes. Balances are run by hand instead of on the interval.
 from __future__ import annotations
 
 import time
-import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -25,6 +24,7 @@ from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessSto
 from switch_core.ownership import Fence, OwnedKind, Ownership, owner_of
 from switch_core.process_lease import LEASE_TTL, ProcessLease
 from switch_core.signals import SignalBus
+from tests.ownership import process_lease_on
 
 KIND = "work"
 KEYS = [f"key-{n}" for n in range(24)]
@@ -62,12 +62,8 @@ class _Process:
 def _process(
     session_factory: async_sessionmaker[AsyncSession], everywhere: _Everywhere
 ) -> _Process:
-    process_id = str(uuid.uuid4())
-    lease = ProcessLease(
-        process_id=process_id,
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
+    lease = process_lease_on(session_factory)
+    process_id = lease.process_id
     ownership = Ownership(
         lease=lease,
         session_factory=session_factory,
@@ -361,11 +357,7 @@ class TestThisProcessLease:
     async def test_a_renewed_lease_is_sure_until_half_its_lifetime(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        lease = ProcessLease(
-            process_id=str(uuid.uuid4()),
-            session_factory=session_factory,
-            processes=SwitchCoreProcessStore(),
-        )
+        lease = process_lease_on(session_factory)
         assert not lease.surely_held()
 
         await lease.renew()
@@ -380,11 +372,7 @@ class TestThisProcessLease:
     async def test_a_stopped_lease_is_not_held(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        lease = ProcessLease(
-            process_id=str(uuid.uuid4()),
-            session_factory=session_factory,
-            processes=SwitchCoreProcessStore(),
-        )
+        lease = process_lease_on(session_factory)
         await lease.renew()
 
         await lease.stop()

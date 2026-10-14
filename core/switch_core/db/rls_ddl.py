@@ -153,6 +153,11 @@ POLICY_NAME = "tenant_isolation"
 # a vendor that offers no other way to have one. The vendor sees one Switch,
 # so there is one client per deployment and service, shared by every tenant's
 # sign-ins; it holds no person's account, only the deployment's own client.
+#
+# `schema_expand_only_revisions` records which applied schema revisions only
+# added to the schema (`db/schema_version.py`), as Alembic's own
+# `alembic_version` records which is applied. It describes the schema and
+# holds no data of anyone's.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
@@ -165,6 +170,7 @@ GLOBAL_TABLES = frozenset(
         "ownership_leases",
         "trust_settings",
         "service_oauth_clients",
+        "schema_expand_only_revisions",
     }
 )
 

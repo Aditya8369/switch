@@ -53,6 +53,8 @@ from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from tests.ownership import process_lease_on
+from tests.routing import router_on
 from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 TIMEOUT = 10.0
@@ -110,6 +112,7 @@ async def _process(
             ),
         ),
         message_observer=IgnoreParticipantMessages(),
+        router=router_on(session_factory),
     )
     # The agent tagged in the room is a client too; it reads nothing here.
     factory.register("agent", AgentActor)
@@ -127,11 +130,7 @@ async def _process(
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
     )
-    lease = ProcessLease(
-        process_id=str(uuid.uuid4()),
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
+    lease = process_lease_on(session_factory)
     ownership = Ownership(
         lease=lease,
         session_factory=session_factory,

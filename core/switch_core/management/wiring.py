@@ -10,14 +10,16 @@ serves. `install` also hands Core the agent-facing side
 machines and managed agents exist.
 
 Each process writes its controllers' connection transitions
-(`connection_ledger.py`) under the lease every switch-core process holds
-(`switch_core.process_lease`, claimed and renewed by the core wiring in
-`main.py`): `run` writes transitions until cancelled, and `stop` writes what
-is left, before the core wiring marks the lease stopped.
+(`connection_ledger.py`), read against the lease the server holds for the
+process whether or not management is on (`switch_core/process_lease.py`): `run` writes
+transitions until cancelled, and `flush` writes what is left as the process
+drains, before the server marks its lease stopped. `load_connections` reads
+which controllers the other processes hold, before the bridge serves.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,7 +33,7 @@ from switch_core.bridges.agent.operations.agent_management import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
-from switch_core.config import SwitchConfig
+from switch_core.config import ControllerRelease, SwitchConfig
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_operation_store import (
     AgentControllerOperationStore,
@@ -40,6 +42,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.management.agent_operations import ManagementAgentOperations
@@ -52,7 +55,10 @@ from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
+from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
+
+logger = logging.getLogger(__name__)
 
 GATEWAY_PREFIX = "/management"
 
@@ -67,6 +73,7 @@ class Management:
     authenticator: ManagementAuthenticator
     agent_operations: ManagementAgentOperations
     session_factory: async_sessionmaker[AsyncSession]
+    lease: ProcessLease
     ledger: ControllerConnectionLedger
 
     def install(
@@ -91,14 +98,21 @@ class Management:
             await self.service.forget_deleted_agent(session, tenant_id, agent_id)
 
     async def run(self) -> None:
-        """Write connection transitions, until cancelled."""
+        """Write connection transitions as they happen, until cancelled. The
+        process lease they are read against is the server's to renew."""
         await self.ledger.run()
 
-    async def stop(self) -> None:
-        """Write the transitions still queued. The core wiring marks the
-        process's lease stopped after this, whether it succeeds or not, so
-        the machines this process held read offline either way."""
+    async def flush(self) -> None:
+        """Write the transitions still queued. Called as the process drains,
+        before its lease is marked stopped, so the machines it held read as
+        closed by the server rather than lost with it."""
         await self.ledger.flush_all()
+
+    async def load_connections(self) -> None:
+        """Read which controllers' sockets the other processes hold, before
+        the bridge serves: until then every agent they run reads offline
+        here. The signal bus keeps it current from then on."""
+        await self.service.signals.read_connections()
 
     async def load_bindings(self) -> int:
         return await load_bindings(
@@ -114,23 +128,44 @@ def build_management(
     token_secret: str,
     status_interval_seconds: int,
     server_url: str | None,
+    third_party_avatars: bool,
+    controller_release: ControllerRelease | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
     signal_bus: SignalBus,
+    lease: ProcessLease,
 ) -> Management:
-    process_id = signal_bus.process_id
+    process_id = lease.process_id
+    if signal_bus.process_id != process_id:
+        raise ValueError(
+            f"The signal bus speaks for process {signal_bus.process_id!r} and "
+            f"the lease for {process_id!r}; one process has one name."
+        )
     controllers = AgentControllerStore()
     definitions = AgentDefinitionStore()
     operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
+    signals = ControllerSignals(
+        notifier=ControllerNotifier(),
+        presence=presence,
+        bus=signal_bus,
+        session_factory=session_factory,
+        controllers=controllers,
+        operations=operations,
+        definitions=definitions,
+        rooms=RoomStore(),
+        processes=processes,
+        clock=clock,
+    )
     ledger = ControllerConnectionLedger(
         process_id=process_id,
         session_factory=session_factory,
         controllers=controllers,
         clock=clock,
+        announce=signals.connection_changed,
     )
     presence.use_ledger(ledger)
     service = ManagementService(
@@ -138,17 +173,10 @@ def build_management(
             token_secret=token_secret,
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
+            third_party_avatars=third_party_avatars,
+            controller_release=controller_release,
         ),
-        signals=ControllerSignals(
-            notifier=ControllerNotifier(),
-            presence=presence,
-            bus=signal_bus,
-            session_factory=session_factory,
-            controllers=controllers,
-            definitions=definitions,
-            operations=operations,
-            clock=clock,
-        ),
+        signals=signals,
         controllers=controllers,
         definitions=definitions,
         operations=operations,
@@ -174,6 +202,7 @@ def build_management(
             service=service, session_factory=session_factory
         ),
         session_factory=session_factory,
+        lease=lease,
         ledger=ledger,
     )
 
@@ -183,6 +212,7 @@ def create_management(
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     signal_bus: SignalBus,
+    lease: ProcessLease,
 ) -> Management | None:
     if not config.agent_management_enabled:
         return None
@@ -195,6 +225,8 @@ def create_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
         server_url=config.gateway_public_url,
+        third_party_avatars=config.third_party_avatars_enabled,
+        controller_release=config.controller_release,
         session_factory=session_factory,
         presence=presence,
         # The agent API-key cache's bound: the longest a controller revoked
@@ -206,4 +238,5 @@ def create_management(
         ),
         clock=utc_now,
         signal_bus=signal_bus,
+        lease=lease,
     )

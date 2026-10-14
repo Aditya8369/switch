@@ -24,7 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.agent_event_notify_ddl import (
@@ -2160,12 +2160,13 @@ class TelemetrySnapshotWatermark(Base):
 class SwitchCoreProcess(Base):
     """A running switch-core process's lease (`process_lease.py`).
 
-    Every process claims a row at startup, renews `beat_at` every few
-    seconds, and sets `stopped_at` as it shuts down. A controller connection
-    whose holding process's lease is stale, stopped or gone reads as offline,
-    which is how a process that died without writing its connections'
-    closings is noticed, and work it owned (`OwnershipLease`) may be taken
-    over. One write per process per renewal, however much it holds.
+    Every process claims a row at startup under its process id
+    (`process_identity.py`), renews `beat_at` every few seconds, and sets
+    `stopped_at` as it shuts down. An agent or controller connection whose
+    holding process's lease is stale, stopped or gone reads as offline, which
+    is how a process that died without writing its connections' closings is
+    noticed, and work it owned (`OwnershipLease`) may be taken over. One
+    write per process per renewal, however much it holds.
 
     Not tenant-scoped: a process serves every tenant. Rows long stale are
     pruned by the live processes.
@@ -2182,6 +2183,36 @@ class SwitchCoreProcess(Base):
     )
     stopped_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # The ids of the `SECRET_KEYS` this process can read, so a process
+    # starting with a new front key can tell whether every live one could read
+    # what it writes (`db/key_rotation.py`). Ids only, never key material.
+    # NULL for a process from before the column.
+    key_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+
+
+# ── Schema revisions ─────────────────────────────────────────────────────────
+
+
+class SchemaExpandOnlyRevision(Base):
+    """An applied schema revision that only added to the schema.
+
+    Written by `migrations/env.py` as Alembic applies a revision marked
+    `expand_only`, and deleted as it is undone, with the revision it follows.
+    A switch-core release older than the schema reads this chain back from the
+    database's head to its own (`db/schema_version.py`): if every revision in
+    between is here, it can serve on the newer schema, which is what lets two
+    releases run side by side during a rolling deploy. The older release has
+    no copy of those revisions' files, so the database is the only place it
+    can learn this.
+    """
+
+    __tablename__ = "schema_expand_only_revisions"
+
+    revision: Mapped[str] = mapped_column(Text, primary_key=True)
+    down_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -2421,13 +2452,14 @@ class AgentEventRow(TenantScoped, Base):
     """One of an agent's own events: an event meant for that agent, not one it
     sent.
 
-    The agent's consumer (`AgentConsumer`) writes a row when a room row it is
-    handed turns out to be for the agent: a message addressed to it, a join it
-    is set to listen for, a task event it is part of, or a command sent to it.
-    Whether a row is for the agent depends on the room's state at the moment
-    it is delivered, so the consumer records the decision here instead of
-    leaving it to be worked out again at read time. The rest of a room's
-    conversation is not copied here; a reader that wants it reads `messages`.
+    The router (`delivery/router.py`) writes a row, in the transaction that
+    writes the room row, when that room row is for the agent: a message
+    addressed to it, a join it is set to listen for, or a task event it is part
+    of. A room command's handler writes one for a command it passes on to the
+    agent. Whether a row is for the agent depends on the room's state at the
+    moment it is written, so the decision is recorded here instead of being
+    worked out again at read time. The rest of a room's conversation is not
+    copied here; a reader that wants it reads `messages`.
 
     `seq` numbers the own events of one agent. The numbers are contiguous
     and never reused (`AgentEventHead` hands them out). `payload` is the event
@@ -2443,12 +2475,12 @@ class AgentEventRow(TenantScoped, Base):
     it has already received from here.
 
     `message_key`, `room_id`, `room_seq` and `type` together name the source of
-    an event,
-    and an agent has at most one event per source (`uq_agent_events_source`).
-    `EventBuffer.enqueue` hands back the number of the event already stored
-    instead of storing a second copy. A file of a multi-file message that
-    arrives after the message was delivered has a later `room_seq`, so it is
-    stored as an event of its own.
+    an event, and an agent has at most one event per source
+    (`uq_agent_events_source`). The router stores nothing for a source already
+    stored, and `EventBuffer.enqueue` hands back the number of the event
+    already stored instead of storing a second copy. A file of a multi-file
+    message that arrives after the message was delivered has a later
+    `room_seq`, so it is stored as an event of its own.
 
     The retention loop in `main.py` deletes rows older than
     `agent_event_retention_seconds`. It never deletes from `messages`.
@@ -2465,9 +2497,10 @@ class AgentEventRow(TenantScoped, Base):
             "room_id",
             "room_seq",
         ),
-        # One decision of the consumer is stored once. The same room row, read
-        # by the consumer of a second process or written again after a commit
-        # whose acknowledgement was lost, finds this row already there.
+        # One decision is stored once. The same room row decided again (by an
+        # agent consumer of an older release during a rolling deploy) or an
+        # event written again after a commit whose acknowledgement was lost
+        # finds this row already there.
         Index(
             "uq_agent_events_source",
             "agent_id",
@@ -2559,6 +2592,54 @@ class AgentEventDrop(TenantScoped, Base):
     agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
     room_id: Mapped[str] = mapped_column(Text, primary_key=True)
     dropped_through: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class PendingAttachmentGroup(TenantScoped, Base):
+    """A multi-file post whose files have not all been written yet.
+
+    Several files posted as one message are written as one row each in
+    `messages`, sharing a group id (`attachments.py`). Whether the post is for
+    an agent, and the one own event it becomes, can only be decided once the
+    files are rows, so the router (`delivery/router.py`) records the group
+    here when a file arrives that does not complete it. The file that does
+    complete it is written in a transaction that also deletes this row and
+    stores the post's own events.
+
+    A group whose files stop arriving is decided with the files that did,
+    once `deadline` has passed (`MessageRouter.flush_due_groups`). Every
+    switch-core process runs that sweep, and each claims a row with `FOR
+    UPDATE SKIP LOCKED` and decides it in the transaction that deletes it, so
+    one process decides each group whichever processes are running.
+    `deadline` is set from the database's clock when the group's first file
+    is written and never moved, so the wait bounds the whole group rather
+    than the gap between two files.
+
+    `from_seq` is the room row this group's files are counted from: the
+    first file written since the group was last decided. A file that arrives
+    after its group was decided incomplete starts a new row here, from
+    itself, rather than completing a post that has already gone out.
+
+    A reader of a room's conversation holds a group back while it has a row
+    here, so the post is delivered as one message once it is decided.
+    """
+
+    __tablename__ = "pending_attachment_groups"
+    __table_args__ = (
+        # The sweep's question: which of a tenant's groups are due.
+        Index("ix_pending_attachment_groups_deadline", "tenant_id", "deadline"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_pending_attachment_groups_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    group_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AgentRoomRead(TenantScoped, Base):
@@ -2695,6 +2776,189 @@ class AgentPositionTicket(TenantScoped, Base):
     )
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+#: The first connection incarnation the database hands out. Before agent
+#: connections were recorded, each process drew incarnations from a counter
+#: seeded with a random 32-bit number, so every number a client may still hold
+#: from then is below 2**33 and none of them can match one drawn from here.
+CONNECTION_INCARNATION_FLOOR = 2**33
+
+#: The last one: every incarnation stays an integer a JavaScript client holds
+#: exactly.
+CONNECTION_INCARNATION_CEILING = 2**53 - 1
+
+agent_connection_incarnation_sequence = Sequence(
+    "agent_connection_incarnation",
+    metadata=Base.metadata,
+    start=CONNECTION_INCARNATION_FLOOR,
+    minvalue=CONNECTION_INCARNATION_FLOOR,
+    maxvalue=CONNECTION_INCARNATION_CEILING,
+    cycle=False,
+)
+
+
+class AgentConnectionRecord(TenantScoped, Base):
+    """An agent connection, as every switch-core process can see it.
+
+    The connection itself (its socket, its heartbeat, the frames it is owed)
+    lives in the memory of the process holding it (`agent_connections.py`).
+    This row is what the other processes need to know about it: which process
+    holds it (`process_id`, a `switch_core_processes` row), which incarnation
+    is current, and what the client declared. It is written when the
+    connection opens or is reattached and when it closes, never on a
+    heartbeat, and it reads as live only while `closed_at` is null and the
+    holding process's lease is held.
+
+    `incarnation` comes from `agent_connection_incarnation`, so the fence a
+    client names can be checked by any process, not only the one that issued
+    it.
+    """
+
+    __tablename__ = "agent_connections"
+    __table_args__ = (
+        Index("ix_agent_connections_tenant_id", "tenant_id"),
+        Index("ix_agent_connections_agent_id", "agent_id"),
+        UniqueConstraint("id", "tenant_id", name="uq_agent_connections_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_connections_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    process_id: Mapped[str] = mapped_column(Text, nullable=False)
+    incarnation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    delivery_filter: Mapped[str] = mapped_column(Text, nullable=False)
+    spawn_capable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    transport: Mapped[str] = mapped_column(Text, nullable=False)
+    speaks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    accepts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attached_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    close_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentConnectionRoom(TenantScoped, Base):
+    """A room explicitly claimed on an agent connection.
+
+    The primary key is the rule that at most one connection of an agent acts
+    in a room, kept by the database so that two processes claiming the same
+    room for the same agent cannot both succeed. A claim counts only while its
+    connection's row is live.
+    """
+
+    __tablename__ = "agent_connection_rooms"
+    __table_args__ = (
+        Index("ix_agent_connection_rooms_tenant_id", "tenant_id"),
+        Index("ix_agent_connection_rooms_connection_id", "connection_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_connection_rooms_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_connection_rooms_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "connection_id"],
+            ["agent_connections.tenant_id", "agent_connections.id"],
+            name="fk_agent_connection_rooms_connection",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentSessionPlacement(TenantScoped, Base):
+    """Which room one of an agent's sessions connected to, and over which
+    connection.
+
+    A session placed itself with `connect_to_room`, or its watcher stated it
+    with `/connection/placements`. One session of an agent acts in a room, so
+    a room appears once per agent. The placement belongs to the connection it
+    arrived on and goes with that connection's row.
+    """
+
+    __tablename__ = "agent_session_placements"
+    __table_args__ = (
+        Index("ix_agent_session_placements_tenant_id", "tenant_id"),
+        Index("ix_agent_session_placements_connection_id", "connection_id"),
+        UniqueConstraint(
+            "agent_id", "room_id", name="uq_agent_session_placements_agent_room"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_session_placements_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_session_placements_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "connection_id"],
+            ["agent_connections.tenant_id", "agent_connections.id"],
+            name="fk_agent_session_placements_connection",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentSessionCommandRelay(TenantScoped, Base):
+    """A session command waiting for the process that can deliver it.
+
+    A command for one of an agent's sessions (from Switch Console, or a Stop
+    pressed on a bridge) can arrive at any process, while the stream it must
+    be written to (the agent's watcher, or its controller's) is held by one.
+    The command is stored here for that process (`process_id`) and the process
+    is told to look; it deletes the row as it takes the command. The signal
+    carries only ids, because a command's content is tenant data and a
+    `NOTIFY` is readable by any listener.
+    """
+
+    __tablename__ = "agent_session_command_relays"
+    __table_args__ = (
+        Index("ix_agent_session_command_relays_tenant_id", "tenant_id"),
+        Index("ix_agent_session_command_relays_process_id", "process_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_session_command_relays_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    process_id: Mapped[str] = mapped_column(Text, nullable=False)
+    frame: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3246,6 +3510,15 @@ class AgentController(TenantScoped, Base):
     the current connection, or the last one once it has closed; a new one
     replaces them. Every replica reads them, so whether the machine is
     connected does not depend on which process holds its socket.
+
+    The `open_*` columns are the connection the controller last opened,
+    attached or not: its id, its generation, the process holding it and where
+    its stream resumes each agent. Opening and attaching the socket are two
+    requests that may reach two processes, as may a socket reattaching after a
+    drop, so the process the socket reaches reads them to hold the connection
+    itself, and records that it does. Written when the connection opens, when
+    another process takes it up and, for the cursors, when its socket goes;
+    never per heartbeat.
     """
 
     __tablename__ = "agent_controllers"
@@ -3298,6 +3571,13 @@ class AgentController(TenantScoped, Base):
     # `socket_closed`, `heartbeat_lapsed`, `taken_over`, `revoked` or
     # `server_shutdown`.
     disconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    open_connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    open_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # The process holding that connection: the one that opened it, or the one
+    # its socket reached since. Any other process holding a copy closes it.
+    open_process_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Agent id to the cursor its delivery resumes after, or null for the head.
+    open_cursors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3557,6 +3837,69 @@ class ServiceConnection(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class SignInFlow(TenantScoped, Base):
+    """A person part-way through signing in to a service from Switch Console.
+
+    A sign-in is half a dozen requests, from Console and from the person's
+    browser, and with several switch-core processes behind one address each
+    can land on any of them, so the flow lives here rather than in the memory
+    of the process that started it (`connections/sign_in_flows.py`).
+
+    `id` is the state Console chose for the flow, which travels in the
+    vendor's redirect, so the browser's requests find the flow by it and the
+    flow's tenant through `tenant_of_sign_in_flow`. `kind` is `github` for the
+    GitHub App's own sign-in and `service` for the catalog's OAuth sign-ins:
+    a person has at most one flow of each kind at a time. `status` moves by
+    conditional update only, so of two requests racing for one step exactly
+    one takes it.
+
+    Nothing secret is stored in the clear: the PKCE verifier and, once the code
+    is exchanged, the vendor's credentials are keyring-encrypted, and the
+    completion secret and browser nonce are kept as SHA-256 hashes, compared
+    against what Console and the browser present. `details` holds what the
+    flow asked the vendor for (its name, scopes and consent), none of it
+    secret. Rows expire after ten minutes, and expired ones are deleted as the
+    next flow in the workspace starts.
+    """
+
+    __tablename__ = "sign_in_flows"
+    __table_args__ = (
+        CheckConstraint("kind IN ('github', 'service')", name="ck_sign_in_flows_kind"),
+        CheckConstraint(
+            "status IN ('pending', 'authorizing', 'returning', 'delivered', "
+            "'checking', 'ready', 'failed')",
+            name="ck_sign_in_flows_status",
+        ),
+        CheckConstraint("mode IN ('loopback', 'core')", name="ck_sign_in_flows_mode"),
+        Index("ix_sign_in_flows_user", "tenant_id", "user_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_label: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    encrypted_verifier: Mapped[str] = mapped_column(Text, nullable=False)
+    completion_secret_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    browser_nonce_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 

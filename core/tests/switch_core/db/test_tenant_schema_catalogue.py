@@ -123,6 +123,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # vendor sees one Switch, so one client per deployment and
             # service, holding no person's account.
             "service_oauth_clients",
+            # Which schema revisions a release from before them can still
+            # serve on, as Alembic applied them: a fact about the schema.
+            "schema_expand_only_revisions",
         }
 
     async def test_scoped_is_everything_else(self) -> None:

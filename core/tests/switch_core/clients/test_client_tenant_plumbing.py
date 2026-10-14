@@ -53,6 +53,7 @@ from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.observer import IgnoreParticipantMessages
 from tests.ownership import NeverOwned
+from tests.routing import router_on
 
 
 def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory:
@@ -69,6 +70,7 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
         ephemeral=EphemeralBus(),
         room_cache=MagicMock(),
         message_observer=IgnoreParticipantMessages(),
+        router=router_on(session_factory),
     )
     factory.register("user", Actor)
     return factory

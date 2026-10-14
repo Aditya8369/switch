@@ -3,12 +3,16 @@
 A transport carries an event from the client that sent it to the clients that
 should see it, and remembers it in between. Here the `messages` table does all
 of that. **The write is the send.** A send is an INSERT, numbered per room
-under an advisory lock (`MessageStore.create`); the `messages_notify` trigger
-announces it on commit (`db/notify_ddl.py`); one `MessageListener` wakes the
-transports watching that room (`messages/notify.py`); and each transport reads
-the rows after its own cursor, `DELIVERY_PAGE` at a time. There is no second
-store to agree with. Switch used to run on a Matrix homeserver; the
-`matrix_*` column names are what is left of it, kept as stable ids.
+under an advisory lock (`MessageStore.create`), made by the router
+(`delivery/router.py`), which decides in the same transaction which agents in
+the room the row is for and stores their own events with it. The
+`messages_notify` trigger announces the row on commit (`db/notify_ddl.py`);
+one `MessageListener` wakes the transports watching that room
+(`messages/notify.py`); and each transport reads the rows after its own
+cursor, `DELIVERY_PAGE` at a time. Agents have no transport watching for them:
+what is for them was decided as it was written. There is no second store to
+agree with. Switch used to run on a Matrix homeserver; the `matrix_*` column
+names are what is left of it, kept as stable ids.
 
 Three consequences worth stating up front:
 
@@ -97,6 +101,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.db.stores.usage_store import UsageStore
+    from switch_core.delivery.router import MessageRouter
     from switch_core.messages.notify import MessageListener
     from switch_core.transport.cursors import DeliveryProgress
     from switch_core.transport.room_cache import RoomDeliveryCache
@@ -200,6 +205,7 @@ class PostgresTransport:
         ephemeral: EphemeralBus,
         room_cache: RoomDeliveryCache,
         message_observer: ParticipantMessageObserver,
+        router: MessageRouter,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -235,6 +241,8 @@ class PostgresTransport:
         # A shared read only counts for this client if it started after this.
         self._woken: dict[str, int] = {}
         self._message_observer = message_observer
+        # Writes every row, deciding as it does which agents the row is for.
+        self._router = router
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
         # to a handler. Both are keyed by the Switch room id, which is what
@@ -248,6 +256,7 @@ class PostgresTransport:
         # its own arrival.
         self._joining: set[str] = set()
         self._receiving = False
+        self._receiving_event = asyncio.Event()
         # Set to end the current `receive_forever`. Replaced at the start of
         # each, so a consumer stopped here and started again later reads again.
         self._closed = asyncio.Event()
@@ -304,6 +313,7 @@ class PostgresTransport:
             self._reconcile_membership,
         )
         self._receiving = True
+        self._receiving_event.set()
         try:
             rooms = await self.joined_rooms()
             if not rooms:
@@ -322,6 +332,7 @@ class PostgresTransport:
                 await self._finish(delivery)
         finally:
             self._receiving = False
+            self._receiving_event.clear()
             self._invites.unregister(
                 self.client_id,
                 self._on_invited,
@@ -356,6 +367,13 @@ class PostgresTransport:
         finally:
             delivery.cancel()
             await asyncio.gather(delivery, return_exceptions=True)
+
+    async def wait_receiving(self, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(self._receiving_event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
 
     async def _deliver_forever(self) -> None:
         """This client's own delivery loop: its rooms, one at a time.
@@ -976,7 +994,9 @@ class PostgresTransport:
 
         The commit is the acceptance: the trigger on `messages` announces the
         row as part of it, so no subscriber can be woken for a row that a later
-        rollback removes.
+        rollback removes. The agents the row is for have their own events in
+        the same commit, and anything the row leaves an agent to say is posted
+        only after it.
         """
         # A row this client writes while handling one it was handed, or on
         # behalf of a platform post, gets an id derived from what it acts on
@@ -1023,15 +1043,18 @@ class PostgresTransport:
                     thread_root_event_id=thread_root_of(content),
                     content=content,
                 )
-                if derived is None:
-                    await self._message_store.create(
-                        session, message, attachments_in(content)
-                    )
-                elif not await self._message_store.create_unless_stored(
-                    session, message, attachments_in(content)
-                ):
+                routed = await self._router.store(
+                    session,
+                    tenant_id=tenant_id,
+                    room_id=room_id,
+                    transport_room_id=transport_room_id,
+                    message=message,
+                    attachments=attachments_in(content),
+                    unless_stored=derived is not None,
+                )
+                if routed is None:
                     logger.info(
-                        "Client %s already wrote %s while handling this row; "
+                        "Client %s already wrote %s for what it is acting on; "
                         "not writing it again",
                         self.user_id,
                         result.event_id,
@@ -1055,6 +1078,7 @@ class PostgresTransport:
                 SEND_FAILURES, {"kind": kind, "actor": self._actor_role}
             )
             raise
+        routed.committed()
         metrics().increment(MESSAGES_SENT, {"kind": kind, "actor": self._actor_role})
         if metered and kind in _METERED_KINDS:
             self._observe(tenant_id, room_id, kind, content)
@@ -1208,11 +1232,16 @@ class PostgresTransport:
             existing = await session.get(
                 ClientRoom, {"client_id": self.client_id, "room_id": switch_room_id}
             )
-            if existing is not None:
+            joined = existing is None and await self._room_store.add_client(
+                session, self.client_id, switch_room_id
+            )
+            if not joined:
+                # A member already, or made one a moment ago by another
+                # writer, which wrote the arrival too: one arrival per
+                # membership, so the room is greeted once.
                 if self._receiving:
                     await self._watch(room_id, arrival_seq=None)
                 return True
-            await self._room_store.add_client(session, self.client_id, switch_room_id)
             arrival = Message(
                 room_id=switch_room_id,
                 transport_event_id=new_event_id(),
@@ -1229,9 +1258,17 @@ class PostgresTransport:
                 # something a later change can take back.
                 content={"membership": "join", "displayname": self.display_name},
             )
-            await self._message_store.create(session, arrival, [])
+            routed = await self._router.store(
+                session,
+                tenant_id=tenant_id,
+                room_id=switch_room_id,
+                transport_room_id=room_id,
+                message=arrival,
+                attachments=[],
+            )
             await session.commit()
-            arrival_seq = arrival.seq
+        routed.committed()
+        arrival_seq = routed.seq
         if self._receiving:
             # From just before the arrival, so this client reads its own join
             # the way every other member does.
