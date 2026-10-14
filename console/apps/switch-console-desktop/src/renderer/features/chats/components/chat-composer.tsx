@@ -222,7 +222,7 @@ export const ChatComposer = observer(function ChatComposer({
       >
         <PromptInput
           onSubmit={send}
-          className="rounded-3xl border-border/60 bg-background-1/50 shadow-(--composer-shadow) duration-200 focus-within:border-border-1"
+          className="rounded-[20px] border-(--composer-border) bg-background-1/50 shadow-(--composer-shadow) duration-200 focus-within:border-(--composer-border-focus)"
         >
           <PromptInputAttachments
             items={files.map(({ id, file }) => ({ id, name: file.name, mediaType: file.type }))}
@@ -260,7 +260,7 @@ export const ChatComposer = observer(function ChatComposer({
             />
             <PromptInputSubmit
               status={status}
-              className="h-8 min-w-8 rounded-full"
+              className="h-8 min-w-8"
               onStop={() => void stop()}
               stopDisabledReason={blocker}
               disabled={disabled !== null || (!showStop && !draft.trim() && !files.length)}

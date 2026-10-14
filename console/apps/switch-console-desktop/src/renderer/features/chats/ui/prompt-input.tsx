@@ -194,7 +194,10 @@ export function PromptInputSubmit({
       type="submit"
       variant="default"
       size="icon-sm"
-      className={cn('rounded-full', className)}
+      className={cn(
+        'rounded-xl emdark:bg-[#A1C9D2] emdark:text-[#1a1a1a] emdark:hover:bg-[#B1D9E2] emdark:disabled:bg-[#A1C9D2]/50',
+        className
+      )}
       disabled={sending || disabled}
       aria-label={sending ? 'Sending' : 'Send'}
       title={sending ? 'Sending' : 'Send'}
