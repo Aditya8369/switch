@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ActivityBindings,
   bindTurns,
+  foldTurnEndNotices,
   isThinking,
   placeTurns,
   toolState,
@@ -144,6 +145,61 @@ describe('placeTurns', () => {
       ['q2', turn('t2')],
     ]);
     expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
+});
+
+describe('foldTurnEndNotices', () => {
+  const said = (messageId: string, agentId: string | null, body = messageId): ChatMessage =>
+    ({
+      messageId,
+      body,
+      sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
+    }) as unknown as ChatMessage;
+  const turn = (turnId: string, status: TurnActivity['status']): TurnActivity => ({
+    turnId,
+    status,
+    items: [],
+    requests: [],
+  });
+  const interrupted = 'I finished without replying. The turn was interrupted: Claude turn ended';
+
+  it("folds a notice into the agent's last turn when that turn shows the same ending", () => {
+    const messages = [
+      said('q1', null),
+      said('q2', null),
+      said('r1', 'helper'),
+      said('n2', 'helper', interrupted),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1', 'completed')],
+      ['q2', turn('t2', 'interrupted')],
+    ]);
+    expect(foldTurnEndNotices(messages, 'helper', bound)).toEqual(new Map([['n2', 't2']]));
+  });
+
+  it('keeps a notice whose turn shows no such ending, or is not known', () => {
+    const messages = [said('q1', null), said('n1', 'helper', interrupted)];
+    expect(
+      foldTurnEndNotices(messages, 'helper', new Map([['q1', turn('t1', 'running')]]))
+    ).toEqual(new Map());
+    expect(foldTurnEndNotices(messages, 'helper', new Map())).toEqual(new Map());
+    expect(
+      foldTurnEndNotices(messages, 'reviewer', new Map([['q1', turn('t1', 'interrupted')]]))
+    ).toEqual(new Map());
+  });
+
+  it('does not take a notice as the reply a queued turn waits for', () => {
+    const messages = [
+      said('q1', null),
+      said('q2', null),
+      said('n1', 'helper', 'I finished without replying.'),
+      said('r2', 'helper'),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1', 'completed')],
+      ['q2', turn('t2', 'running')],
+    ]);
+    expect([...placeTurns(messages, 'helper', bound).keys()]).toEqual(['q1', 'r2']);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { HostBody, Item, Snapshot } from '@switch-console/shared/session-v1';
-import { type ChatMessage, isSessionStartingNotice } from '@shared/core/chats/chats';
+import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
 import { SWITCH_TOOL_PREFIX } from './tool-presentation';
 
 /**
@@ -90,7 +90,8 @@ export function placeTurns(
           index > after &&
           each.sender.kind === 'agent' &&
           each.sender.agentId === agentId &&
-          !isSessionStartingNotice(each)
+          !isSessionStartingNotice(each) &&
+          !turnEndNotice(each)
       );
       anchor = Math.max(at, reply === -1 ? previous : reply);
     }
@@ -99,6 +100,28 @@ export function placeTurns(
     previous = turn.status === 'interrupted' || turn.status === 'error' ? null : anchor;
   });
   return placed;
+}
+
+/**
+ * The host's notices of turns that ended without a reply, each matched to the
+ * turn it reports: the agent's last turn before it, when that turn shows the
+ * same ending. Maps the notice's message id to the turn id.
+ */
+export function foldTurnEndNotices(
+  messages: readonly ChatMessage[],
+  agentId: string,
+  bound: ReadonlyMap<string, TurnActivity>
+): Map<string, string> {
+  const folded = new Map<string, string>();
+  messages.forEach((message, at) => {
+    const notice = message.sender.agentId === agentId ? turnEndNotice(message) : null;
+    if (!notice) return;
+    const started = messages.slice(0, at).findLast((each) => bound.has(each.messageId));
+    const turn = started ? bound.get(started.messageId) : undefined;
+    const status = { failed: 'error', interrupted: 'interrupted', completed: null }[notice.outcome];
+    if (turn && turn.status === status) folded.set(message.messageId, turn.turnId);
+  });
+  return folded;
 }
 
 export type ToolState = 'running' | 'done' | 'failed' | 'declined';

@@ -11,16 +11,17 @@ import {
   chatAgentLabel,
   isSessionStartingNotice,
   liveSessionStartingNotices,
+  turnEndNotice,
 } from '@shared/core/chats/chats';
-import { placeTurns, type TurnActivity } from '../activity-join';
+import { foldTurnEndNotices, placeTurns, type TurnActivity } from '../activity-join';
 import { type ContextMarker, contextMarkerSlots } from '../chat-context';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
-import { WorkLogRow } from '../ui/work-log';
-import { ChatActivityBlock } from './chat-activity-block';
+import { FailedIcon, WorkLogRow } from '../ui/work-log';
+import { ChatActivityBlock, turnEndLabel } from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
 
 /** Messages more than this far apart start a new dated group. */
@@ -133,6 +134,8 @@ export const ChatTimelineView = observer(function ChatTimelineView({
 }: Props) {
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
   const blocksByAnchor = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
+  /** Turn-end notices shown on their turn's status row, by message id → `agentId:turnId`. */
+  const foldedNotices = new Map<string, string>();
   const boundTurns = new Map(activities.map((activity) => [activity, activity.turns()]));
   for (const [activity, bound] of boundTurns) {
     for (const [messageId, turn] of bound) {
@@ -145,7 +148,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         ...(blocksByAnchor.get(anchorId) ?? []),
         ...turns.map((turn) => ({ activity, turn })),
       ]);
+    for (const [noticeId, turnId] of foldTurnEndNotices(timeline.messages, activity.agentId, bound))
+      foldedNotices.set(noticeId, `${activity.agentId}:${turnId}`);
   }
+  const endReasons = new Map(
+    timeline.messages.flatMap((message) => {
+      const turnKey = foldedNotices.get(message.messageId);
+      return turnKey ? [[turnKey, turnEndNotice(message)?.reason ?? null] as const] : [];
+    })
+  );
   const agentOf = (agentId: string | null) => agents.find((agent) => agent.id === agentId) ?? null;
   const find = (messageId: string) => timeline.byId(messageId);
   const myUserId = chatsStore.userId;
@@ -197,6 +208,8 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       {timeline.messages.map((message) => {
         const notice = isSessionStartingNotice(message);
         if (notice && !liveNotices.has(message.messageId)) return null;
+        if (foldedNotices.has(message.messageId)) return null;
+        const ended = turnEndNotice(message);
         const sentAt = new Date(message.sentAt);
         const separator =
           previous === null || sentAt.getTime() - previous.getTime() > GROUP_GAP_MS ? (
@@ -228,6 +241,30 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                         : 'Starting a session…'
                     }
                     active
+                  />
+                </div>
+              </div>
+            ) : ended ? (
+              <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
+                <AgentAvatar
+                  name={agent ? chatAgentLabel(agent) : message.sender.name}
+                  iconUrl={agent?.iconUrl ?? null}
+                  size={28}
+                  className="mt-0.5"
+                />
+                <div className="flex min-w-0 flex-1 flex-col pt-0.5">
+                  <WorkLogRow
+                    icon={<FailedIcon />}
+                    label={turnEndLabel(
+                      ended.outcome === 'interrupted'
+                        ? 'Stopped'
+                        : ended.outcome === 'failed'
+                          ? 'The turn ended with an error'
+                          : 'Finished without replying',
+                      ended.reason
+                    )}
+                    title={ended.reason ?? undefined}
+                    tone={ended.outcome === 'completed' ? 'passive' : 'failed'}
                   />
                 </div>
               </div>
@@ -321,6 +358,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   key={`${activity.agentId}:${turn.turnId}`}
                   activity={activity}
                   turn={turn}
+                  endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
                   agent={{
                     name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
                     iconUrl: turnAgent?.iconUrl ?? null,
