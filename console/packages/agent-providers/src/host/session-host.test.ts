@@ -690,6 +690,29 @@ it('waits for native compaction and keeps history without sending a summarizatio
   expect(fixture.adapter.interruptTurn).not.toHaveBeenCalled();
 });
 
+it('publishes context usage when a turn ends and clears it on reset', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-context-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.contextUsage = vi.fn(async () => ({ usedTokens: 134000, windowTokens: 0 }));
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.snapshot().session.context).toBeUndefined();
+  await host.command(message('turn'));
+  await waitFor(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  fixture.emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
+  await waitFor(() =>
+    expect(host.snapshot().session.context).toMatchObject({
+      usedTokens: 134000,
+      windowTokens: null,
+    })
+  );
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.snapshot().session.context).toBeNull();
+});
+
 it('stages attachments before dispatch and never executes after shutdown during transfer', async () => {
   const { adapter, config } = setup('codex');
   let resolve!: (files: Array<{ path: string; mimeType: string }>) => void;
