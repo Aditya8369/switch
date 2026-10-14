@@ -117,3 +117,17 @@ async def test_the_posted_control_reaches_command_dispatch(chats: _Harness) -> N
     assert event.user_id == member.transport_user_id
     assert event.user_name == "alice"
     assert event.message_id == event.thread_id == command_id
+
+
+async def test_a_posted_control_is_shown_in_the_chat(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    response = await _control(chats, chats.alice, room_id, agent, "k1", "reset")
+    command_id = response.json()["commandId"]
+
+    page = await chats.client.get(
+        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
+    )
+    assert page.status_code == 200, page.text
+    [shown] = [m for m in page.json()["messages"] if m["messageId"] == command_id]
+    assert shown["body"] == "!reset @helper"

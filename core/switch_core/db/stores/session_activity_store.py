@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from switch_core.db.models import Agent, AgentSessionActivityItem, ApprovalRequest
@@ -86,12 +86,14 @@ class ApprovalRequestStore:
     async def for_room(
         self, session: AsyncSession, room_id: str, since: datetime
     ) -> list[ApprovalRequest]:
-        """Requests in `room_id`, in every state, changed since `since`; oldest first."""
+        """Open requests in `room_id` plus closed ones changed since `since`; oldest first."""
         result = await session.execute(
             select(ApprovalRequest)
             .where(
                 ApprovalRequest.room_id == room_id,
-                ApprovalRequest.updated_at >= since,
+                or_(
+                    ApprovalRequest.state == "open", ApprovalRequest.updated_at >= since
+                ),
             )
             .order_by(ApprovalRequest.created_at)
         )

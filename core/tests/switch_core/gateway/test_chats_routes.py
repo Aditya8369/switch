@@ -13,12 +13,12 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.db.models import (
@@ -1529,6 +1529,28 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
         f"/chats/{mine}/activity", headers=chats.as_user(chats.bob)
     )
     assert refused.status_code == 403
+
+
+async def test_room_activity_keeps_open_requests_past_retention(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    await _request(chats, agent, room_id, "r-old-open", "open")
+    await _request(chats, agent, room_id, "r-old-done", "answered")
+    async with chats.factory() as session:
+        await session.execute(
+            update(ApprovalRequest).values(
+                updated_at=datetime.now(UTC) - timedelta(days=8)
+            )
+        )
+        await session.commit()
+
+    response = await chats.client.get(
+        f"/chats/{room_id}/activity", headers=chats.as_user(chats.alice)
+    )
+    assert response.status_code == 200, response.text
+    assert [a["requestId"] for a in response.json()["approvals"]] == ["r-old-open"]
 
 
 async def test_the_activity_stream_sends_only_readable_rooms_and_moved_steps(

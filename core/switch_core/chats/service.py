@@ -46,7 +46,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.authz import administers_tenant
 from switch_core.chats import MEMBER_CLIENT_TYPE
-from switch_core.chats.views import MESSAGE_EVENT_TYPE
+from switch_core.chats.views import (
+    COMMAND_EVENT_TYPE,
+    MESSAGE_EVENT_TYPE,
+    SHOWN_EVENT_TYPES,
+)
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import (
     Agent,
@@ -121,7 +125,6 @@ class StagedUpload:
 
 RemovalReason = Literal["access", "unlisted"]
 RoomControl = Literal["interrupt", "reset", "compact"]
-COMMAND_EVENT_TYPE = "com.switch.command"
 
 
 def _hash(payload: dict[str, object]) -> str:
@@ -601,7 +604,9 @@ class ChatService:
     async def _last_message_seq(self, session: AsyncSession, room_id: str) -> int:
         seq = await session.scalar(
             select(Message.seq)
-            .where(Message.room_id == room_id, Message.event_type == MESSAGE_EVENT_TYPE)
+            .where(
+                Message.room_id == room_id, Message.event_type.in_(SHOWN_EVENT_TYPES)
+            )
             .order_by(Message.seq.desc())
             .limit(1)
         )
@@ -613,7 +618,7 @@ class ChatService:
         """Messages before `before_seq` (newest first, returned oldest first),
         the room's head position, and whether older messages remain."""
         query = select(Message).where(
-            Message.room_id == room_id, Message.event_type == MESSAGE_EVENT_TYPE
+            Message.room_id == room_id, Message.event_type.in_(SHOWN_EVENT_TYPES)
         )
         if before_seq is not None:
             query = query.where(Message.seq < before_seq)

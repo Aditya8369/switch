@@ -27,6 +27,9 @@ from switch_core.db.models import (
 from switch_core.db.stores.message_store import MessageStore
 
 MESSAGE_EVENT_TYPE = "m.room.message"
+COMMAND_EVENT_TYPE = "com.switch.command"
+# A room command (`!reset @agent`) is shown so its threaded acknowledgement has a visible root.
+SHOWN_EVENT_TYPES = (MESSAGE_EVENT_TYPE, COMMAND_EVENT_TYPE)
 PREVIEW_CHARS = 140
 
 _MESSAGE_STORE = MessageStore()
@@ -159,7 +162,9 @@ async def chat_summary(
     last = (
         await session.execute(
             select(Message)
-            .where(Message.room_id == room.id, Message.event_type == MESSAGE_EVENT_TYPE)
+            .where(
+                Message.room_id == room.id, Message.event_type.in_(SHOWN_EVENT_TYPES)
+            )
             .order_by(Message.seq.desc())
             .limit(1)
         )
@@ -195,6 +200,14 @@ async def chat_summary(
     )
 
 
+def _command_text(message: Message) -> str:
+    if message.event_type != COMMAND_EVENT_TYPE:
+        return ""
+    command = message.content.get("command")
+    args = message.content.get("args")
+    return f"!{command} {args}".strip() if args else f"!{command}"
+
+
 async def chat_messages(
     session: AsyncSession, room: Room, messages: Sequence[Message]
 ) -> list[ChatMessage]:
@@ -202,7 +215,7 @@ async def chat_messages(
 
     Only conversation is shown: a row of any other event type is skipped.
     """
-    shown = [m for m in messages if m.event_type == MESSAGE_EVENT_TYPE]
+    shown = [m for m in messages if m.event_type in SHOWN_EVENT_TYPES]
     client_ids = {m.sender_client_id for m in shown if m.sender_client_id}
     clients = {
         client.id: client
@@ -246,7 +259,7 @@ async def chat_messages(
                     user_id=client.user_id if client is not None else None,
                 ),
                 source=source,
-                body=message.body or "",
+                body=message.body or _command_text(message),
                 format=format_ if isinstance(format_, str) else None,
                 thread_root_id=message.thread_root_event_id,
                 attachments=[
