@@ -229,6 +229,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <AgentAvatar
                   name={agent ? chatAgentLabel(agent) : message.sender.name}
                   iconUrl={agent?.iconUrl ?? null}
+                  serverId={serverId}
                   size={28}
                   className="mt-0.5"
                 />
@@ -249,6 +250,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <AgentAvatar
                   name={agent ? chatAgentLabel(agent) : message.sender.name}
                   iconUrl={agent?.iconUrl ?? null}
+                  serverId={serverId}
                   size={28}
                   className="mt-0.5"
                 />
@@ -322,6 +324,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <AgentAvatar
                   name={agent ? chatAgentLabel(agent) : message.sender.name}
                   iconUrl={agent?.iconUrl ?? null}
+                  serverId={serverId}
                   size={28}
                   className="mt-0.5"
                 />
@@ -355,6 +358,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
               const turnAgent = agentOf(activity.agentId);
               return (
                 <ChatActivityBlock
+                  serverId={serverId}
                   key={`${activity.agentId}:${turn.turnId}`}
                   activity={activity}
                   turn={turn}

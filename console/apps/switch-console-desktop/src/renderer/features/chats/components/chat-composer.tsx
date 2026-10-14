@@ -316,6 +316,7 @@ export const ChatComposer = observer(function ChatComposer({
                       <AgentAvatar
                         name={chatAgentLabel(selected)}
                         iconUrl={selected.iconUrl}
+                        serverId={serverId}
                         size={14}
                       />
                       {chatAgentLabel(selected)}

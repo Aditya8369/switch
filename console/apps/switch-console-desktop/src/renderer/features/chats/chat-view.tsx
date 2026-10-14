@@ -18,7 +18,7 @@ const ChatTitlebar = observer(function ChatTitlebar() {
       leftSlot={
         <div className="flex min-w-0 items-center pr-2">
           {chat ? (
-            <ChatHeaderTitle chat={chat} />
+            <ChatHeaderTitle serverId={params.serverId} chat={chat} />
           ) : (
             <span className="text-sm text-foreground-muted">Chat</span>
           )}
