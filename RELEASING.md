@@ -108,10 +108,12 @@ git push origin switch-v0.30.0-rc.1
   `core/pyproject.toml` and not already released as `switch-v0.30.0`.
 - **Never `latest`.** Images, chart and compose are pushed under `0.30.0-rc.1` only.
   `helm install` skips the chart unless given `--devel` or that exact `--version`.
-- **No controller release.** An RC publishes no controller package and its chart
-  leaves `switchCore.controllerRelease` empty: controllers talking to an RC keep the
-  version they have. Set the three values yourself to point an RC at a released
-  controller.
+- **Its own controller, as a prerelease.** An RC publishes the controller as
+  `switch-agent-controller-v0.30.0-rc.1`, a GitHub prerelease that `install.sh` and
+  `switch-agent-controller update` leave out, and its chart names it in
+  `switchCore.controllerRelease`: controllers talking to an RC update to it once
+  idle, as they would for a release. `0.30.0-rc.1` sorts before `0.30.0`, so the
+  release that follows moves them on. The dev cleanup never prunes it.
 - **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
   into `core/pyproject.toml` on the runner, so the running server's version says
   which candidate it is. Nothing is committed.
@@ -298,8 +300,9 @@ git push origin switch-agent-controller-v0.2.0
 
 ### The controller a Switch release names
 
-A Switch release (`switch-v<version>`, not an RC) also publishes the controller
-(a dev build of main does too, as a prerelease: see [Dev builds](#dev-builds)),
+A Switch release (`switch-v<version>`) also publishes the controller
+(an RC and a dev build of main do too, as a prerelease: see
+[Release candidates](#release-candidates) and [Dev builds](#dev-builds)),
 built from the same commit, as `switch-agent-controller-v<version>`: the same
 GitHub release this workflow makes (package and `install.sh`, never Latest), so
 `install.sh` and `switch-agent-controller update` find it as they find any other.

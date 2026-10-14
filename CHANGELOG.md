@@ -84,10 +84,11 @@ version of their own to them without also giving them a release of their own.
   version fetches that package, checks its SHA-256 and installs it once idle.
   `GET /gateway/management/controllers` shows each controller's `release`
   (`{wanted, running, current}`, null when none is named), and its status keeps
-  the `update` the controller reports. A Switch release (not an RC) now also
+  the `update` the controller reports. A Switch release now also
   publishes the controller at its version as `switch-agent-controller-v<version>`,
-  and its chart names that package; a dev build of main does the same as a
-  prerelease, so the dev environment's controllers follow main. A controller
+  and its chart names that package; a release candidate and a dev build of main
+  do the same as a prerelease, so the controllers of a deployment running an RC,
+  and the dev environment's, follow it. A controller
   run as a service installs a release beside the one it runs and keeps the one
   before. Roll back by pointing the values at the previous release.
 
