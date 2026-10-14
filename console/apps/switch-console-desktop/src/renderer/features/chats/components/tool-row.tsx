@@ -1,6 +1,6 @@
-import type { Item } from '@switch-console/shared/session-v1';
 import { useState } from 'react';
 import { cn } from '@renderer/utils/utils';
+import type { ChatActivityItem } from '@shared/core/chats/activity';
 import type { ToolDetail } from '@shared/core/sessions/reasoning';
 import type { ToolState } from '../activity-join';
 import {
@@ -126,7 +126,7 @@ export function ToolRow({
   state,
   detail,
 }: {
-  item: Item;
+  item: ChatActivityItem;
   state: ToolState;
   detail: ToolDetail | null;
 }) {

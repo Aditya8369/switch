@@ -1,22 +1,20 @@
-import { RelayError } from '@switch-console/agent-providers';
 import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { agentPlacements } from '@main/core/sdk-host/connection-health';
-import { controllerControl } from '@main/core/sdk-host/controller-control';
 import { localWatcherControl } from '@main/core/sdk-host/local-host';
 import { withSidecar } from '@main/core/sdk-host/sidecar-control';
-import {
-  AgentManagementUnavailableError,
-  fetchAgents,
-  fetchManagedAgents,
-  fetchManagementControllers,
-  fetchMe,
-} from '@main/core/switch-servers/gateway-client';
+import { fetchMe } from '@main/core/switch-servers/gateway-client';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
-import type { ChatActivityTarget } from '@shared/core/chats/activity';
+import type {
+  ChatActivityTarget,
+  ChatApproval,
+  ChatApprovalAnswer,
+  ChatControlCommand,
+  RoomActivity,
+} from '@shared/core/chats/activity';
 import type {
   ChatMessage,
   ChatMessagesPage,
@@ -25,9 +23,8 @@ import type {
   ChatUpload,
   ChatUploadInput,
 } from '@shared/core/chats/chats';
-import { controllerAgentKey } from '@shared/core/managed-agents/controller-agent-key';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { type ActivityDeps, type OwnedManagedAgent, resolveChatActivity } from './activity';
+import { type ActivityDeps, resolveChatActivity } from './activity';
 import {
   connectChatStream,
   disconnectChatStream,
@@ -36,11 +33,14 @@ import {
 } from './chat-streams';
 import { generateChatTitle } from './chat-title';
 import {
+  answerChatApproval,
   createChat,
   fetchChatMedia,
   fetchChatMessages,
+  fetchRoomActivity,
   listChats,
   renameChat,
+  sendChatControl,
   sendChatMessage,
   setChatHidden,
   uploadChatAttachment,
@@ -48,14 +48,8 @@ import {
 
 const onServer = withServerWorkspaceSession;
 
-/** Short-lived reads the activity lookup repeats on every placement change. */
+/** Short-lived reads repeated by every chat opened. */
 const CACHE_MS = 10_000;
-/** What a controller answers when it is reached but the agent's host on it is not. */
-const HOST_UNREACHABLE_CODES = new Set([
-  'agent_not_running',
-  'agent_unreachable',
-  'control_file_invalid',
-]);
 const cache = new Map<string, { at: number; value: Promise<unknown> }>();
 function cached<T>(key: string, read: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
@@ -87,63 +81,13 @@ const activityDeps: ActivityDeps = {
     );
   },
   placements: (serverId, consoleAgentId) => agentPlacements(serverId, consoleAgentId),
-  controllerPlacements: async (serverId, agentId) => {
-    try {
-      const client = await controllerControl(controllerAgentKey(serverId, agentId));
-      return (await client.health()).placements;
-    } catch (error) {
-      const reason =
-        error instanceof RelayError && HOST_UNREACHABLE_CODES.has(error.relayCode)
-          ? 'host-unreachable'
-          : 'on-controller';
-      log.warn(
-        'Could not ask a managed agent’s controller for its placements; showing messages only',
-        {
-          serverId,
-          agentId,
-          error: String(error),
-        }
-      );
-      return reason;
-    }
-  },
-  ownedManagedAgents: (serverId) =>
-    cached(`${serverId}:managed`, () =>
-      onServer(serverId, async (server): Promise<OwnedManagedAgent[] | null> => {
-        try {
-          const [agents, controllers] = await Promise.all([
-            fetchManagedAgents(server),
-            fetchManagementControllers(server),
-          ]);
-          const byId = new Map(controllers.map((controller) => [controller.id, controller]));
-          return agents.map((agent) => {
-            const controller = agent.controllerId ? byId.get(agent.controllerId) : undefined;
-            return {
-              agentId: agent.agentId,
-              controllerId: agent.controllerId,
-              controllerOnline: controller?.state === 'online',
-            };
-          });
-        } catch (error) {
-          if (error instanceof AgentManagementUnavailableError) return null;
-          throw error;
-        }
-      })
-    ),
-  ownsAgent: async (serverId, agentId) => {
-    const [me, agents] = await Promise.all([
-      cached(`${serverId}:me`, () => onServer(serverId, fetchMe)),
-      cached(`${serverId}:agents`, () => onServer(serverId, fetchAgents)),
-    ]);
-    return agents.some((agent) => agent.id === agentId && agent.ownerId === me.id);
-  },
 };
 
 /**
- * Asks the host of an agent the person owns to start the session a message to
- * the room would start, ahead of the message. Does nothing for an agent that
- * is not theirs or whose machine is offline; a failure is logged, never thrown,
- * so it cannot get in the way of sending.
+ * Asks the local or SSH host of the person's agent to start the session a
+ * message to the room would start, ahead of the message. Does nothing for an
+ * agent not hosted here; a failure is logged, never thrown, so it cannot get
+ * in the way of sending.
  */
 async function warmChat(params: { serverId: string; agentId: string; roomId: string }) {
   const { serverId, agentId, roomId } = params;
@@ -151,17 +95,10 @@ async function warmChat(params: { serverId: string; agentId: string; roomId: str
     const local = (await activityDeps.localAgents(serverId)).find(
       (agent) => agent.switchAgentId === agentId
     );
-    if (local) {
-      await (local.ssh
-        ? withSidecar(local.id, (client) => client.warm(roomId))
-        : localWatcherControl(agentId).warm(roomId));
-      return;
-    }
-    const managed = (await activityDeps.ownedManagedAgents(serverId))?.find(
-      (agent) => agent.agentId === agentId
-    );
-    if (!managed?.controllerId || !managed.controllerOnline) return;
-    await (await controllerControl(controllerAgentKey(serverId, agentId))).warm(roomId);
+    if (!local) return;
+    await (local.ssh
+      ? withSidecar(local.id, (client) => client.warm(roomId))
+      : localWatcherControl(agentId).warm(roomId));
   } catch (error) {
     log.warn('Could not warm the agent’s session for a chat; its first message starts it', {
       serverId,
@@ -266,4 +203,30 @@ export const chatsController = createRPCController({
   /** Start the agent's session for the chat while its user types, if the agent is theirs. */
   warm: (params: { serverId: string; agentId: string; roomId: string }): Promise<void> =>
     warmChat(params),
+  /** The room's turn steps and approval requests; changes follow on the activity channels. */
+  roomActivity: (serverId: string, roomId: string): Promise<RoomActivity> =>
+    onServer(serverId, (server) => fetchRoomActivity(server, roomId)),
+  /** Post Stop, Reset or Compact for an agent; the command id its reply threads under. */
+  control: (params: {
+    serverId: string;
+    roomId: string;
+    requestId: string;
+    agentId: string;
+    command: ChatControlCommand;
+  }): Promise<string> =>
+    onServer(params.serverId, (server) =>
+      sendChatControl(server, params.roomId, {
+        requestId: params.requestId,
+        agentId: params.agentId,
+        command: params.command,
+      })
+    ),
+  answerApproval: (params: {
+    serverId: string;
+    agentId: string;
+    sessionId: string;
+    requestId: string;
+    answer: ChatApprovalAnswer;
+  }): Promise<ChatApproval> =>
+    onServer(params.serverId, (server) => answerChatApproval(server, params, params.answer)),
 });

@@ -1,14 +1,8 @@
-import type {
-  CommandStatus,
-  Item,
-  SessionTransport,
-  Snapshot,
-} from '@switch-console/shared/session-v1';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  ActivityBindings,
   bindTurns,
   foldTurnEndNotices,
+  groupTurns,
   isThinking,
   placeTurns,
   toolState,
@@ -19,65 +13,71 @@ import {
   type ActivityApi,
   AgentActivities,
 } from '@renderer/features/chats/stores/chat-activity-store';
-import type { ChatActivityTarget } from '@shared/core/chats/activity';
+import type { ChatActivityItem, ChatApproval, RoomActivity } from '@shared/core/chats/activity';
 import type { ChatMessage } from '@shared/core/chats/chats';
 
-function item(turnId: string, kind: Item['kind'], extra: Partial<Item> = {}): Item {
+let clock = 0;
+function row(
+  turnId: string,
+  itemId: string,
+  extra: Partial<ChatActivityItem> = {}
+): ChatActivityItem {
+  const at = new Date(Date.UTC(2026, 0, 1, 0, 0, clock++)).toISOString();
   return {
-    itemId: `${turnId}-${kind}-${extra.title ?? ''}`,
+    agentId: 'agent-a',
+    sessionId: 's1',
     turnId,
+    itemId,
+    kind: itemId === 'turn' ? 'turn' : 'tool-activity',
     revision: 1,
-    kind,
-    status: 'completed',
+    status: itemId === 'turn' ? 'running' : 'completed',
     title: '',
     text: '',
-    attachments: [],
-    origin: null,
+    commandId: null,
+    roomId: 'room-1',
+    threadId: null,
+    messageId: `m-${turnId}`,
+    occurredAt: at,
+    createdAt: at,
+    updatedAt: at,
     ...extra,
   };
 }
 
-function snapshot(sessionId: string, epoch: string, overrides: Partial<Snapshot> = {}): Snapshot {
+function approval(turnId: string, extra: Partial<ChatApproval> = {}): ChatApproval {
   return {
-    contractVersion: 1,
-    throughSequence: 1,
-    session: {
-      sessionId,
-      agentId: `agent-of-${sessionId}`,
-      provider: 'claude',
-      hostId: 'host',
-      epoch,
-      status: 'running',
-      connectivity: 'online',
-      capabilities: {
-        input: 'queue',
-        approvals: true,
-        questions: true,
-        interrupt: true,
-        reset: false,
-        compact: false,
-        modelChange: false,
-        attachmentMimeTypes: [],
-      },
-      pendingRequestIds: [],
-    },
-    turns: [],
-    items: [],
-    requests: [],
-    commandStatuses: [],
-    notices: [],
-    nextPageToken: null,
-    ...overrides,
+    agentId: 'agent-a',
+    sessionId: 's1',
+    requestId: `req-${turnId}`,
+    turnId,
+    kind: 'approval',
+    roomId: 'room-1',
+    threadId: null,
+    title: 'Run tests?',
+    detail: null,
+    options: [{ id: 'yes', label: 'Yes', decision: 'accept' }],
+    questions: [],
+    state: 'open',
+    expiresAt: null,
+    answer: null,
+    answers: null,
+    answeredBy: null,
+    answeredAt: null,
+    ...extra,
   };
 }
 
-const origin = (messageId: string, roomId = 'room-1') => ({
-  surface: 'switch-web' as const,
-  actorId: 'person',
-  roomId,
-  threadId: null,
-  messageId,
-});
+function turnOf(items: ChatActivityItem[], status: TurnActivity['status']): TurnActivity {
+  return {
+    sessionId: 's1',
+    turnId: 't1',
+    status,
+    roomId: 'room-1',
+    messageId: 'm1',
+    items,
+    requests: [],
+  };
+}
 
 describe('placeTurns', () => {
   const said = (messageId: string, agentId: string | null): ChatMessage =>
@@ -87,8 +87,11 @@ describe('placeTurns', () => {
       sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
     }) as unknown as ChatMessage;
   const turn = (turnId: string, status: TurnActivity['status'] = 'completed'): TurnActivity => ({
+    sessionId: 's1',
     turnId,
     status,
+    roomId: 'room-1',
+    messageId: null,
     items: [],
     requests: [],
   });
@@ -156,8 +159,11 @@ describe('foldTurnEndNotices', () => {
       sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
     }) as unknown as ChatMessage;
   const turn = (turnId: string, status: TurnActivity['status']): TurnActivity => ({
+    sessionId: 's1',
     turnId,
     status,
+    roomId: 'room-1',
+    messageId: null,
     items: [],
     requests: [],
   });
@@ -237,60 +243,49 @@ describe('foldTurnEndNotices', () => {
 });
 
 describe('bindTurns', () => {
-  it('joins a turn to its room message by origin or by command id', () => {
-    const snap = snapshot('s1', 'e1', {
-      turns: [
-        { type: 'turn.upsert', turnId: 't1', status: 'completed', commandId: 't1' },
-        { type: 'turn.upsert', turnId: 't2', status: 'running', commandId: 'cmd-m2' },
-        { type: 'turn.upsert', turnId: 't3', status: 'running', commandId: 'other' },
+  it('joins each turn to the room message its rows name, with its steps and requests', () => {
+    const turns = groupTurns(
+      [
+        row('t1', 'turn', { status: 'completed' }),
+        row('t1', 'grep', { title: 'grep' }),
+        row('t1', 'reply', { kind: 'assistant-message', text: 'done' }),
+        row('t2', 'turn'),
+        row('t3', 'turn', { roomId: 'room-2' }),
+        row('t4', 'turn', { messageId: null, commandId: 'cmd' }),
+        row('t5', 'orphan'),
       ],
-      items: [
-        item('t1', 'user-message', { origin: origin('m1') }),
-        item('t1', 'tool-activity', { title: 'grep' }),
-        item('t1', 'assistant-message', { text: 'done' }),
-        item('t3', 'user-message', { origin: origin('m9', 'room-2') }),
-      ],
-    });
-    const bound = bindTurns(
-      snap,
-      'room-1',
-      new Map([
-        ['m1', 'cmd-m1'],
-        ['m2', 'cmd-m2'],
-      ])
+      [approval('t2')]
     );
-    expect([...bound.keys()]).toEqual(['m1', 'm2']);
-    expect(bound.get('m1')!.items.map((each) => each.kind)).toEqual([
+    const bound = bindTurns(turns, 'room-1');
+    expect([...bound.keys()]).toEqual(['m-t1', 'm-t2']);
+    expect(bound.get('m-t1')!.items.map((each) => each.kind)).toEqual([
       'tool-activity',
       'assistant-message',
     ]);
-    expect(isThinking(bound.get('m2')!)).toBe(true);
-    expect(isThinking(bound.get('m1')!)).toBe(false);
+    expect(bound.get('m-t2')!.requests.map((each) => each.requestId)).toEqual(['req-t2']);
+    expect(isThinking(bound.get('m-t2')!)).toBe(true);
+    expect(isThinking(bound.get('m-t1')!)).toBe(false);
   });
 
   it('keeps a turn thinking while it has written text but run no tool', () => {
-    const turn = {
-      turnId: 't1',
-      status: 'running' as const,
-      items: [item('t1', 'assistant-message', { text: 'draft' })],
-      requests: [],
-    };
+    const turn = turnOf(
+      [row('t1', 'draft', { kind: 'assistant-message', text: 'draft' })],
+      'running'
+    );
     expect(isThinking(turn)).toBe(true);
-    expect(isThinking({ ...turn, items: [item('t1', 'tool-activity')] })).toBe(false);
+    expect(isThinking({ ...turn, items: [row('t1', 'tool')] })).toBe(false);
   });
 
   it("shows tools only, with Switch's own tools set apart", () => {
-    const turn = {
-      turnId: 't1',
-      status: 'completed' as const,
-      items: [
-        item('t1', 'tool-activity', { title: 'mcp__switch__read_context' }),
-        item('t1', 'tool-activity', { title: 'ls -la' }),
-        item('t1', 'assistant-message', { text: 'the answer' }),
-        item('t1', 'tool-activity', { title: 'mcp__switch__post_message' }),
+    const turn = turnOf(
+      [
+        row('t1', 'a', { title: 'mcp__switch__read_context' }),
+        row('t1', 'b', { title: 'ls -la' }),
+        row('t1', 'c', { kind: 'assistant-message', text: 'the answer' }),
+        row('t1', 'd', { title: 'mcp__switch__post_message' }),
       ],
-      requests: [],
-    };
+      'completed'
+    );
     const { work, switchActions } = turnTools(turn);
     expect(work.map((each) => each.title)).toEqual(['ls -la']);
     expect(switchActions.map((each) => each.title)).toEqual([
@@ -300,198 +295,156 @@ describe('bindTurns', () => {
   });
 
   it('shows an unfinished tool of an interrupted turn as failed', () => {
-    const tool = item('t', 'tool-activity', { status: 'in-progress' });
+    const tool = row('t', 'tool', { status: 'in-progress' });
     expect(toolState(tool, 'running')).toBe('running');
     expect(toolState(tool, 'interrupted')).toBe('failed');
     expect(toolState({ ...tool, status: 'completed' }, 'running')).toBe('done');
   });
 });
 
-describe('ActivityBindings', () => {
-  it('drops every binding when the epoch (the key) changes', () => {
-    const bindings = new ActivityBindings();
-    const turn = { turnId: 't1', status: 'completed' as const, items: [], requests: [] };
-    bindings.update('session:e1', new Map([['m1', turn]]));
-    expect([...bindings.update('session:e1', new Map()).keys()]).toEqual(['m1']);
-    expect([...bindings.update('session:e2', new Map()).keys()]).toEqual([]);
-  });
-});
-
-function fakeTransport(snap: Snapshot) {
-  const submitted: unknown[] = [];
-  const transport: SessionTransport = {
-    snapshot: async () => snap,
-    subscribe: () => () => {},
-    submit: async (command) => {
-      submitted.push(command);
-      return {
-        type: 'command.status',
-        commandId: command.commandId,
-        status: 'applied',
-        code: null,
-        message: null,
-      } satisfies CommandStatus;
+function fakeApi(snapshots: RoomActivity[]) {
+  const reads: string[] = [];
+  const controls: unknown[] = [];
+  const api: ActivityApi = {
+    resolve: async () => ({
+      kind: 'unavailable',
+      reason: 'not-on-this-machine',
+      message: 'Activity not available on this machine.',
+    }),
+    reasoning: async () => null,
+    watchPlacements: () => () => {},
+    roomActivity: async (_server, roomId) => {
+      reads.push(roomId);
+      return snapshots.shift() ?? { items: [], approvals: [] };
     },
-    commandStatus: async () => {
-      throw new Error('unused');
+    control: async (input) => {
+      controls.push(input);
+      return 'cmd-1';
     },
+    answerApproval: async (input) =>
+      approval('t1', { requestId: input.requestId, state: 'answered', answer: 'yes' }),
   };
-  return { transport, submitted };
+  return { api, reads, controls };
 }
 
 describe('AgentActivities', () => {
-  it('keeps two agents in one room apart and stops exactly the session shown', async () => {
-    const sessions: Record<string, Snapshot> = {
-      'agent-a': snapshot('session-a', 'epoch-a', {
-        turns: [{ type: 'turn.upsert', turnId: 'turn-a', status: 'running', commandId: null }],
-      }),
-      'agent-b': snapshot('session-b', 'epoch-b'),
-    };
-    const transports = new Map<string, ReturnType<typeof fakeTransport>>();
-    const api: ActivityApi = {
-      resolve: async (_server, agentId): Promise<ChatActivityTarget> => ({
-        kind: 'session',
-        target: 'local',
-        hostAgentKey: `console-${agentId}`,
-        sessionId: sessions[agentId]!.session.sessionId,
-        controllerId: null,
-        generation: null,
-      }),
-      transport: (target) => {
-        const agentId = target.hostAgentKey.replace('console-', '');
-        const fake = fakeTransport(sessions[agentId]!);
-        transports.set(agentId, fake);
-        return fake.transport;
+  it('reads one snapshot for the agents of a room and keeps them apart', async () => {
+    const { api, reads } = fakeApi([
+      {
+        items: [row('ta', 'turn'), row('tb', 'turn', { agentId: 'agent-b', status: 'completed' })],
+        approvals: [],
       },
-      reasoning: async () => null,
-      watchPlacements: () => () => {},
-    };
+    ]);
     const activities = new AgentActivities(api);
     const a = activities.acquire('server', 'tenant', 'room-1', 'agent-a');
     const b = activities.acquire('server', 'tenant', 'room-1', 'agent-b');
-    await vi.waitFor(() => expect(a.key?.epoch).toBe('epoch-a'));
-    await vi.waitFor(() => expect(b.key?.epoch).toBe('epoch-b'));
-    expect(a.key).toMatchObject({ agentId: 'agent-a', sessionId: 'session-a' });
-    expect(b.key).toMatchObject({ agentId: 'agent-b', sessionId: 'session-b' });
+    await vi.waitFor(() => expect(b.turns().size).toBe(1));
+    expect(reads).toEqual(['room-1']);
     expect(a.working).toBe(true);
+    expect(a.runningTurn?.turnId).toBe('ta');
     expect(b.working).toBe(false);
-
-    await a.client!.execute({ type: 'turn.interrupt', turnId: a.runningTurn!.turnId }, 'stop-1');
-    expect(transports.get('agent-a')!.submitted).toEqual([
-      expect.objectContaining({
-        sessionId: 'session-a',
-        epoch: 'epoch-a',
-        body: { type: 'turn.interrupt', turnId: 'turn-a' },
-      }),
-    ]);
-    expect(transports.get('agent-b')!.submitted).toEqual([]);
     activities.release(a);
     activities.release(b);
   });
 
-  it('opens a new client when the session behind the chat changes', async () => {
-    let sessionId = 'session-1';
-    const api: ActivityApi = {
-      resolve: async () => ({
-        kind: 'session',
-        target: 'controller',
-        hostAgentKey: 'controller:server:agent=a',
-        sessionId,
-        controllerId: 'ctl',
-        generation: sessionId === 'session-1' ? 'g1' : 'g2',
-      }),
-      transport: () => fakeTransport(snapshot(sessionId, `epoch-${sessionId}`)).transport,
-      reasoning: async () => null,
-      watchPlacements: () => () => {},
-    };
-    const activities = new AgentActivities(api);
-    const activity = activities.acquire('server', null, 'room-1', 'a');
-    await vi.waitFor(() => expect(activity.key?.sessionId).toBe('session-1'));
-    const first = activity.client;
-    sessionId = 'session-2';
-    await activity.resolve();
-    await vi.waitFor(() => expect(activity.key?.sessionId).toBe('session-2'));
-    expect(activity.client).not.toBe(first);
-    expect(activity.key).toMatchObject({ generation: 'g2', epoch: 'epoch-session-2' });
-    activities.release(activity);
-  });
-
-  it('shows nothing for an agent someone else owns', async () => {
-    const api: ActivityApi = {
-      resolve: async () => ({
-        kind: 'unavailable',
-        reason: 'not-owner',
-        message: 'Agent activity is visible to its owner.',
-      }),
-      transport: () => {
-        throw new Error('No session should be opened.');
-      },
-      reasoning: async () => null,
-      watchPlacements: () => () => {},
-    };
-    const activities = new AgentActivities(api);
-    const activity = activities.acquire('server', null, 'room-1', 'theirs');
-    await vi.waitFor(() => expect(activity.target?.kind).toBe('unavailable'));
-    expect(activity.client).toBeNull();
-    expect(activity.turns().size).toBe(0);
-    activities.release(activity);
-  });
-
-  it('keeps last known activity visible when controller goes offline', async () => {
-    let online = true;
-    const api: ActivityApi = {
-      resolve: async (): Promise<ChatActivityTarget> =>
-        online
-          ? {
-              kind: 'session',
-              target: 'controller',
-              hostAgentKey: 'controller:agent-a',
-              sessionId: 'session-a',
-              controllerId: 'ctl',
-              generation: 'g1',
-            }
-          : {
-              kind: 'unavailable',
-              reason: 'controller-offline',
-              message: "The agent's controller is offline.",
-            },
-      transport: () =>
-        fakeTransport(
-          snapshot('session-a', 'epoch-a', {
-            turns: [
-              { type: 'turn.upsert', turnId: 'turn-1', status: 'completed', commandId: null },
-            ],
-            items: [
-              item('turn-1', 'user-message', { origin: origin('m1') }),
-              item('turn-1', 'tool-activity', { title: 'test-tool' }),
-            ],
-          })
-        ).transport,
-      reasoning: async () => null,
-      watchPlacements: () => () => {},
-    };
+  it('merges live rows with the snapshot by revision, dropping stale ones', async () => {
+    const snapshotTool = row('t1', 'tool', { revision: 5, title: 'from snapshot' });
+    const { api } = fakeApi([{ items: [row('t1', 'turn'), snapshotTool], approvals: [] }]);
     const activities = new AgentActivities(api);
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
-    await vi.waitFor(() => expect(activity.key?.epoch).toBe('epoch-a'));
-    await activity.learnMessages([
-      { messageId: 'm1', sender: { kind: 'human', id: 'user' } } as any,
-    ]);
+    // A newer row arrives over the feed before the snapshot is read.
+    activities.applyItem('server', { ...snapshotTool, revision: 7, title: 'live' });
     await vi.waitFor(() => expect(activity.turns().size).toBe(1));
-    expect(activity.turns().get('m1')?.items[0].title).toBe('test-tool');
-
-    online = false;
-    await activity.resolve();
-    await vi.waitFor(() => expect(activity.target?.kind).toBe('unavailable'));
-    expect(activity.client).toBeNull();
-    expect(activity.view).toBeNull();
-    expect(activity.turns().size).toBe(1);
-    expect(activity.turns().get('m1')?.items[0].title).toBe('test-tool');
+    expect(activity.turns().get('m-t1')!.items[0].title).toBe('live');
+    activities.applyItem('server', { ...snapshotTool, revision: 7, title: 'replayed' });
+    activities.applyItem('server', { ...snapshotTool, revision: 6, title: 'stale' });
+    expect(activity.turns().get('m-t1')!.items[0].title).toBe('live');
+    activities.applyItem('server', { ...snapshotTool, revision: 8, title: 'newer' });
+    expect(activity.turns().get('m-t1')!.items[0].title).toBe('newer');
+    activities.applyItem('server', row('t1', 'other-room', { roomId: 'room-2' }));
+    expect(activity.turns().get('m-t1')!.items).toHaveLength(1);
     activities.release(activity);
   });
 
-  it('keeps the tool details a local host sends with its reasoning, for this epoch only', async () => {
+  it('reads every shown room again on resync, and says when a read fails', async () => {
+    const { api, reads } = fakeApi([
+      { items: [], approvals: [] },
+      { items: [row('t1', 'turn', { status: 'completed' })], approvals: [] },
+    ]);
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(reads).toEqual(['room-1']));
+    activities.resync('server');
+    activities.resync('other-server');
+    await vi.waitFor(() => expect(activity.turns().size).toBe(1));
+    expect(reads).toEqual(['room-1', 'room-1']);
+    api.roomActivity = async () => {
+      throw new Error('Switch did not answer.');
+    };
+    await activities.loadRoom('server', 'room-1');
+    expect(activity.feedError).toContain('Switch did not answer.');
+    activities.release(activity);
+  });
+
+  it('never reopens an answered request from an older copy', async () => {
+    const { api } = fakeApi([]);
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    activities.applyItem('server', row('t1', 'turn'));
+    activities.applyApproval('server', approval('t1'));
+    await activity.answer(approval('t1'), { answer: 'yes' });
+    activities.applyApproval('server', approval('t1'));
+    expect(activity.turns().get('m-t1')!.requests[0]).toMatchObject({
+      state: 'answered',
+      answer: 'yes',
+    });
+    activities.release(activity);
+  });
+
+  it('keeps a settled request settled when a resync snapshot still has it open', async () => {
+    const { api } = fakeApi([
+      { items: [row('t1', 'turn')], approvals: [] },
+      { items: [], approvals: [approval('t1'), approval('t2')] },
+    ]);
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(activity.turns().size).toBe(1));
+    activities.applyApproval('server', approval('t1', { state: 'expired' }));
+    await activities.loadRoom('server', 'room-1');
+    expect(activity.turns().get('m-t1')!.requests[0].state).toBe('expired');
+    expect(activity.approvals.size).toBe(2);
+    activities.applyApproval('server', approval('t1', { state: 'closed' }));
+    expect(activity.turns().get('m-t1')!.requests[0].state).toBe('closed');
+    activities.release(activity);
+  });
+
+  it('posts Stop to the room and holds its command id as requested', async () => {
+    const { api, controls } = fakeApi([]);
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await activity.control('interrupt');
+    expect(controls).toEqual([
+      {
+        serverId: 'server',
+        roomId: 'room-1',
+        requestId: activity.controls[0].requestId,
+        agentId: 'agent-a',
+        command: 'interrupt',
+      },
+    ]);
+    expect(activity.controls[0]).toMatchObject({ state: 'requested', commandId: 'cmd-1' });
+    api.control = async () => {
+      throw new Error('That agent is not in this chat.');
+    };
+    await activity.control('reset');
+    expect(activity.controls[1]).toMatchObject({ state: 'failed' });
+    expect(activity.controls[1].error).toContain('That agent is not in this chat.');
+    activities.release(activity);
+  });
+
+  it('reads reasoning and tool details from a local host for its own session only', async () => {
     const tool = {
-      itemId: '["turn-1","t1"]',
+      itemId: '["t1","tool"]',
       type: 'tool_call',
       toolName: 'Read',
       input: { file_path: '/a.ts' },
@@ -499,31 +452,29 @@ describe('AgentActivities', () => {
       truncated: false,
       exitCode: null,
     };
-    const api: ActivityApi = {
-      resolve: async () => ({
-        kind: 'session',
-        target: 'local',
-        hostAgentKey: 'console-a',
-        sessionId: 's1',
-        controllerId: null,
-        generation: null,
-      }),
-      transport: () => fakeTransport(snapshot('s1', 'e1')).transport,
-      reasoning: async (_key, _session, turnIds) => ({
-        epoch: turnIds?.includes('stale') ? 'old' : 'e1',
-        turns: [],
-        tools: [{ turnId: 'turn-1', tools: [tool] }],
-      }),
-      watchPlacements: () => () => {},
+    const asked: string[][] = [];
+    const { api } = fakeApi([]);
+    api.resolve = async () => ({
+      kind: 'session',
+      target: 'local',
+      hostAgentKey: 'console-a',
+      sessionId: 's1',
+      controllerId: null,
+      generation: null,
+    });
+    api.reasoning = async (_key, _session, turnIds) => {
+      asked.push(turnIds ?? []);
+      return { epoch: 'e1', turns: [], tools: [{ turnId: 't1', tools: [tool] }] };
     };
     const activities = new AgentActivities(api);
-    const activity = activities.acquire('server', null, 'room-1', 'a');
-    await vi.waitFor(() => expect(activity.key?.epoch).toBe('e1'));
-    await activity.readReasoning(['turn-1']);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(activity.target?.kind).toBe('session'));
+    await activity.readReasoning([
+      { ...turnOf([], 'completed'), turnId: 't1' },
+      { ...turnOf([], 'completed'), turnId: 't0', sessionId: 'older-session' },
+    ]);
+    expect(asked).toEqual([['t1']]);
     expect(activity.toolDetails.get(tool.itemId)).toEqual(tool);
-    activity.toolDetails.clear();
-    await activity.readReasoning(['stale']);
-    expect(activity.toolDetails.size).toBe(0);
     activities.release(activity);
   });
 });

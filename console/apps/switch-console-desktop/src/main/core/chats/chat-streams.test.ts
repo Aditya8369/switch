@@ -4,6 +4,7 @@ const state = vi.hoisted(() => ({
   workspace: { id: 'ws-1', tenantId: 'tenant-1' as string | null },
   emitted: [] as { name: string; data: unknown }[],
   opened: [] as { workspaceId: string; signal: AbortSignal }[],
+  activityOpened: [] as { workspaceId: string; signal: AbortSignal }[],
 }));
 
 vi.mock('@main/core/workspaces/workspaces-store', () => ({
@@ -17,10 +18,13 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: class GatewayError extends Error {},
   gatewayRequest: async (
     server: { workspaceId: string },
-    _path: string,
+    path: string,
     options: { signal: AbortSignal }
   ) => {
-    state.opened.push({ workspaceId: server.workspaceId, signal: options.signal });
+    (path === '/chats/activity/events' ? state.activityOpened : state.opened).push({
+      workspaceId: server.workspaceId,
+      signal: options.signal,
+    });
     return new Response(new ReadableStream({ start: () => {} }), { status: 200 });
   },
 }));
@@ -39,6 +43,7 @@ describe('chat streams', () => {
   beforeEach(() => {
     state.emitted.length = 0;
     state.opened.length = 0;
+    state.activityOpened.length = 0;
     state.workspace = { id: 'ws-1', tenantId: 'tenant-1' };
     resetChatStream('server-1');
     state.emitted.length = 0;
@@ -61,6 +66,9 @@ describe('chat streams', () => {
     await vi.waitFor(() => expect(state.opened).toHaveLength(2));
     expect(state.opened[0]!.signal.aborted).toBe(true);
     expect(state.opened[1]!.workspaceId).toBe('ws-2');
+    await vi.waitFor(() => expect(state.activityOpened).toHaveLength(2));
+    expect(state.activityOpened[0]!.signal.aborted).toBe(true);
+    expect(state.activityOpened[1]!.workspaceId).toBe('ws-2');
     expect(state.emitted).toContainEqual({ name: 'chat:reset', data: { serverId: 'server-1' } });
   });
 

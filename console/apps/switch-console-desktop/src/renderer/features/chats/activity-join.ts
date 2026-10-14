@@ -1,66 +1,73 @@
-import type { HostBody, Item, Snapshot } from '@switch-console/shared/session-v1';
+import {
+  type ChatActivityItem,
+  type ChatApproval,
+  TURN_ITEM_ID,
+} from '@shared/core/chats/activity';
 import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
 import { SWITCH_TOOL_PREFIX } from './tool-presentation';
 
 /**
- * Joining an agent's session activity to the room messages that started it.
- *
- * A room message the agent was addressed with runs as one turn whose command
- * id is `roomCommandId(agent, room, message)`, and whose user-message item
- * carries the message id in its origin. Either identifies the turn; the
- * turn's other items (tool activity, the agent's own text) and its approval
- * requests are then shown under that message. Nothing is joined across
- * sessions or epochs: bindings are made per activity key and dropped when it
- * changes.
+ * Joining an agent's turns, as Switch's activity feed stores them, to the
+ * room messages that started them. Every row of a turn the agent took from
+ * the room carries that message's id, so a turn shows under its message;
+ * its other steps (tool activity, the agent's own text) and its approval
+ * requests show with it.
  */
 
-export type TurnStatus = Extract<HostBody, { type: 'turn.upsert' }>['status'];
+export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
 
 export type TurnActivity = {
+  sessionId: string;
   turnId: string;
   status: TurnStatus;
+  roomId: string | null;
+  messageId: string | null;
   /** Tool activity and assistant text, in the order the host recorded them. */
-  items: Item[];
-  requests: Snapshot['requests'];
+  items: ChatActivityItem[];
+  requests: ChatApproval[];
 };
 
-/**
- * The turns of a snapshot by the room message that started them.
- * `commandIds` maps a room message id to its derived command id.
- */
+/** Where a row is held: one per step, whatever its revision. */
+export const itemKey = (item: ChatActivityItem): string =>
+  JSON.stringify([item.sessionId, item.turnId, item.itemId]);
+export const turnKey = (sessionId: string, turnId: string): string =>
+  JSON.stringify([sessionId, turnId]);
+
+/** One agent's rows grouped into turns, oldest first. A turn not reported yet is left out. */
+export function groupTurns(
+  items: Iterable<ChatActivityItem>,
+  approvals: Iterable<ChatApproval>
+): TurnActivity[] {
+  const byCreation = (a: ChatActivityItem, b: ChatActivityItem) =>
+    a.createdAt.localeCompare(b.createdAt) || a.itemId.localeCompare(b.itemId);
+  const rows = [...items].sort(byCreation);
+  const turns = new Map<string, TurnActivity>();
+  for (const row of rows)
+    if (row.itemId === TURN_ITEM_ID)
+      turns.set(turnKey(row.sessionId, row.turnId), {
+        sessionId: row.sessionId,
+        turnId: row.turnId,
+        status: row.status as TurnStatus,
+        roomId: row.roomId,
+        messageId: row.messageId,
+        items: [],
+        requests: [],
+      });
+  for (const row of rows)
+    if (row.itemId !== TURN_ITEM_ID) turns.get(turnKey(row.sessionId, row.turnId))?.items.push(row);
+  for (const approval of approvals)
+    turns.get(turnKey(approval.sessionId, approval.turnId))?.requests.push(approval);
+  return [...turns.values()];
+}
+
+/** The turns started by a message of `roomId`, by that message; a later turn for it wins. */
 export function bindTurns(
-  snapshot: Snapshot,
-  roomId: string,
-  commandIds: ReadonlyMap<string, string>
+  turns: readonly TurnActivity[],
+  roomId: string
 ): Map<string, TurnActivity> {
-  const byCommand = new Map<string, string>();
-  for (const [messageId, commandId] of commandIds) byCommand.set(commandId, messageId);
-  const origins = new Map<string, string>();
-  const items = new Map<string, Item[]>();
-  for (const item of snapshot.items) {
-    if (item.kind === 'user-message') {
-      if (item.origin?.roomId === roomId && item.origin.messageId)
-        origins.set(item.turnId, item.origin.messageId);
-      continue;
-    }
-    const list = items.get(item.turnId) ?? [];
-    list.push(item);
-    items.set(item.turnId, list);
-  }
   const bound = new Map<string, TurnActivity>();
-  for (const turn of snapshot.turns) {
-    const messageId =
-      origins.get(turn.turnId) ??
-      (turn.commandId !== null ? byCommand.get(turn.commandId) : undefined) ??
-      byCommand.get(turn.turnId);
-    if (!messageId || !commandIds.has(messageId)) continue;
-    bound.set(messageId, {
-      turnId: turn.turnId,
-      status: turn.status,
-      items: items.get(turn.turnId) ?? [],
-      requests: snapshot.requests.filter((request) => request.turnId === turn.turnId),
-    });
-  }
+  for (const turn of turns)
+    if (turn.roomId === roomId && turn.messageId) bound.set(turn.messageId, turn);
   return bound;
 }
 
@@ -134,7 +141,7 @@ export function foldTurnEndNotices(
 export type ToolState = 'running' | 'done' | 'failed' | 'declined';
 
 /** How a tool item stands, given its turn's status: one left open by a turn that ended failed. */
-export function toolState(item: Item, turn: TurnStatus): ToolState {
+export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStatus): ToolState {
   if (item.status === 'completed') return 'done';
   if (item.status === 'failed') return 'failed';
   if (item.status === 'declined') return 'declined';
@@ -147,9 +154,12 @@ export function toolState(item: Item, turn: TurnStatus): ToolState {
  * shown. Switch's own tools (connecting, reading context, posting) are split
  * off — they are how the agent talks to the room, not work done for it.
  */
-export function turnTools(turn: TurnActivity): { work: Item[]; switchActions: Item[] } {
-  const work: Item[] = [];
-  const switchActions: Item[] = [];
+export function turnTools(turn: TurnActivity): {
+  work: ChatActivityItem[];
+  switchActions: ChatActivityItem[];
+} {
+  const work: ChatActivityItem[] = [];
+  const switchActions: ChatActivityItem[] = [];
   for (const item of turn.items) {
     if (item.kind !== 'tool-activity') continue;
     (item.title.startsWith(SWITCH_TOOL_PREFIX) ? switchActions : work).push(item);
@@ -163,32 +173,4 @@ export function isThinking(turn: TurnActivity): boolean {
     (turn.status === 'queued' || turn.status === 'running') &&
     !turn.items.some((item) => item.kind === 'tool-activity')
   );
-}
-
-/**
- * Keeps the bindings made under one activity key, and drops them all when the
- * key changes — another session, a new epoch, another controller run — so a
- * turn from an earlier run is never shown under a message of a later one.
- */
-export class ActivityBindings {
-  private key: string | null = null;
-  private bound = new Map<string, TurnActivity>();
-
-  update(key: string, next: Map<string, TurnActivity>): Map<string, TurnActivity> {
-    if (key !== this.key) {
-      this.key = key;
-      this.bound = new Map();
-    }
-    for (const [messageId, turn] of next) this.bound.set(messageId, turn);
-    return this.bound;
-  }
-
-  lastKnown(): Map<string, TurnActivity> {
-    return this.bound;
-  }
-
-  clear(): void {
-    this.key = null;
-    this.bound = new Map();
-  }
 }

@@ -1,18 +1,15 @@
-import type { Command } from '@switch-console/shared/session-v1';
-import { ChevronDown, Loader2, Minimize2, Plus, RotateCcw, X } from 'lucide-react';
+import { ChevronDown, Minimize2, Plus, RotateCcw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
 import { rpc } from '@renderer/lib/ipc';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
-import { contextBlocker, isCompacting } from '../chat-context';
 import { snippetOf } from '../chat-threads';
 import { agentChatsFlag } from '../stores/agent-chats-flag';
-import type { AgentActivity } from '../stores/chat-activity-store';
+import type { AgentActivity, ControlRequest } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
 import { createChatWarmer } from '../stores/chat-warmer';
 import { chatTitler } from '../stores/chats';
@@ -56,21 +53,70 @@ export function focusComposerWhenOpened(roomId: string): void {
   else focusOnOpen.add(roomId);
 }
 
-/** Why Stop cannot be used on the running turn, or null when it can. */
-function stopBlocker(activity: AgentActivity | null): string | null {
-  if (!activity?.session) return null;
-  if (!activity.session.capabilities.interrupt)
-    return "This agent's provider cannot be interrupted from here.";
-  if (!activity.view?.connected) return "Reconnecting to the agent's session...";
-  if (activity.client?.hasPendingCommand())
-    return 'Waiting for the previous command to be confirmed.';
-  return null;
-}
+const CONTROL_LABEL: Record<ControlRequest['command'], string> = {
+  interrupt: 'Stop',
+  reset: 'Reset',
+  compact: 'Compact',
+};
+
+/**
+ * Where each Stop, Reset or Compact sent from here stands: being posted,
+ * posted and waiting for the agent, or the agent's answer, which it threads
+ * under the command in the room.
+ */
+const ControlStatus = observer(function ControlStatus({
+  activity,
+  timeline,
+  who,
+}: {
+  activity: AgentActivity;
+  timeline: ChatTimeline;
+  who: string;
+}) {
+  return (
+    <>
+      {activity.controls.map((control) => {
+        const label = CONTROL_LABEL[control.command];
+        const reply = control.commandId
+          ? timeline.messages.findLast((message) => message.threadRootId === control.commandId)
+          : undefined;
+        const failed = control.state === 'failed';
+        return (
+          <div
+            key={control.requestId}
+            role={failed ? 'alert' : 'status'}
+            className={`mb-2 flex items-start gap-2 text-xs ${failed ? 'text-foreground-destructive' : 'text-foreground-muted'}`}
+          >
+            <span className="min-w-0 flex-1">
+              {failed
+                ? `${label} was not sent: ${control.error}`
+                : control.state === 'sending'
+                  ? `Sending ${label}…`
+                  : reply
+                    ? `${label}: ${snippetOf(reply)}`
+                    : `${label} requested — waiting for ${who} to answer.`}
+            </span>
+            {control.state !== 'sending' && (
+              <button
+                type="button"
+                aria-label="Dismiss"
+                onClick={() => activity.dismissControl(control.requestId)}
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+});
 
 /**
  * The chat's composer. Sending posts the message to the room and nothing
  * else: which session answers, and starting or waking it, is up to the
- * agent's host. Stop and the context actions act on the agent's own session, and are offered only as far as that session says they work.
+ * agent's host. Stop, Reset and Compact are posted to the room as commands
+ * for the agent, which answers each in the room.
  */
 export const ChatComposer = observer(function ChatComposer({
   serverId,
@@ -95,8 +141,6 @@ export const ChatComposer = observer(function ChatComposer({
     drafts.set(draftKey, draft);
   }, [draftKey, draft]);
   const [files, setFiles] = useState<{ id: string; file: File }[]>([]);
-  const [controlError, setControlError] = useState<string | null>(null);
-  const [stopping, setStopping] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
@@ -130,8 +174,7 @@ export const ChatComposer = observer(function ChatComposer({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
   const agent = agents[0] ?? null;
-  const session = activity?.session ?? null;
-  const runningTurn = activity?.runningTurn ?? null;
+  const stopActivity = activity?.runningTurn ? activity : null;
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
@@ -153,51 +196,23 @@ export const ChatComposer = observer(function ChatComposer({
     onClearReply();
   };
 
-  const execute = async (body: Command['body']) => {
-    if (!activity?.client) return;
-    setControlError(null);
-    try {
-      await activity.client.execute(body, crypto.randomUUID());
-    } catch (error) {
-      setControlError(failureText(error, "The agent's session did not take the command."));
-    }
-  };
-
-  const stop = async () => {
-    if (!runningTurn) return;
-    setStopping(true);
-    await execute({ type: 'turn.interrupt', turnId: runningTurn.turnId });
-    setStopping(false);
-  };
-
-  const blocker = stopBlocker(activity);
-  const showStop = Boolean(runningTurn) && !draft.trim() && !files.length;
+  const showStop = Boolean(stopActivity) && !draft.trim() && !files.length;
+  const stopping = stopActivity?.pendingControl?.command === 'interrupt';
   const status = stopping ? 'sending' : showStop ? 'running' : 'idle';
-  const contextBlocked =
-    session && activity?.client
-      ? contextBlocker({
-          connected: Boolean(activity.view?.connected),
-          session,
-          pendingCommand: activity.client.hasPendingCommand(),
-          working: activity.working,
-        })
+  const contextBlocked = activity?.working
+    ? 'The agent is working — wait for it to finish.'
+    : activity?.pendingControl
+      ? 'Waiting for the previous command to be sent.'
       : null;
-  const compacting = session ? isCompacting(session, activity?.view?.notices ?? []) : false;
-  const unknownCommands =
-    activity?.view?.snapshot?.commandStatuses.filter((each) => each.status === 'unknown') ?? [];
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-5 pb-1.5">
-      {unknownCommands.length > 0 && (
-        <p role="status" className="mb-2 text-xs text-foreground-muted">
-          Not confirmed: Switch couldn't confirm whether an earlier action finished. It won't run
-          that action again automatically.
-        </p>
-      )}
-      {controlError && (
-        <p role="alert" className="mb-2 text-sm text-foreground-destructive">
-          {controlError}
-        </p>
+      {activity && (
+        <ControlStatus
+          activity={activity}
+          timeline={timeline}
+          who={agent ? chatAgentLabel(agent) : 'the agent'}
+        />
       )}
       {replyTo && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-muted">
@@ -268,14 +283,14 @@ export const ChatComposer = observer(function ChatComposer({
             <PromptInputSubmit
               status={status}
               className="h-8 min-w-8"
-              onStop={() => void stop()}
-              stopDisabledReason={blocker}
+              onStop={() => void stopActivity?.control('interrupt')}
+              stopDisabledReason={stopActivity?.pendingControl ? 'Sending…' : null}
               disabled={disabled !== null || (!showStop && !draft.trim() && !files.length)}
             />
           </div>
         </PromptInput>
         <div className="mt-1.5 flex min-h-7 items-center justify-end gap-1 px-2">
-          {session && activity?.client && (
+          {activity && (
             <Popover
               open={contextOpen}
               onOpenChange={(open) => {
@@ -288,8 +303,7 @@ export const ChatComposer = observer(function ChatComposer({
                 className="h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted"
                 aria-label="Context actions"
               >
-                {compacting && <Loader2 className="size-3.5 animate-spin" />}
-                {compacting ? 'Compacting…' : 'Context'}
+                Context
                 <ChevronDown className="size-3" />
               </PopoverTrigger>
               <PopoverContent
@@ -312,11 +326,11 @@ export const ChatComposer = observer(function ChatComposer({
                       </Button>
                       <Button
                         size="sm"
-                        disabled={contextBlocked !== null || !session.capabilities.reset}
+                        disabled={contextBlocked !== null}
                         onClick={() => {
                           setContextOpen(false);
                           setConfirmReset(false);
-                          void execute({ type: 'session.reset' });
+                          void activity.control('reset');
                         }}
                       >
                         Start fresh
@@ -327,26 +341,24 @@ export const ChatComposer = observer(function ChatComposer({
                   <>
                     <Button
                       variant="ghost"
-                      disabled={contextBlocked !== null || !session.capabilities.compact}
+                      disabled={contextBlocked !== null}
                       className="h-auto justify-start gap-3 px-2 py-2 text-left"
                       onClick={() => {
                         setContextOpen(false);
-                        void execute({ type: 'session.compact' });
+                        void activity.control('compact');
                       }}
                     >
                       <Minimize2 className="size-4 shrink-0" />
                       <span>
                         <span className="block">Compact context</span>
                         <span className="block text-xs font-normal text-foreground-muted">
-                          {session.capabilities.compact
-                            ? 'Free up space in this conversation'
-                            : 'Native compaction is unavailable'}
+                          Free up space in this conversation
                         </span>
                       </span>
                     </Button>
                     <Button
                       variant="ghost"
-                      disabled={contextBlocked !== null || !session.capabilities.reset}
+                      disabled={contextBlocked !== null}
                       className="h-auto justify-start gap-3 px-2 py-2 text-left"
                       onClick={() => setConfirmReset(true)}
                     >
@@ -354,9 +366,7 @@ export const ChatComposer = observer(function ChatComposer({
                       <span>
                         <span className="block">Reset context...</span>
                         <span className="block text-xs font-normal text-foreground-muted">
-                          {session.capabilities.reset
-                            ? 'Start fresh and keep transcript history'
-                            : 'Reset is unavailable for this session'}
+                          Start fresh and keep transcript history
                         </span>
                       </span>
                     </Button>

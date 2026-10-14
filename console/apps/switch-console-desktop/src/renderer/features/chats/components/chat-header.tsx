@@ -29,7 +29,6 @@ async function restartSession(activity: AgentActivity): Promise<void> {
   const target = activity.target;
   if (target?.kind !== 'session') return;
   await rpc.sessions.restartAgent(target.sessionId);
-  await activity.client?.connect();
 }
 
 /** Who and where: the chat's agent and its name. */
@@ -118,7 +117,7 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
               }
             >
               <RotateCw className="size-4" />
-              {activity.session?.status === 'stopped' ? 'Resume session' : 'Restart session'}
+              Restart session
             </DropdownMenuItem>
           ))}
           {children && <DropdownMenuSeparator />}

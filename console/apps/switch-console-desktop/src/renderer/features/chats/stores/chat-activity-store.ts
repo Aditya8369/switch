@@ -1,35 +1,32 @@
-import {
-  type ChatView,
-  SessionChatClient,
-  type SessionTransport,
-} from '@switch-console/shared/session-v1';
 import { makeAutoObservable, observable, runInAction } from 'mobx';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import {
-  activityKeyString,
-  type ChatActivityKey,
-  type ChatActivityTarget,
+import type {
+  ChatActivityItem,
+  ChatActivityTarget,
+  ChatApproval,
+  ChatApprovalAnswer,
+  ChatControlCommand,
+  RoomActivity,
 } from '@shared/core/chats/activity';
-import type { ChatMessage } from '@shared/core/chats/chats';
-import { roomCommandId } from '@shared/core/chats/room-command-id';
 import type { ReasoningList, ReasoningTurn, ToolDetail } from '@shared/core/sessions/reasoning';
-import { ActivityBindings, bindTurns, type TurnActivity } from '../activity-join';
+import { bindTurns, groupTurns, itemKey, type TurnActivity } from '../activity-join';
+import { chatFailure } from './chat-errors';
 
 /**
- * What one agent is doing in one chat, from its session on this machine, its
- * SSH host or its controller: the session found for the room, a client on the
- * session's journal, and its turns joined to the room messages that started
- * them.
+ * What one agent is doing in one chat, from Switch's activity feed: the
+ * steps of its turns and the requests it put to people, joined to the room
+ * messages that started them. Snapshots and live rows are merged by
+ * revision, so a row older than the one held is dropped whichever arrives
+ * first.
  *
- * Read-only toward the agent's work: nothing here sends the person's message
- * (that is only ever a post to the room), and nothing starts a session. The
- * client is used for the controls the session itself offers — Stop, model,
- * approvals — aimed at exactly the session and epoch shown.
+ * Stop, Reset and Compact are posted to the room as commands; the agent
+ * answers each in a thread rooted at the command. Reasoning and full tool
+ * input and output are read from the agent's session host when it runs on
+ * this machine or its SSH host — the only thing the host is asked for.
  */
 
 export type ActivityApi = {
   resolve: (serverId: string, agentId: string, roomId: string) => Promise<ChatActivityTarget>;
-  transport: (target: Extract<ChatActivityTarget, { kind: 'session' }>) => SessionTransport;
   reasoning: (
     hostAgentKey: string,
     sessionId: string,
@@ -37,33 +34,47 @@ export type ActivityApi = {
   ) => Promise<ReasoningList | null>;
   /** Call `onChange` whenever the server's local or SSH placements change. */
   watchPlacements: (serverId: string, onChange: () => void) => () => void;
+  roomActivity: (serverId: string, roomId: string) => Promise<RoomActivity>;
+  control: (input: {
+    serverId: string;
+    roomId: string;
+    requestId: string;
+    agentId: string;
+    command: ChatControlCommand;
+  }) => Promise<string>;
+  answerApproval: (input: {
+    serverId: string;
+    agentId: string;
+    sessionId: string;
+    requestId: string;
+    answer: ChatApprovalAnswer;
+  }) => Promise<ChatApproval>;
 };
 
-type SessionTarget = Extract<ChatActivityTarget, { kind: 'session' }>;
+/** A Stop, Reset or Compact sent from here: `requested` once Switch posted it, not once done. */
+export type ControlRequest = {
+  requestId: string;
+  command: ChatControlCommand;
+  state: 'sending' | 'requested' | 'failed';
+  /** The room message the command is; the agent's answer threads under it. */
+  commandId: string | null;
+  error: string | null;
+};
 
-const sameSession = (a: ChatActivityTarget | null, b: ChatActivityTarget): boolean =>
-  a?.kind === 'session' &&
-  b.kind === 'session' &&
-  a.hostAgentKey === b.hostAgentKey &&
-  a.sessionId === b.sessionId &&
-  a.target === b.target &&
-  a.controllerId === b.controllerId &&
-  a.generation === b.generation;
+const approvalKey = (approval: ChatApproval) =>
+  JSON.stringify([approval.sessionId, approval.requestId]);
 
 export class AgentActivity {
   target: ChatActivityTarget | null = null;
   resolveError: string | null = null;
-  client: SessionChatClient | null = null;
-  view: ChatView | null = null;
-  /** Room message id → the command id its turn runs under, for the session's agent. */
-  commandIds = new Map<string, string>();
+  /** Why the room's activity snapshot could not be read; null once it has been. */
+  feedError: string | null = null;
+  readonly items = observable.map<string, ChatActivityItem>({}, { deep: false });
+  readonly approvals = observable.map<string, ChatApproval>({}, { deep: false });
+  controls: ControlRequest[] = [];
   reasoning = new Map<string, ReasoningTurn>();
-  /** Session-v1 tool item id → what the call was given and gave back; local and SSH hosts only. */
+  /** Tool item id → what the call was given and gave back; local and SSH hosts only. */
   toolDetails = new Map<string, ToolDetail>();
-  private readonly bindings = new ActivityBindings();
-  private lastKnownKey: ChatActivityKey | null = null;
-  private lastKnownCommandIds = new Map<string, string>();
-  private offView: (() => void) | null = null;
   private resolving = false;
 
   constructor(
@@ -73,74 +84,62 @@ export class AgentActivity {
     readonly agentId: string,
     private readonly api: ActivityApi
   ) {
-    makeAutoObservable<
-      AgentActivity,
-      'api' | 'bindings' | 'lastKnownKey' | 'lastKnownCommandIds' | 'offView' | 'resolving'
-    >(this, {
+    makeAutoObservable<AgentActivity, 'api' | 'resolving'>(this, {
       api: false,
-      bindings: false,
-      lastKnownKey: false,
-      lastKnownCommandIds: false,
-      offView: false,
       resolving: false,
-      client: observable.ref,
-      view: observable.ref,
       target: observable.ref,
     });
   }
 
-  /** The identity bindings are kept under; null until the session's epoch is known. */
-  get key(): ChatActivityKey | null {
-    const target = this.target;
-    const epoch = this.view?.snapshot?.session.epoch;
-    if (target?.kind !== 'session' || !epoch) return null;
-    return {
-      serverId: this.serverId,
-      tenantId: this.tenantId,
-      roomId: this.roomId,
-      agentId: this.agentId,
-      target: target.target,
-      controllerId: target.controllerId,
-      generation: target.generation,
-      sessionId: target.sessionId,
-      epoch,
-    };
+  /** Take a row of this agent in this room, unless one at least as new is held. */
+  applyItem(item: ChatActivityItem): void {
+    if (item.agentId !== this.agentId || item.roomId !== this.roomId) return;
+    const key = itemKey(item);
+    const held = this.items.get(key);
+    if (held && held.revision >= item.revision) return;
+    this.items.set(key, item);
   }
 
-  get session() {
-    return this.view?.snapshot?.session ?? null;
+  /** Take a request of this agent in this room; a settled one is never reopened by an older copy. */
+  applyApproval(approval: ChatApproval): void {
+    if (approval.agentId !== this.agentId || approval.roomId !== this.roomId) return;
+    const key = approvalKey(approval);
+    const held = this.approvals.get(key);
+    if (held && held.state !== 'open' && approval.state === 'open') return;
+    this.approvals.set(key, approval);
   }
 
-  /** The turn running now in this session, which Stop interrupts. */
-  get runningTurn() {
-    return this.view?.snapshot?.turns.find((turn) => turn.status === 'running') ?? null;
+  applySnapshot(snapshot: RoomActivity): void {
+    this.feedError = null;
+    for (const item of snapshot.items) this.applyItem(item);
+    for (const approval of snapshot.approvals) this.applyApproval(approval);
+  }
+
+  get allTurns(): TurnActivity[] {
+    return groupTurns(this.items.values(), this.approvals.values());
+  }
+
+  /** Turns joined to the room messages that started them. */
+  get bound(): Map<string, TurnActivity> {
+    return bindTurns(this.allTurns, this.roomId);
+  }
+
+  turns(): Map<string, TurnActivity> {
+    return this.bound;
+  }
+
+  /** The turn running now, which Stop interrupts. */
+  get runningTurn(): TurnActivity | null {
+    return this.allTurns.findLast((turn) => turn.status === 'running') ?? null;
   }
 
   get working(): boolean {
-    return Boolean(
-      this.view?.snapshot?.turns.some(
-        (turn) => turn.status === 'running' || turn.status === 'queued'
-      )
-    );
+    return this.allTurns.some((turn) => turn.status === 'running' || turn.status === 'queued');
   }
 
-  /** Turns joined to room messages, under the current key only. */
-  turns(): Map<string, TurnActivity> {
-    const key = this.key;
-    const snapshot = this.view?.snapshot;
-    if (!key || !snapshot) {
-      if (this.lastKnownKey) {
-        return this.bindings.lastKnown();
-      }
-      return new Map();
-    }
-    const bound = this.bindings.update(
-      activityKeyString(key),
-      bindTurns(snapshot, this.roomId, this.commandIds)
-    );
-    this.lastKnownKey = key;
-    this.lastKnownCommandIds = new Map(this.commandIds);
-    return bound;
+  /** A Stop, Reset or Compact still being posted. */
+  get pendingControl(): ControlRequest | null {
+    return this.controls.findLast((control) => control.state === 'sending') ?? null;
   }
 
   async resolve(): Promise<void> {
@@ -150,13 +149,7 @@ export class AgentActivity {
       const target = await this.api.resolve(this.serverId, this.agentId, this.roomId);
       runInAction(() => {
         this.resolveError = null;
-        if (sameSession(this.target, target)) {
-          this.target = target;
-          return;
-        }
-        this.closeClient();
         this.target = target;
-        if (target.kind === 'session') this.openClient(target);
       });
     } catch (error) {
       runInAction(() => {
@@ -167,66 +160,68 @@ export class AgentActivity {
     }
   }
 
-  /** Derive the command ids of the human messages not seen yet. */
-  async learnMessages(messages: ChatMessage[]): Promise<void> {
-    const agentId = this.session?.agentId;
-    if (!agentId) return;
-    const fresh = messages.filter(
-      (message) => message.sender.kind === 'human' && !this.commandIds.has(message.messageId)
-    );
-    const derived = await Promise.all(
-      fresh.map(
-        async (message) =>
-          [message.messageId, await roomCommandId(agentId, this.roomId, message.messageId)] as const
-      )
-    );
-    runInAction(() => {
-      for (const [messageId, commandId] of derived) this.commandIds.set(messageId, commandId);
+  /** Post a command to the room for this agent; the request id stays with it. */
+  async control(command: ChatControlCommand): Promise<void> {
+    const control: ControlRequest = {
+      requestId: crypto.randomUUID(),
+      command,
+      state: 'sending',
+      commandId: null,
+      error: null,
+    };
+    this.controls.push(control);
+    const held = this.controls.at(-1)!;
+    try {
+      const commandId = await this.api.control({
+        serverId: this.serverId,
+        roomId: this.roomId,
+        requestId: control.requestId,
+        agentId: this.agentId,
+        command,
+      });
+      runInAction(() => {
+        held.state = 'requested';
+        held.commandId = commandId;
+      });
+    } catch (error) {
+      runInAction(() => {
+        held.state = 'failed';
+        held.error = chatFailure(error).message;
+      });
+    }
+  }
+
+  dismissControl(requestId: string): void {
+    this.controls = this.controls.filter((control) => control.requestId !== requestId);
+  }
+
+  /** Answer a request as the signed-in person; the answered copy replaces the held one. */
+  async answer(approval: ChatApproval, answer: ChatApprovalAnswer): Promise<void> {
+    const answered = await this.api.answerApproval({
+      serverId: this.serverId,
+      agentId: approval.agentId,
+      sessionId: approval.sessionId,
+      requestId: approval.requestId,
+      answer,
     });
+    runInAction(() => this.applyApproval(answered));
   }
 
   /** Ask the host for the reasoning and tool details of these turns; local and SSH hosts only. */
-  async readReasoning(turnIds: string[]): Promise<void> {
+  async readReasoning(turns: TurnActivity[]): Promise<void> {
     const target = this.target;
-    if (target?.kind !== 'session' || target.target === 'controller' || !turnIds.length) return;
+    if (target?.kind !== 'session' || target.target === 'controller') return;
+    const turnIds = turns
+      .filter((turn) => turn.sessionId === target.sessionId)
+      .map((turn) => turn.turnId);
+    if (!turnIds.length) return;
     const list = await this.api.reasoning(target.hostAgentKey, target.sessionId, turnIds);
     runInAction(() => {
-      if (!list || list.epoch !== this.session?.epoch) return;
+      if (!list) return;
       for (const turn of list.turns) this.reasoning.set(turn.turnId, turn);
       for (const turn of list.tools ?? [])
         for (const tool of turn.tools) this.toolDetails.set(tool.itemId, tool);
     });
-  }
-
-  dispose(): void {
-    this.closeClient();
-    this.bindings.clear();
-  }
-
-  private openClient(target: SessionTarget): void {
-    const client = new SessionChatClient(target.sessionId, this.api.transport(target));
-    this.client = client;
-    this.view = client.getSnapshot();
-    this.offView = client.subscribe(() => {
-      runInAction(() => {
-        const view = client.getSnapshot();
-        if (view.snapshot?.session.epoch !== this.view?.snapshot?.session.epoch) {
-          this.reasoning = new Map();
-          this.toolDetails = new Map();
-          this.commandIds = new Map();
-        }
-        this.view = view;
-      });
-    });
-    void client.connect();
-  }
-
-  private closeClient(): void {
-    this.offView?.();
-    this.offView = null;
-    this.client?.dispose();
-    this.client = null;
-    this.view = null;
   }
 }
 
@@ -238,6 +233,8 @@ export class AgentActivities {
     { deep: false }
   );
   private readonly watches = new Map<string, () => void>();
+  /** Rooms whose snapshot is due, read once per room however many agents asked. */
+  private readonly due = new Set<string>();
 
   constructor(private readonly api: ActivityApi) {}
 
@@ -254,6 +251,57 @@ export class AgentActivities {
         off();
         this.watches.delete(serverId);
       }
+  }
+
+  private inRoom(serverId: string, roomId: string): AgentActivity[] {
+    return [...this.entries.values()]
+      .map(({ activity }) => activity)
+      .filter((activity) => activity.serverId === serverId && activity.roomId === roomId);
+  }
+
+  /** Read the room's snapshot soon, once for every agent asking in the same tick. */
+  private scheduleLoad(serverId: string, roomId: string): void {
+    const key = JSON.stringify([serverId, roomId]);
+    if (this.due.has(key)) return;
+    this.due.add(key);
+    queueMicrotask(() => {
+      this.due.delete(key);
+      void this.loadRoom(serverId, roomId);
+    });
+  }
+
+  async loadRoom(serverId: string, roomId: string): Promise<void> {
+    try {
+      const snapshot = await this.api.roomActivity(serverId, roomId);
+      runInAction(() => {
+        for (const activity of this.inRoom(serverId, roomId)) activity.applySnapshot(snapshot);
+      });
+    } catch (error) {
+      const message = failureText(error, "The agents' activity in this chat could not be read.");
+      runInAction(() => {
+        for (const activity of this.inRoom(serverId, roomId)) activity.feedError = message;
+      });
+    }
+  }
+
+  /** The feed reconnected or may have missed changes: read every room shown again. */
+  resync(serverId: string): void {
+    const rooms = new Set(
+      [...this.entries.values()]
+        .filter(({ activity }) => activity.serverId === serverId)
+        .map(({ activity }) => activity.roomId)
+    );
+    for (const roomId of rooms) this.scheduleLoad(serverId, roomId);
+  }
+
+  applyItem(serverId: string, item: ChatActivityItem): void {
+    if (!item.roomId) return;
+    for (const activity of this.inRoom(serverId, item.roomId)) activity.applyItem(item);
+  }
+
+  applyApproval(serverId: string, approval: ChatApproval): void {
+    if (!approval.roomId) return;
+    for (const activity of this.inRoom(serverId, approval.roomId)) activity.applyApproval(approval);
   }
 
   acquire(
@@ -273,6 +321,7 @@ export class AgentActivities {
       runInAction(() => this.entries.set(key, created));
       this.syncWatches();
       void entry.activity.resolve();
+      this.scheduleLoad(serverId, roomId);
     }
     entry.users += 1;
     return entry.activity;
@@ -301,25 +350,22 @@ export class AgentActivities {
     if (!entry || entry.activity !== activity) return;
     entry.users -= 1;
     if (entry.users > 0) return;
-    entry.activity.dispose();
     runInAction(() => this.entries.delete(key));
     this.syncWatches();
   }
 
-  /** Look again for every activity on the server (placements changed). */
+  /** Look again for where every activity on the server runs (placements changed). */
   refresh(serverId: string, agentId: string | null): void {
     for (const { activity } of this.entries.values())
       if (activity.serverId === serverId && (agentId === null || activity.agentId === agentId))
         void activity.resolve();
   }
 
-  /** Close everything for a room the person lost, or a whole server on reset. */
+  /** Forget everything for a room the person lost, or a whole server on reset. */
   drop(serverId: string, roomId: string | null): void {
     for (const [key, { activity }] of this.entries)
-      if (activity.serverId === serverId && (roomId === null || activity.roomId === roomId)) {
-        activity.dispose();
+      if (activity.serverId === serverId && (roomId === null || activity.roomId === roomId))
         runInAction(() => this.entries.delete(key));
-      }
     this.syncWatches();
   }
 }

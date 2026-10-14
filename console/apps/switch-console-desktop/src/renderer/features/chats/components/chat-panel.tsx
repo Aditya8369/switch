@@ -61,8 +61,8 @@ const Notice = ({ icon, title, body }: { icon: React.ReactNode; title: string; b
 
 /**
  * A chat: the room's messages from Switch, kept live, with each agent's
- * activity from its session on this machine (or its SSH host or controller)
- * joined under the messages that started it, and a composer that posts to the
+ * activity from Switch's activity feed joined under the messages that
+ * started it, and a composer that posts to the
  * room.
  */
 export const ChatPanel = observer(function ChatPanel({
@@ -82,16 +82,8 @@ export const ChatPanel = observer(function ChatPanel({
     if (!timeline.loaded && !lost && !timeline.notMember) void timeline.load();
   }, [timeline, lost, timeline.notMember]);
 
-  // Every new message may be one the agent was addressed with: derive its command id.
-  const messageCount = timeline.messages.length;
-  useEffect(() => {
-    for (const activity of activities) void activity.learnMessages(timeline.messages);
-    // oxlint-disable-next-line react/exhaustive-deps -- re-run as messages arrive and epochs change
-  }, [activities, messageCount, activities.map((each) => each.session?.epoch).join()]);
-
   // Reasoning lives only on a local or SSH host and is read while a turn runs,
-  // and whenever the joined turns change: a chat opened while idle has none
-  // until the session's snapshot arrives, and its past turns are read then.
+  // and whenever the joined turns change.
   const working = activities.some((activity) => activity.working);
   const turnIdsKey = activities
     .map((activity) => [...activity.turns().values()].map((turn) => turn.turnId).join(','))
@@ -109,17 +101,17 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     const read = (activeOnly: boolean) => {
       for (const activity of activities) {
-        const turnIds = [...activity.turns().values()]
-          .filter((turn) => !activeOnly || turn.status === 'running' || turn.status === 'queued')
-          .map((turn) => turn.turnId);
-        void activity.readReasoning(turnIds.slice(-20));
+        const turns = [...activity.turns().values()].filter(
+          (turn) => !activeOnly || turn.status === 'running' || turn.status === 'queued'
+        );
+        void activity.readReasoning(turns.slice(-20));
       }
     };
     read(false);
     if (!working) return;
     const timer = setInterval(() => read(true), REASONING_MS);
     return () => clearInterval(timer);
-  }, [activities, working, messageCount, turnIdsKey, activeTurnsKey]);
+  }, [activities, working, turnIdsKey, activeTurnsKey]);
 
   if (lost)
     return (
@@ -213,25 +205,22 @@ const FollowOwnSends = observer(function FollowOwnSends({ timeline }: { timeline
   return null;
 });
 
-/**
- * Why an agent's activity is not shown, once someone may be waiting on it:
- * owner-only, not on this machine, or its controller offline.
- */
+/** Why an agent's activity may be missing or stale: its feed or its host lookup failed. */
 const ActivityUnavailable = observer(function ActivityUnavailable({
   activities,
 }: {
   activities: AgentActivity[];
 }) {
-  const notes = activities.flatMap((activity) => {
-    const target = activity.target;
-    if (activity.resolveError) return [activity.resolveError];
-    if (target?.kind !== 'unavailable' || target.reason === 'not-placed') return [];
-    return [target.message];
-  });
+  const notes = activities.flatMap((activity) =>
+    [activity.feedError, activity.resolveError].filter((note) => note !== null)
+  );
   const unique = [...new Set(notes)];
   if (!unique.length) return null;
   return (
-    <p className="mx-auto w-full max-w-[860px] px-5 pb-1 text-xs text-foreground-passive">
+    <p
+      role="alert"
+      className="mx-auto w-full max-w-[860px] px-5 pb-1 text-xs text-foreground-destructive"
+    >
       {unique.join(' ')}
     </p>
   );

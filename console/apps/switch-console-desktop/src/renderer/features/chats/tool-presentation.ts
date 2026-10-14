@@ -1,4 +1,3 @@
-import type { Item } from '@switch-console/shared/session-v1';
 import type { ToolDetail } from '@shared/core/sessions/reasoning';
 
 /**
@@ -6,7 +5,7 @@ import type { ToolDetail } from '@shared/core/sessions/reasoning';
  * its icon), a short human label ("Ran `ls -la`", "Read src/store.ts") and
  * what opening it shows.
  *
- * The session-v1 item carries only a title. What the call was given and gave
+ * The activity row carries only a title and text. What the call was given and gave
  * back comes from the session host's tool details when it has them (a local
  * or SSH host that knows them); without them the row is labelled from the
  * title alone and has nothing to open.
@@ -216,7 +215,10 @@ const VERBS: Record<Exclude<ToolKind, 'switch' | 'mcp' | 'other'>, Verbs> = {
   },
 };
 
-export function presentTool(item: Item, detail: ToolDetail | null): ToolPresentation {
+/** What a tool row is drawn from: an activity row's status, title and text. */
+export type ToolItem = { status: string; title: string; text: string };
+
+export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPresentation {
   const running = item.status === 'in-progress';
   const titled = fromTitle(item.title);
   const name = detail?.toolName ?? titled.name;

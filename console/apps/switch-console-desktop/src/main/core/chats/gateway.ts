@@ -2,6 +2,15 @@ import type { z } from 'zod';
 import { GatewayError, gatewayFetch } from '@main/core/switch-servers/gateway-client';
 import { log } from '@main/lib/logger';
 import {
+  type ChatApproval,
+  type ChatApprovalAnswer,
+  chatApprovalSchema,
+  chatControlAcceptedSchema,
+  type ChatControlCommand,
+  type RoomActivity,
+  roomActivitySchema,
+} from '@shared/core/chats/activity';
+import {
   type ChatMessage,
   type ChatMessagesPage,
   chatMessagesPageSchema,
@@ -137,6 +146,47 @@ export async function sendChatMessage(
       body: input,
     })
   ).messages;
+}
+
+/** The room's turn steps and approval requests, as Switch stores them. */
+export async function fetchRoomActivity(
+  server: SwitchServer,
+  roomId: string
+): Promise<RoomActivity> {
+  return json(server, `${room(roomId)}/activity`, roomActivitySchema);
+}
+
+/**
+ * Post Stop, Reset or Compact to the room for an agent. The answer is its
+ * command id: the command is posted, not done, and the agent answers it in a
+ * thread rooted there.
+ */
+export async function sendChatControl(
+  server: SwitchServer,
+  roomId: string,
+  input: { requestId: string; agentId: string; command: ChatControlCommand }
+): Promise<string> {
+  return (
+    await json(server, `${room(roomId)}/controls`, chatControlAcceptedSchema, {
+      method: 'POST',
+      body: input,
+    })
+  ).commandId;
+}
+
+/** Answer an agent's approval request as the signed-in person. */
+export async function answerChatApproval(
+  server: SwitchServer,
+  request: { agentId: string; sessionId: string; requestId: string },
+  answer: ChatApprovalAnswer
+): Promise<ChatApproval> {
+  const path = [request.agentId, request.sessionId, 'approvals', request.requestId]
+    .map(encodeURIComponent)
+    .join('/');
+  return json(server, `/agent-sessions/${path}/answer`, chatApprovalSchema, {
+    method: 'POST',
+    body: answer,
+  });
 }
 
 export async function uploadChatAttachment(

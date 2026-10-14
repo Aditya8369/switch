@@ -1,14 +1,14 @@
-import type { Item } from '@switch-console/shared/session-v1';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
-import { SessionV1Request } from '@renderer/features/sessions/components/transcript/session-v1-request';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
 import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { presentTool, summarizeTools } from '../tool-presentation';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
+import { ChatApprovalCard } from './chat-approval-card';
 import { ToolRow } from './tool-row';
 
 /** A settled turn with at least this many tool calls folds them behind one summary line. */
@@ -19,7 +19,7 @@ function ToolRows({
   turn,
   activity,
 }: {
-  items: Item[];
+  items: ChatActivityItem[];
   turn: TurnActivity;
   activity: AgentActivity;
 }) {
@@ -47,7 +47,7 @@ function ToolGroup({
   turn,
   activity,
 }: {
-  items: Item[];
+  items: ChatActivityItem[];
   turn: TurnActivity;
   activity: AgentActivity;
 }) {
@@ -83,7 +83,7 @@ function SwitchActions({
   turn,
   activity,
 }: {
-  items: Item[];
+  items: ChatActivityItem[];
   turn: TurnActivity;
   activity: AgentActivity;
 }) {
@@ -117,9 +117,9 @@ export function turnEndLabel(label: string, reason: string | null): ReactNode {
 }
 
 /**
- * What the agent did for one room message, from its session: its reasoning
- * (local and SSH hosts only), each tool it ran, and the approvals it asks
- * for, as a compact work log under the message that started the turn. The
+ * What the agent did for one room message, from Switch's activity feed: its
+ * reasoning (local and SSH hosts only, read from the host), each tool it ran,
+ * and the requests it put to people, as a compact work log under the message that started the turn. The
  * text the agent wrote is not shown: its reply arrives as a room message of
  * its own, and that is the copy shown.
  */
@@ -140,12 +140,10 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const running = turn.status === 'queued' || turn.status === 'running';
   const reasoning = activity.reasoning.get(turn.turnId) ?? null;
   const label = reasoningLabel(reasoning, running && reasoning !== null);
-  const client = activity.client;
-  const connected = activity.view?.connected ?? false;
   const { work, switchActions } = turnTools(turn);
   const thinking = isThinking(turn) && !label;
   const ended = turn.status === 'interrupted' || turn.status === 'error';
-  const requests = client ? turn.requests : [];
+  const requests = turn.requests;
   if (!label && !work.length && !switchActions.length && !thinking && !ended && !requests.length)
     return null;
   return (
@@ -193,19 +191,29 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
             />
           </div>
         )}
-        {client && requests.length > 0 && (
-          <WorkLogDetails>
-            {requests.map((request) => (
-              <SessionV1Request
-                key={request.requestId}
-                request={request}
-                client={client}
-                connected={connected}
-              />
-            ))}
-          </WorkLogDetails>
-        )}
+        {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
       </div>
     </div>
+  );
+});
+
+/** Requests answered through Switch as the signed-in person. */
+export const ChatRequests = observer(function ChatRequests({
+  activity,
+  requests,
+}: {
+  activity: AgentActivity;
+  requests: ChatApproval[];
+}) {
+  return (
+    <WorkLogDetails>
+      {requests.map((request) => (
+        <ChatApprovalCard
+          key={request.requestId}
+          request={request}
+          onAnswer={(answer) => activity.answer(request, answer)}
+        />
+      ))}
+    </WorkLogDetails>
   );
 });

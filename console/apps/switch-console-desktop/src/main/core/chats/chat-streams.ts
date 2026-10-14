@@ -4,6 +4,9 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
+  chatActivityChannel,
+  chatActivityResyncChannel,
+  chatApprovalChannel,
   chatMessageChannel,
   chatRemovedChannel,
   chatResetChannel,
@@ -11,6 +14,7 @@ import {
   chatSummaryChannel,
 } from '@shared/core/chats/chatEvents';
 import type { ChatStreamState } from '@shared/core/chats/chats';
+import { ChatActivityStream } from './activity-stream';
 import { ChatStream, defaultBackoffMs } from './chat-stream';
 import { listChats } from './gateway';
 
@@ -27,7 +31,12 @@ import { listChats } from './gateway';
  * never kept waiting on a feed that does not end.
  */
 
-type Entry = { tenantId: string | null; workspaceId: string; stream: ChatStream };
+type Entry = {
+  tenantId: string | null;
+  workspaceId: string;
+  stream: ChatStream;
+  activity: ChatActivityStream;
+};
 const streams = new Map<string, Entry>();
 
 function makeStream(serverId: string, workspaceId: string): ChatStream {
@@ -43,11 +52,7 @@ function makeStream(serverId: string, workspaceId: string): ChatStream {
       ),
     isUnauthorized: (error) => error instanceof GatewayError && error.kind === 'unauthorized',
     backoffMs: defaultBackoffMs,
-    setTimer: (fn, ms) => {
-      const timer = setTimeout(fn, ms);
-      timer.unref?.();
-      return () => clearTimeout(timer);
-    },
+    setTimer,
     sink: {
       message: (message) => events.emit(chatMessageChannel, { serverId, message }),
       summary: (chat) => events.emit(chatSummaryChannel, { serverId, chat }),
@@ -61,11 +66,35 @@ function makeStream(serverId: string, workspaceId: string): ChatStream {
   });
 }
 
+const setTimer = (fn: () => void, ms: number) => {
+  const timer = setTimeout(fn, ms);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+};
+
+function makeActivityStream(serverId: string, workspaceId: string): ChatActivityStream {
+  return new ChatActivityStream({
+    open: (signal) =>
+      withWorkspaceSession(workspaceId, (server) =>
+        gatewayRequest(server, '/chats/activity/events', { authenticated: true, signal })
+      ),
+    isUnauthorized: (error) => error instanceof GatewayError && error.kind === 'unauthorized',
+    backoffMs: defaultBackoffMs,
+    setTimer,
+    sink: {
+      activity: (item) => events.emit(chatActivityChannel, { serverId, item }),
+      approval: (approval) => events.emit(chatApprovalChannel, { serverId, approval }),
+      resync: () => events.emit(chatActivityResyncChannel, { serverId }),
+    },
+  });
+}
+
 /** Drop the server's feed and tell the renderer its chats are stale. */
 export function resetChatStream(serverId: string): void {
   const entry = streams.get(serverId);
   if (entry) {
     entry.stream.stop();
+    entry.activity.stop();
     streams.delete(serverId);
   }
   events.emit(chatResetChannel, { serverId });
@@ -86,18 +115,28 @@ export async function connectChatStream(
     existing.tenantId === workspace.tenantId
   ) {
     existing.stream.start();
+    existing.activity.start();
     return existing.stream.state;
   }
   if (existing) resetChatStream(serverId);
   const stream = makeStream(serverId, workspace.id);
-  streams.set(serverId, { tenantId: workspace.tenantId, workspaceId: workspace.id, stream });
+  const activity = makeActivityStream(serverId, workspace.id);
+  streams.set(serverId, {
+    tenantId: workspace.tenantId,
+    workspaceId: workspace.id,
+    stream,
+    activity,
+  });
   stream.start();
+  activity.start();
   return stream.state;
 }
 
 /** Stop the feed without forgetting anything, e.g. when no window needs it. */
 export function disconnectChatStream(serverId: string): void {
-  streams.get(serverId)?.stream.stop();
+  const entry = streams.get(serverId);
+  entry?.stream.stop();
+  entry?.activity.stop();
   streams.delete(serverId);
 }
 

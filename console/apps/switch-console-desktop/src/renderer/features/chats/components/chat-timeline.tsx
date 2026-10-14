@@ -14,14 +14,13 @@ import {
   turnEndNotice,
 } from '@shared/core/chats/chats';
 import { foldTurnEndNotices, placeTurns, type TurnActivity } from '../activity-join';
-import { type ContextMarker, contextMarkerSlots } from '../chat-context';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
 import { FailedIcon, WorkLogRow } from '../ui/work-log';
-import { ChatActivityBlock, turnEndLabel } from './chat-activity-block';
+import { ChatActivityBlock, ChatRequests, turnEndLabel } from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
 
 /** Messages more than this far apart start a new dated group. */
@@ -40,19 +39,6 @@ function Separator({ children }: { children: ReactNode }) {
       <span className="h-px flex-1 bg-border" />
       {children}
       <span className="h-px flex-1 bg-border" />
-    </div>
-  );
-}
-
-function ContextMarkerRow({ kind, who }: { kind: ContextMarker; who: string }) {
-  return (
-    <div role="status">
-      <Separator>
-        {who}
-        {kind === 'compacted'
-          ? 'Context compacted'
-          : 'Context reset — the agent starts fresh from here'}
-      </Separator>
     </div>
   );
 }
@@ -167,29 +153,12 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     ])
   );
   const liveNotices = liveSessionStartingNotices(timeline.messages, turnAgents);
-  const messageIds = timeline.messages.map((message) => message.messageId);
-  const markers = new Map<string | null, ReactNode[]>();
-  for (const [activity, bound] of boundTurns) {
-    const snapshot = activity.view?.snapshot;
-    if (!snapshot) continue;
-    const slots = contextMarkerSlots({
-      messageIds,
-      bound,
-      turnIds: snapshot.turns.map((turn) => turn.turnId),
-      items: snapshot.items,
-      notices: activity.view?.notices ?? [],
-      hasMore: timeline.hasMore,
-    });
-    const agent = agentOf(activity.agentId);
-    const who = agents.length > 1 && agent ? `${chatAgentLabel(agent)}: ` : '';
-    for (const [key, kinds] of slots)
-      markers.set(key, [
-        ...(markers.get(key) ?? []),
-        ...kinds.map((kind, at) => (
-          <ContextMarkerRow key={`${activity.agentId}:${at}`} kind={kind} who={who} />
-        )),
-      ]);
-  }
+  // Open requests whose turn shows under no loaded message still need an answer.
+  const shownRequests = new Set(
+    [...blocksByAnchor.values()].flatMap((blocks) =>
+      blocks.flatMap(({ turn }) => turn.requests.map((request) => request.requestId))
+    )
+  );
   let previous: Date | null = null;
   return (
     <div className="flex flex-col gap-5">
@@ -222,7 +191,6 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const mine = message.sender.userId !== null && message.sender.userId === myUserId;
         return (
           <Fragment key={message.messageId}>
-            {markers.get(message.messageId)}
             {separator}
             {notice ? (
               <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
@@ -373,7 +341,27 @@ export const ChatTimelineView = observer(function ChatTimelineView({
           </Fragment>
         );
       })}
-      {markers.get(null)}
+      {activities.map((activity) => {
+        const requests = [...activity.approvals.values()].filter(
+          (request) => request.state === 'open' && !shownRequests.has(request.requestId)
+        );
+        if (!requests.length) return null;
+        const agent = agentOf(activity.agentId);
+        return (
+          <div key={`requests:${activity.agentId}`} className="flex gap-3">
+            <AgentAvatar
+              name={agent ? chatAgentLabel(agent) : activity.agentId}
+              iconUrl={agent?.iconUrl ?? null}
+              serverId={serverId}
+              size={28}
+              className="mt-0.5"
+            />
+            <div className="flex min-w-0 flex-1 flex-col pt-0.5">
+              <ChatRequests activity={activity} requests={requests} />
+            </div>
+          </div>
+        );
+      })}
       {timeline.pending.map((send) => (
         <PendingBubble key={send.requestId} timeline={timeline} send={send} find={find} />
       ))}

@@ -1,18 +1,30 @@
-import { hostJournalTransport } from '@renderer/features/sessions/components/transcript/shared-session-transport';
 import { events, rpc } from '@renderer/lib/ipc';
-import { chatRemovedChannel, chatResetChannel } from '@shared/core/chats/chatEvents';
+import {
+  chatActivityChannel,
+  chatActivityResyncChannel,
+  chatApprovalChannel,
+  chatRemovedChannel,
+  chatResetChannel,
+} from '@shared/core/chats/chatEvents';
 import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { AgentActivities } from './chat-activity-store';
 
-/** The app's agent activities, kept in step with placements and access. */
+/** The app's agent activities, kept in step with the activity feed, placements and access. */
 export const agentActivities = new AgentActivities({
   resolve: (serverId, agentId, roomId) => rpc.chats.activity({ serverId, agentId, roomId }),
-  transport: (target) => hostJournalTransport(target.hostAgentKey),
   reasoning: (hostAgentKey, sessionId, turnIds) =>
     rpc.sdkHost.reasoningList(hostAgentKey, sessionId, turnIds),
   watchPlacements: (serverId, onChange) => events.on(roomHealthChangedChannel, onChange, serverId),
+  roomActivity: (serverId, roomId) => rpc.chats.roomActivity(serverId, roomId),
+  control: (input) => rpc.chats.control(input),
+  answerApproval: (input) => rpc.chats.answerApproval(input),
 });
 
+events.on(chatActivityChannel, ({ serverId, item }) => agentActivities.applyItem(serverId, item));
+events.on(chatApprovalChannel, ({ serverId, approval }) =>
+  agentActivities.applyApproval(serverId, approval)
+);
+events.on(chatActivityResyncChannel, ({ serverId }) => agentActivities.resync(serverId));
 events.on(chatRemovedChannel, ({ serverId, roomId, reason }) => {
   if (reason === 'access') agentActivities.drop(serverId, roomId);
 });
