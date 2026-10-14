@@ -177,6 +177,39 @@ describe('foldTurnEndNotices', () => {
     expect(foldTurnEndNotices(messages, 'helper', bound)).toEqual(new Map([['n2', 't2']]));
   });
 
+  it('folds the notice of a stopped turn that a queued turn followed', () => {
+    const messages = [
+      said('what means second', null),
+      said('actually', null),
+      said('n1', 'helper', 'I finished without replying. The turn was interrupted: error'),
+    ];
+    const bound = new Map([
+      ['what means second', turn('t1', 'interrupted')],
+      ['actually', turn('t2', 'running')],
+    ]);
+    expect(foldTurnEndNotices(messages, 'helper', bound)).toEqual(new Map([['n1', 't1']]));
+  });
+
+  it('gives each stopped turn one notice at most', () => {
+    const messages = [
+      said('q1', null),
+      said('n1', 'helper', interrupted),
+      said('q2', null),
+      said('n2', 'helper', interrupted),
+      said('n3', 'helper', interrupted),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1', 'interrupted')],
+      ['q2', turn('t2', 'interrupted')],
+    ]);
+    expect(foldTurnEndNotices(messages, 'helper', bound)).toEqual(
+      new Map([
+        ['n1', 't1'],
+        ['n2', 't2'],
+      ])
+    );
+  });
+
   it('keeps a notice whose turn shows no such ending, or is not known', () => {
     const messages = [said('q1', null), said('n1', 'helper', interrupted)];
     expect(
