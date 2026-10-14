@@ -19,7 +19,7 @@ export type ChatAgent = z.infer<typeof chatAgentSchema>;
 export const chatSummarySchema = z.object({
   roomId: z.string(),
   name: z.string(),
-  channelType: z.enum(['channel_public', 'channel_private', 'direct']),
+  channelType: z.enum(['lobby', 'channel_public', 'channel_private', 'group', 'direct']),
   bridgeType: z.string().nullable(),
   channelName: z.string().nullable(),
   agents: z.array(chatAgentSchema),
