@@ -39,6 +39,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.gateway import chats as chats_module
 from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
@@ -1485,13 +1486,15 @@ def _turn_change(agent: Agent, turn_id: str) -> Change:
     )
 
 
-def _activity_stream(chats: _Harness, user: User, queue_max: int = 64) -> _Events:
+def _activity_stream(
+    chats: _Harness, user: User, queue_max: int = 64, ping_seconds: float = 60.0
+) -> _Events:
     return _Events(
         chat_activity_events(
             chats.service,
             "00000000-0000-0000-0000-000000000000",
             user,
-            ping_seconds=60.0,
+            ping_seconds=ping_seconds,
             queue_max=queue_max,
         )
     )
@@ -1628,4 +1631,54 @@ async def test_the_activity_stream_says_resync_when_changes_may_be_lost(
     assert await events.next() == ("resync", {})
     with pytest.raises(TimeoutError):
         await events.next(timeout=0.3)
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def _drop_tenant_role(chats: _Harness, user: User) -> None:
+    async with chats.factory() as session:
+        await session.execute(
+            delete(TenantMember).where(TenantMember.user_id == user.id)
+        )
+        await session.commit()
+
+
+async def test_the_activity_stream_ends_when_the_tenant_role_is_gone(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    on_change = _activity_stream(chats, chats.bob)
+    assert (await on_change.next())[0] == "ready"
+    on_ping = _activity_stream(chats, chats.bob, ping_seconds=0.05)
+    assert (await on_ping.next())[0] == "ready"
+
+    await _drop_tenant_role(chats, chats.bob)
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    await chats.activity.change(_turn_change(agent, "t1"))
+    with pytest.raises(StopAsyncIteration):
+        await on_change.next()
+    with pytest.raises(StopAsyncIteration):
+        await on_ping.next()
+    assert chats.activity.subscribers == []
+
+
+async def test_the_activity_stream_forgets_revisions_past_its_cap(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chats_module, "_ACTIVITY_SENT_MAX", 1)
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    events = _activity_stream(chats, chats.alice)
+    assert (await events.next())[0] == "ready"
+
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    await _step(chats, agent, room_id, "t1", "tool-1", 1)
+    await chats.activity.change(_turn_change(agent, "t1"))
+    assert [(await events.next())[1]["itemId"] for _ in range(2)] == ["turn", "tool-1"]
+
+    # Over the cap, the next reread starts from nothing and resends the turn.
+    await chats.activity.change(_turn_change(agent, "t1"))
+    assert [(await events.next())[1]["itemId"] for _ in range(2)] == ["turn", "tool-1"]
     await events.stream.aclose()  # type: ignore[attr-defined]

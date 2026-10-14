@@ -537,13 +537,6 @@ class ChatService:
         )
         return list(result.scalars().all())
 
-    async def readable_room_ids(
-        self, session: AsyncSession, tenant_id: str, user_id: str
-    ) -> set[str]:
-        if not await self.has_tenant_role(session, tenant_id, user_id):
-            return set()
-        return {room.id for room in await self.readable_rooms(session, user_id)}
-
     async def room_activity(
         self, session: AsyncSession, room_id: str
     ) -> tuple[list[AgentSessionActivityItem], list[ApprovalRequest]]:
@@ -1193,6 +1186,15 @@ class ChatService:
             )
             if not decision.allowed:
                 raise ChatError(403, "AGENT_NOT_ALLOWED", decision.refusal)
+            # `!interrupt` stops the agent's current turn wherever it runs.
+            if command == "interrupt":
+                turn = await self._activity_store.newest_unended_turn(session, agent.id)
+                if turn is None or turn.room_id != room.id:
+                    raise ChatError(
+                        409,
+                        "NOTHING_RUNNING_HERE",
+                        f"{agent.name}'s current turn is not in this chat.",
+                    )
 
             if not await self._claim(
                 session,

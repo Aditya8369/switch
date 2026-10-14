@@ -215,6 +215,22 @@ class AgentSessionActivityStore:
         )
         return list(result.scalars())
 
+    async def newest_unended_turn(
+        self, session: AsyncSession, agent_id: str
+    ) -> AgentSessionActivityItem | None:
+        """The agent's most recently reported queued or running turn row."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status.in_(("queued", "running")),
+            )
+            .order_by(AgentSessionActivityItem.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def for_room(
         self, session: AsyncSession, room_id: str, since: datetime
     ) -> list[AgentSessionActivityItem]:

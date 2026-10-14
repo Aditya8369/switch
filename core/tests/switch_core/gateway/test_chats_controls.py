@@ -15,7 +15,7 @@ from switch_core.events import CommandEvent
 from switch_core.transport import RoomRef
 from switch_core.transport.stored import to_inbound
 from tests.switch_core.gateway.conftest import _Harness
-from tests.switch_core.gateway.test_chats_routes import _code
+from tests.switch_core.gateway.test_chats_routes import _code, _step
 
 
 async def _control(
@@ -24,7 +24,7 @@ async def _control(
     room_id: str,
     agent: Agent,
     request_id: str,
-    command: str = "interrupt",
+    command: str = "reset",
 ) -> httpx.Response:
     return await chats.client.post(
         f"/chats/{room_id}/controls",
@@ -79,7 +79,7 @@ async def test_a_repeated_control_posts_one_command(chats: _Harness) -> None:
     assert first.json() == again.json()
     assert len(await _commands(chats, room_id)) == 1
 
-    reused = await _control(chats, chats.alice, room_id, agent, "k1", "reset")
+    reused = await _control(chats, chats.alice, room_id, agent, "k1", "compact")
     assert reused.status_code == 409
     assert _code(reused) == "REQUEST_REUSED"
 
@@ -135,3 +135,26 @@ async def test_a_posted_control_is_shown_in_the_chat(chats: _Harness) -> None:
     listed = await chats.client.get("/chats", headers=chats.as_user(chats.alice))
     [chat] = [c for c in listed.json()["chats"] if c["roomId"] == room_id]
     assert chat["lastMessage"]["preview"] == "!reset @helper"
+
+
+async def test_stop_refuses_unless_the_agents_current_turn_is_in_this_chat(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    here = await chats.new_chat(chats.alice, agent, "c1")
+    there = await chats.new_chat(chats.alice, agent, "c2")
+
+    idle = await _control(chats, chats.alice, here, agent, "k1", "interrupt")
+    assert idle.status_code == 409
+    assert _code(idle) == "NOTHING_RUNNING_HERE"
+
+    await _step(chats, agent, here, "t1", "turn", 1)
+    await _step(chats, agent, there, "t2", "turn", 1)
+    elsewhere = await _control(chats, chats.alice, here, agent, "k2", "interrupt")
+    assert elsewhere.status_code == 409
+    assert _code(elsewhere) == "NOTHING_RUNNING_HERE"
+    assert await _commands(chats, here) == []
+
+    stopped = await _control(chats, chats.alice, there, agent, "k3", "interrupt")
+    assert stopped.status_code == 202, stopped.text
+    assert len(await _commands(chats, there)) == 1

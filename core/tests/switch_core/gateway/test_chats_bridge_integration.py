@@ -17,14 +17,17 @@ from sqlalchemy import func, select
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
+from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Client,
     CollaborationBridge,
     Message,
     Room,
 )
+from switch_core.events import CommandEvent
 from switch_core.transport import InboundMessage as TransportMessage
 from switch_core.transport import RoomRef
+from switch_core.transport.stored import to_inbound
 from switch_core.trust.client import NullTrustClient
 from tests.switch_core.gateway.conftest import _Harness
 
@@ -335,6 +338,7 @@ async def _fake_collab_core_full(
         ns
     )
     ns._relay_outbound_message = CollaborationCore._relay_outbound_message.__get__(ns)
+    ns.handle_outbound_message = CollaborationCore.handle_outbound_message.__get__(ns)
     ns._relay_outbound_media = CollaborationCore._relay_outbound_media.__get__(ns)
     ns._counted_outbound = CollaborationCore._counted_outbound.__get__(ns)
     ns._handle_inbound_message = CollaborationCore._handle_inbound_message.__get__(ns)
@@ -471,6 +475,77 @@ async def test_console_member_threaded_reply_roundtrip_through_bridge(
 
     # Exactly one new message (the member's post), no echo imported
     assert count_after == count_before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_console_command_is_posted_and_its_reply_threads_under_it(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id, bridge, adapter = await _bridged_room(chats, agent)
+    core = await _fake_collab_core_full(chats, room_id, bridge, adapter)
+
+    response = await chats.client.post(
+        f"/chats/{room_id}/controls",
+        json={"requestId": "k1", "agentId": agent.id, "command": "reset"},
+        headers=chats.as_user(chats.alice),
+    )
+    assert response.status_code == 202, response.text
+    command_id = response.json()["commandId"]
+
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        row = (
+            await session.execute(
+                select(Message).where(Message.transport_event_id == command_id)
+            )
+        ).scalar_one()
+    transport_room = RoomRef(room.transport_room_id)
+
+    async def on_command(room_ref: RoomRef, event: CommandEvent) -> None:
+        await CollaborationCore.handle_outbound_command(core, room_ref, event)
+
+    consumer = SimpleNamespace(
+        _EVENT_DISPATCH=Consumer._EVENT_DISPATCH,
+        _should_ignore=lambda _room, _event: False,
+        on_command=on_command,
+    )
+    inbound = to_inbound(row, [], transport_room_id=room.transport_room_id)
+    await Consumer._handle_custom_event(consumer, transport_room, inbound)  # type: ignore[arg-type]
+
+    [posted] = adapter.sent
+    assert (posted["sender_name"], posted["content"]) == ("alice", "!reset @helper")
+    assert posted["thread_root_id"] is None
+
+    ack = TransportMessage(
+        room_id=room.transport_room_id,
+        event_id="$ack",
+        sender="@helper:switch.test",
+        timestamp=1700000000000,
+        content={"m.relates_to": {"rel_type": "m.thread", "event_id": command_id}},
+        body="Session reset.",
+        sender_name="helper",
+        thread_root_id=command_id,
+    )
+    await CollaborationCore.handle_outbound_message(core, transport_room, ack)
+    assert adapter.sent[1]["thread_root_id"] == "ext-1"
+
+    # A command typed on the platform is already there: it is not posted back.
+    core._human_user_ids.add("@fake-platform-user:switch.test")
+    await CollaborationCore.handle_outbound_command(
+        core,
+        transport_room,
+        CommandEvent(
+            command="reset",
+            args="@helper",
+            user_id="@fake-platform-user:switch.test",
+            user_name="bob",
+            message_id="$typed",
+            thread_id="$typed",
+        ),
+    )
+    assert len(adapter.sent) == 2
 
 
 @pytest.mark.asyncio

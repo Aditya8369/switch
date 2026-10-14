@@ -65,6 +65,8 @@ PING_SECONDS = 20.0
 ACTIVITY_QUEUE_MAX = 256
 RECHECK_SECONDS = 30.0
 _CATCH_UP_PAGE = 200
+# Revisions one activity stream remembers before forgetting them all.
+_ACTIVITY_SENT_MAX = 10_000
 MAX_PAGE = 200
 
 
@@ -717,13 +719,24 @@ async def chat_activity_events(
             try:
                 change = await asyncio.wait_for(queue.get(), timeout=ping_seconds)
             except TimeoutError:
+                async with tenant_session(
+                    service.session_factory, tenant_id
+                ) as session:
+                    if not await service.has_tenant_role(session, tenant_id, user.id):
+                        return
                 yield b": ping\n\n"
                 continue
             if change is None:
                 sent.clear()
                 yield _frame("resync", {})
                 continue
-            for frame in await _activity_frames(service, tenant_id, user, change, sent):
+            if len(sent) > _ACTIVITY_SENT_MAX:
+                # Forgetting only resends steps the client already holds.
+                sent.clear()
+            frames = await _activity_frames(service, tenant_id, user, change, sent)
+            if frames is None:
+                return
+            for frame in frames:
                 yield frame
     finally:
         unsubscribe()
@@ -735,16 +748,19 @@ async def _activity_frames(
     user: User,
     change: Change,
     sent: dict[tuple[str, str, str, str], int],
-) -> list[bytes]:
-    """Frames for one change, limited to the rooms the caller may read now."""
+) -> list[bytes] | None:
+    """Frames for one change, limited to the rooms the caller may read now;
+    None once the caller has no tenant role, which ends the stream."""
     async with tenant_session(service.session_factory, tenant_id) as session:
+        if not await service.has_tenant_role(session, tenant_id, user.id):
+            return None
+        readable = {room.id for room in await service.readable_rooms(session, user.id)}
+        if not readable:
+            return []
         if change.kind == "activity":
             rows = await service.turn_items(
                 session, change.agent_id, change.session_id, change.key
             )
-            if not any(row.room_id for row in rows):
-                return []
-            readable = await service.readable_room_ids(session, tenant_id, user.id)
             frames = []
             for row in rows:
                 key = (row.agent_id, row.session_id, row.turn_id, row.item_id)
@@ -758,9 +774,7 @@ async def _activity_frames(
         request = await service.approval(
             session, change.agent_id, change.session_id, change.key
         )
-        if request is None or request.room_id not in await service.readable_room_ids(
-            session, tenant_id, user.id
-        ):
+        if request is None or request.room_id not in readable:
             return []
         approval = ApprovalRequestView.of(request)
         return [_frame("approval", approval.model_dump(mode="json", by_alias=True))]
