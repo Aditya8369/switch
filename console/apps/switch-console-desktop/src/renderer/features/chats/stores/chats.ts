@@ -1,6 +1,7 @@
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
+import { agentActivities } from './activities';
 import { agentChatsFlag } from './agent-chats-flag';
 import { ChatTitler } from './chat-titler';
 import { ChatsStore, chatsEventsFrom } from './chats-store';
@@ -8,7 +9,12 @@ import { ChatsStore, chatsEventsFrom } from './chats-store';
 /** The app's chats store, following the workspace the window is scoped to. */
 export const chatsStore = new ChatsStore(
   {
-    connect: (serverId) => rpc.chats.connect(serverId),
+    connect: async (serverId) => {
+      const state = await rpc.chats.connect(serverId);
+      // A feed already down when this renderer (re)connects sends no change to hear.
+      agentActivities.feedState(serverId, state.activity.state, state.activity.detail);
+      return state;
+    },
     disconnect: (serverId) => rpc.chats.disconnect(serverId),
     list: (serverId) => rpc.chats.list(serverId),
     identity: (serverId) => rpc.chats.identity(serverId),

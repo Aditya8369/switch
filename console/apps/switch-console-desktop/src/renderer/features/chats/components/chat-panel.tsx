@@ -2,6 +2,7 @@ import { Lock, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
+import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
 import { agentActivities } from '../stores/activities';
 import type { AgentActivity } from '../stores/chat-activity-store';
@@ -217,10 +218,13 @@ const ActivityUnavailable = observer(function ActivityUnavailable({
   activities: AgentActivity[];
 }) {
   const feedDown = activities.length > 0 && agentActivities.feedDown.has(serverId);
+  const tooOld = agentActivities.feedDown.get(serverId) === SERVER_TOO_OLD_FOR_ACTIVITY;
   const notes = activities.flatMap((activity) =>
     [activity.feedError, activity.resolveError].filter((note) => note !== null)
   );
-  const unique = [...new Set(notes)];
+  const unique = [...new Set(notes)].filter(
+    (note) => !(feedDown && tooOld && note === SERVER_TOO_OLD_FOR_ACTIVITY)
+  );
   return (
     <>
       {feedDown && (
@@ -229,7 +233,9 @@ const ActivityUnavailable = observer(function ActivityUnavailable({
           title={agentActivities.feedDown.get(serverId) ?? undefined}
           className="mx-auto w-full max-w-[860px] px-5 pb-1 text-xs text-foreground-warning"
         >
-          Live activity is reconnecting — progress may be stale.
+          {tooOld
+            ? SERVER_TOO_OLD_FOR_ACTIVITY
+            : 'Live activity is reconnecting — progress may be stale.'}
         </p>
       )}
       {unique.length > 0 && (

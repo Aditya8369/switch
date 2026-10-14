@@ -42,10 +42,7 @@ import {
 
 export const CONTROL_FILE = 'control.json';
 
-/**
- * One message Console sends a sidecar or a watcher, whether over the loopback
- * socket or relayed through Switch: the one vocabulary both paths answer.
- */
+/** One message Console sends a sidecar or a watcher over the loopback socket. */
 export const controlMessageSchema = z.union([
   z.object({ sessionId: z.string().min(1), request: sessionRequestSchema }),
   z.object({ subscribe: z.string().min(1) }),
@@ -90,10 +87,6 @@ export const controlMessageSchema = z.union([
   z.object({ list: z.literal(true) }),
   /** A session read from its journal, whether or not its host is running. */
   z.object({ journal: z.string().min(1) }),
-  /** One page of a paged answer; only the relay pages its answers. */
-  z.object({
-    page: z.object({ snapshotId: z.string().min(1), index: z.number().int().nonnegative() }),
-  }),
   z.object({ attachment: attachmentChunkSchema }),
   z.object({ attachmentCancel: z.string().min(1) }),
 ]);
@@ -141,7 +134,7 @@ const sentAttachmentsSchema = z.object({
 });
 
 /**
- * Answer one control message; a refusal throws. `page` is the relay's.
+ * Answer one control message; a refusal throws.
  * `dispatching` is called just before a session request is sent to its host.
  */
 export async function handleControlMessage(
@@ -225,8 +218,6 @@ export async function handleControlMessage(
   }
   if ('list' in message) return listSessions(context.agentId);
   if ('journal' in message) return readJournalSnapshot(message.journal);
-  if ('page' in message)
-    throw new ControlError('refused_message', 'Pages are served only to relayed answers.');
   if ('attachment' in message) return context.transfers.receive(message.attachment);
   if ('attachmentCancel' in message) return context.transfers.cancel(message.attachmentCancel);
   return context.ensure(message.ensure);

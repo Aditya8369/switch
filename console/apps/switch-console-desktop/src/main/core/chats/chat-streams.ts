@@ -102,13 +102,16 @@ export function resetChatStream(serverId: string): void {
   events.emit(chatResetChannel, { serverId });
 }
 
+type FeedState = { state: ChatStreamState; detail: string | null };
+
 /**
  * Make sure the server's feed runs for the tenant the window is scoped to now,
- * and say where it stands. A feed for another tenant is dropped first.
+ * and say where it and the activity feed stand. A feed for another tenant is
+ * dropped first.
  */
 export async function connectChatStream(
   serverId: string
-): Promise<{ state: ChatStreamState; detail: string | null }> {
+): Promise<FeedState & { activity: FeedState }> {
   const workspace = await requireWorkspaceForServer(serverId);
   const existing = streams.get(serverId);
   if (
@@ -118,7 +121,7 @@ export async function connectChatStream(
   ) {
     existing.stream.start();
     existing.activity.start();
-    return existing.stream.state;
+    return { ...existing.stream.state, activity: existing.activity.state };
   }
   if (existing) resetChatStream(serverId);
   const stream = makeStream(serverId, workspace.id);
@@ -131,7 +134,7 @@ export async function connectChatStream(
   });
   stream.start();
   activity.start();
-  return stream.state;
+  return { ...stream.state, activity: activity.state };
 }
 
 /** Stop the feed without forgetting anything, e.g. when no window needs it. */

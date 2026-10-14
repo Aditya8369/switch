@@ -49,3 +49,12 @@ export function chatFailure(error: unknown): ChatFailure {
     uncertain: true,
   };
 }
+
+/** An uncoded 404 from an activity route: the server predates live chat activity. */
+export function serverTooOld(error: unknown): boolean {
+  return (
+    error instanceof RpcError &&
+    error.code === 'GatewayError' &&
+    error.numberField('status') === 404
+  );
+}

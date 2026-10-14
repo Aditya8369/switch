@@ -11,15 +11,19 @@ import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEv
 import { AgentActivities } from './chat-activity-store';
 
 /** The app's agent activities, kept in step with the activity feed, placements and access. */
-export const agentActivities = new AgentActivities({
-  resolve: (serverId, agentId, roomId) => rpc.chats.activity({ serverId, agentId, roomId }),
-  reasoning: (hostAgentKey, sessionId, turnIds) =>
-    rpc.sdkHost.reasoningList(hostAgentKey, sessionId, turnIds),
-  watchPlacements: (serverId, onChange) => events.on(roomHealthChangedChannel, onChange, serverId),
-  roomActivity: (serverId, roomId) => rpc.chats.roomActivity(serverId, roomId),
-  control: (input) => rpc.chats.control(input),
-  answerApproval: (input) => rpc.chats.answerApproval(input),
-});
+export const agentActivities = new AgentActivities(
+  {
+    resolve: (serverId, agentId, roomId) => rpc.chats.activity({ serverId, agentId, roomId }),
+    reasoning: (hostAgentKey, sessionId, turnIds) =>
+      rpc.sdkHost.reasoningList(hostAgentKey, sessionId, turnIds),
+    watchPlacements: (serverId, onChange) =>
+      events.on(roomHealthChangedChannel, onChange, serverId),
+    roomActivity: (serverId, roomId) => rpc.chats.roomActivity(serverId, roomId),
+    control: (input) => rpc.chats.control(input),
+    answerApproval: (input) => rpc.chats.answerApproval(input),
+  },
+  sessionStorage
+);
 
 events.on(chatActivityChannel, ({ serverId, item }) => agentActivities.applyItem(serverId, item));
 events.on(chatApprovalChannel, ({ serverId, approval }) =>

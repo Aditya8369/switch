@@ -1,4 +1,4 @@
-import { makeAutoObservable, observable, runInAction } from 'mobx';
+import { makeAutoObservable, observable, reaction, runInAction } from 'mobx';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import type {
   ChatActivityItem,
@@ -8,10 +8,11 @@ import type {
   ChatControlCommand,
   RoomActivity,
 } from '@shared/core/chats/activity';
+import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatStreamState } from '@shared/core/chats/chats';
 import type { ReasoningList, ReasoningTurn, ToolDetail } from '@shared/core/sessions/reasoning';
 import { bindTurns, groupTurns, itemKey, type TurnActivity } from '../activity-join';
-import { chatFailure } from './chat-errors';
+import { chatFailure, serverTooOld } from './chat-errors';
 
 /**
  * What one agent is doing in one chat, from Switch's activity feed: the
@@ -66,6 +67,9 @@ export type ControlRequest = {
   commandId: string | null;
   error: string | null;
 };
+
+const unsettled = (control: ControlRequest) =>
+  control.state === 'sending' || control.state === 'unknown';
 
 const approvalKey = (approval: ChatApproval) =>
   JSON.stringify([approval.sessionId, approval.requestId]);
@@ -243,14 +247,21 @@ export class AgentActivity {
       runInAction(() => {
         held.state = 'requested';
         held.commandId = commandId;
+        this.keepLatestSettled(held);
       });
     } catch (error) {
       const failure = chatFailure(error);
       runInAction(() => {
         held.state = failure.uncertain ? 'unknown' : 'failed';
-        held.error = failure.message;
+        held.error = serverTooOld(error) ? SERVER_TOO_OLD_FOR_ACTIVITY : failure.message;
+        if (held.state === 'failed') this.keepLatestSettled(held);
       });
     }
+  }
+
+  /** Only the command settled last shows its outcome; ones still open stay. */
+  private keepLatestSettled(held: ControlRequest): void {
+    this.controls = this.controls.filter((control) => control === held || unsettled(control));
   }
 
   /** Forget a settled command; one whose outcome is unknown stays until a retry settles it. */
@@ -290,6 +301,8 @@ export class AgentActivity {
   }
 }
 
+const CONTROLS_KEY = 'switch-console.chat-controls';
+
 /** Activities by server, room and agent, shared by the views showing them. */
 export class AgentActivities {
   /** Observable so a view that only peeks (the chat's title bar) follows the one holding it. */
@@ -298,7 +311,7 @@ export class AgentActivities {
     { deep: false }
   );
   /** Unsettled controls of activities no view holds, by entry key. */
-  private readonly parked = new Map<string, ControlRequest[]>();
+  private readonly parked = observable.map<string, ControlRequest[]>({}, { deep: false });
   /** The activity feed's connection for each server, when it is down: why. Absent while live. */
   readonly feedDown = observable.map<string, string | null>({}, { deep: false });
   private readonly watches = new Map<string, () => void>();
@@ -308,7 +321,39 @@ export class AgentActivities {
   private readonly latestLoad = new Map<string, number>();
   private loads = 0;
 
-  constructor(private readonly api: ActivityApi) {}
+  /**
+   * Unsettled controls are kept in `storage` (the window's sessionStorage) so
+   * a reload still settles them under their request ids. One still sending
+   * when the window went has no answer coming, so it comes back unknown.
+   */
+  constructor(
+    private readonly api: ActivityApi,
+    storage: Pick<Storage, 'getItem' | 'setItem'>
+  ) {
+    const saved = storage.getItem(CONTROLS_KEY);
+    for (const [key, controls] of saved ? (JSON.parse(saved) as [string, ControlRequest[]][]) : [])
+      this.parked.set(
+        key,
+        controls.map((control) =>
+          control.state === 'sending'
+            ? { ...control, state: 'unknown', error: 'The window reloaded before Switch answered.' }
+            : control
+        )
+      );
+    reaction(
+      () =>
+        JSON.stringify(
+          [
+            ...[...this.entries].map(([key, { activity }]) => [key, activity.controls] as const),
+            ...this.parked,
+          ].flatMap(([key, controls]) => {
+            const open = controls.filter(unsettled);
+            return open.length ? [[key, open]] : [];
+          })
+        ),
+      (json) => storage.setItem(CONTROLS_KEY, json)
+    );
+  }
 
   private syncWatches(): void {
     const servers = new Set([...this.entries.values()].map(({ activity }) => activity.serverId));
@@ -360,7 +405,9 @@ export class AgentActivities {
       });
     } catch (error) {
       if (!current()) return;
-      const message = failureText(error, "The agents' activity in this chat could not be read.");
+      const message = serverTooOld(error)
+        ? SERVER_TOO_OLD_FOR_ACTIVITY
+        : failureText(error, "The agents' activity in this chat could not be read.");
       runInAction(() => {
         for (const activity of this.inRoom(serverId, roomId)) activity.feedError = message;
       });
@@ -410,13 +457,13 @@ export class AgentActivities {
         activity: new AgentActivity(serverId, tenantId, roomId, agentId, this.api),
         users: 0,
       };
-      const parked = this.parked.get(key);
-      if (parked) {
-        entry.activity.controls = parked;
-        this.parked.delete(key);
-      }
+      const parked = this.parked.get(key)?.filter(unsettled);
+      if (parked) entry.activity.controls = parked;
       const created = entry;
-      runInAction(() => this.entries.set(key, created));
+      runInAction(() => {
+        this.parked.delete(key);
+        this.entries.set(key, created);
+      });
       this.syncWatches();
       void entry.activity.resolve();
       this.scheduleLoad(serverId, roomId);
@@ -449,11 +496,11 @@ export class AgentActivities {
     entry.users -= 1;
     if (entry.users > 0) return;
     // A command still sending or of unknown outcome outlives the view, so reopening reuses its request id.
-    const unsettled = activity.controls.filter(
-      (control) => control.state === 'sending' || control.state === 'unknown'
-    );
-    if (unsettled.length > 0) this.parked.set(key, unsettled);
-    runInAction(() => this.entries.delete(key));
+    const open = activity.controls.filter(unsettled);
+    runInAction(() => {
+      if (open.length > 0) this.parked.set(key, open);
+      this.entries.delete(key);
+    });
     this.syncWatches();
   }
 
@@ -475,10 +522,10 @@ export class AgentActivities {
       if (loadServer === serverId && (roomId === null || loadRoom === roomId))
         this.latestLoad.delete(key);
     }
-    for (const key of this.parked.keys()) {
+    for (const key of [...this.parked.keys()]) {
       const [parkedServer, , parkedRoom] = JSON.parse(key) as [string, string | null, string];
       if (parkedServer === serverId && (roomId === null || parkedRoom === roomId))
-        this.parked.delete(key);
+        runInAction(() => this.parked.delete(key));
     }
     this.syncWatches();
   }

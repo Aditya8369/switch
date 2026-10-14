@@ -119,6 +119,10 @@ export type ChatApprovalAnswer =
   | { answer: string }
   | { answers: NonNullable<ChatApproval['answers']> };
 
+/** A server without the activity routes answers them with an uncoded 404. */
+export const SERVER_TOO_OLD_FOR_ACTIVITY =
+  'This Switch server is too old for live chat activity — update the server.';
+
 /** What the chat's Stop, Reset and Compact post to the room for an agent. */
 export type ChatControlCommand = 'interrupt' | 'reset' | 'compact';
 

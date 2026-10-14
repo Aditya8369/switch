@@ -77,7 +77,9 @@ export function bindTurns(
  * was sent while the agent's previous turn still ran: the turn then runs after
  * that turn's reply, and shows under it. Shortcut: the reply is taken to be
  * the agent's first message after the previous turn, so a turn that ended
- * without a reply pushes the next turn under its own reply.
+ * without a reply pushes the next turn under its own reply. A turn also shows
+ * after the agent's own messages sent before its first step, such as an
+ * acknowledgement posted while the session started.
  */
 export function placeTurns(
   messages: readonly ChatMessage[],
@@ -86,21 +88,25 @@ export function placeTurns(
 ): Map<string, TurnActivity[]> {
   const placed = new Map<string, TurnActivity[]>();
   let previous: number | null = null;
+  const shown = (each: ChatMessage) =>
+    each.sender.kind === 'agent' &&
+    each.sender.agentId === agentId &&
+    !isSessionStartingNotice(each) &&
+    !turnEndNotice(each);
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
     let anchor = at;
     if (previous !== null) {
       const after = previous;
-      const reply = messages.findIndex(
-        (each, index) =>
-          index > after &&
-          each.sender.kind === 'agent' &&
-          each.sender.agentId === agentId &&
-          !isSessionStartingNotice(each) &&
-          !turnEndNotice(each)
-      );
+      const reply = messages.findIndex((each, index) => index > after && shown(each));
       anchor = Math.max(at, reply === -1 ? previous : reply);
+    }
+    const firstStep = turn.items[0] ? Date.parse(turn.items[0].createdAt) : null;
+    for (let next = anchor + 1; firstStep !== null && next < messages.length; next++) {
+      const each = messages[next];
+      if (bound.has(each.messageId) || Date.parse(each.sentAt) >= firstStep) break;
+      if (shown(each)) anchor = next;
     }
     const key = messages[anchor].messageId;
     placed.set(key, [...(placed.get(key) ?? []), turn]);

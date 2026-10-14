@@ -4,6 +4,7 @@ import {
   chatActivityItemSchema,
   type ChatApproval,
   chatApprovalSchema,
+  SERVER_TOO_OLD_FOR_ACTIVITY,
 } from '@shared/core/chats/activity';
 import type { ChatStreamState } from '@shared/core/chats/chats';
 import { sseFrames, STALL_MS } from './chat-stream';
@@ -38,8 +39,23 @@ export class ChatActivityStream {
   private abort: AbortController | null = null;
   private cancelTimer: (() => void) | null = null;
   private attempt = 0;
+  /** A server without the feed: not asked again until the next `start`. */
+  private tooOld = false;
+  private current: { state: ChatStreamState; detail: string | null } = {
+    state: 'connecting',
+    detail: null,
+  };
 
   constructor(private readonly deps: ChatActivityStreamDeps) {}
+
+  get state(): { state: ChatStreamState; detail: string | null } {
+    return this.current;
+  }
+
+  private setState(state: ChatStreamState, detail: string | null): void {
+    this.current = { state, detail };
+    this.deps.sink.state(state, detail);
+  }
 
   start(): void {
     this.stopped = false;
@@ -47,6 +63,7 @@ export class ChatActivityStream {
     this.cancelTimer?.();
     this.cancelTimer = null;
     this.attempt = 0;
+    this.tooOld = false;
     void this.loop();
   }
 
@@ -67,13 +84,17 @@ export class ChatActivityStream {
           throw new Error('The server closed the activity feed.');
         } catch (error) {
           if (this.stopped) return;
-          const detail = error instanceof Error ? error.message : String(error);
+          const detail = this.tooOld
+            ? SERVER_TOO_OLD_FOR_ACTIVITY
+            : error instanceof Error
+              ? error.message
+              : String(error);
           log.warn('Chat activity feed dropped; agent activity may lag until it reconnects', {
             event: 'chat_activity_stream_offline',
             error: detail,
           });
-          this.deps.sink.state('offline', detail);
-          if (this.deps.isUnauthorized(error)) return;
+          this.setState('offline', detail);
+          if (this.tooOld || this.deps.isUnauthorized(error)) return;
           const wait = this.deps.backoffMs(this.attempt++);
           await new Promise<void>((resolve) => {
             this.cancelTimer = this.deps.setTimer(() => {
@@ -99,6 +120,7 @@ export class ChatActivityStream {
     try {
       armStall();
       const response = await this.deps.open(abort.signal);
+      this.tooOld = response.status === 404;
       if (!response.ok) throw new Error(`The activity feed was refused (${response.status}).`);
       if (!response.body) throw new Error('The activity feed has no body.');
       for await (const frame of sseFrames(
@@ -126,7 +148,7 @@ export class ChatActivityStream {
     switch (event) {
       case 'ready':
         this.attempt = 0;
-        this.deps.sink.state('live', null);
+        this.setState('live', null);
         this.deps.sink.resync();
         return;
       case 'resync':

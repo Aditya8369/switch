@@ -13,7 +13,12 @@ import {
   type ActivityApi,
   AgentActivities,
 } from '@renderer/features/chats/stores/chat-activity-store';
-import type { ChatActivityItem, ChatApproval, RoomActivity } from '@shared/core/chats/activity';
+import {
+  type ChatActivityItem,
+  type ChatApproval,
+  type RoomActivity,
+  SERVER_TOO_OLD_FOR_ACTIVITY,
+} from '@shared/core/chats/activity';
 import type { ChatMessage } from '@shared/core/chats/chats';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
@@ -139,6 +144,31 @@ describe('placeTurns', () => {
       q1: ['t1'],
       r1: ['t2'],
       r2: ['t3'],
+    });
+  });
+
+  it("shows a turn after the agent's messages sent before its first step", () => {
+    const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+    const timed = (message: ChatMessage, second: number) =>
+      ({ ...message, sentAt: at(second) }) as ChatMessage;
+    const messages = [
+      timed(said('q1', null), 0),
+      timed(said('ack', 'helper'), 1),
+      timed(said('r1', 'helper'), 5),
+    ];
+    const started = {
+      ...turn('t1'),
+      items: [row('t1', 'tool', { createdAt: at(3) })],
+    };
+    expect(ids(placeTurns(messages, 'helper', new Map([['q1', started]])))).toEqual({
+      ack: ['t1'],
+    });
+    // Before its first step, or another agent's message, it stays under the question.
+    expect(ids(placeTurns(messages, 'helper', new Map([['q1', turn('t1')]])))).toEqual({
+      q1: ['t1'],
+    });
+    expect(ids(placeTurns(messages, 'reviewer', new Map([['q1', started]])))).toEqual({
+      q1: ['t1'],
     });
   });
 
@@ -309,6 +339,15 @@ function rpcError(code: string, message: string, data: Record<string, unknown>):
   >[0]);
 }
 
+function memoryStorage() {
+  const held = new Map<string, string>();
+  return {
+    held,
+    getItem: (key: string) => held.get(key) ?? null,
+    setItem: (key: string, value: string) => void held.set(key, value),
+  };
+}
+
 function fakeApi(snapshots: RoomActivity[]) {
   const reads: string[] = [];
   const controls: unknown[] = [];
@@ -342,7 +381,7 @@ describe('AgentActivities', () => {
         approvals: [],
       },
     ]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const a = activities.acquire('server', 'tenant', 'room-1', 'agent-a');
     const b = activities.acquire('server', 'tenant', 'room-1', 'agent-b');
     await vi.waitFor(() => expect(b.turns().size).toBe(1));
@@ -357,7 +396,7 @@ describe('AgentActivities', () => {
   it('merges live rows with the snapshot by revision, dropping stale ones', async () => {
     const snapshotTool = row('t1', 'tool', { revision: 5, title: 'from snapshot' });
     const { api } = fakeApi([{ items: [row('t1', 'turn'), snapshotTool], approvals: [] }]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     // A newer row arrives over the feed before the snapshot is read.
     activities.applyItem('server', { ...snapshotTool, revision: 7, title: 'live' });
@@ -378,7 +417,7 @@ describe('AgentActivities', () => {
       { items: [], approvals: [] },
       { items: [row('t1', 'turn', { status: 'completed' })], approvals: [] },
     ]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     await vi.waitFor(() => expect(reads).toEqual(['room-1']));
     activities.resync('server');
@@ -395,7 +434,7 @@ describe('AgentActivities', () => {
 
   it('never reopens an answered request from an older copy', async () => {
     const { api } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     await activities.loadRoom('server', 'room-1');
     activities.applyItem('server', row('t1', 'turn'));
@@ -414,7 +453,7 @@ describe('AgentActivities', () => {
       { items: [row('t1', 'turn')], approvals: [] },
       { items: [row('t1', 'turn')], approvals: [approval('t1'), approval('t2')] },
     ]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     await vi.waitFor(() => expect(activity.turns().size).toBe(1));
     activities.applyApproval('server', approval('t1', { state: 'expired' }));
@@ -428,7 +467,7 @@ describe('AgentActivities', () => {
 
   it('posts Stop to the room and holds its command id as requested', async () => {
     const { api, controls } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     await activity.control('interrupt');
     expect(controls).toEqual([
@@ -447,14 +486,15 @@ describe('AgentActivities', () => {
       });
     };
     await activity.control('reset');
-    expect(activity.controls[1]).toMatchObject({ state: 'failed' });
-    expect(activity.controls[1].error).toContain('That agent is not in this chat.');
+    expect(activity.controls).toHaveLength(1);
+    expect(activity.controls[0]).toMatchObject({ command: 'reset', state: 'failed' });
+    expect(activity.controls[0].error).toContain('That agent is not in this chat.');
     activities.release(activity);
   });
 
   it('keeps the request id of a command whose answer was lost until a retry settles it', async () => {
     const { api, controls } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     const sent = () => (controls as { requestId: string }[]).map((input) => input.requestId);
     api.control = async (input) => {
@@ -484,7 +524,7 @@ describe('AgentActivities', () => {
 
   it('keeps the request id of a lost command across leaving and reopening the chat', async () => {
     const { api, controls } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const sent = () => (controls as { requestId: string }[]).map((input) => input.requestId);
     api.control = async (input) => {
       controls.push(input);
@@ -502,7 +542,7 @@ describe('AgentActivities', () => {
 
   it('keeps the request id of a command still sending when the chat closes', async () => {
     const { api, controls } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const sent = () => (controls as { requestId: string }[]).map((input) => input.requestId);
     let fail!: (error: unknown) => void;
     api.control = (input) => {
@@ -525,9 +565,99 @@ describe('AgentActivities', () => {
     activities.release(reopened);
   });
 
+  it('does not bring back a parked command that settled after the chat closed', async () => {
+    const { api } = fakeApi([]);
+    const activities = new AgentActivities(api, memoryStorage());
+    let answer!: (commandId: string) => void;
+    api.control = () => new Promise((resolve) => (answer = resolve));
+    const first = activities.acquire('server', null, 'room-1', 'agent-a');
+    const pending = first.control('reset');
+    activities.release(first);
+    answer('cmd-1');
+    await pending;
+    const reopened = activities.acquire('server', null, 'room-1', 'agent-a');
+    expect(reopened.controls).toHaveLength(0);
+    activities.release(reopened);
+  });
+
+  it('settles a lost command after a reload, and forgets it on drop', async () => {
+    const { api, controls } = fakeApi([]);
+    const storage = memoryStorage();
+    const sent = () => (controls as { requestId: string }[]).map((input) => input.requestId);
+    let fail!: (error: unknown) => void;
+    api.control = async (input) => {
+      controls.push(input);
+      if (input.command === 'compact') return new Promise((_resolve, reject) => (fail = reject));
+      throw rpcError('GatewayError', 'socket hang up', { kind: 'network' });
+    };
+    const before = new AgentActivities(api, storage);
+    const first = before.acquire('server', 't', 'room-1', 'agent-a');
+    await first.control('reset');
+    void first.control('compact');
+    await vi.waitFor(() => expect(first.controls).toHaveLength(2));
+
+    // The window reloads: Reset is still unknown and Compact, mid-send, comes back unknown.
+    const after = new AgentActivities(api, storage);
+    const reopened = after.acquire('server', 't', 'room-1', 'agent-a');
+    expect(reopened.controls.map((control) => [control.command, control.state])).toEqual([
+      ['reset', 'unknown'],
+      ['compact', 'unknown'],
+    ]);
+    api.control = async (input) => {
+      controls.push(input);
+      return 'cmd-1';
+    };
+    await reopened.control('reset');
+    expect(new Set(sent()).size).toBe(2);
+    expect(storage.held.get('switch-console.chat-controls')).not.toContain('reset');
+
+    after.drop('server', null);
+    expect(storage.held.get('switch-console.chat-controls')).toBe('[]');
+    fail(rpcError('GatewayError', 'socket hang up', { kind: 'network' }));
+  });
+
+  it('shows only the outcome of the command settled last', async () => {
+    const { api } = fakeApi([]);
+    const activities = new AgentActivities(api, memoryStorage());
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await activity.control('interrupt');
+    await activity.control('interrupt');
+    expect(activity.controls).toHaveLength(1);
+    api.control = async () => {
+      throw rpcError('GatewayError', 'socket hang up', { kind: 'network' });
+    };
+    await activity.control('reset');
+    expect(activity.controls.map((control) => control.state)).toEqual(['requested', 'unknown']);
+    activities.release(activity);
+  });
+
+  it('says plainly when the server predates chat activity', async () => {
+    const { api } = fakeApi([]);
+    const tooOld = () =>
+      rpcError('GatewayError', 'Switch gateway returned 404', {
+        kind: 'http',
+        status: 404,
+      });
+    api.roomActivity = async () => {
+      throw tooOld();
+    };
+    api.control = async () => {
+      throw tooOld();
+    };
+    const activities = new AgentActivities(api, memoryStorage());
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(activity.feedError).toBe(SERVER_TOO_OLD_FOR_ACTIVITY));
+    await activity.control('reset');
+    expect(activity.controls[0]).toMatchObject({
+      state: 'failed',
+      error: SERVER_TOO_OLD_FOR_ACTIVITY,
+    });
+    activities.release(activity);
+  });
+
   it('forgets a lost command when the server or room is dropped', async () => {
     const { api } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     api.control = async () => {
       throw rpcError('GatewayError', 'socket hang up', { kind: 'network' });
     };
@@ -547,7 +677,7 @@ describe('AgentActivities', () => {
 
   it('ignores the answer of a snapshot read that a newer read or a drop superseded', async () => {
     const { api } = fakeApi([]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const running: RoomActivity = { items: [row('t1', 'turn')], approvals: [] };
     const empty: RoomActivity = { items: [], approvals: [] };
     const first = activities.acquire('server', null, 'room-1', 'agent-a');
@@ -583,7 +713,7 @@ describe('AgentActivities', () => {
     const { api } = fakeApi([
       { items: [row('t1', 'turn')], approvals: [approval('t1', { state: 'answered' })] },
     ]);
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     await vi.waitFor(() => expect(activity.working).toBe(true));
     expect(activity.approvals.size).toBe(1);
@@ -601,7 +731,7 @@ describe('AgentActivities', () => {
   });
 
   it('says the activity feed is down until it is live again', () => {
-    const activities = new AgentActivities(fakeApi([]).api);
+    const activities = new AgentActivities(fakeApi([]).api, memoryStorage());
     activities.feedState('server', 'offline', 'The server closed the activity feed.');
     expect(activities.feedDown.get('server')).toBe('The server closed the activity feed.');
     activities.feedState('server', 'live', null);
@@ -630,7 +760,7 @@ describe('AgentActivities', () => {
       asked.push(turnIds ?? []);
       return { epoch: 'e1', turns: [], tools: [{ turnId: 't1', tools: [tool] }] };
     };
-    const activities = new AgentActivities(api);
+    const activities = new AgentActivities(api, memoryStorage());
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
     await vi.waitFor(() => expect(activity.target?.kind).toBe('session'));
     await activity.readReasoning([

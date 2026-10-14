@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@main/lib/logger', () => ({ log: { warn: () => {} } }));
 
 const { ChatActivityStream } = await import('./activity-stream');
+const { SERVER_TOO_OLD_FOR_ACTIVITY } = await import('@shared/core/chats/activity');
 
 const item = {
   agentId: 'a',
@@ -49,6 +50,37 @@ describe('ChatActivityStream', () => {
     await vi.waitFor(() =>
       expect(seen).toEqual(['live', 'resync', 'activity:m1', 'resync', 'offline'])
     );
+    stream.stop();
+  });
+
+  it('stops asking a server that has no activity feed until started again', async () => {
+    let opened = 0;
+    const seen: (string | null)[] = [];
+    const stream = new ChatActivityStream({
+      open: async () => {
+        opened++;
+        return new Response('Not Found', { status: 404 });
+      },
+      isUnauthorized: () => false,
+      backoffMs: () => 0,
+      setTimer: (fn) => {
+        fn();
+        return () => {};
+      },
+      sink: {
+        activity: () => {},
+        approval: () => {},
+        resync: () => {},
+        state: (state, detail) => seen.push(`${state}:${detail}`),
+      },
+    });
+    stream.start();
+    await vi.waitFor(() => expect(seen).toEqual([`offline:${SERVER_TOO_OLD_FOR_ACTIVITY}`]));
+    expect(stream.state).toEqual({ state: 'offline', detail: SERVER_TOO_OLD_FOR_ACTIVITY });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(opened).toBe(1);
+    stream.start();
+    await vi.waitFor(() => expect(opened).toBe(2));
     stream.stop();
   });
 });
