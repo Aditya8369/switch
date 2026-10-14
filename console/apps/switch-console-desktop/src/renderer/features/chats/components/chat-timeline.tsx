@@ -13,6 +13,7 @@ import {
   liveSessionStartingNotices,
 } from '@shared/core/chats/chats';
 import type { TurnActivity } from '../activity-join';
+import { type ContextMarker, contextMarkerSlots } from '../chat-context';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
@@ -38,6 +39,19 @@ function Separator({ children }: { children: ReactNode }) {
       <span className="h-px flex-1 bg-border" />
       {children}
       <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function ContextMarkerRow({ kind, who }: { kind: ContextMarker; who: string }) {
+  return (
+    <div role="status">
+      <Separator>
+        {who}
+        {kind === 'compacted'
+          ? 'Context compacted'
+          : 'Context reset — the agent starts fresh from here'}
+      </Separator>
     </div>
   );
 }
@@ -118,8 +132,9 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   onReply,
 }: Props) {
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
-  for (const activity of activities)
-    for (const [messageId, turn] of activity.turns()) {
+  const boundTurns = new Map(activities.map((activity) => [activity, activity.turns()]));
+  for (const [activity, bound] of boundTurns)
+    for (const [messageId, turn] of bound) {
       const list = turnsByMessage.get(messageId) ?? [];
       list.push({ activity, turn });
       turnsByMessage.set(messageId, list);
@@ -128,6 +143,29 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   const find = (messageId: string) => timeline.byId(messageId);
   const myUserId = chatsStore.userId;
   const liveNotices = liveSessionStartingNotices(timeline.messages);
+  const messageIds = timeline.messages.map((message) => message.messageId);
+  const markers = new Map<string | null, ReactNode[]>();
+  for (const [activity, bound] of boundTurns) {
+    const snapshot = activity.view?.snapshot;
+    if (!snapshot) continue;
+    const slots = contextMarkerSlots({
+      messageIds,
+      bound,
+      turnIds: snapshot.turns.map((turn) => turn.turnId),
+      items: snapshot.items,
+      notices: activity.view?.notices ?? [],
+      hasMore: timeline.hasMore,
+    });
+    const agent = agentOf(activity.agentId);
+    const who = agents.length > 1 && agent ? `${chatAgentLabel(agent)}: ` : '';
+    for (const [key, kinds] of slots)
+      markers.set(key, [
+        ...(markers.get(key) ?? []),
+        ...kinds.map((kind, at) => (
+          <ContextMarkerRow key={`${activity.agentId}:${at}`} kind={kind} who={who} />
+        )),
+      ]);
+  }
   let previous: Date | null = null;
   return (
     <div className="flex flex-col gap-5">
@@ -158,6 +196,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const mine = message.sender.userId !== null && message.sender.userId === myUserId;
         return (
           <Fragment key={message.messageId}>
+            {markers.get(message.messageId)}
             {separator}
             {notice ? (
               <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
@@ -279,6 +318,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
           </Fragment>
         );
       })}
+      {markers.get(null)}
       {timeline.pending.map((send) => (
         <PendingBubble key={send.requestId} timeline={timeline} send={send} find={find} />
       ))}

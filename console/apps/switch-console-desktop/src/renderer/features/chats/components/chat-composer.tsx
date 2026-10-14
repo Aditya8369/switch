@@ -1,6 +1,7 @@
 import type { Command } from '@switch-console/shared/session-v1';
 import {
   ChevronDown,
+  Loader2,
   Minimize2,
   Paperclip,
   RotateCcw,
@@ -21,8 +22,10 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
+import { type ContextMeter, contextBlocker, contextMeter, isCompacting } from '../chat-context';
 import { snippetOf } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
@@ -61,6 +64,31 @@ function stopBlocker(activity: AgentActivity | null): string | null {
   if (activity.client?.hasPendingCommand())
     return 'Waiting for the previous command to be confirmed.';
   return null;
+}
+
+function ContextDonut({ meter }: { meter: ContextMeter }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="flex" aria-label={meter.label} />}>
+        <svg viewBox="0 0 16 16" className="size-3.5 -rotate-90" aria-hidden>
+          <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2.5" className="stroke-border" />
+          {meter.fraction !== null && (
+            <circle
+              cx="8"
+              cy="8"
+              r="6"
+              fill="none"
+              strokeWidth="2.5"
+              pathLength={100}
+              strokeDasharray={`${meter.fraction * 100} 100`}
+              className={meter.warning ? 'stroke-foreground-warning' : 'stroke-foreground-muted'}
+            />
+          )}
+        </svg>
+      </TooltipTrigger>
+      <TooltipContent>{meter.label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 /**
@@ -150,6 +178,17 @@ export const ChatComposer = observer(function ChatComposer({
   const blocker = stopBlocker(activity);
   const showStop = Boolean(runningTurn) && !draft.trim() && !files.length;
   const status = stopping ? 'sending' : showStop ? 'running' : 'idle';
+  const contextBlocked =
+    session && activity?.client
+      ? contextBlocker({
+          connected: Boolean(activity.view?.connected),
+          session,
+          pendingCommand: activity.client.hasPendingCommand(),
+          working: activity.working,
+        })
+      : null;
+  const meter = contextMeter(session?.context);
+  const compacting = session ? isCompacting(session, activity?.view?.notices ?? []) : false;
   const unknownCommands =
     activity?.view?.snapshot?.commandStatuses.filter((each) => each.status === 'unknown') ?? [];
 
@@ -260,8 +299,14 @@ export const ChatComposer = observer(function ChatComposer({
                     className="h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted"
                     aria-label="Context actions"
                   >
-                    <SlidersHorizontal className="size-3.5" />
-                    Context
+                    {compacting ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : meter ? (
+                      <ContextDonut meter={meter} />
+                    ) : (
+                      <SlidersHorizontal className="size-3.5" />
+                    )}
+                    {compacting ? 'Compacting…' : 'Context'}
                     <ChevronDown className="size-3" />
                   </PopoverTrigger>
                   <PopoverContent
@@ -284,15 +329,7 @@ export const ChatComposer = observer(function ChatComposer({
                           </Button>
                           <Button
                             size="sm"
-                            disabled={
-                              !activity.view?.connected ||
-                              session.connectivity !== 'online' ||
-                              activity.client.hasPendingCommand() ||
-                              session.status !== 'ready' ||
-                              activity.working ||
-                              session.pendingRequestIds.length > 0 ||
-                              !session.capabilities.reset
-                            }
+                            disabled={contextBlocked !== null || !session.capabilities.reset}
                             onClick={() => {
                               setContextOpen(false);
                               setConfirmReset(false);
@@ -307,15 +344,7 @@ export const ChatComposer = observer(function ChatComposer({
                       <>
                         <Button
                           variant="ghost"
-                          disabled={
-                            !activity.view?.connected ||
-                            session.connectivity !== 'online' ||
-                            activity.client.hasPendingCommand() ||
-                            session.status !== 'ready' ||
-                            activity.working ||
-                            session.pendingRequestIds.length > 0 ||
-                            !session.capabilities.compact
-                          }
+                          disabled={contextBlocked !== null || !session.capabilities.compact}
                           className="h-auto justify-start gap-3 px-2 py-2 text-left"
                           onClick={() => {
                             setContextOpen(false);
@@ -334,15 +363,7 @@ export const ChatComposer = observer(function ChatComposer({
                         </Button>
                         <Button
                           variant="ghost"
-                          disabled={
-                            !activity.view?.connected ||
-                            session.connectivity !== 'online' ||
-                            activity.client.hasPendingCommand() ||
-                            session.status !== 'ready' ||
-                            activity.working ||
-                            session.pendingRequestIds.length > 0 ||
-                            !session.capabilities.reset
-                          }
+                          disabled={contextBlocked !== null || !session.capabilities.reset}
                           className="h-auto justify-start gap-3 px-2 py-2 text-left"
                           onClick={() => setConfirmReset(true)}
                         >
@@ -356,16 +377,8 @@ export const ChatComposer = observer(function ChatComposer({
                             </span>
                           </span>
                         </Button>
-                        {(!activity.view?.connected ||
-                          session.connectivity !== 'online' ||
-                          activity.client.hasPendingCommand() ||
-                          session.status !== 'ready' ||
-                          activity.working ||
-                          session.pendingRequestIds.length > 0) && (
-                          <p className="text-xs text-foreground-muted">
-                            Context changes need a connected, idle session with no pending requests
-                            or commands.
-                          </p>
+                        {contextBlocked && (
+                          <p className="text-xs text-foreground-muted">{contextBlocked}</p>
                         )}
                         <p className="border-t border-border pt-2 text-xs text-foreground-muted">
                           Skills and MCP load from the execution host. Restart the host while idle

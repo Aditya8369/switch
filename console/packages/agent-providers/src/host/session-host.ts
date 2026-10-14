@@ -287,6 +287,7 @@ export class HostedSession {
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
         config.session.models = next.session.models;
+        config.session.context = next.session.context;
         next.session = structuredClone(config.session);
         host.replica = new SessionReplica(next);
       }
@@ -403,6 +404,28 @@ export class HostedSession {
     this.replica = new SessionReplica(snapshot);
     await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
     await this.publish({ type: 'notice', level: 'error', code, message });
+  }
+
+  /** Reads how full the context window is and publishes it; unknown when the read fails. */
+  private async refreshContext(): Promise<void> {
+    if (!this.adapter.contextUsage) return;
+    const { sessionId, epoch } = this.config.session;
+    let usage: Awaited<ReturnType<NonNullable<ProviderAdapter['contextUsage']>>> = null;
+    try {
+      usage = await this.adapter.contextUsage(sessionId);
+    } catch (error) {
+      console.warn(`Could not read context usage for session ${sessionId}: ${String(error)}`);
+    }
+    if (this.shuttingDown || this.resetting || epoch !== this.config.session.epoch) return;
+    this.config.session.context = usage
+      ? {
+          usedTokens: Math.max(0, Math.round(usage.usedTokens)),
+          windowTokens:
+            usage.windowTokens && usage.windowTokens > 0 ? Math.round(usage.windowTokens) : null,
+          updatedAt: new Date().toISOString(),
+        }
+      : null;
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
   }
 
   private async refreshModels(): Promise<void> {
@@ -822,6 +845,7 @@ export class HostedSession {
             type: 'session.upsert',
             session: structuredClone(this.config.session),
           });
+          void this.refreshContext().catch((error: unknown) => this.fail(error));
         } catch (error) {
           await this.fail(error);
           throw error;
@@ -864,6 +888,7 @@ export class HostedSession {
           const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
           this.config.session.epoch = epoch;
           this.config.session.status = 'starting';
+          this.config.session.context = null;
           const snapshot = this.snapshot();
           snapshot.session = structuredClone(this.config.session);
           this.replica = new SessionReplica(snapshot);
@@ -1180,6 +1205,7 @@ export class HostedSession {
       await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
+      void this.refreshContext().catch((error: unknown) => this.fail(error));
     }
   }
 
