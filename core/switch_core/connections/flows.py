@@ -345,7 +345,7 @@ class ServiceFlows:
         except BaseException:
             await self._fail(checking, INTERRUPTED)
             raise
-        await self._flows.advance(
+        ready = await self._flows.advance(
             checking,
             expect=("checking",),
             to="ready",
@@ -361,6 +361,10 @@ class ServiceFlows:
                 "account_label": account.label,
             },
         )
+        if ready is None:
+            # The flow expired or was cancelled while the code was exchanged:
+            # what the vendor issued has nowhere to go.
+            raise FlowError(INTERRUPTED)
 
     async def _fail(self, flow: StoredFlow, error: str) -> None:
         await self._flows.advance(

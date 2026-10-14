@@ -319,7 +319,7 @@ async def complete(
         if isinstance(error, GitHubError):
             raise HTTPException(400, str(error)) from None
         raise
-    await flows.advance(
+    ready = await flows.advance(
         checking,
         expect=("checking",),
         to="ready",
@@ -328,6 +328,9 @@ async def complete(
             "account_label": credentials["login"],
         },
     )
+    if ready is None:
+        # The flow expired or was cancelled while the code was exchanged.
+        raise HTTPException(410, INTERRUPTED)
     return Response(status_code=204)
 
 
