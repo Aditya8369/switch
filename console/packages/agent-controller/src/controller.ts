@@ -30,6 +30,7 @@ import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from '
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { SelfUpdater } from './self-update';
 import {
+  noSessionMidTurn,
   type ProviderLocator,
   ProviderStatuses,
   StatusCollector,
@@ -499,7 +500,16 @@ export async function runController(
     });
   };
 
-  const idle = async () => (await collector.collect(assignment)).machine.sessions_running === 0;
+  const idle = async () =>
+    noSessionMidTurn(
+      await Promise.all((assignment?.agents ?? []).map((entry) => runtime.observe(entry.agent_id)))
+    );
+  /** What the last status response named; looked at again while an update waits for idle. */
+  let offeredRelease: unknown = null;
+  const offerRelease = () => {
+    if (deps.selfUpdate && !stop.signal.aborted)
+      void deps.selfUpdate.offer(offeredRelease, { idle, restart, signal: stop.signal });
+  };
   reporter = new StatusReporter({
     collect: async () => {
       const collected = await collector.collect(assignment);
@@ -511,12 +521,8 @@ export async function runController(
       reportWithinS = answer.report_within_s;
       if (assignment === null || answer.assignment_revision > assignment.revision)
         void sync('status says the assignment moved on');
-      if (deps.selfUpdate && !stop.signal.aborted)
-        void deps.selfUpdate.offer(answer.controller_release, {
-          idle,
-          restart,
-          signal: stop.signal,
-        });
+      offeredRelease = answer.controller_release;
+      offerRelease();
     },
     seq: () => store.nextStatusSeq(deps.now()),
     minGapMs: timing.statusMinGapMs,
@@ -608,6 +614,9 @@ export async function runController(
       return;
     }
     void reporter?.requestIfChanged();
+    // A turn ending changes nothing reported, so it would otherwise wait for
+    // the next periodic report to let the update through.
+    if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
   }, timing.statusPollMs);
 
   let ending: ControllerExit = 'stopped';

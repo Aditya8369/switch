@@ -662,7 +662,7 @@ describe('the release Switch names', () => {
     sha256: 'c'.repeat(64),
   };
 
-  it('is installed while no session runs, and the controller ends to restart on it', async () => {
+  it('is installed while no session is mid-turn, and the controller ends to restart on it', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     core.controllerRelease = release;
     const { updater, installed } = selfUpdate();
@@ -671,7 +671,7 @@ describe('the release Switch names', () => {
     expect(installed).toEqual(['0.2.0']);
   });
 
-  it('waits while a session runs, and says so in the status', async () => {
+  it('waits while an agent host that does not report busy sessions has any, and says so in the status', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     const { updater, installed } = selfUpdate();
     running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
@@ -685,6 +685,25 @@ describe('the release Switch names', () => {
     expect(core.statusReports.at(-1)?.update).toEqual({ target: '0.2.0', state: 'waiting_idle' });
     expect(installed).toEqual([]);
     runtime.observation('agent-1').health!.placements = {};
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('waits only while a session is mid-turn when the agent host says which are', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const health = runtime.observation('agent-1').health!;
+    health.placements = { 'session-1': 'room-a', 'session-2': 'room-b' };
+    health.busy = ['session-1'];
+    core.controllerRelease = release;
+    await waitFor(
+      () => core.statusReports.some((report) => report.update?.state === 'waiting_idle'),
+      'a status saying the update waits'
+    );
+    expect(installed).toEqual([]);
+    health.busy = [];
     expect(await running).toBe('restarting');
     expect(installed).toEqual(['0.2.0']);
   });

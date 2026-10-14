@@ -3505,6 +3505,17 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Fixed
+- **A controller updates to the release Switch names while sessions sit idle.**
+  It waited until no session existed on the machine, and a session connected to
+  a room counted even with nothing to do, so a machine with long-lived sessions
+  stayed `waiting_idle` for good. It now waits only until no session is in the
+  middle of a turn. Each agent host reports which of its sessions are busy (one
+  that has not said yet counts as busy), and the controller looks again every
+  few seconds while it waits rather than at the next status report. Idle
+  sessions in the controller's own process are restarted with it and resume
+  their conversations; agents running in a process of their own keep running
+  through it. An agent host too old to report busy sessions still holds the
+  update while it has any session.
 - **A refusal that cannot pass stops the controller instead of retrying it
   forever.** The server answers `protocol_unsupported` when it no longer speaks
   the controller's protocol and `invalid_credential` when it knows no controller
