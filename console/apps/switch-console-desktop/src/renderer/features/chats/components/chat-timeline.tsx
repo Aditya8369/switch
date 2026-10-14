@@ -142,7 +142,13 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   const agentOf = (agentId: string | null) => agents.find((agent) => agent.id === agentId) ?? null;
   const find = (messageId: string) => timeline.byId(messageId);
   const myUserId = chatsStore.userId;
-  const liveNotices = liveSessionStartingNotices(timeline.messages);
+  const turnAgents = new Map(
+    [...turnsByMessage].map(([messageId, list]) => [
+      messageId,
+      new Set(list.map(({ activity }) => activity.agentId)),
+    ])
+  );
+  const liveNotices = liveSessionStartingNotices(timeline.messages, turnAgents);
   const messageIds = timeline.messages.map((message) => message.messageId);
   const markers = new Map<string | null, ReactNode[]>();
   for (const [activity, bound] of boundTurns) {
