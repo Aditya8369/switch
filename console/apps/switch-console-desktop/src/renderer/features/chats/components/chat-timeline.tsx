@@ -12,7 +12,7 @@ import {
   isSessionStartingNotice,
   liveSessionStartingNotices,
 } from '@shared/core/chats/chats';
-import type { TurnActivity } from '../activity-join';
+import { placeTurns, type TurnActivity } from '../activity-join';
 import { type ContextMarker, contextMarkerSlots } from '../chat-context';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
@@ -132,13 +132,20 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   onReply,
 }: Props) {
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
+  const blocksByAnchor = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
   const boundTurns = new Map(activities.map((activity) => [activity, activity.turns()]));
-  for (const [activity, bound] of boundTurns)
+  for (const [activity, bound] of boundTurns) {
     for (const [messageId, turn] of bound) {
       const list = turnsByMessage.get(messageId) ?? [];
       list.push({ activity, turn });
       turnsByMessage.set(messageId, list);
     }
+    for (const [anchorId, turns] of placeTurns(timeline.messages, activity.agentId, bound))
+      blocksByAnchor.set(anchorId, [
+        ...(blocksByAnchor.get(anchorId) ?? []),
+        ...turns.map((turn) => ({ activity, turn })),
+      ]);
+  }
   const agentOf = (agentId: string | null) => agents.find((agent) => agent.id === agentId) ?? null;
   const find = (messageId: string) => timeline.byId(messageId);
   const myUserId = chatsStore.userId;
@@ -307,7 +314,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 {message.body}
               </p>
             )}
-            {turns.map(({ activity, turn }) => {
+            {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
               const turnAgent = agentOf(activity.agentId);
               return (
                 <ChatActivityBlock

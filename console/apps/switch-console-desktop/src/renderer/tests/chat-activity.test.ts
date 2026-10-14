@@ -9,7 +9,9 @@ import {
   ActivityBindings,
   bindTurns,
   isThinking,
+  placeTurns,
   toolState,
+  type TurnActivity,
   turnTools,
 } from '@renderer/features/chats/activity-join';
 import {
@@ -17,6 +19,7 @@ import {
   AgentActivities,
 } from '@renderer/features/chats/stores/chat-activity-store';
 import type { ChatActivityTarget } from '@shared/core/chats/activity';
+import type { ChatMessage } from '@shared/core/chats/chats';
 
 function item(turnId: string, kind: Item['kind'], extra: Partial<Item> = {}): Item {
   return {
@@ -73,6 +76,75 @@ const origin = (messageId: string, roomId = 'room-1') => ({
   roomId,
   threadId: null,
   messageId,
+});
+
+describe('placeTurns', () => {
+  const said = (messageId: string, agentId: string | null): ChatMessage =>
+    ({
+      messageId,
+      body: messageId,
+      sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
+    }) as unknown as ChatMessage;
+  const turn = (turnId: string, status: TurnActivity['status'] = 'completed'): TurnActivity => ({
+    turnId,
+    status,
+    items: [],
+    requests: [],
+  });
+  const ids = (placed: Map<string, TurnActivity[]>) =>
+    Object.fromEntries([...placed].map(([at, turns]) => [at, turns.map((each) => each.turnId)]));
+
+  it('shows a turn under the message that started it', () => {
+    const messages = [said('q1', null), said('r1', 'helper'), said('q2', null)];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
+
+  it('shows a queued turn under the reply to the turn it waited for', () => {
+    const bound = new Map([
+      ['q1', turn('t1', 'running')],
+      ['q2', turn('t2', 'queued')],
+    ]);
+    expect(ids(placeTurns([said('q1', null), said('q2', null)], 'helper', bound))).toEqual({
+      q1: ['t1'],
+      q2: ['t2'],
+    });
+    const replied = [said('q1', null), said('q2', null), said('r1', 'helper')];
+    expect(ids(placeTurns(replied, 'helper', bound))).toEqual({ q1: ['t1'], r1: ['t2'] });
+  });
+
+  it('chains turns queued one after another under each reply in turn', () => {
+    const messages = [
+      said('q1', null),
+      said('q2', null),
+      said('q3', null),
+      said('r1', 'helper'),
+      said('other', 'reviewer'),
+      said('r2', 'helper'),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2')],
+      ['q3', turn('t3', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({
+      q1: ['t1'],
+      r1: ['t2'],
+      r2: ['t3'],
+    });
+  });
+
+  it('does not wait on a reply from a turn that ended with an error', () => {
+    const messages = [said('q1', null), said('q2', null), said('r2', 'helper')];
+    const bound = new Map([
+      ['q1', turn('t1', 'error')],
+      ['q2', turn('t2')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
 });
 
 describe('bindTurns', () => {

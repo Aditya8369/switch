@@ -1,4 +1,5 @@
 import type { HostBody, Item, Snapshot } from '@switch-console/shared/session-v1';
+import { type ChatMessage, isSessionStartingNotice } from '@shared/core/chats/chats';
 import { SWITCH_TOOL_PREFIX } from './tool-presentation';
 
 /**
@@ -61,6 +62,43 @@ export function bindTurns(
     });
   }
   return bound;
+}
+
+/**
+ * Where one agent's turns show, by the message each shows under, in message
+ * order. A turn shows under the message that started it, unless that message
+ * was sent while the agent's previous turn still ran: the turn then runs after
+ * that turn's reply, and shows under it. Shortcut: the reply is taken to be
+ * the agent's first message after the previous turn, so a turn that ended
+ * without a reply pushes the next turn under its own reply.
+ */
+export function placeTurns(
+  messages: readonly ChatMessage[],
+  agentId: string,
+  bound: ReadonlyMap<string, TurnActivity>
+): Map<string, TurnActivity[]> {
+  const placed = new Map<string, TurnActivity[]>();
+  let previous: number | null = null;
+  messages.forEach((message, at) => {
+    const turn = bound.get(message.messageId);
+    if (!turn) return;
+    let anchor = at;
+    if (previous !== null) {
+      const after = previous;
+      const reply = messages.findIndex(
+        (each, index) =>
+          index > after &&
+          each.sender.kind === 'agent' &&
+          each.sender.agentId === agentId &&
+          !isSessionStartingNotice(each)
+      );
+      anchor = Math.max(at, reply === -1 ? previous : reply);
+    }
+    const key = messages[anchor].messageId;
+    placed.set(key, [...(placed.get(key) ?? []), turn]);
+    previous = turn.status === 'interrupted' || turn.status === 'error' ? null : anchor;
+  });
+  return placed;
 }
 
 export type ToolState = 'running' | 'done' | 'failed' | 'declined';
