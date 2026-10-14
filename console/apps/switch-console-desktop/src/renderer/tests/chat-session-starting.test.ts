@@ -83,7 +83,7 @@ describe('turn-end notices', () => {
       read(
         'I finished without replying. The turn was interrupted: Claude turn ended: error_during_execution'
       )
-    ).toEqual({ outcome: 'interrupted', reason: 'Claude turn ended: error_during_execution' });
+    ).toEqual({ outcome: 'interrupted', reason: null });
     expect(read('I finished without replying. The turn failed: Not signed in.')).toEqual({
       outcome: 'failed',
       reason: 'Not signed in.',

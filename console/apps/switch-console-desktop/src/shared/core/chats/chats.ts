@@ -195,8 +195,12 @@ export function turnEndNotice(message: ChatMessage): TurnEndNotice | null {
     [TURN_INTERRUPTED_PHRASE, 'interrupted'],
   ] as const) {
     if (rest === `${phrase}.`) return { outcome, reason: null };
+    // An interrupt is the person's Stop; the provider's raw reason for it says nothing more.
     if (rest.startsWith(`${phrase}: `))
-      return { outcome, reason: rest.slice(phrase.length + 2).trim() };
+      return {
+        outcome,
+        reason: outcome === 'interrupted' ? null : rest.slice(phrase.length + 2).trim(),
+      };
   }
   return null;
 }
