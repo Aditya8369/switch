@@ -11,22 +11,26 @@ the process would run.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
-from switch_core.ownership import Fence
+from switch_core.ownership import Fence, Ownership, StartWork, StopWork
 from switch_core.process_lease import LEASE_TTL, ProcessLease
+from switch_core.signals import SignalBus
 from switch_core.transport.cursors import ConsumerCursors, CursorWriter
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.transport.postgres import PostgresTransport
+
+logger = logging.getLogger(__name__)
 
 CLIENT = "client"
 
@@ -138,6 +142,145 @@ class _NeverOwnedKind:
 
     def fence(self, key: str) -> Fence | None:
         return None
+
+    def lost(self, fence: Fence) -> None:
+        return None
+
+
+def _never_listening() -> Any:
+    raise AssertionError("a test process's signal bus is never started")
+
+
+@dataclass
+class OwningProcess:
+    """A process's ownership as `main` wires it, for tests of a lifecycle
+    that owns work: its lease, its `Ownership` and its cursor writer. Work is
+    claimed when the test balances (`ownership.start()`), as `main` does at
+    boot, or when the code under test settles it."""
+
+    lease: ProcessLease
+    ownership: Ownership
+    writer: CursorWriter
+
+
+def owning_process(session_factory: async_sessionmaker[AsyncSession]) -> OwningProcess:
+    lease = ProcessLease(
+        process_id=str(uuid.uuid4()),
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+    )
+    return OwningProcess(
+        lease=lease,
+        ownership=Ownership(
+            lease=lease,
+            session_factory=session_factory,
+            bus=SignalBus(
+                session_factory, _never_listening, process_id=lease.process_id
+            ),
+            store=OwnershipLeaseStore(),
+            processes=SwitchCoreProcessStore(),
+        ),
+        writer=CursorWriter(
+            session_factory=session_factory,
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=lease.process_id,
+        ),
+    )
+
+
+class SoleOwner:
+    """An ownership under which this process is the only one, and holds all
+    the work it wants, as a deployment of one process does after its first
+    balance. For unit tests of a lifecycle that run without a database: work
+    wanted starts when the code under test settles it or the test calls
+    `start()`, as `main` does at boot, and every key reads as held here, so
+    work a test starts by hand runs as its holder would."""
+
+    process_id = "the-only-process"
+
+    def __init__(self) -> None:
+        self.stopping = False
+        self._kinds: list[_SoleKind] = []
+
+    def kind(self, name: str, *, start: StartWork, stop: StopWork) -> _SoleKind:
+        kind = _SoleKind(self, name, start, stop)
+        self._kinds.append(kind)
+        return kind
+
+    async def start(self) -> None:
+        for kind in self._kinds:
+            await kind.settle()
+
+    async def stop(self) -> None:
+        self.stopping = True
+        for kind in self._kinds:
+            for key in sorted(kind.held()):
+                await kind.drop(key)
+
+    @staticmethod
+    def cursor_writer(
+        session_factory: async_sessionmaker[AsyncSession] | Any,
+    ) -> CursorWriter:
+        """The process's cursor writer, never run: what a consumer under it
+        records is written only when flushed."""
+        return CursorWriter(
+            session_factory=session_factory,
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=SoleOwner.process_id,
+        )
+
+
+class _SoleKind:
+    def __init__(
+        self, owner: SoleOwner, name: str, start: StartWork, stop: StopWork
+    ) -> None:
+        self.name = name
+        self._owner = owner
+        self._start = start
+        self._stop = stop
+        self._wanted: set[str] = set()
+        self._started: set[str] = set()
+
+    def want(self, key: str) -> None:
+        self._wanted.add(key)
+
+    def wanted(self) -> set[str]:
+        return set(self._wanted)
+
+    def wants(self, key: str) -> bool:
+        return key in self._wanted
+
+    @property
+    def stopping(self) -> bool:
+        return self._owner.stopping
+
+    async def settle(self) -> None:
+        for key in sorted(self._wanted - self._started):
+            self._started.add(key)
+            fence = self.fence(key)
+            assert fence is not None
+            # As the ownership does: one key failing to start is logged, and
+            # the rest still start.
+            try:
+                await self._start(key, fence)
+            except Exception:
+                logger.exception("Starting %s %s failed", self.name, key)
+
+    def held(self) -> set[str]:
+        return set(self._started)
+
+    def fence(self, key: str) -> Fence | None:
+        return Fence(
+            kind=self.name, key=key, process_id=self._owner.process_id, token=1
+        )
+
+    async def drop(self, key: str) -> None:
+        self._wanted.discard(key)
+        if key in self._started:
+            self._started.discard(key)
+            await self._stop(key)
 
     def lost(self, fence: Fence) -> None:
         return None

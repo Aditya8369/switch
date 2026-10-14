@@ -718,6 +718,8 @@ async def harness(
                 session_activity_listener=session_activity_listener,
                 session_activity_service=AgentSessionActivityService(session_factory),
                 connections=connections,
+                ownership=ownership,
+                cursor_writer=cursor_writer,
             )
 
         room_service = RoomService(

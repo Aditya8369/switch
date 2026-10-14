@@ -47,6 +47,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy, OutboundURLRefused
+from tests.ownership import SoleOwner
 
 
 def _mattermost_config(url: str) -> dict[str, object]:
@@ -77,6 +78,8 @@ def _bridge_lifecycle(policy: OutboundPolicy) -> CollaborationBridgeLifecycleSer
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(MagicMock()),
     )
     service.register_adapter(
         "mattermost", MattermostAdapter, MattermostConnectionConfig

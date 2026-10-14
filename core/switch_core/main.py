@@ -56,6 +56,7 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnector,
 )
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
 )
@@ -785,9 +786,16 @@ async def run(config: SwitchConfig) -> None:
         session_activity_listener=session_activity_listener,
         session_activity_service=AgentSessionActivityService(session_factory),
         connections=connections,
+        ownership=ownership,
+        cursor_writer=cursor_writer,
         telemetry=telemetry,
         trust_client=trust_client,
     )
+    # Bridges registered, edited or removed in another process are applied to
+    # this process's copies too (`bridges/collaboration/bridge_signals.py`),
+    # and agents registered or deleted elsewhere reach their identities here.
+    BridgeSignals(lifecycle=collab_lifecycle, bus=signal_bus)
+    client_lifecycle.add_agents_changed_listener(collab_lifecycle.agents_changed)
 
     # ── Room service ─────────────────────────────────────────────────────────
     room_service = RoomService(
@@ -1245,8 +1253,9 @@ async def run(config: SwitchConfig) -> None:
         )
 
     # Start the work this process owns, before it serves: with one process,
-    # all of it.
+    # all of it. Then the quiet copies of the bridges another process holds.
     await ownership.start()
+    await collab_lifecycle.start_quiet_copies()
 
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The

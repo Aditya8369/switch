@@ -17,7 +17,8 @@ from switch_core.db.models import Message
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.transport import InboundMessage, RoomRef, TransportHandlers
 from switch_core.transport.cursors import FromHead
-from switch_core.transport.postgres import PostgresTransport, derived_event_id
+from switch_core.transport.derived_ids import derived_event_id, writes_derived_from
+from switch_core.transport.postgres import PostgresTransport
 from tests.switch_core.transport.test_postgres_transport import (
     _FakeListener,
     _make_client,
@@ -113,6 +114,43 @@ class TestTwoCopiesOfOneClient:
 
         assert first.event_id != second.event_id
         assert await _bodies(session_factory, room_id) == ["same words"] * 2
+
+
+class TestWritesOnBehalfOfSomethingOutside:
+    async def test_a_post_delivered_twice_is_written_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A messaging platform delivering one post again: what the post's
+        author writes for it is numbered from the post."""
+        async with session_factory() as session:
+            room_id, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+        author = _transport(session_factory, client_id=client_id, user_id=user_id)
+
+        for _ in range(2):
+            with writes_derived_from(client_id, "bridge\x1fchannel\x1fpost-1"):
+                await author.send_message(
+                    room, "from the platform", sender_name="a", metered=False
+                )
+
+        assert await _bodies(session_factory, room_id) == ["from the platform"]
+
+    async def test_another_client_writing_meanwhile_is_not_numbered(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, room, client_id, user_id = await _make_room(session)
+            other_id, other = await _make_client(session, "other")
+            await session.commit()
+        writer = _transport(session_factory, client_id=other_id, user_id=other)
+
+        for _ in range(2):
+            with writes_derived_from(client_id, "bridge\x1fchannel\x1fpost-1"):
+                await writer.send_message(
+                    room, "a notice", sender_name="b", metered=False
+                )
+
+        assert await _bodies(session_factory, room_id) == ["a notice"] * 2
 
 
 def test_the_id_depends_on_client_row_and_position() -> None:

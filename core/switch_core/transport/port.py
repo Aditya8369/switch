@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from switch_core.transport.cursors import DeliveryProgress
 
 Handler = Callable[[Any, Any], Awaitable[None]]
+# Given a room's transport id, the lowest room position whose effect the
+# client has not made yet, or None when it holds nothing back.
+HeldFrom = Callable[[str], int | None]
 
 
 @dataclass
@@ -48,6 +51,11 @@ class TransportHandlers:
     # the room by the time this fires; it is for whatever downstream still
     # holds the room's events, which the transport knows nothing about.
     on_removed: Handler | None = None
+    # Rows a client has been handed but not acted on yet, such as the files of
+    # a multi-file message waiting for the rest. Progress is not recorded past
+    # them, so the next reader of the client handles them if this one stops
+    # first.
+    held_from: HeldFrom | None = None
 
 
 @runtime_checkable
@@ -72,6 +80,11 @@ class MessageTransport(Protocol):
         """Deliver inbound events to the registered handlers until closed,
         starting each room where `progress` says and recording through it how
         far the client got."""
+        ...
+
+    def held_back_released(self, room_id: str) -> None:
+        """The client acted on rows of `room_id` it had been holding back
+        (`TransportHandlers.held_from`): record the progress waiting on them."""
         ...
 
     # ── Outbound ──────────────────────────────────────────────────────────────

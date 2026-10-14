@@ -302,6 +302,11 @@ def _ephemeral(text: str) -> dict[str, Any]:
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
     docs_slug: ClassVar[str | None] = "mattermost"
+    # A quiet Mattermost bridge opens no websocket and mints no bot token: it
+    # knows each agent's bot by id, for mentions, and calls the API as the
+    # admin. Mattermost sends every event to every open socket, so a socket
+    # in each process would hand each process every post.
+    keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -2090,7 +2095,7 @@ class MattermostAdapter(PlatformAdapter):
         existing = await self._find_existing_bot(agent_name)
         if existing:
             bot_id: str = str(existing["user_id"])
-            if existing.get("display_name") != label:
+            if existing.get("display_name") != label and self._listening:
                 try:
                     await self._mm_api(
                         "put", f"/bots/{bot_id}", {"display_name": label}
@@ -2114,10 +2119,29 @@ class MattermostAdapter(PlatformAdapter):
                 )
                 bot_id = str(bot["user_id"])
             except Exception as e:
-                logger.exception(
-                    "Failed to create Mattermost bot %s: %s", agent_name, e
-                )
-                return
+                # Another switch-core process may have created it a moment ago:
+                # every process provisions its copy of the bridge.
+                created = await self._find_existing_bot(agent_name)
+                if created is None:
+                    logger.exception(
+                        "Failed to create Mattermost bot %s: %s", agent_name, e
+                    )
+                    return
+                bot_id = str(created["user_id"])
+
+        if not self._listening:
+            # Known by id, for mentions and for telling its posts from people's.
+            # The process holding the bridge posts as the bot and listens on
+            # its socket.
+            self._agent_bots[agent_name] = {
+                "bot_id": bot_id,
+                "user_id": bot_id,
+                "username": agent_name,
+            }
+            self._bridge_bot_ids.add(bot_id)
+            self._bot_id_to_username[bot_id] = agent_name
+            logger.info("Found Mattermost bot identity %s (quiet)", agent_name)
+            return
 
         try:
             token_resp = await self._mm_api(
@@ -2253,6 +2277,10 @@ class MattermostAdapter(PlatformAdapter):
         existing = await self._find_existing_bot(username)
         if existing:
             bot_id = str(existing["user_id"])
+        elif not self._listening:
+            # Created by the process holding the bridge; this one posts no
+            # notices.
+            return
         else:
             try:
                 bot = await self._mm_api(
@@ -2268,6 +2296,10 @@ class MattermostAdapter(PlatformAdapter):
             except Exception:
                 logger.exception("Failed to create Switch Admin bot")
                 return
+        if not self._listening:
+            self._admin_bot_id = bot_id
+            self._bridge_bot_ids.add(bot_id)
+            return
         try:
             token_resp = await self._mm_api(
                 "post",

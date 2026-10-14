@@ -11,6 +11,9 @@ from switch_core.transport import (
     RoomRef,
     TransportError,
 )
+from tests.switch_core.bridges.collaboration.outbound_fakes import (
+    posting_without_a_database,
+)
 
 
 def _media_event(
@@ -122,14 +125,10 @@ def _fake_bridge(
     max_bytes: int = 1024,
 ) -> SimpleNamespace:
     adapter = _FakeAdapter()
-    recorded: list[dict[str, str]] = []
     lookup = room_to_external or {}
 
     async def _external_post_for_event(transport_event_id: str) -> str | None:
         return lookup.get(transport_event_id)
-
-    async def _record_message_map(**kwargs: str) -> None:
-        recorded.append(kwargs)
 
     async def _room_tenant(room_id: str) -> str:
         return "tenant-1"
@@ -141,13 +140,12 @@ def _fake_bridge(
         _workspace_consumer_transport_user_id="@bridge:s",
         _max_attachment_bytes=max_bytes,
         _external_post_for_event=_external_post_for_event,
-        _record_message_map=_record_message_map,
-        recorded=recorded,
         _outbound_groups={},
         _outbound_group_timers={},
         _channel_to_room={"chan-1": ("room-uuid", "!room:s")},
         _room_tenant=_room_tenant,
     )
+    ns.recorded = posting_without_a_database(ns)
     ns._find_channel = lambda room_id=None, transport_room_id=None: (
         "chan-1" if transport_room_id == "!room:s" else None
     )
@@ -167,14 +165,20 @@ def _fake_bridge(
     ns._flush_incomplete_outbound_group = (
         CollaborationCore._flush_incomplete_outbound_group.__get__(ns)
     )
+    ns._flush_outbound_group = CollaborationCore._flush_outbound_group.__get__(ns)
 
     async def _download_media(uri: str) -> DownloadResult:
         if isinstance(download, TransportError):
             raise download
         return download
 
+    released: list[str] = []
+    ns.released = released
     ns.client = SimpleNamespace(
-        transport=SimpleNamespace(download_media=_download_media)
+        running=True,
+        transport=SimpleNamespace(
+            download_media=_download_media, held_back_released=released.append
+        ),
     )
     return ns
 
@@ -375,3 +379,36 @@ async def test_incomplete_group_is_flushed_with_a_disclosed_notice() -> None:
     assert [f.filename for f in batch["files"]] == ["only.md"]
     assert "1 of 3" in (batch["caption"] or "")
     assert bridge._outbound_groups == {}
+    # Posted, so the bridge's progress in the room may move past it.
+    assert bridge.released == ["!room:s"]
+
+
+async def test_an_incomplete_group_is_left_to_the_next_holder_once_stopped() -> None:
+    """A bridge that stopped while a group waited for its other files posts
+    nothing: its progress in the room stops before the group's first file,
+    so whichever process holds the bridge next reads the group again."""
+    import switch_core.bridges.collaboration.collaboration_core as bc
+
+    original = bc.OUTBOUND_GROUP_TIMEOUT_SECONDS
+    bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = 0.01
+    try:
+        bridge = _fake_bridge()
+        await CollaborationCore.handle_outbound_media(
+            bridge,
+            _room(),
+            _media_event(
+                msgtype="m.file",
+                body="only.md",
+                mimetype="text/markdown",
+                group={"id": "grp-3", "index": 0, "total": 2},
+            ),
+            bridge.client,
+        )
+        bridge.client.running = False
+
+        await asyncio.sleep(0.1)
+    finally:
+        bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = original
+
+    assert bridge._adapter.batches == []
+    assert bridge.released == []

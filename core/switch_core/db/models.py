@@ -2054,7 +2054,7 @@ class BridgeMessageMap(TenantScoped, Base):
     bridging (resolving a Switch thread root to its external post and vice
     versa) and the edit/delete sync that previously relied on a volatile
     in-memory dict. Unique in both directions per bridge so either id resolves
-    the other.
+    the other. A room message going out is claimed here before it is posted.
     """
 
     __tablename__ = "bridge_message_map"
@@ -2074,7 +2074,11 @@ class BridgeMessageMap(TenantScoped, Base):
     bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
     transport_event_id: Mapped[str] = mapped_column(Text, nullable=False)
-    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # Null while a room message is claimed for posting and not posted yet: an
+    # outbound relay writes the row first and fills this in after the platform
+    # answers, so a second process handling the same message finds the claim
+    # and does not post it again (`CollaborationCore._claim_outbound`).
+    external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

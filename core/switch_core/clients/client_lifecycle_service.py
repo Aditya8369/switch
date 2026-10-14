@@ -17,6 +17,7 @@ import asyncio
 import logging
 import random
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from sqlalchemy.exc import InterfaceError, OperationalError
@@ -134,6 +135,24 @@ class ClientLifecycleService:
             start=self._start_owned_consumer,
             stop=self._stop_owned_consumer,
         )
+        # Told the tenant whenever a re-read starts or stops an agent client
+        # here, which is how an agent registered or deleted in another process
+        # reaches what keeps per-agent state of its own (a bridge's platform
+        # identities, `CollaborationBridgeLifecycleService.agents_changed`).
+        self._agents_changed_listeners: list[Callable[[str], None]] = []
+
+    def add_agents_changed_listener(self, listener: Callable[[str], None]) -> None:
+        self._agents_changed_listeners.append(listener)
+
+    def _agents_changed(self, tenant_id: str) -> None:
+        for listener in self._agents_changed_listeners:
+            try:
+                listener(tenant_id)
+            except Exception:
+                logger.exception(
+                    "Telling a listener that tenant %s's agents changed failed",
+                    tenant_id,
+                )
 
     def use_signals(self, signals: ClientSignals) -> None:
         """Where a client started or deleted here is announced, so every
@@ -342,6 +361,7 @@ class ClientLifecycleService:
             for client_id, client_tenant in self._left_stopped.items()
             if client_tenant != tenant_id or client_id in present
         }
+        agents_changed = False
         for client_id, client_tenant in list(self._client_tenants.items()):
             if (
                 client_tenant == tenant_id
@@ -349,6 +369,7 @@ class ClientLifecycleService:
                 and client_id not in present
             ):
                 logger.info("Client %s was deleted elsewhere; stopping it", client_id)
+                agents_changed |= self._client_types.get(client_id) == "agent"
                 await self.stop(client_id)
         missing = [
             record
@@ -356,6 +377,8 @@ class ClientLifecycleService:
             if record.id not in self._clients and record.id not in self._left_stopped
         ]
         if not missing:
+            if agents_changed:
+                self._agents_changed(tenant_id)
             return
         agents = await self._agents_by_client_id(missing)
         for record in missing:
@@ -375,6 +398,9 @@ class ClientLifecycleService:
             consumer = self._consumers.get(record.id)
             if agent is not None and isinstance(consumer, _PreloadsAgent):
                 consumer.preload_agent(agent)
+            agents_changed |= agent is not None
+        if agents_changed:
+            self._agents_changed(tenant_id)
 
     async def _agents_by_client_id(self, records: list[Client]) -> dict[str, Agent]:
         """The agent row behind each client, one query per tenant.

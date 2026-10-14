@@ -13,6 +13,7 @@ from switch_core.trust.client import NullTrustClient
 
 
 class _FakeHumanActor:
+    client_id = "human-actor-client"
     transport_user_id = "@human actor:s"
 
     def __init__(self) -> None:
@@ -88,6 +89,7 @@ def _fake_bridge() -> SimpleNamespace:
         return None
 
     ns = SimpleNamespace(
+        _bridge_id="bridge-1",
         _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
