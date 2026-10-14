@@ -69,6 +69,7 @@ def _host(
         _external_user_store=ExternalUserStore(),
         client_store=ClientStore(),
         _connections=SimpleNamespace(live_connection_ids=lambda: set()),
+        _follow_the_conversation_enabled=True,
     )
     return host, posted
 

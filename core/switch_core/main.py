@@ -721,6 +721,7 @@ async def run(config: SwitchConfig) -> None:
         room_service=room_service,
         connections=connections,
         frontend_base_url=config.frontend_base_url,
+        follow_the_conversation_enabled=config.follow_the_conversation_enabled,
     )
 
     # ── Agent management (off unless the agent_management flag is on) ─────────

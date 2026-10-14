@@ -219,7 +219,34 @@ class MessageStore:
         result = await session.execute(query.order_by(Message.seq.desc()).limit(limit))
         return list(result.scalars().all())
 
-    async def list_thread_before(
+    async def posted_in_thread(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        thread_root_event_id: str,
+        sender_id: str,
+        before_seq: int,
+        excluding: Collection[str],
+    ) -> bool:
+        """Whether `sender_id` posted in the thread (its root included) before
+        `before_seq`, not counting messages whose content carries any key in
+        `excluding` (automatic replies, Switch's notices)."""
+        query = select(Message.id).where(
+            Message.room_id == room_id,
+            Message.seq < before_seq,
+            Message.sender_id == sender_id,
+            or_(
+                Message.thread_root_event_id == thread_root_event_id,
+                Message.transport_event_id == thread_root_event_id,
+            ),
+        )
+        for key in excluding:
+            query = query.where(~Message.content.has_key(key))
+        result = await session.execute(select(query.exists()))
+        return bool(result.scalar())
+
+    async def list_thread_mentions_before(
         self,
         session: AsyncSession,
         room_id: str,
@@ -228,20 +255,18 @@ class MessageStore:
         before_seq: int,
         limit: int,
     ) -> list[Message]:
-        """A thread's messages from before `before_seq`, oldest first.
-
-        The thread's root is included, as the first row when it is in range,
-        so a caller reading only the first `limit` always sees the message
-        that started it.
-        """
+        """A thread's root and its messages that contain an `@`, from before
+        `before_seq`, oldest first: the only messages in a thread that could
+        have addressed someone."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
                 Message.seq < before_seq,
                 or_(
-                    Message.thread_root_event_id == thread_root_event_id,
                     Message.transport_event_id == thread_root_event_id,
+                    (Message.thread_root_event_id == thread_root_event_id)
+                    & Message.body.contains("@"),
                 ),
             )
             .order_by(Message.seq)

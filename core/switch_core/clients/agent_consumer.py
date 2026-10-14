@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import re
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -80,7 +81,9 @@ from switch_core.delivery.addressing import (
     IncomingMessage,
 )
 from switch_core.delivery.conversation import (
+    NOT_TAKING_PART,
     ConversationMessage,
+    ConversationRoute,
     ConversationRules,
     ConversationSettings,
     may_follow,
@@ -302,6 +305,19 @@ _ADDRESSING_DENIED_MESSAGE = ADDRESSING_DENIED_MESSAGE
 _ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 
 
+# How many (room, thread) entries each agent's client remembers for the free
+# check. The oldest are forgotten first; forgetting only costs one history read.
+_THREAD_MEMORY_LIMIT = 10_000
+
+
+class _FollowOutcome(NamedTuple):
+    """Whether following the conversation delivered the message, and whether
+    the agent was live to receive it."""
+
+    delivered: bool
+    agent_live: bool
+
+
 class _GateOutcome(NamedTuple):
     """Whether a message that tags this agent really addresses it, plus the
     refusal to post when it does not. The refusal is returned rather than sent
@@ -401,6 +417,11 @@ class AgentConsumer(Consumer[AgentActor]):
         # without a database read. Empty after a restart, which only ever
         # means a follow-up is missed, never one invented.
         self._last_top_level_post_ms: dict[str, int] = {}
+        # (transport_room_id, thread root) -> whether this agent takes part in
+        # that thread: True once it posted there or was addressed there, False
+        # once the rules found it does not. Unknown threads are read from
+        # history once.
+        self._thread_membership: OrderedDict[tuple[str, str], bool] = OrderedDict()
 
     @property
     def agent(self) -> Agent:
@@ -559,18 +580,32 @@ class AgentConsumer(Consumer[AgentActor]):
         if (
             event.sender == self.transport_user_id
             and isinstance(event, InboundMessage)
-            and event.thread_root_id is None
             and AUTO_REPLY_FLAG not in event.content
         ):
-            self._last_top_level_post_ms[room.room_id] = event.timestamp
+            # This agent's own message: it now takes part in its thread, and a
+            # top-level one may become the root of a thread.
+            if event.thread_root_id is None:
+                self._last_top_level_post_ms[room.room_id] = event.timestamp
+                self._remember_thread(room.room_id, event.event_id, True)
+            else:
+                self._remember_thread(room.room_id, event.thread_root_id, True)
         return super()._should_ignore(room, event)
+
+    def _remember_thread(
+        self, room_id: str, thread_root: str, taking_part: bool
+    ) -> None:
+        key = (room_id, thread_root)
+        self._thread_membership[key] = taking_part
+        self._thread_membership.move_to_end(key)
+        while len(self._thread_membership) > _THREAD_MEMORY_LIMIT:
+            self._thread_membership.popitem(last=False)
 
     async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
         if ROOM_SETTINGS_MARKER in event.content:
-            self._apply_room_settings_notice(room, meta, event)
+            await self._apply_room_settings_notice(room, meta, event)
 
         thread_id = event.thread_root_id
         if platform_replies_in_channel(event.content):
@@ -606,16 +641,16 @@ class AgentConsumer(Consumer[AgentActor]):
                             unavailable = await self._reply_when_unavailable_here(
                                 session, agent, meta, self._sender_handle(event)
                             )
-        elif await self._follow_the_conversation(event, meta):
-            is_addressed = True
-            async with self.session_factory() as session:
-                agent = await self._fresh_agent(session)
-                if not self._triggered_by_auto_reply(event):
-                    agent_live = await self._is_available(session, agent, meta.room_id)
-                    if not agent_live:
-                        unavailable = await self._reply_when_unavailable_here(
-                            session, agent, meta, self._sender_handle(event)
-                        )
+        if is_addressed:
+            # Addressed here: from now on this agent takes part in the thread
+            # this message starts or sits in.
+            self._remember_thread(
+                room.room_id, event.thread_root_id or event.event_id, True
+            )
+        elif refusal is None:
+            follow = await self._follow_the_conversation(event, meta)
+            is_addressed = follow.delivered
+            agent_live = follow.agent_live
 
         text = event.body
 
@@ -1506,15 +1541,17 @@ class AgentConsumer(Consumer[AgentActor]):
 
     async def _follow_the_conversation(
         self, event: InboundMessage, meta: RoomMeta
-    ) -> bool:
-        """Whether a message that mentions nobody reaches this agent anyway,
+    ) -> _FollowOutcome:
+        """Whether a message that addresses nobody reaches this agent anyway,
         by one of the rules in `delivery/conversation.py`, and is permitted to.
 
-        A message the rules deliver from a sender the agent's policy does not
-        admit, or while the agent is over budget, is dropped without a
-        refusal: the sender did not ask this agent for anything, so telling
-        them off would be noise. Every outcome in a room the rules apply to is
-        logged, which is how each route can be followed in the server's log.
+        Decided in one session, like the mention path above. A delivery the
+        sender may not make, or one while the agent is over budget, is dropped
+        without a refusal; and an agent with no session gets no "unavailable"
+        notice either. In both cases the sender did not ask this agent for
+        anything, so telling them so would be noise in someone else's
+        conversation. Every outcome is logged, which is how each route can be
+        followed in the server's log.
         """
         message = ConversationMessage(
             event_id=event.event_id,
@@ -1525,13 +1562,13 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         if not may_follow(
             self._conversation.settings,
-            room_id=meta.room_id,
             channel_type=meta.channel_type,
             message=message,
         ):
-            return False
+            return _FollowOutcome(delivered=False, agent_live=False)
         if not self._might_follow(event, meta):
-            return False
+            return _FollowOutcome(delivered=False, agent_live=False)
+        agent_live = False
         async with self.session_factory() as session:
             decision = await self._conversation.decide(
                 session,
@@ -1546,6 +1583,20 @@ class AgentConsumer(Consumer[AgentActor]):
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
                 outcome = "delivered" if gate.addressed else "dropped_not_permitted"
+                if gate.addressed and not self._triggered_by_auto_reply(event):
+                    agent_live = await self._is_available(session, agent, meta.room_id)
+                    if not agent_live:
+                        # Called for what it does, not what it says: it wakes
+                        # a stopped cloud machine so a session can start. The
+                        # notice it returns is not posted.
+                        await self._reply_when_unavailable_here(
+                            session, agent, meta, self._sender_handle(event)
+                        )
+        if event.thread_root_id is not None:
+            if decision.route == ConversationRoute.THREAD_FOLLOW_UP:
+                self._remember_thread(event.room_id, event.thread_root_id, True)
+            elif decision.reason == NOT_TAKING_PART:
+                self._remember_thread(event.room_id, event.thread_root_id, False)
         logger.info(
             "Follow the conversation: room=%s message=%s agent=%s route=%s "
             "outcome=%s reason=%s",
@@ -1558,7 +1609,7 @@ class AgentConsumer(Consumer[AgentActor]):
             if outcome != "dropped_not_permitted"
             else "the sender may not instruct this agent, or it is over budget",
         )
-        return outcome == "delivered"
+        return _FollowOutcome(delivered=outcome == "delivered", agent_live=agent_live)
 
     def _might_follow(self, event: InboundMessage, meta: RoomMeta) -> bool:
         """Whether any rule could deliver this message, judged from memory.
@@ -1572,20 +1623,36 @@ class AgentConsumer(Consumer[AgentActor]):
         if not meta.follow_ups_enabled:
             return False
         if event.thread_root_id is not None:
-            return True
+            # Known not to take part: free. Known or unknown otherwise: the
+            # rules decide, and their answer is remembered.
+            known = self._thread_membership.get((event.room_id, event.thread_root_id))
+            return known is not False
         last_post = self._last_top_level_post_ms.get(event.room_id)
         if last_post is None:
             return False
         window_ms = self._conversation.settings.window_seconds * 1000
         return 0 <= event.timestamp - last_post <= window_ms
 
-    def _apply_room_settings_notice(
+    async def _apply_room_settings_notice(
         self, room: RoomRef, meta: RoomMeta, event: InboundMessage
     ) -> None:
         """Keep the cached room settings current when the Switch app announces
-        a change (`!follow-ups`, `!assign-agent`)."""
+        a change (`!follow-ups`, `!assign-agent`). Only the Switch app's own
+        notice is trusted, checked by who sent it as well as by its markers."""
         settings = event.content.get(ROOM_SETTINGS_MARKER)
         if ADMIN_MARKER not in event.content or not isinstance(settings, dict):
+            return
+        async with self.session_factory() as session:
+            sender = await self.client_store.get_by_transport_user_id(
+                session, event.sender
+            )
+        if sender is None or sender.type != "admin":
+            logger.warning(
+                "Ignoring a room-settings notice in %s from %s, which is not the "
+                "Switch app",
+                room.room_id,
+                event.sender,
+            )
             return
         main_agent_id = settings.get("main_agent_id")
         self._room_meta[room.room_id] = meta.model_copy(

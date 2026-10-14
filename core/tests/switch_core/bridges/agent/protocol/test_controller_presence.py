@@ -607,6 +607,12 @@ def _addressing_client(
     ns.session_factory = _no_session
     ns._resolve_room_meta = _resolve_room_meta
     ns._addressed_without_lookup = lambda _event, _meta: True
+
+    async def _not_followed(_event: object, _meta: object) -> object:
+        return SimpleNamespace(delivered=False, agent_live=False)
+
+    ns._follow_the_conversation = _not_followed
+    ns._remember_thread = lambda *_a: None
     ns._compute_addressed = _addressed
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed

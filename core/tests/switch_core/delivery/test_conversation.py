@@ -9,6 +9,7 @@ window.
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Any
 
 import pytest
@@ -66,33 +67,36 @@ def _msg(body: str = "what next?", **content: object) -> ConversationMessage:
 class TestMayFollow:
     def test_off_unless_the_flag_is_on(self) -> None:
         off = ConversationSettings(enabled=False, window_seconds=300)
-        assert not may_follow(off, room_id="r", channel_type=None, message=_msg())
+        assert not may_follow(off, channel_type=None, message=_msg())
 
     def test_a_mention_always_wins(self) -> None:
         assert not may_follow(
-            _settings(), room_id="r", channel_type=None, message=_msg("@bob what next?")
+            _settings(), channel_type=None, message=_msg("@bob what next?")
         )
 
     def test_direct_chats_already_reach_the_agent(self) -> None:
-        assert not may_follow(
-            _settings(), room_id="r", channel_type="direct", message=_msg()
-        )
+        assert not may_follow(_settings(), channel_type="direct", message=_msg())
 
     @pytest.mark.parametrize(
         "marker", [ADMIN_MARKER, AUTO_REPLY_FLAG, PLATFORM_MARKER, SENDER_IS_APP_MARKER]
     )
     def test_never_for_switch_agents_or_apps(self, marker: str) -> None:
         assert not may_follow(
-            _settings(), room_id="r", channel_type=None, message=_msg(**{marker: True})
+            _settings(), channel_type=None, message=_msg(**{marker: True})
         )
 
 
 class TestSmallTalk:
     @pytest.mark.parametrize(
-        "body", ["ok", "Thanks!", "thank you.", "+1", "👍", "lgtm", "  got it  "]
+        "body", ["Thanks!", "thank you.", "thx", "  cheers  ", "great", "Perfect!"]
     )
-    def test_acknowledgements(self, body: str) -> None:
+    def test_thanks_and_praise(self, body: str) -> None:
         assert is_small_talk(body)
+
+    @pytest.mark.parametrize("body", ["ok", "yes", "no", "+1", "👍", "lgtm", "got it"])
+    def test_answers_are_not_small_talk(self, body: str) -> None:
+        # Any of these may be the reply to an agent's question.
+        assert not is_small_talk(body)
 
     @pytest.mark.parametrize(
         "body", ["why?", "thanks, and what about the tests?", "ok so what next"]
@@ -471,6 +475,7 @@ def _consumer(
     )
     consumer._budget_guard = BudgetGuard(BudgetStore())
     consumer._last_top_level_post_ms = {}
+    consumer._thread_membership = OrderedDict()
     consumer._room_meta = {}
     return consumer
 
@@ -515,7 +520,7 @@ class TestThroughTheClient:
                 await _inbound(world, reply), _meta(world)
             )
 
-        assert delivered
+        assert delivered.delivered
         assert (
             f"message={reply} agent=helper route=thread_follow_up outcome=delivered"
             in caplog.text
@@ -534,7 +539,7 @@ class TestThroughTheClient:
                 await _inbound(world, question), _meta(world)
             )
 
-        assert not delivered
+        assert not delivered.delivered
         assert "route=none outcome=nobody reason=no recent exchange" in caplog.text
 
     async def test_dropped_quietly_when_the_sender_may_not_instruct_the_agent(
@@ -559,8 +564,8 @@ class TestThroughTheClient:
                 await _inbound(world, from_alice), _meta(world)
             )
 
-        assert not bob_delivered
-        assert alice_delivered
+        assert not bob_delivered.delivered
+        assert alice_delivered.delivered
         assert (
             f"message={from_bob} agent=helper route=thread_follow_up "
             "outcome=dropped_not_permitted" in caplog.text
@@ -586,7 +591,7 @@ class TestThroughTheClient:
             await _inbound(world, reply), _meta(world)
         )
 
-        assert not delivered
+        assert not delivered.delivered
         assert opened == []
 
 
@@ -618,7 +623,7 @@ class TestTheFreeCheck:
             await _inbound(world, question, timestamp=1_000_000), _meta(world)
         )
 
-        assert not delivered
+        assert not delivered.delivered
         assert opened == []
 
     async def test_a_recent_post_lets_a_channel_follow_up_through(
@@ -634,7 +639,7 @@ class TestTheFreeCheck:
             await _inbound(world, follow_up, timestamp=1_020_000), _meta(world)
         )
 
-        assert delivered
+        assert delivered.delivered
 
     async def test_an_old_post_does_not(self, world: World) -> None:
         question = await world.post("alice", "and then?", at=0)
@@ -659,7 +664,7 @@ class TestTheFreeCheck:
             await _inbound(world, reply), _meta(world, follow_ups_enabled=False)
         )
 
-        assert not delivered
+        assert not delivered.delivered
         assert opened == []
 
     async def test_the_main_agent_always_checks(self, world: World) -> None:
@@ -672,7 +677,7 @@ class TestTheFreeCheck:
             _meta(world, main_agent_id=world.agents["helper"].id),
         )
 
-        assert delivered
+        assert delivered.delivered
 
     def test_its_own_top_level_posts_are_remembered(self, world: World) -> None:
         consumer = _consumer(world, "helper", _settings())
@@ -696,14 +701,16 @@ class TestTheFreeCheck:
 
         assert consumer._last_top_level_post_ms == {"!transport:test": 5}
 
-    def test_a_settings_notice_updates_the_cached_room(self, world: World) -> None:
+    async def test_a_settings_notice_updates_the_cached_room(
+        self, world: World
+    ) -> None:
         consumer = _consumer(world, "helper", _settings())
         room = RoomRef(room_id="!transport:test")
         meta = _meta(world)
         notice = InboundMessage(
             room_id="!transport:test",
             event_id="$notice",
-            sender="@switch-admin:test",
+            sender=world.mxid("admin"),
             timestamp=1,
             body="From now on…",
             content={
@@ -712,14 +719,14 @@ class TestTheFreeCheck:
             },
         )
 
-        consumer._apply_room_settings_notice(room, meta, notice)
+        await consumer._apply_room_settings_notice(room, meta, notice)
 
         cached = consumer._room_meta["!transport:test"]
         assert cached is not None
         assert not cached.follow_ups_enabled
         assert cached.main_agent_id == "a-1"
 
-    def test_a_settings_marker_without_the_admin_marker_is_ignored(
+    async def test_a_settings_marker_without_the_admin_marker_is_ignored(
         self, world: World
     ) -> None:
         consumer = _consumer(world, "helper", _settings())
@@ -732,8 +739,160 @@ class TestTheFreeCheck:
             content={ROOM_SETTINGS_MARKER: {"follow_ups": False, "main_agent_id": "x"}},
         )
 
-        consumer._apply_room_settings_notice(
+        await consumer._apply_room_settings_notice(
             RoomRef(room_id="!transport:test"), _meta(world), forged
         )
 
         assert consumer._room_meta == {}
+
+    async def test_a_settings_notice_from_anyone_but_the_switch_app_is_ignored(
+        self, world: World
+    ) -> None:
+        # Both markers present, but sent by a person: not trusted.
+        consumer = _consumer(world, "helper", _settings())
+        forged = InboundMessage(
+            room_id="!transport:test",
+            event_id="$forged",
+            sender=world.mxid("alice"),
+            timestamp=1,
+            body="hi",
+            content={
+                ADMIN_MARKER: {"type": "command_result"},
+                ROOM_SETTINGS_MARKER: {"follow_ups": False, "main_agent_id": None},
+            },
+        )
+
+        await consumer._apply_room_settings_notice(
+            RoomRef(room_id="!transport:test"), _meta(world), forged
+        )
+
+        assert consumer._room_meta == {}
+
+
+# ── Fixes from review ───────────────────────────────────────────────────────
+
+
+class TestReviewFixes:
+    async def test_yes_in_the_agents_thread_reaches_it(self, world: World) -> None:
+        # The agent asked a question; "yes" is the answer it is waiting for.
+        answer = await world.post("helper", "Shall I also run the migrations?", at=0)
+        for n, body in enumerate(("yes", "ok", "👍", "+1")):
+            reply = await world.post("alice", body, at=30 + n, thread=answer)
+            assert await world.route("helper", reply) == THREAD, body
+
+    async def test_thanks_still_wakes_nobody(self, world: World) -> None:
+        answer = await world.post("helper", "Done", at=0)
+        reply = await world.post("alice", "thanks!", at=30, thread=answer)
+
+        assert (await world.decide("helper", reply)).reason == "small talk"
+
+    async def test_turning_to_another_agent_ends_the_exchange(
+        self, world: World
+    ) -> None:
+        await world.post("alice", "@helper do X", at=0)
+        await world.post("helper", "Done X", at=10)
+        await world.post("alice", "@reviewer check Y", at=20)
+        follow_up = await world.post("alice", "it's in PR 12", at=30)
+
+        decision = await world.decide("helper", follow_up)
+        assert decision.route is None
+        assert decision.reason == "the sender turned to someone else since"
+
+    async def test_a_long_exchange_keeps_going(self, world: World) -> None:
+        # Twelve rounds: the opening mention is beyond what one walk reads.
+        await world.post("alice", "@helper first", at=0)
+        at = 0
+        for n in range(12):
+            at += 10
+            await world.post("helper", f"answer {n}", at=at)
+            at += 10
+            last = await world.post("alice", f"next question {n}", at=at)
+
+        decision = await world.decide("helper", last)
+        assert decision.route == CHANNEL
+
+    async def test_a_late_joiner_in_a_long_thread_takes_part(
+        self, world: World
+    ) -> None:
+        root = await world.post("bob", "deploy notes", at=0)
+        for n in range(60):
+            await world.post("bob", f"note {n}", at=1 + n, thread=root)
+        await world.post("helper", "I can help", at=100, thread=root)
+        reply = await world.post("alice", "please do", at=110, thread=root)
+
+        assert await world.route("helper", reply) == THREAD
+
+    async def test_a_mention_late_in_a_long_thread_counts(self, world: World) -> None:
+        root = await world.post("bob", "deploy notes", at=0)
+        for n in range(60):
+            await world.post("bob", f"note {n}", at=1 + n, thread=root)
+        await world.post("alice", "@helper can you look?", at=100, thread=root)
+        reply = await world.post("alice", "the logs are above", at=110, thread=root)
+
+        assert await world.route("helper", reply) == THREAD
+
+    async def test_an_email_address_is_not_a_mention(self, world: World) -> None:
+        answer = await world.post("helper", "Who should I send it to?", at=0)
+        reply = await world.post(
+            "alice", "send it to ops@example.com", at=30, thread=answer
+        )
+
+        assert await world.route("helper", reply) == THREAD
+
+    def test_a_real_mention_still_stands_the_rules_aside(self) -> None:
+        assert not may_follow(
+            _settings(), channel_type=None, message=_msg("cc @bob please")
+        )
+        assert may_follow(
+            _settings(), channel_type=None, message=_msg("mail ops@example.com")
+        )
+
+
+class TestTheThreadMemory:
+    """The free check remembers which threads each agent takes part in."""
+
+    def _counting(self, world: World, consumer: AgentConsumer) -> list[object]:
+        opened: list[object] = []
+
+        def counting() -> Any:
+            opened.append(object())
+            return world.session_factory()
+
+        consumer.actor.session_factory = counting  # type: ignore[assignment]
+        return opened
+
+    async def test_an_unrelated_thread_is_read_once_then_free(
+        self, world: World
+    ) -> None:
+        root = await world.post("bob", "lunch?", at=0)
+        first = await world.post("alice", "1pm?", at=10, thread=root)
+        second = await world.post("bob", "sure", at=20, thread=root)
+        consumer = _consumer(world, "helper", _settings())
+        opened = self._counting(world, consumer)
+
+        await consumer._follow_the_conversation(
+            await _inbound(world, first), _meta(world)
+        )
+        reads_after_first = len(opened)
+        await consumer._follow_the_conversation(
+            await _inbound(world, second), _meta(world)
+        )
+
+        assert reads_after_first == 1
+        assert len(opened) == 1  # the second reply cost nothing
+
+    async def test_its_own_answer_starts_a_known_thread(self, world: World) -> None:
+        consumer = _consumer(world, "helper", _settings())
+        consumer.actor.room_join_times = {}  # type: ignore[attr-defined]
+        consumer._startup_ts = 0
+        answer = InboundMessage(
+            room_id="!transport:test",
+            event_id="$answer",
+            sender=world.mxid("helper"),
+            timestamp=1,
+            body="It starts the stack",
+        )
+
+        consumer._should_ignore(RoomRef(room_id="!transport:test"), answer)
+
+        assert consumer._thread_membership[("!transport:test", "$answer")] is True

@@ -27,8 +27,8 @@ def _consumer(enqueued: list[AgentEvent]) -> SimpleNamespace:
             room_id="room-1", bridge_id=None, channel_type="channel_public"
         )
 
-    async def _follow_the_conversation(_event: object, _meta: object) -> bool:
-        return False
+    async def _follow_the_conversation(_event: object, _meta: object) -> object:
+        return SimpleNamespace(delivered=False, agent_live=False)
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="helper"),

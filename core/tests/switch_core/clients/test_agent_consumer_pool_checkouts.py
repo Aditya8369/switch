@@ -14,6 +14,7 @@ open while the client posts to Matrix.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Any
 
@@ -171,6 +172,7 @@ def _client(
     client._attachment_groups = {}
     client._attachment_group_timers = {}
     client._last_top_level_post_ms = {}
+    client._thread_membership = OrderedDict()
     client.sent = []  # type: ignore[attr-defined]
 
     async def _send_message(transport_room_id: str, body: str, **kwargs: Any) -> str:

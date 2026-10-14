@@ -393,40 +393,107 @@ class TestListForRoom:
 class TestConversationHistory:
     """The two reads following the conversation decides from."""
 
-    async def test_a_thread_before_a_message_includes_its_root_first(
+    async def test_whether_someone_posted_in_a_thread(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = MessageStore()
         async with session_factory() as session:
             room = await _make_room(session, "alpha")
             other = await _make_room(session, "beta")
-            await store.create(session, _message(room.id, "$root"), [])
-            await store.create(session, _message(room.id, "$top"), [])
             await store.create(
-                session, _message(room.id, "$r1", thread_root_event_id="$root"), []
+                session, _message(room.id, "$root", sender_id="@root:t"), []
             )
             await store.create(
                 session,
-                _message(other.id, "$elsewhere", thread_root_event_id="$root"),
+                _message(
+                    room.id,
+                    "$auto",
+                    sender_id="@agent:t",
+                    thread_root_event_id="$root",
+                    content={
+                        "body": "Starting a session…",
+                        "com.switch.auto_reply": True,
+                    },
+                ),
                 [],
             )
-            current = await store.create(
-                session, _message(room.id, "$r2", thread_root_event_id="$root"), []
+            await store.create(
+                session,
+                _message(
+                    other.id,
+                    "$elsewhere",
+                    sender_id="@agent:t",
+                    thread_root_event_id="$root",
+                ),
+                [],
+            )
+            now = await store.create(
+                session, _message(room.id, "$now", thread_root_event_id="$root"), []
             )
             await store.create(
-                session, _message(room.id, "$r3", thread_root_event_id="$root"), []
+                session,
+                _message(
+                    room.id,
+                    "$later",
+                    sender_id="@agent:t",
+                    thread_root_event_id="$root",
+                ),
+                [],
             )
             await session.commit()
 
-            rows = await store.list_thread_before(
+            async def posted(sender: str) -> bool:
+                return await store.posted_in_thread(
+                    session,
+                    room.id,
+                    thread_root_event_id="$root",
+                    sender_id=sender,
+                    before_seq=now.seq,
+                    excluding=("com.switch.auto_reply",),
+                )
+
+            # The root counts; an automatic reply, another room, and anything
+            # after the message do not.
+            assert await posted("@root:t")
+            assert not await posted("@agent:t")
+
+    async def test_a_threads_root_and_its_messages_with_an_at(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            await store.create(
+                session, _message(room.id, "$root", body="no mention here"), []
+            )
+            await store.create(
+                session,
+                _message(
+                    room.id, "$plain", body="just chat", thread_root_event_id="$root"
+                ),
+                [],
+            )
+            await store.create(
+                session,
+                _message(
+                    room.id, "$at", body="@helper look", thread_root_event_id="$root"
+                ),
+                [],
+            )
+            now = await store.create(
+                session, _message(room.id, "$now", thread_root_event_id="$root"), []
+            )
+            await session.commit()
+
+            rows = await store.list_thread_mentions_before(
                 session,
                 room.id,
                 thread_root_event_id="$root",
-                before_seq=current.seq,
+                before_seq=now.seq,
                 limit=10,
             )
 
-        assert [r.transport_event_id for r in rows] == ["$root", "$r1"]
+        assert [r.transport_event_id for r in rows] == ["$root", "$at"]
 
     async def test_top_level_before_a_message_is_newest_first_without_replies(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -66,6 +66,7 @@ class CommandConsumer(Consumer[SystemActor]):
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
         frontend_base_url: str | None,
+        follow_the_conversation_enabled: bool,
     ) -> None:
         super().__init__(actor=actor)
         self._agent_store = agent_store
@@ -77,6 +78,9 @@ class CommandConsumer(Consumer[SystemActor]):
         self._reference_store = reference_store
         self._agent_session_store = agent_session_store
         self._room_service = room_service
+        # Whether `!follow-ups` and `!assign-agent` mean anything here: with
+        # the feature flag off they say so rather than claim a change.
+        self._follow_the_conversation_enabled = follow_the_conversation_enabled
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )

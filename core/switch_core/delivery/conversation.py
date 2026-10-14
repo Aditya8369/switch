@@ -44,6 +44,7 @@ from switch_core.clients.admin_messages import (
     PLATFORM_MARKER,
     SENDER_IS_APP_MARKER,
 )
+from switch_core.clients.mentions import NAME_CHAR
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
 from switch_core.delivery.addressing import IncomingMessage
 
@@ -58,55 +59,59 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many of a thread's earlier messages are read, oldest first, so the
-# message that started the thread always counts.
-THREAD_LOOKBACK = 50
+# How many messages of a thread that mention someone are read when looking for
+# one that addressed the agent, oldest first so the thread's root always counts.
+THREAD_MENTION_LOOKBACK = 200
 
-# How many of the channel's earlier top-level messages a follow-up exchange can
-# reach back through.
+# How many of the channel's earlier top-level messages one walk reads. An
+# exchange longer than this still continues: see `_channel_follow_up`.
 CHANNEL_LOOKBACK = 20
 
-# Replies that acknowledge rather than ask. Waking an agent to answer "thanks"
-# costs a session for nothing.
+# Thanks and praise: they close an exchange rather than continue it, so they
+# never wake an agent through a follow-up. Answers are deliberately absent:
+# "yes", "ok", "+1" or a thumbs-up may be the reply to an agent's question.
 _SMALL_TALK = frozenset(
     {
-        "ok",
-        "okay",
-        "k",
-        "kk",
         "thanks",
         "thank you",
         "thanks a lot",
         "thank you very much",
+        "many thanks",
         "thx",
         "ty",
         "cheers",
-        "+1",
-        "got it",
         "great",
         "nice",
         "cool",
         "perfect",
         "awesome",
-        "sounds good",
-        "lgtm",
-        "yep",
-        "yes",
-        "no",
-        "nope",
+        "brilliant",
     }
 )
 
 _TRAILING_PUNCTUATION = re.compile(r"[\s.!?,;:]+$")
 
+# A mention-shaped token: an `@` that starts a word, followed by name
+# characters. An email address (`ops@example.com`) is not one.
+_MENTION = re.compile(rf"(?<!{NAME_CHAR})@{NAME_CHAR}")
+
 
 def is_small_talk(body: str) -> bool:
-    """True for an acknowledgement ("ok", "thanks!", "+1") or a message with no
-    letters or digits at all, such as a lone emoji."""
-    text = _TRAILING_PUNCTUATION.sub("", body.strip().lower())
-    if text in _SMALL_TALK:
-        return True
-    return not any(ch.isalnum() for ch in text)
+    """True for thanks or praise ("thanks!", "great"), which ends an exchange
+    rather than continuing it."""
+    return _TRAILING_PUNCTUATION.sub("", body.strip().lower()) in _SMALL_TALK
+
+
+def mentions_anyone(body: str) -> bool:
+    """Whether the text @-mentions anyone, by the same token rule mentions use.
+    A mention always wins, so the rules stand aside."""
+    return _MENTION.search(body) is not None
+
+
+# The reason given when a thread reply reaches an agent that is not taking part
+# in the thread. Agents' clients remember threads that answered this way, so
+# later replies in them cost nothing.
+NOT_TAKING_PART = "the agent is not taking part in this thread"
 
 
 class ConversationRoute(StrEnum):
@@ -152,7 +157,6 @@ class ConversationMessage:
 def may_follow(
     settings: ConversationSettings,
     *,
-    room_id: str,
     channel_type: str | None,
     message: ConversationMessage,
 ) -> bool:
@@ -164,7 +168,7 @@ def may_follow(
         return False
     if channel_type == "direct":
         return False
-    if "@" in message.body:
+    if mentions_anyone(message.body):
         return False
     content = message.content
     return not any(
@@ -313,21 +317,27 @@ class ConversationRules:
         thread_root_id: str,
         before_seq: int,
     ) -> ConversationDecision:
-        rows = await self._message_store.list_thread_before(
+        if await self._message_store.posted_in_thread(
+            session,
+            room_id,
+            thread_root_event_id=thread_root_id,
+            sender_id=agent_user_id,
+            before_seq=before_seq,
+            excluding=(AUTO_REPLY_FLAG, ADMIN_MARKER),
+        ):
+            return ConversationDecision(
+                ConversationRoute.THREAD_FOLLOW_UP, "the agent posted in this thread"
+            )
+        rows = await self._message_store.list_thread_mentions_before(
             session,
             room_id,
             thread_root_event_id=thread_root_id,
             before_seq=before_seq,
-            limit=THREAD_LOOKBACK,
+            limit=THREAD_MENTION_LOOKBACK,
         )
         for row in rows:
             if _is_automatic(row):
                 continue
-            if row.sender_id == agent_user_id:
-                return ConversationDecision(
-                    ConversationRoute.THREAD_FOLLOW_UP,
-                    "the agent posted in this thread",
-                )
             if await self._addressed_agent(
                 session,
                 agent=agent,
@@ -340,7 +350,7 @@ class ConversationRules:
                     ConversationRoute.THREAD_FOLLOW_UP,
                     "an earlier message in this thread addressed the agent",
                 )
-        return ConversationDecision(None, "the agent is not taking part in this thread")
+        return ConversationDecision(None, NOT_TAKING_PART)
 
     async def _channel_follow_up(
         self,
@@ -352,6 +362,15 @@ class ConversationRules:
         channel_type: str | None,
         current: Message,
     ) -> ConversationDecision:
+        """Walk back through the channel's top-level messages for an unbroken
+        exchange between the sender and this agent.
+
+        It must have started with the sender addressing the agent, unless it
+        runs past the lookback: a run that long with only the two of them in
+        it, each gap inside the window, can only be an exchange already under
+        way. Anyone else posting ends it, and so does the sender turning to
+        someone else with a mention.
+        """
         rows = await self._message_store.list_top_level_before(
             session, room_id, before_seq=current.seq, limit=CHANNEL_LOOKBACK
         )
@@ -396,4 +415,13 @@ class ConversationRules:
                         "continues an exchange the agent has just answered",
                     )
                 return ConversationDecision(None, "the agent has not answered yet")
+            if mentions_anyone(row.body or ""):
+                return ConversationDecision(
+                    None, "the sender turned to someone else since"
+                )
+        if agent_answered and len(rows) == CHANNEL_LOOKBACK:
+            return ConversationDecision(
+                ConversationRoute.CHANNEL_FOLLOW_UP,
+                "continues a long exchange the agent is answering",
+            )
         return ConversationDecision(None, "no recent exchange with this agent")

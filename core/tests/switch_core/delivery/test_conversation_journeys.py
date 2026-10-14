@@ -13,6 +13,7 @@ per journey, mirroring the end-to-end demo.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -46,8 +47,6 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.transport import InboundMessage, RoomRef
 from tests.switch_core.delivery.world import T0, World, _resolver
-
-ADMIN = "@switch-admin:test"
 
 
 class Journey:
@@ -112,6 +111,7 @@ class Journey:
         client._attachment_groups = {}
         client._attachment_group_timers = {}
         client._last_top_level_post_ms = {}
+        client._thread_membership = OrderedDict()
         client._cloud_waking_notices = set()
 
         async def _send_message(_room: str, body: str, **_kwargs: Any) -> str:
@@ -172,7 +172,7 @@ class Journey:
         event = InboundMessage(
             room_id=self.transport_room_id,
             event_id=event_id,
-            sender=self.world.mxid(who) if who != "admin" else ADMIN,
+            sender=self.world.mxid(who),
             timestamp=int(sent_at.timestamp() * 1000),
             content={"msgtype": "m.text", "body": body, **content},
             body=body,
@@ -235,6 +235,7 @@ class Journey:
             _external_user_store=ExternalUserStore(),
             client_store=ClientStore(),
             _connections=SimpleNamespace(live_connection_ids=lambda: set()),
+            _follow_the_conversation_enabled=True,
         )
 
     async def command(self, who: str, command: str, args: str, *, at: float) -> str:
@@ -455,3 +456,69 @@ class TestAgentsDoNotSetEachOtherOff:
         )
 
         assert room.reached(told) == set()
+
+
+class TestReviewFixesThroughTheClients:
+    async def test_no_unavailable_notice_for_a_follow_up(self, room: Journey) -> None:
+        # The agents here have no session. A mention gets the usual notice;
+        # a follow-up is delivered without one.
+        await room.say("alice", "@helper what does just up do?", at=0)
+        notices_after_mention = len(room.refusals)
+        assert notices_after_mention == 1  # the mention did get a notice
+        answer = await room.post("helper", "It starts the stack", at=5)
+
+        told = await room.say("alice", "why two database roles?", at=30, thread=answer)
+
+        assert room.reached(told) == {"helper"}
+        assert len(room.refusals) == notices_after_mention
+
+    async def test_a_follow_up_with_an_email_address_in_it(self, room: Journey) -> None:
+        answer = await room.post("helper", "Who should I send it to?", at=0)
+
+        told = await room.say(
+            "alice", "send it to ops@example.com", at=30, thread=answer
+        )
+
+        assert room.reached(told) == {"helper"}
+
+    async def test_switching_agents_ends_the_exchange(self, room: Journey) -> None:
+        await room.say("alice", "@helper do X", at=0)
+        await room.post("helper", "Done X", at=10)
+        await room.say("alice", "@reviewer check Y", at=20)
+
+        told = await room.say("alice", "it's in PR 12", at=30)
+
+        assert room.reached(told) == set()
+
+
+class TestCommandsWhileTheFlagIsOff:
+    async def test_they_say_so_and_change_nothing(self, world: World) -> None:
+        room = await Journey(world, ON).start()
+        host = room._host(at=0)
+        host._follow_the_conversation_enabled = False
+        replies: list[str] = []
+
+        async def _reply_command(_room: str, body: str, **_kw: object) -> None:
+            replies.append(body)
+
+        host.reply_command = _reply_command
+        for command, args in (
+            ("assign-agent", "@helper"),
+            ("follow-ups", "off"),
+            ("unassign-agent", ""),
+        ):
+            event = SimpleNamespace(
+                command=command, args=args, thread_id=None, user_id=world.mxid("alice")
+            )
+            handler = {
+                "assign-agent": _cmd_assign_agent,
+                "follow-ups": _cmd_follow_ups,
+                "unassign-agent": _cmd_unassign_agent,
+            }[command]
+            await handler(host, RoomRef(room_id=room.transport_room_id), event, False)  # type: ignore[arg-type]
+
+        assert len(replies) == 3
+        assert all("isn't switched on for this Switch server" in r for r in replies)
+        async with world.session_factory() as session:
+            assert await RoomStore().main_agent_id(session, world.room_id) is None
+            assert await RoomStore().follow_ups_enabled(session, world.room_id)

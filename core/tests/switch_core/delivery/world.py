@@ -132,7 +132,6 @@ class World:
             )
             assert may_follow(
                 settings,
-                room_id=self.room_id,
                 channel_type=channel_type,
                 message=message,
             )
@@ -223,6 +222,13 @@ async def make_world(session_factory: async_sessionmaker[AsyncSession]) -> World
         )
         session.add(bridge)
         await session.flush()
+        # The Switch app's own client, which sends room-settings notices.
+        admin_mxid = f"@switch-admin-{tag}:test"
+        session.add(
+            Client(transport_user_id=admin_mxid, display_name="Switch", type="admin")
+        )
+        await session.flush()
+        world.people["admin"] = admin_mxid
         for name in ("alice", "bob"):
             mxid = f"@{name}-{tag}:test"
             client = Client(

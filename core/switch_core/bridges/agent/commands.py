@@ -630,6 +630,25 @@ async def _cmd_list_room_agents(
     await _reply(client, room, event, "\n".join(lines))
 
 
+_FOLLOW_THE_CONVERSATION_OFF = (
+    "Following the conversation isn't switched on for this Switch server, so "
+    "`!follow-ups` and `!assign-agent` have no effect here. Agents only get "
+    "messages that mention them."
+)
+
+
+async def _reject_if_following_is_off(
+    client: AgentConsumer, room: RoomRef, event: CommandEvent
+) -> bool:
+    """True, after saying so, when the server has the feature off: a command
+    must not claim a change that nothing will act on."""
+    host = cast("CommandConsumer", client)
+    if host._follow_the_conversation_enabled:
+        return False
+    await _reply(client, room, event, _FOLLOW_THE_CONVERSATION_OFF)
+    return True
+
+
 _FOLLOW_UPS_ON = (
     "Follow-ups are **on** in this room. A reply in an agent's thread, or your "
     "next message after an agent has just answered you, reaches that agent "
@@ -647,6 +666,8 @@ async def _cmd_follow_ups(
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
+    if await _reject_if_following_is_off(client, room, event):
+        return
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
         await _reply(client, room, event, "Room not found.")
@@ -705,6 +726,8 @@ async def _cmd_assign_agent(
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
+    if await _reject_if_following_is_off(client, room, event):
+        return
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
         await _reply(client, room, event, "Room not found.")
@@ -786,6 +809,8 @@ async def _cmd_unassign_agent(
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
+    if await _reject_if_following_is_off(client, room, event):
+        return
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
         await _reply(client, room, event, "Room not found.")
