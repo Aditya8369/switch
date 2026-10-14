@@ -35,7 +35,7 @@ from typing import Any, Literal
 from switch_core.db.models import AgentController
 from switch_core.management import reason_codes
 from switch_core.management.errors import ManagementError
-from switch_core.management.process_lease import ProcessLeases
+from switch_core.process_lease import ProcessLeases
 
 ControllerState = Literal["online", "offline", "unknown", "revoked"]
 

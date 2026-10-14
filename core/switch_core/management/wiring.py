@@ -9,16 +9,18 @@ serves. `install` also hands Core the agent-facing side
 (`ManagementAgentOperations`), which is what makes the agent operations on
 machines and managed agents exist.
 
-Each process also holds a lease (`process_lease.py`) and writes its
-controllers' connection transitions (`connection_ledger.py`): `start` claims
-the lease before the bridge serves, `run` renews it and writes transitions
-until cancelled, and `stop` writes what is left and marks the lease stopped.
+Each process writes its controllers' connection transitions
+(`connection_ledger.py`) under the lease the process holds whatever features
+it runs (`switch_core.process_lease`, claimed and renewed by the core
+wiring). `start` reads which controllers the other processes hold before the
+bridge serves, `run` writes transitions and reads the bindings and the other
+processes' controllers again now and then until cancelled, and `stop` writes
+what is left, before the core wiring marks the lease stopped.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -41,6 +43,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.management.agent_operations import ManagementAgentOperations
@@ -51,12 +54,9 @@ from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
-from switch_core.management.process_lease import ProcessLease
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.signals import SignalBus
-
-logger = logging.getLogger(__name__)
 
 GATEWAY_PREFIX = "/management"
 
@@ -71,7 +71,6 @@ class Management:
     authenticator: ManagementAuthenticator
     agent_operations: ManagementAgentOperations
     session_factory: async_sessionmaker[AsyncSession]
-    lease: ProcessLease
     ledger: ControllerConnectionLedger
 
     def install(
@@ -96,24 +95,23 @@ class Management:
             await self.service.forget_deleted_agent(session, tenant_id, agent_id)
 
     async def start(self) -> None:
-        """Claim this process's lease, so the connections it records read as
-        held. Raises when the database refuses: a process that cannot hold a
-        lease would show every machine it connects as offline."""
-        await self.lease.renew()
-        logger.info("Claimed switch-core process lease %s", self.lease.process_id)
+        """Read which controllers the other processes hold, before the bridge
+        serves: until then every agent they run reads offline here."""
+        await self.service.signals.reconcile()
 
     async def run(self) -> None:
-        """Renew the lease and write connection transitions, until cancelled."""
-        await asyncio.gather(self.lease.run(), self.ledger.run())
+        """Write connection transitions, and read the bindings and the other
+        processes' controllers again now and then, until cancelled."""
+        # A task group rather than `gather`: cancelled, it waits for both to
+        # unwind, so neither is left holding a database connection.
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self.ledger.run())
+            group.create_task(self.service.signals.reconcile_forever())
 
     async def stop(self) -> None:
-        """Write the transitions still queued, then mark the lease stopped.
-        The lease is marked stopped even when the writes fail, so the
-        machines this process held read offline either way."""
-        try:
-            await self.ledger.flush_all()
-        finally:
-            await self.lease.stop()
+        """Write the transitions still queued. The core wiring marks the
+        process's lease stopped after this, whether it succeeds or not."""
+        await self.ledger.flush_all()
 
     async def load_bindings(self) -> int:
         return await load_bindings(
@@ -138,13 +136,27 @@ def build_management(
     process_id = signal_bus.process_id
     controllers = AgentControllerStore()
     operations = AgentControllerOperationStore()
+    definitions = AgentDefinitionStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
+    signals = ControllerSignals(
+        notifier=ControllerNotifier(),
+        presence=presence,
+        bus=signal_bus,
+        session_factory=session_factory,
+        controllers=controllers,
+        operations=operations,
+        definitions=definitions,
+        rooms=RoomStore(),
+        processes=processes,
+        clock=clock,
+    )
     ledger = ControllerConnectionLedger(
         process_id=process_id,
         session_factory=session_factory,
         controllers=controllers,
         clock=clock,
+        announce=signals.connection_changed,
     )
     presence.use_ledger(ledger)
     service = ManagementService(
@@ -153,17 +165,9 @@ def build_management(
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
         ),
-        signals=ControllerSignals(
-            notifier=ControllerNotifier(),
-            presence=presence,
-            bus=signal_bus,
-            session_factory=session_factory,
-            controllers=controllers,
-            operations=operations,
-            clock=clock,
-        ),
+        signals=signals,
         controllers=controllers,
-        definitions=AgentDefinitionStore(),
+        definitions=definitions,
         operations=operations,
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
@@ -187,11 +191,6 @@ def build_management(
             service=service, session_factory=session_factory
         ),
         session_factory=session_factory,
-        lease=ProcessLease(
-            process_id=process_id,
-            session_factory=session_factory,
-            processes=processes,
-        ),
         ledger=ledger,
     )
 

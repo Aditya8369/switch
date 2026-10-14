@@ -2136,14 +2136,14 @@ class TelemetrySnapshotWatermark(Base):
 
 
 class SwitchCoreProcess(Base):
-    """A running switch-core process's lease (`management/process_lease.py`).
+    """A running switch-core process's lease (`process_lease.py`).
 
-    Each process holding controller sockets claims a row at startup, renews
-    `beat_at` every few seconds, and sets `stopped_at` as it shuts down. A
-    controller connection whose holding process's lease is stale, stopped or
-    gone reads as offline, which is how a process that died without writing
-    its connections' closings is noticed. One write per process per renewal,
-    however many machines it holds.
+    Every process claims a row at startup, renews `beat_at` every few
+    seconds, and sets `stopped_at` as it shuts down. An agent or controller
+    connection whose holding process's lease is stale, stopped or gone reads
+    as offline, which is how a process that died without writing its
+    connections' closings is noticed. One write per process per renewal,
+    however many connections it holds.
 
     Not tenant-scoped: a process serves every tenant. Rows long stale are
     pruned by the live processes.
@@ -2636,6 +2636,189 @@ class AgentPositionTicket(TenantScoped, Base):
     )
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+#: The first connection incarnation the database hands out. Before agent
+#: connections were recorded, each process drew incarnations from a counter
+#: seeded with a random 32-bit number, so every number a client may still hold
+#: from then is below 2**33 and none of them can match one drawn from here.
+CONNECTION_INCARNATION_FLOOR = 2**33
+
+#: The last one: every incarnation stays an integer a JavaScript client holds
+#: exactly.
+CONNECTION_INCARNATION_CEILING = 2**53 - 1
+
+agent_connection_incarnation_sequence = Sequence(
+    "agent_connection_incarnation",
+    metadata=Base.metadata,
+    start=CONNECTION_INCARNATION_FLOOR,
+    minvalue=CONNECTION_INCARNATION_FLOOR,
+    maxvalue=CONNECTION_INCARNATION_CEILING,
+    cycle=False,
+)
+
+
+class AgentConnectionRecord(TenantScoped, Base):
+    """An agent connection, as every switch-core process can see it.
+
+    The connection itself (its socket, its heartbeat, the frames it is owed)
+    lives in the memory of the process holding it (`agent_connections.py`).
+    This row is what the other processes need to know about it: which process
+    holds it (`process_id`, a `switch_core_processes` row), which incarnation
+    is current, and what the client declared. It is written when the
+    connection opens or is reattached and when it closes, never on a
+    heartbeat, and it reads as live only while `closed_at` is null and the
+    holding process's lease is held.
+
+    `incarnation` comes from `agent_connection_incarnation`, so the fence a
+    client names can be checked by any process, not only the one that issued
+    it.
+    """
+
+    __tablename__ = "agent_connections"
+    __table_args__ = (
+        Index("ix_agent_connections_tenant_id", "tenant_id"),
+        Index("ix_agent_connections_agent_id", "agent_id"),
+        UniqueConstraint("id", "tenant_id", name="uq_agent_connections_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_connections_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    process_id: Mapped[str] = mapped_column(Text, nullable=False)
+    incarnation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    delivery_filter: Mapped[str] = mapped_column(Text, nullable=False)
+    spawn_capable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    transport: Mapped[str] = mapped_column(Text, nullable=False)
+    speaks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    accepts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attached_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    close_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentConnectionRoom(TenantScoped, Base):
+    """A room explicitly claimed on an agent connection.
+
+    The primary key is the rule that at most one connection of an agent acts
+    in a room, kept by the database so that two processes claiming the same
+    room for the same agent cannot both succeed. A claim counts only while its
+    connection's row is live.
+    """
+
+    __tablename__ = "agent_connection_rooms"
+    __table_args__ = (
+        Index("ix_agent_connection_rooms_tenant_id", "tenant_id"),
+        Index("ix_agent_connection_rooms_connection_id", "connection_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_connection_rooms_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_connection_rooms_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "connection_id"],
+            ["agent_connections.tenant_id", "agent_connections.id"],
+            name="fk_agent_connection_rooms_connection",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentSessionPlacement(TenantScoped, Base):
+    """Which room one of an agent's sessions connected to, and over which
+    connection.
+
+    A session placed itself with `connect_to_room`, or its watcher stated it
+    with `/connection/placements`. One session of an agent acts in a room, so
+    a room appears once per agent. The placement belongs to the connection it
+    arrived on and goes with that connection's row.
+    """
+
+    __tablename__ = "agent_session_placements"
+    __table_args__ = (
+        Index("ix_agent_session_placements_tenant_id", "tenant_id"),
+        Index("ix_agent_session_placements_connection_id", "connection_id"),
+        UniqueConstraint(
+            "agent_id", "room_id", name="uq_agent_session_placements_agent_room"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_session_placements_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_session_placements_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "connection_id"],
+            ["agent_connections.tenant_id", "agent_connections.id"],
+            name="fk_agent_session_placements_connection",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentSessionCommandRelay(TenantScoped, Base):
+    """A session command waiting for the process that can deliver it.
+
+    A command for one of an agent's sessions (from Switch Console, or a Stop
+    pressed on a bridge) can arrive at any process, while the stream it must
+    be written to (the agent's watcher, or its controller's) is held by one.
+    The command is stored here for that process (`process_id`) and the process
+    is told to look; it deletes the row as it takes the command. The signal
+    carries only ids, because a command's content is tenant data and a
+    `NOTIFY` is readable by any listener.
+    """
+
+    __tablename__ = "agent_session_command_relays"
+    __table_args__ = (
+        Index("ix_agent_session_command_relays_tenant_id", "tenant_id"),
+        Index("ix_agent_session_command_relays_process_id", "process_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_session_command_relays_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    process_id: Mapped[str] = mapped_column(Text, nullable=False)
+    frame: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3173,6 +3356,15 @@ class AgentController(TenantScoped, Base):
     the current connection, or the last one once it has closed; a new one
     replaces them. Every replica reads them, so whether the machine is
     connected does not depend on which process holds its socket.
+
+    The `open_*` columns are the connection the controller last opened,
+    attached or not: its id, its generation, the process holding it and where
+    its stream resumes each agent. Opening and attaching the socket are two
+    requests that may reach two processes, as may a socket reattaching after a
+    drop, so the process the socket reaches reads them to hold the connection
+    itself, and records that it does. Written when the connection opens, when
+    another process takes it up and, for the cursors, when its socket goes;
+    never per heartbeat.
     """
 
     __tablename__ = "agent_controllers"
@@ -3225,6 +3417,13 @@ class AgentController(TenantScoped, Base):
     # `socket_closed`, `heartbeat_lapsed`, `taken_over`, `revoked` or
     # `server_shutdown`.
     disconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    open_connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    open_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # The process holding that connection: the one that opened it, or the one
+    # its socket reached since. Any other process holding a copy closes it.
+    open_process_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Agent id to the cursor its delivery resumes after, or null for the head.
+    open_cursors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

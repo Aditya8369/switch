@@ -30,7 +30,7 @@ from switch_core.db.models import AgentController, SwitchCoreProcess
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.switch_core_process_store import ProcessLeaseRow
 from switch_core.management.connection_ledger import ControllerConnectionLedger
-from switch_core.management.process_lease import LEASE_TTL, ProcessLeases
+from switch_core.process_lease import LEASE_TTL, ProcessLeases
 from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
@@ -89,7 +89,7 @@ async def _age_lease(harness: Harness, seconds: float) -> None:
                 "SET beat_at = now() - make_interval(secs => :seconds) "
                 "WHERE id = :id"
             ),
-            {"seconds": seconds, "id": harness.management.lease.process_id},
+            {"seconds": seconds, "id": harness.lease.process_id},
         )
         await session.commit()
 
@@ -178,7 +178,7 @@ class TestTheMachineState:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
-            await harness.management.start()
+            await harness.lease.renew()
             await open_connection(client, controller)
             await _flush(harness)
             listed = await _listed(client, controller)
@@ -215,7 +215,7 @@ class TestTheMachineState:
         assert offline["connection"]["disconnect_reason"] == "socket_closed"
         assert offline["connection"]["disconnected_at"] is not None
         assert row.connection_id == conn.id
-        assert row.connection_process_id == harness.management.lease.process_id
+        assert row.connection_process_id == harness.lease.process_id
 
     async def test_a_socket_reattaching_to_its_connection_is_online_again(
         self, harness: Harness
@@ -242,10 +242,11 @@ class TestTheMachineState:
         store = _CountingStore()
         presence = harness.protocol.connections.controllers
         ledger = ControllerConnectionLedger(
-            process_id=harness.management.lease.process_id,
+            process_id=harness.lease.process_id,
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
         )
         presence.use_ledger(ledger)
         owner = await add_member(harness.session_factory, "ada")
@@ -387,7 +388,7 @@ class TestTheProcessLease:
             still_online = await _listed(client, controller)
             await _age_lease(harness, LEASE_TTL.total_seconds() + 1)
             lapsed = await _listed(client, controller)
-            await harness.management.lease.renew()
+            await harness.lease.renew()
             renewed = await _listed(client, controller)
         assert still_online["state"] == "online"
         assert lapsed["state"] == "offline"
@@ -407,15 +408,15 @@ class TestTheProcessLease:
         async with holder.client() as client, other.client() as elsewhere:
             controller = await enroll_console(holder, client, owner)
             await connect(client, controller)
-            await other.management.start()
+            await other.lease.renew()
             online = await _listed(elsewhere, controller)
             await _age_lease(holder, LEASE_TTL.total_seconds() + 1)
-            await other.management.lease.renew()
+            await other.lease.renew()
             offline = await _listed(elsewhere, controller)
             async with session_factory() as session:
                 await session.execute(
                     SwitchCoreProcess.__table__.delete().where(
-                        SwitchCoreProcess.id == holder.management.lease.process_id
+                        SwitchCoreProcess.id == holder.lease.process_id
                     )
                 )
                 await session.commit()
@@ -448,6 +449,7 @@ class TestTheProcessLease:
             controller = await enroll_console(holder, client, owner)
             await connect(client, controller)
             await holder.management.stop()
+            await holder.lease.stop()
             listed = await _listed(elsewhere, controller)
         assert listed["state"] == "offline"
         assert listed["connection"]["disconnect_reason"] == "server_shutdown"
@@ -464,13 +466,13 @@ class TestTheProcessLease:
                 )
             )
             await session.commit()
-        await harness.management.lease.renew()
+        await harness.lease.renew()
         async with harness.session_factory() as session:
             ids = set(
                 (await session.execute(select(SwitchCoreProcess.id))).scalars().all()
             )
         assert dead not in ids
-        assert harness.management.lease.process_id in ids
+        assert harness.lease.process_id in ids
 
 
 class TestTheLedger:
@@ -491,6 +493,7 @@ class TestTheLedger:
                 session_factory=harness.session_factory,
                 controllers=AgentControllerStore(),
                 clock=harness.clock,
+                announce=lambda tenant_id, controller_id: None,
             )
             elsewhere.disconnected(earlier, "heartbeat_lapsed")
             await elsewhere.flush_all()
@@ -505,10 +508,11 @@ class TestTheLedger:
     ) -> None:
         store = _CountingStore()
         ledger = ControllerConnectionLedger(
-            process_id=harness.management.lease.process_id,
+            process_id=harness.lease.process_id,
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
         )
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
@@ -527,10 +531,11 @@ class TestTheLedger:
     ) -> None:
         store = _CountingStore(failures=1)
         ledger = ControllerConnectionLedger(
-            process_id=harness.management.lease.process_id,
+            process_id=harness.lease.process_id,
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
         )
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:

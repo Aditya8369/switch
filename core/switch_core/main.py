@@ -34,6 +34,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
+from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.event_buffer import (
@@ -128,6 +129,7 @@ from switch_core.db.runtime_role import (
 )
 from switch_core.db.schema_version import require_schema_at_head
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -152,6 +154,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -178,6 +181,7 @@ from switch_core.observability.pool import (
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.outbound import guarded_async_client
+from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -299,27 +303,37 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
 
 
 # Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
-# writes is what lets every other process see this one's machines go offline
-# now rather than when its lease lapses.
-_MANAGEMENT_STOP_SECONDS = 1.0
+# writes is what lets every other process see this one's connections go
+# offline now rather than when its lease lapses.
+_RECORDING_STOP_SECONDS = 1.0
 
 
-async def _stop_management(management: Management) -> None:
-    """Record the controller sockets that went and mark this process's lease
-    stopped. Never raises: if it fails, the lease lapses on its own."""
+async def _stop_recording(
+    connections: SharedConnections,
+    management: Management | None,
+    lease: ProcessLease,
+) -> None:
+    """Record the agent and controller connections that went, then mark this
+    process's lease stopped. Never raises: if it fails, the lease lapses on
+    its own."""
     try:
-        async with asyncio.timeout(_MANAGEMENT_STOP_SECONDS):
-            await management.stop()
+        async with asyncio.timeout(_RECORDING_STOP_SECONDS):
+            try:
+                await connections.stop()
+                if management is not None:
+                    await management.stop()
+            finally:
+                await lease.stop()
     except TimeoutError:
         logger.warning(
-            "Gave up recording controller disconnections after %.1fs; their "
-            "machines read offline once this process's lease lapses.",
-            _MANAGEMENT_STOP_SECONDS,
+            "Gave up recording connection closings after %.1fs; this process's "
+            "connections read offline once its lease lapses.",
+            _RECORDING_STOP_SECONDS,
         )
     except Exception:
         logger.warning(
-            "Recording controller disconnections at shutdown failed; their "
-            "machines read offline once this process's lease lapses.",
+            "Recording connection closings at shutdown failed; this process's "
+            "connections read offline once its lease lapses.",
             exc_info=True,
         )
 
@@ -649,6 +663,24 @@ async def run(config: SwitchConfig) -> None:
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
+    # This process's lease, held whatever features it runs: a connection this
+    # process holds counts as live in the others only while the lease is held
+    # (`process_lease.py`). Its id is the signal bus's, so a signal's sender
+    # and a row's holder are named alike.
+    lease = ProcessLease(
+        process_id=signal_bus.process_id,
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+    )
+    # The agent connections this process holds, recorded for the others, and
+    # a copy of theirs kept in `connections` (`connection_rows.py`).
+    shared_connections = SharedConnections(
+        registry=connections,
+        session_factory=session_factory,
+        store=AgentConnectionStore(),
+        bus=signal_bus,
+        lease=lease,
+    )
 
     # One shared read per room for every client in this process.
     room_cache = RoomDeliveryCache(
@@ -973,6 +1005,13 @@ async def run(config: SwitchConfig) -> None:
         tags=["bridge-webhooks"],
     )
 
+    # Before the bridge serves: a connection this process records reads as
+    # held elsewhere only once the lease is. Raises when the database refuses,
+    # since a process that cannot hold a lease would show every connection it
+    # holds as offline.
+    await lease.renew()
+    logger.info("Claimed switch-core process lease %s", lease.process_id)
+
     if management is not None:
         management.install(
             agent_bridge_app=agent_bridge_app,
@@ -983,6 +1022,10 @@ async def run(config: SwitchConfig) -> None:
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
         await management.start()
+
+    # Before the bridge serves, so the first presence question already knows
+    # the agents connected to the other processes.
+    await shared_connections.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
@@ -1066,6 +1109,8 @@ async def run(config: SwitchConfig) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
+            lease_task = asyncio.create_task(lease.run())
+            shared_connections_task = asyncio.create_task(shared_connections.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1092,10 +1137,11 @@ async def run(config: SwitchConfig) -> None:
                 service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
-                if management is not None:
-                    assert management_task is not None
+                lease_task.cancel()
+                shared_connections_task.cancel()
+                if management_task is not None:
                     management_task.cancel()
-                    await _stop_management(management)
+                await _stop_recording(shared_connections, management, lease)
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
