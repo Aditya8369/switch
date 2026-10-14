@@ -1105,49 +1105,22 @@ def _record_beat(
     protocol: AgentCore,
     agent_id: str,
     connection_id: str,
-    cursor: int,
     generation: int | None,
-    position: Position | None = None,
 ) -> AgentConnection:
-    """Count a client's beat and record how far it has read.
+    """Count a client's beat: the client is still there.
 
     A beat is a pong on the WebSocket, or a `POST /connection/beat` from an
-    event-stream client. A client on agent-protocol revision 9 reports its
-    position. An older client reports one integer, `cursor`. On a connection
-    that reads only the agent's own events, the integer is their `seq`. On a
-    connection that also reads the room conversation, it is a ticket id, read
-    from the tickets recently sent on this connection; an older one, or a
-    smaller number, cannot be mapped to a position and is ignored.
-
-    Each entry of the reported position is lowered to what this server has
-    sent on the connection (`conn.position`), and an entry for a source the
-    connection has no place in is dropped. A client cannot have read further
-    than it was sent. A larger number comes from another history, such as a
-    database restored from backup or a different server, and `beat()` never
-    moves a position backwards, so keeping it would make the server skip
-    every event up to it without telling the client. The bound is kept in
-    memory, so a beat costs no database query.
+    event-stream client. Clients also report how far they have read; it is not
+    read here. The connection's position is moved only by the stream, as it
+    sends, and a client that drops resumes from the position it sends when it
+    reopens, which is checked against the database then. So a beat costs no
+    database query.
 
     Raises the registry's refusal when the connection is no longer this
     client's to beat for: another socket took it over (`taken_over`), or it
     has no stream attached (`no_stream`), or it is gone.
     """
-    conn = protocol.connections.require(agent_id, connection_id)
-    if position is not None:
-        reported = dict(position)
-    elif conn.reads_conversation and cursor >= TICKET_FLOOR:
-        reported = dict(conn.issued_tickets.get(cursor, {}))
-    elif conn.reads_conversation:
-        reported = {}
-    else:
-        reported = {OWN_EVENTS: cursor}
-    sent = conn.position
-    within = {
-        source: min(seq, sent[source])
-        for source, seq in reported.items()
-        if source in sent
-    }
-    return protocol.connections.beat(agent_id, connection_id, within, generation)
+    return protocol.connections.beat(agent_id, connection_id, generation)
 
 
 @router.post("/{agent_id}/connection/beat")
@@ -1161,25 +1134,14 @@ async def connection_beat(
 
     The socket carries its own heartbeat; this is for a client built before it,
     kept with the event stream for the same compatibility window. Proves the
-    client is alive and reports its cursor. Rejected when the connection is
+    client is alive. Rejected when the connection is
     unknown, dead, has no stream attached, or belongs to another incarnation.
     A refusal carries a code beside its prose, because the remedies differ:
     `taken_over` is terminal for the client that receives it, and the rest are
     recovered by reopening.
     """
     try:
-        reported = None if req.position is None else positions.parse(req.position)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    try:
-        conn = _record_beat(
-            protocol,
-            agent.id,
-            req.connection_id,
-            req.cursor,
-            req.generation,
-            reported,
-        )
+        conn = _record_beat(protocol, agent.id, req.connection_id, req.generation)
     except (
         NoStreamAttachedError,
         SupersededConnectionError,
@@ -1378,22 +1340,8 @@ async def _receive_pongs(
             return None
         if not isinstance(message, dict) or message.get("type") != "pong":
             continue
-        raw = message.get("cursor", 0)
-        cursor = raw if isinstance(raw, int) and raw >= 0 else 0
-        position: Position | None = None
-        if "position" in message:
-            try:
-                position = positions.parse(message["position"])
-            except ValueError:
-                # A position that fails to parse is treated as an empty
-                # report: the beat still counts and the connection's position
-                # stays where it was. A pong has no response that could carry
-                # the 422 that `POST /connection/beat` returns.
-                position = {}
         try:
-            _record_beat(
-                protocol, agent_id, connection_id, cursor, generation, position
-            )
+            _record_beat(protocol, agent_id, connection_id, generation)
         except ConnectionError_ as refusal:
             return refusal
 

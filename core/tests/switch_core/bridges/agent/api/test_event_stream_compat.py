@@ -165,7 +165,9 @@ class _Reader:
 async def _beat(protocol: _Protocol, cursor: int, generation: int | None) -> Any:
     return await connection_beat(
         AGENT_ID,
-        ConnectionBeatRequest(connection_id="c1", cursor=cursor, generation=generation),
+        ConnectionBeatRequest.model_validate(
+            {"connection_id": "c1", "cursor": cursor, "generation": generation}
+        ),
         SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]
     )
@@ -193,7 +195,8 @@ async def test_an_old_client_connects_receives_beats_and_lapses(
     assert data["sequence"] == ticket
     assert "position" not in data
 
-    # The ticket it beats with is read back as the position it stands for.
+    # The beat carries the ticket, which is not read. It is answered with where
+    # the connection stands: the last ticket sent and the position it stands for.
     beaten = await _beat(protocol, ticket, generation)
     assert beaten == {
         "ok": True,

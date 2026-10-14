@@ -26,7 +26,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     UnfencedBeatError,
     UnknownConnectionError,
 )
-from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 
 AGENT = "agent-1"
 OTHER_AGENT = "agent-2"
@@ -224,7 +224,7 @@ def test_a_beat_without_a_stream_is_rejected() -> None:
     # The client is alive but receiving nothing. It must be told, not left
     # believing it is connected.
     with pytest.raises(NoStreamAttachedError):
-        registry.beat(AGENT, "c1", {OWN_EVENTS: 5}, conn.stream_generation)
+        registry.beat(AGENT, "c1", conn.stream_generation)
 
 
 def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
@@ -250,24 +250,6 @@ def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
     assert conn.stream_attached
 
 
-def test_beat_advances_the_position_but_never_rewinds_it() -> None:
-    """Source by source: a report behind on one source and ahead on another
-    moves only the one it is ahead on."""
-    registry = AgentConnectionRegistry()
-    conn = _open(registry, "c1")
-    current = conn.stream_generation
-    room = room_source(ROOM_A)
-
-    assert registry.beat(AGENT, "c1", {OWN_EVENTS: 7, room: 40}, current).position == {
-        OWN_EVENTS: 7,
-        room: 40,
-    }
-    assert registry.beat(AGENT, "c1", {OWN_EVENTS: 3, room: 41}, current).position == {
-        OWN_EVENTS: 7,
-        room: 41,
-    }
-
-
 def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
     registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
@@ -276,28 +258,22 @@ def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
     _open(registry, "c1")  # the winner attaches; incarnation bumps
 
     with pytest.raises(SupersededConnectionError) as caught:
-        registry.beat(AGENT, "c1", {OWN_EVENTS: 0}, displaced)
+        registry.beat(AGENT, "c1", displaced)
 
     assert caught.value.presented == displaced
     assert caught.value.current == displaced + 1
 
 
-def test_a_refused_beat_leaves_the_winners_position_where_it_was() -> None:
+def test_a_refused_beat_is_not_counted_for_the_winner() -> None:
     registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     displaced = conn.stream_generation
     winner = _open(registry, "c1")
-    registry.beat(AGENT, "c1", {OWN_EVENTS: 7}, winner.stream_generation)
+    registry.beat(AGENT, "c1", winner.stream_generation)
 
-    before = dict(winner.position)
-    assert before[OWN_EVENTS] == 7
-
-    # The displaced client is further ahead than the winner: it was sent
-    # events the winner never saw. Adopting that position would skip them.
     with pytest.raises(SupersededConnectionError):
-        registry.beat(AGENT, "c1", {OWN_EVENTS: 99}, displaced)
+        registry.beat(AGENT, "c1", displaced)
 
-    assert winner.position == before
     assert winner.beats == 1
 
 
@@ -310,7 +286,7 @@ def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
     winner.last_beat = aging
 
     with pytest.raises(SupersededConnectionError):
-        registry.beat(AGENT, "c1", {OWN_EVENTS: 0}, displaced)
+        registry.beat(AGENT, "c1", displaced)
 
     # The loser cannot hold the winner's connection open on its behalf: the
     # clock keeps running, so a winner that has gone quiet still lapses.
@@ -324,7 +300,7 @@ def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
 
     # A client that declares nothing sends no incarnation. Unknown is not
     # superseded.
-    assert registry.beat(AGENT, "c1", {OWN_EVENTS: 4}, None).position[OWN_EVENTS] == 4
+    assert registry.beat(AGENT, "c1", None).beats == 1
 
 
 def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> None:
@@ -334,22 +310,20 @@ def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> No
     # The server still accepts revision 1, and that revision has no incarnation
     # to return, so its tick is taken as it always was. Refusing it would break
     # every client released before the fence rather than fencing it.
-    assert registry.beat(AGENT, "c1", {OWN_EVENTS: 4}, None).position[OWN_EVENTS] == 4
+    assert registry.beat(AGENT, "c1", None).beats == 1
 
 
 def test_a_holder_that_carries_an_incarnation_may_not_tick_without_one() -> None:
     registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
-    conn.position[OWN_EVENTS] = 4
 
     # Otherwise the fence is a formality: a displaced client that never saw its
     # own incarnation — or one that would rather not be fenced — sends null and
     # is treated as the holder, which is what the incarnation exists to stop.
     with pytest.raises(UnfencedBeatError) as caught:
-        registry.beat(AGENT, "c1", {OWN_EVENTS: 99}, None)
+        registry.beat(AGENT, "c1", None)
 
     assert caught.value.speaks == PROTOCOL_VERSION
-    assert conn.position[OWN_EVENTS] == 4
     assert conn.beats == 0
 
 
@@ -364,7 +338,7 @@ def test_what_a_connection_cannot_be_fenced_by_follows_its_current_holder() -> N
     _open(registry, "c1")
 
     with pytest.raises(UnfencedBeatError):
-        registry.beat(AGENT, "c1", {OWN_EVENTS: 4}, None)
+        registry.beat(AGENT, "c1", None)
 
 
 # ── Room slots ──────────────────────────────────────────────────────────────
@@ -558,8 +532,7 @@ class TestAReattachCanBeFenced:
             conn.stream_attached,
             conn.declaration,
         ) == before
-        beaten = registry.beat(AGENT, "c1", {OWN_EVENTS: 7}, conn.stream_generation)
-        assert beaten.position[OWN_EVENTS] == 7
+        assert registry.beat(AGENT, "c1", conn.stream_generation).beats == 1
 
     def test_claiming_nothing_still_takes_the_connection_over(self) -> None:
         """A deliberate takeover makes no claim, and keeps working.

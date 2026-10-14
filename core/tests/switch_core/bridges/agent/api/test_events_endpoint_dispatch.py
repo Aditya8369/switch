@@ -557,7 +557,7 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert protocol.connections.beat(
-        AGENT_ID, "c1", {OWN_EVENTS: 0}, conn.stream_generation
+        AGENT_ID, "c1", conn.stream_generation
     ).stream_attached
     await newer.body_iterator.aclose()
 

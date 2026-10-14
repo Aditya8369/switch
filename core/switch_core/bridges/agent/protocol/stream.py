@@ -415,8 +415,8 @@ async def _event_stream(
                         "reason": unread.reason,
                     }
                 # Advance before yielding, because the position records what
-                # the server has written out. What the client has processed
-                # comes back on its heartbeat, and that governs resume.
+                # the server has written out. Where the client resumes after a
+                # drop is its own position, which it sends when it reopens.
                 if item.seq > conn.position.get(item.source, -1):
                     conn.position[item.source] = item.seq
                 if tickets:
@@ -510,7 +510,6 @@ async def _gap(
             tenant, conn.agent_id, [dict(conn.position)]
         )
         conn.ticket = resumed_at
-        conn.issued(resumed_at, conn.position)
     return {
         "from_sequence": from_sequence,
         "resumed_at": resumed_at,
@@ -736,10 +735,7 @@ async def _tickets_for(
             positions.append(dict(position))
     if not positions:
         return []
-    tickets = await buffer.mint_tickets(tenant, conn.agent_id, positions)
-    for ticket, position in zip(tickets, positions, strict=True):
-        conn.issued(ticket, position)
-    return tickets
+    return await buffer.mint_tickets(tenant, conn.agent_id, positions)
 
 
 def _number_for(

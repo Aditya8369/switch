@@ -45,7 +45,7 @@ from switch_core.bridges.agent.protocol.liveness import (
 from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER as TAKEN_OVER
 from switch_core.bridges.agent.protocol.liveness import CloseCode as CloseCode
 from switch_core.bridges.agent.protocol.liveness import Closure as Closure
-from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position, merged
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     AGENT_CONNECTIONS_EXPIRED,
@@ -96,12 +96,9 @@ ROOM_RELEASED_PROTOCOL_REVISION = 6
 
 # From this agent-protocol revision a client tracks a position (one number per
 # source, see `positions.py`) instead of a single number. It opens with
-# `start_at`, reads `position` from each event, and reports its position on
-# every heartbeat. A client on an older revision is sent a single number.
+# `start_at` and reads `position` from each event. A client on an older
+# revision is sent a single number.
 POSITIONS_PROTOCOL_REVISION = 9
-
-# How many recently sent tickets a connection remembers (`AgentConnection.issued`).
-ISSUED_TICKETS_KEPT = 256
 
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
@@ -124,7 +121,7 @@ class UnknownConnectionError(ConnectionError_):
     def __init__(self, connection_id: str) -> None:
         super().__init__(
             f"connection {connection_id} is not open; reconnect and resume from "
-            "your cursor"
+            "where you got to"
         )
         self.connection_id = connection_id
 
@@ -166,7 +163,7 @@ class SupersededConnectionError(ConnectionError_):
         super().__init__(
             f"connection {connection_id} was reopened since incarnation "
             f"{presented} and is now at {current}; another client holds it, so "
-            "this heartbeat was refused and its cursor was not applied"
+            "this heartbeat was refused"
         )
         self.connection_id = connection_id
         self.presented = presented
@@ -441,9 +438,6 @@ class AgentConnection:
     # ticket is the id of a row in `agent_position_tickets` that stores a full
     # position, so the client can resume from it by sending back one number.
     ticket: int = 0
-    # The tickets most recently sent on this connection, and the position each
-    # stands for, so a beat that reports one is read without a database query.
-    issued_tickets: dict[int, Position] = field(default_factory=dict)
     # True when the client asked to resume from a ticket the server does not
     # have, because it expired or never existed. The stream then opens with a
     # gap frame, and `resume_requested` holds the number the client sent so the
@@ -453,14 +447,6 @@ class AgentConnection:
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
-
-    def issued(self, ticket: int, position: Position) -> None:
-        """Remember a ticket sent on this connection, keeping the most recent
-        `ISSUED_TICKETS_KEPT`. A client beats with the last ticket it received,
-        so older ones are only ever reported late."""
-        self.issued_tickets[ticket] = dict(position)
-        while len(self.issued_tickets) > ISSUED_TICKETS_KEPT:
-            del self.issued_tickets[next(iter(self.issued_tickets))]
 
     @property
     def reads_conversation(self) -> bool:
@@ -815,14 +801,13 @@ class AgentConnectionRegistry:
         self,
         agent_id: str,
         connection_id: str,
-        position: Position,
         generation: int | None,
     ) -> AgentConnection:
-        """Record a client tick and the position it reports.
+        """Record a client tick: the client is still there.
 
-        The reported position is merged into the stored one (`merged`), so no
-        source moves back: a tick that arrives late carrying an older position
-        leaves the connection where it is.
+        A tick says nothing about how far the client has read. The connection's
+        position is moved only by the stream, as it sends, and a client that
+        drops resumes from the position it sends when it reopens.
 
         Rejects a tick for a connection with no stream: the client is alive but
         receiving nothing, and must be told to reopen rather than left believing
@@ -832,9 +817,9 @@ class AgentConnectionRegistry:
         actually attached to. Sharing an id is what makes takeover work, and it
         is also what makes a displaced client's tick indistinguishable from the
         winner's — same id, same token. Unfenced, the loser keeps the
-        connection alive on the winner's behalf and, because a higher position
-        is adopted, drags the winner past events it was never sent. Nothing is
-        mutated before the check, so a refused tick costs the winner nothing.
+        connection alive on the winner's behalf, so the winner is never told it
+        was dropped. Nothing is mutated before the check, so a refused tick
+        costs the winner nothing.
 
         `None` is a tick that cannot be fenced, and it is accepted only from a
         connection whose holder is a client built before the fence existed.
@@ -860,7 +845,6 @@ class AgentConnectionRegistry:
             raise NoStreamAttachedError(connection_id)
         conn.last_beat = time.monotonic()
         conn.beats += 1
-        conn.position = merged(conn.position, position)
         return conn
 
     def require(self, agent_id: str, connection_id: str) -> AgentConnection:

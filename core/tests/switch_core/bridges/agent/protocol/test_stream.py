@@ -1112,9 +1112,7 @@ async def test_replaced_stream_cannot_capture_its_successors_generation(
     old = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
     _open(registry)
     assert await _take(old, 1) == []
-    assert registry.beat(
-        AGENT, conn.id, {OWN_EVENTS: 0}, conn.stream_generation
-    ).stream_attached
+    assert registry.beat(AGENT, conn.id, conn.stream_generation).stream_attached
 
 
 async def test_closed_stream_cannot_detach_a_recreated_connection(
@@ -1130,7 +1128,7 @@ async def test_closed_stream_cannot_detach_a_recreated_connection(
     assert replacement is not conn
     await old.aclose()
     assert registry.beat(
-        AGENT, replacement.id, {OWN_EVENTS: 0}, replacement.stream_generation
+        AGENT, replacement.id, replacement.stream_generation
     ).stream_attached
 
 

@@ -5,8 +5,8 @@ only act on the status: every refusal meant reopen. One of the three must never
 be answered that way. Being superseded means another client holds the
 connection, and reopening is itself a takeover — so the client that was fenced
 out reopens, takes it straight back off the winner, and the pair trade it for
-as long as both run. The fence stops the loser's cursor from moving the
-winner's; it did not stop the loser from coming back.
+as long as both run. The fence stops the loser's beats from counting for the
+winner; it did not stop the loser from coming back.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:
 
 
 async def _beat(protocol: _Protocol, generation: int | None) -> Any:
-    return _record_beat(protocol, AGENT_ID, CONN_ID, 0, generation)  # type: ignore[arg-type]
+    return _record_beat(protocol, AGENT_ID, CONN_ID, generation)  # type: ignore[arg-type]
 
 
 async def test_a_superseded_tick_is_refused_as_a_takeover(
@@ -99,7 +99,7 @@ async def test_a_tick_with_no_stream_is_refused_as_something_to_reopen(
 async def _post_beat(protocol: _Protocol, generation: int | None) -> Any:
     return await connection_beat(
         AGENT_ID,
-        ConnectionBeatRequest(connection_id=CONN_ID, cursor=0, generation=generation),
+        ConnectionBeatRequest(connection_id=CONN_ID, generation=generation),
         SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]
     )
