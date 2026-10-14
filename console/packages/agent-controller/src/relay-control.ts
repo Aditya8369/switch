@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { lstat, open } from 'node:fs/promises';
 import { connect } from 'node:net';
 import {
   ControlClient,
@@ -114,20 +114,28 @@ const controlFileSchema = z.strictObject({
  * naming nothing but a port (always on 127.0.0.1) and a token.
  */
 export async function readControlFile(path: string): Promise<{ port: number; token: string }> {
+  const symlinked = () =>
+    new ControlError('control_file_invalid', `${path} is a symlink; it is not followed.`);
+  let link;
   let handle;
   try {
+    // Windows has no O_NOFOLLOW, so the symlink check is lstat, and the open is held to the same inode below.
+    link = await lstat(path);
+    if (link.isSymbolicLink()) throw symlinked();
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
+    if (error instanceof ControlError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT')
       throw new ControlError('agent_not_running', 'The agent’s host has no control port open.');
-    if (code === 'ELOOP' || code === 'EMLINK')
-      throw new ControlError('control_file_invalid', `${path} is a symlink; it is not followed.`);
+    if (code === 'ELOOP' || code === 'EMLINK') throw symlinked();
     throw error;
   }
   let text: string;
   try {
     const stat = await handle.stat();
+    if (stat.dev !== link.dev || stat.ino !== link.ino)
+      throw new ControlError('control_file_invalid', `${path} changed while it was opened.`);
     if (!stat.isFile())
       throw new ControlError('control_file_invalid', `${path} is not a regular file.`);
     if (stat.size > CONTROL_FILE_LIMIT_BYTES)
