@@ -3488,6 +3488,69 @@ class ServiceConnection(TenantScoped, Base):
     )
 
 
+class SignInFlow(TenantScoped, Base):
+    """A person part-way through signing in to a service from Switch Console.
+
+    A sign-in is half a dozen requests, from Console and from the person's
+    browser, and with several switch-core processes behind one address each
+    can land on any of them, so the flow lives here rather than in the memory
+    of the process that started it (`connections/sign_in_flows.py`).
+
+    `id` is the state Console chose for the flow, which travels in the
+    vendor's redirect, so the browser's requests find the flow by it and the
+    flow's tenant through `tenant_of_sign_in_flow`. `kind` is `github` for the
+    GitHub App's own sign-in and `service` for the catalog's OAuth sign-ins:
+    a person has at most one flow of each kind at a time. `status` moves by
+    conditional update only, so of two requests racing for one step exactly
+    one takes it.
+
+    Nothing secret is stored in the clear: the PKCE verifier and, once the code
+    is exchanged, the vendor's credentials are keyring-encrypted, and the
+    completion secret and browser nonce are kept as SHA-256 hashes, compared
+    against what Console and the browser present. `details` holds what the
+    flow asked the vendor for (its name, scopes and consent), none of it
+    secret. Rows expire after ten minutes, and expired ones are deleted as the
+    next flow in the workspace starts.
+    """
+
+    __tablename__ = "sign_in_flows"
+    __table_args__ = (
+        CheckConstraint("kind IN ('github', 'service')", name="ck_sign_in_flows_kind"),
+        CheckConstraint(
+            "status IN ('pending', 'authorizing', 'returning', 'delivered', "
+            "'checking', 'ready', 'failed')",
+            name="ck_sign_in_flows_status",
+        ),
+        CheckConstraint("mode IN ('loopback', 'core')", name="ck_sign_in_flows_mode"),
+        Index("ix_sign_in_flows_user", "tenant_id", "user_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_label: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    encrypted_verifier: Mapped[str] = mapped_column(Text, nullable=False)
+    completion_secret_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    browser_nonce_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class ServiceOAuthClient(Base):
     """The OAuth client Core registered for itself at a service's vendor.
 

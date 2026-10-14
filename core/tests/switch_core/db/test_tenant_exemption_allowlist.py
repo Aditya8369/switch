@@ -109,6 +109,12 @@ _ALLOWED_MODULES = {
     # the tenant it produced, so a wrong answer here is a miss rather than a
     # cross-tenant read.
     "switch_core.bridges.collaboration.install_service",
+    # A sign-in's browser steps (leaving for the vendor, coming back,
+    # continuing to Switch Console) carry no Switch session, only the flow's
+    # state, and may reach any process. The state is the one thing that names
+    # the flow's tenant, and the flow is then read scoped to it, so a wrong
+    # answer is a missing flow rather than a cross-tenant read.
+    "switch_core.connections.sign_in_flows",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
