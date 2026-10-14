@@ -228,6 +228,12 @@ class PostgresTransport:
         # the listener announces.
         self._cursors: dict[str, int] = {}
         self._watching: dict[str, str] = {}
+        # Rooms this client is joining itself right now, between writing its
+        # membership row and watching the room from its own arrival. A
+        # reconcile that reads the row in that window must leave the room to
+        # the join, or it would watch from the head and the client would miss
+        # its own arrival.
+        self._joining: set[str] = set()
         self._receiving = False
         self._closed = asyncio.Event()
         # Rooms this client has been told moved but has not read yet, and the
@@ -263,7 +269,12 @@ class PostgresTransport:
         # Before the rooms are read, not after they are subscribed: reading
         # them and watching each is several round trips, and a removal rung
         # during those has no membership row for the caller to fall back to.
-        self._invites.register(self.client_id, self._on_invited, self._on_removed)
+        self._invites.register(
+            self.client_id,
+            self._on_invited,
+            self._on_removed,
+            self._reconcile_membership,
+        )
         self._receiving = True
         try:
             rooms = await self.joined_rooms()
@@ -283,7 +294,12 @@ class PostgresTransport:
                 delivery.cancel()
         finally:
             self._receiving = False
-            self._invites.unregister(self.client_id, self._on_invited, self._on_removed)
+            self._invites.unregister(
+                self.client_id,
+                self._on_invited,
+                self._on_removed,
+                self._reconcile_membership,
+            )
             self._unwatch_all()
 
     async def _deliver_forever(self) -> None:
@@ -350,6 +366,10 @@ class PostgresTransport:
         is the client's decision and it already has one — the same one it made
         when the invitation arrived over sync.
         """
+        await self._invite_self(transport_room_id, _now_ms())
+
+    async def _invite_self(self, transport_room_id: str, joined_at_ms: int) -> None:
+        """Hand `on_invite` the room, stamped with when the client joined it."""
         handler = self._handlers.on_invite
         if handler is None:
             return
@@ -359,12 +379,64 @@ class PostgresTransport:
                 room_id=transport_room_id,
                 event_id=new_event_id(),
                 sender=self.user_id,
-                timestamp=_now_ms(),
+                timestamp=joined_at_ms,
                 state_key=self.user_id,
                 membership="invite",
                 display_name=self.display_name,
             ),
         )
+
+    async def _reconcile_membership(self) -> None:
+        """Start or stop reading the rooms whose membership changed underneath.
+
+        A membership written by another switch-core process reaches this copy
+        of the client only as a `membership.changed` signal, and a signal can
+        be missed, so this also runs periodically. It re-reads the client's
+        rows and compares them with what it reads now. A room it is no longer
+        in goes through `_on_removed`, the path a removal rung in this process
+        takes. A room it is in but does not read goes through `on_invite`, as
+        an invitation would, and is watched from its head: the copy in the
+        process that wrote the row has already heard the arrival and greeted,
+        and doing it again here would greet twice. The join time handed on is
+        the row's, the database's clock, so every process filters the room's
+        rows from the same moment.
+
+        Only rooms already read before the rows were fetched can be dropped. A
+        room joined since was joined after its row committed, so the read
+        cannot have missed it; one joined during the read would otherwise look
+        like a removal.
+        """
+        if not self._receiving:
+            return
+        read_before = dict(self._watching)
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
+            memberships = await self._room_store.memberships_of(session, self.client_id)
+        current = {membership.room_id: membership for membership in memberships}
+        for room_id, transport_room_id in read_before.items():
+            if room_id in current or self._watching.get(room_id) != transport_room_id:
+                continue
+            logger.info(
+                "Client %s is no longer in %s; it stops reading the room",
+                self.user_id,
+                transport_room_id,
+            )
+            await self._on_removed(transport_room_id)
+        for membership in memberships:
+            self._room_ids[membership.transport_room_id] = membership.room_id
+            if (
+                membership.room_id in self._watching
+                or membership.room_id in self._joining
+            ):
+                continue
+            logger.info(
+                "Client %s was added to %s elsewhere; it starts reading the room",
+                self.user_id,
+                membership.transport_room_id,
+            )
+            await self._invite_self(
+                membership.transport_room_id,
+                int(membership.joined_at.timestamp() * 1000),
+            )
 
     async def _on_removed(self, transport_room_id: str) -> None:
         """This client was taken out of a room while it was running.
@@ -1000,6 +1072,15 @@ class PostgresTransport:
         once and the subscription is taken whenever it is missing.
         """
         switch_room_id, tenant_id = await self._resolve_room_and_tenant(room_id)
+        self._joining.add(switch_room_id)
+        try:
+            return await self._join_room(room_id, switch_room_id, tenant_id)
+        finally:
+            self._joining.discard(switch_room_id)
+
+    async def _join_room(
+        self, room_id: str, switch_room_id: str, tenant_id: str
+    ) -> bool:
         async with tenant_session(self._session_factory, tenant_id) as session:
             existing = await session.get(
                 ClientRoom, {"client_id": self.client_id, "room_id": switch_room_id}

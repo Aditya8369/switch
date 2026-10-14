@@ -354,7 +354,7 @@ class Consumer[ActorT: Actor[Any]]:
             self.transport_user_id,
             room.room_id,
         )
-        await self.actor.join_room(room.room_id)
+        await self.actor.join_room(room.room_id, event.timestamp)
 
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """This consumer's actor has been taken out of a room while it was

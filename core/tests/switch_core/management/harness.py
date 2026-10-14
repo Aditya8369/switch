@@ -125,6 +125,9 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         return None
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
 
 class _NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:

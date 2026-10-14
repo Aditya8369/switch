@@ -137,6 +137,7 @@ def build_management(
 ) -> Management:
     process_id = signal_bus.process_id
     controllers = AgentControllerStore()
+    definitions = AgentDefinitionStore()
     operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
@@ -159,11 +160,12 @@ def build_management(
             bus=signal_bus,
             session_factory=session_factory,
             controllers=controllers,
+            definitions=definitions,
             operations=operations,
             clock=clock,
         ),
         controllers=controllers,
-        definitions=AgentDefinitionStore(),
+        definitions=definitions,
         operations=operations,
         api_keys=ApiKeyStore(),
         agents=AgentStore(),

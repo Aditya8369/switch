@@ -39,7 +39,6 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExists
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
-    Binding,
     ControllerPresence,
 )
 from switch_core.db.models import (
@@ -68,6 +67,7 @@ from switch_core.gateway.cloud_controllers import (
 )
 from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
+from switch_core.management.bindings import binding_of
 from switch_core.management.errors import ManagementError, not_found
 from switch_core.management.placement import (
     ControllerState,
@@ -342,7 +342,7 @@ class ManagementService:
             self._announce_revoked(replaced)
             for row in moved:
                 await self._bind(session, tenant_id, row)
-            self._nudge(revisions)
+            self._nudge(tenant_id, revisions)
             logger.info(
                 "Cloud machine %s enrolled again; revoked its previous controller %s "
                 "and moved its %d agent(s) to %s",
@@ -708,6 +708,7 @@ class ManagementService:
         await session.commit()
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
+            self.signals.renamed(tenant_id, controller_id)
         logger.info(
             "Updated agent controller %s (%s)",
             controller_id,
@@ -1057,9 +1058,9 @@ class ManagementService:
             )
         return revisions
 
-    def _nudge(self, revisions: dict[str, int]) -> None:
+    def _nudge(self, tenant_id: str, revisions: dict[str, int]) -> None:
         for controller_id, revision in revisions.items():
-            self.signals.assignment_changed(controller_id, revision)
+            self.signals.assignment_changed(tenant_id, controller_id, revision)
 
     async def _bind(
         self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
@@ -1136,7 +1137,7 @@ class ManagementService:
         )
         await session.commit()
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info(
             "Created managed agent %s on controller %s",
             result.agent_id,
@@ -1288,7 +1289,7 @@ class ManagementService:
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
         return await self._view(
             session, tenant_id, row, agent, {}, await self.leases(session)
@@ -1312,7 +1313,7 @@ class ManagementService:
         )
         await session.commit()
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
 
     async def forget_deleted_agent(
         self, session: AsyncSession, tenant_id: str, agent_id: str
@@ -1337,7 +1338,7 @@ class ManagementService:
         )
         await session.commit()
         self.presence.unbind(agent_id, DETACH_DELETED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info("Stopped managing agent %s, which is being deleted", agent_id)
 
     # ── Operations, owner side ────────────────────────────────────────────────
@@ -1434,20 +1435,6 @@ class ManagementService:
             session, tenant_id, controller_ids, OPERATION_LIST_LIMIT
         )
         return [operation_view(operation) for operation in operations]
-
-
-def binding_of(
-    tenant_id: str, row: AgentDefinitionRow, controller: AgentController
-) -> Binding:
-    """The binding Core keeps for a definition placed on `controller`."""
-    assert row.controller_id == controller.id
-    return Binding(
-        agent_id=row.agent_id,
-        controller_id=controller.id,
-        tenant_id=tenant_id,
-        controller_name=controller.name,
-        running=row.desired_state == "running",
-    )
 
 
 def placement_from(
