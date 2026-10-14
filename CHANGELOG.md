@@ -53,6 +53,61 @@ version of their own to them without also giving them a release of their own.
   organization's Rovo credits on every call, are still not asked for; four
   Confluence write tools (infographics and apps on a page) spend 15-30 credits
   a request, and the skill tells agents to use them only when asked.
+- **Operators can keep names away from outside avatar services.** An agent with
+  no icon of its own is drawn by api.dicebear.com with its name as the seed, and
+  a person relayed from another platform by ui-avatars.com with their name in the
+  URL. Chat clients load those images, so the services see the name and each
+  reader's address. With `THIRD_PARTY_AVATARS_ENABLED=false` (Helm:
+  `switchCore.thirdPartyAvatars.enabled`), no bridge sends such a URL, icons
+  already stored on those services included, and each platform shows its own
+  default: Slack the app's icon, Discord its default avatar, Teams no image,
+  while a Mattermost bot keeps the image it already has. People and agents
+  without an icon of their own then share that default. New managed agents get
+  no generated icon, and an agent created or registered with an icon on those
+  services gets none. Setting one later is refused with the reason, rather than
+  stored to never show. `GET /agents/icon-choices` offers none and says why, and
+  `GET /agents/avatar-settings` tells Switch Console the setting. The default is
+  unchanged. A server Switch Console runs for you always uses the default.
+- **The Helm chart can take the invitation SMTP username from its Secret.**
+  Some relays issue usernames that are credentials in their own right (an
+  Amazon SES SMTP username is an access key id). With
+  `switchCore.smtp.usernameFromSecret: true`, the chart reads it from
+  `secrets.gatewaySmtpUsername`, or from `GATEWAY_SMTP_USERNAME` in
+  `secrets.existingSecret`, instead of `switchCore.smtp.username`. Setting
+  both is refused at render time.
+- **Agents controllers update to the release Core names.** With
+  `CONTROLLER_RELEASE_VERSION`, `CONTROLLER_RELEASE_URL` and
+  `CONTROLLER_RELEASE_SHA256` (Helm `switchCore.controllerRelease`; all three or
+  none, refused at startup and at render otherwise), the status answer carries
+  `controller_release: {version, url, sha256}` (null for a Switch Console
+  controller, which updates with Console), and a controller on another
+  version fetches that package, checks its SHA-256 and installs it once idle.
+  `GET /gateway/management/controllers` shows each controller's `release`
+  (`{wanted, running, current}`, null when none is named), and its status keeps
+  the `update` the controller reports. A Switch release now also
+  publishes the controller at its version as `switch-agent-controller-v<version>`,
+  and its chart names that package; a release candidate and a dev build of main
+  do the same as a prerelease, so the controllers of a deployment running an RC,
+  and the dev environment's, follow it. A controller
+  run as a service installs a release beside the one it runs and keeps the one
+  before. Roll back by pointing the values at the previous release.
+
+#### Security
+- **An agent icon URL must spell its host plainly.** A link with a backslash,
+  or a host with percent-encoding or non-ASCII characters, is refused: browsers
+  and chat clients read such a host differently from Switch, so its checks
+  could not tell where the image would be loaded from.
+
+#### Fixed
+- **Usage telemetry no longer carries the `ENVIRONMENT` or `SERVICE_NAME`
+  settings.** From 0.28.0 through 0.30.0, with `TELEMETRY_ENABLED=true`, every
+  event sent to the Flint relay carried both, as `deployment.environment`,
+  `service.name` and the OTLP scope name. They are free text an operator sets
+  for their own logs (Helm `switchCore.logging.environment` and `serviceName`),
+  so a value such as a company name left the deployment despite the promise of
+  no free text. Usage events now always say `switch-core` and omit the
+  environment; `flint_env` still says which Amplitude project they belong in.
+  The operational OTLP export to your own collector is unchanged.
 
 ### [0.30.0] - 2026-10-12
 
@@ -84,6 +139,15 @@ version of their own to them without also giving them a release of their own.
   rather than per-capability environment variables. Known flags:
   `agent_management`, `hosted_agents`, `switch_cloud`, and
   `ecosystem.show_owners`.
+- **An agent or controller that keeps repeating a refused request is answered
+  429 from memory.** After 8 identical refusals (401, 403, 404 or 426 for the
+  same bearer token, or the same controller credential, on the same method and
+  path of an agent or controller route) within two minutes, Switch answers that request 429 with
+  `Retry-After` for a minute without looking up its credential or touching
+  the database. One request goes through when the wait is over; refused
+  again, the wait doubles, up to 15 minutes, and any other answer clears it.
+  It protects the server from old clients that retry a refusal forever. New
+  metric `switch.http.refusals_throttled`, with a panel on the dashboard.
 - **Switch cloud machines that run the agents controller sleep when idle,
   and wake on a message.** Such a machine is stopped once its status reports
   say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,
@@ -1624,6 +1688,20 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Console follows a server that keeps names away from avatar services.** On a
+  server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
+  DiceBear or ui-avatars.com images for that server's agents and shows their
+  initials instead. Its icon picker offers only an image link and refuses one
+  to either service, new agents are created without a generated icon, and it
+  no longer writes generated icons onto existing agents. Until it has heard
+  from a server, Console shows initials rather than send a name, and it reads
+  the setting again every few minutes, so a server restarted with it changed
+  needs no Console restart. A setting it cannot read counts as off: the icon
+  picker says so and offers to ask again, and a new agent is still created,
+  without a generated icon. Agents on servers that leave the setting on look as
+  before. Older versions of Console load those images whatever the server says.
+
 #### Fixed
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
@@ -1631,6 +1709,12 @@ version of their own to them without also giving them a release of their own.
   returns it; Console only accepted the gateway's host and refused the sign-in
   as an invalid URL. It now accepts either of the server's own origins, over
   HTTPS. Google Workspace connects this way.
+- **The usage-data note says what a "yes" does on a shared server.** The
+  consent dialog and Settings said the answer applies to a server Console runs
+  for you. On a server other people also run from their own Console, a "no"
+  turns sharing off for everyone at your next start, while a "yes" leaves it as
+  it is — on stays on, off stays off — unless none of them has used the server
+  in the last 14 days. The note now says so.
 
 ### [0.39.0] - 2026-10-12
 
