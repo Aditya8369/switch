@@ -708,6 +708,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
+        self.client_lifecycle.announce(client_record.tenant_id)
         return agent.id
 
     async def _reregister_agent(
@@ -998,6 +999,7 @@ class AgentCore:
             await self.agent_store.delete(session, resolved_id)
             await self.client_lifecycle.delete_record(session, client_id)
             await session.commit()
+        self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)

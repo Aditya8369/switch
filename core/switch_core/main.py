@@ -97,6 +97,7 @@ from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.clients.client_signals import ClientSignals
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
 from switch_core.connections.adapters.github import GitHubApp
@@ -204,6 +205,7 @@ from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
 from switch_core.version import switch_core_version
@@ -565,7 +567,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
+    # Membership changes made in other processes reach the clients here over
+    # the signal bus (`transport/membership_signals.py`).
     invites = InviteBus()
+    MembershipSignals(invites=invites, bus=signal_bus)
     ephemeral = EphemeralBus()
 
     # ── Stores ───────────────────────────────────────────────────────────────
@@ -751,6 +756,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         config=config,
         tenants_isolated=tenants_isolated,
     )
+    # Clients registered or deleted in another process are started or stopped
+    # here too (`clients/client_signals.py`).
+    ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
     collab_lifecycle = CollaborationBridgeLifecycleService(

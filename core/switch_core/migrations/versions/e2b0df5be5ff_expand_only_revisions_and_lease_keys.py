@@ -16,7 +16,7 @@ Expand only, and the first revision recorded as such, ahead of the others: `migr
 records it once this revision has created the table.
 
 Revision ID: e2b0df5be5ff
-Revises: d7a3f9c2e4b8
+Revises: e5b2c8d1f7a3
 Create Date: 2026-10-14 15:00:00.000000
 
 """
@@ -28,7 +28,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY
 
 revision: str = "e2b0df5be5ff"
-down_revision: str | None = "d7a3f9c2e4b8"
+down_revision: str | None = "e5b2c8d1f7a3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

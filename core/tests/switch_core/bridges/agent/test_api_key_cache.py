@@ -73,6 +73,9 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         self.started.append(client.id)
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
     async def stop(self, client_id: str) -> None:
         return None
 

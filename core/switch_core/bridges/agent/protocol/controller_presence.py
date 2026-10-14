@@ -11,9 +11,10 @@ all, is the controller's business.
 
 Core owns this state and never reads Management's tables. Management fills it
 through the narrow surface at the top of the class (`load`, `bind`, `unbind`,
-`revoke_controller`) at startup and after every change it commits, and each of
-those drops what the controller-token cache (`ControllerAuthCache`) holds for
-the controller or agent it touches. Everything
+`reconcile`, `revoke_controller`) at startup, after every change it commits,
+and when another process signals a change it committed (`management/signals.py`),
+and each of those drops what the controller-token cache (`ControllerAuthCache`)
+holds for the controller or agent it touches. Everything
 else here is read by Core: the presence readers through `AgentConnectionRegistry`,
 the bearer middleware's act-as check, and the controller stream.
 
@@ -199,6 +200,11 @@ class ControllerPresence:
         self._on_bound = on_bound
         self._bindings: dict[str, Binding] = {}
         self._by_controller: dict[str, set[str]] = {}
+        # A count of binding changes, and the count at each agent's last one,
+        # so a reconcile built from a read that started earlier can tell
+        # which agents changed under it (`change_mark`, `reconcile`).
+        self._changes = 0
+        self._changed_at: dict[str, int] = {}
         self._connections: dict[str, ControllerConnection] = {}
         self._superseded: dict[str, deque[str]] = {}
         self._revoked: set[str] = set()
@@ -251,8 +257,45 @@ class ControllerPresence:
         for binding in bindings:
             self.bind(binding)
 
+    def change_mark(self) -> int:
+        """Where the binding changes stand now. Taken before reading
+        Management's tables for `reconcile`."""
+        return self._changes
+
+    def _note_change(self, agent_id: str) -> None:
+        self._changes += 1
+        self._changed_at[agent_id] = self._changes
+
+    def reconcile(
+        self, bindings: Iterable[Binding], *, agent_ids: Iterable[str], since: int
+    ) -> None:
+        """Make the bindings of `agent_ids` what Management's tables said,
+        changing only what differs: an agent in `agent_ids` with no binding
+        in `bindings` is unbound.
+
+        `bindings` was read after `since` was taken (`change_mark`). An agent
+        this process bound or unbound after that has a newer answer than the
+        read, so it is left as it is: otherwise a re-check that read the
+        tables a moment before a request placed an agent would unbind it
+        again until the next re-check.
+        """
+        wanted = {binding.agent_id: binding for binding in bindings}
+        for agent_id in agent_ids:
+            if self._changed_at.get(agent_id, 0) > since:
+                continue
+            binding = wanted.get(agent_id)
+            if binding is None:
+                if agent_id in self._bindings:
+                    self.unbind(agent_id, DETACH_UNASSIGNED)
+            elif self._bindings.get(agent_id) != binding:
+                self.bind(binding)
+
+    def bound_agent_ids(self) -> set[str]:
+        return set(self._bindings)
+
     def bind(self, binding: Binding) -> None:
         """Bind an agent to a controller, moving it off any other."""
+        self._note_change(binding.agent_id)
         previous = self._bindings.get(binding.agent_id)
         if previous is not None:
             self._forget(previous)
@@ -285,6 +328,7 @@ class ControllerPresence:
 
     def unbind(self, agent_id: str, reason: str) -> None:
         """The agent is no longer controller-backed."""
+        self._note_change(agent_id)
         previous = self._bindings.pop(agent_id, None)
         self._rooms.pop(agent_id, None)
         self._invalidate_agent_auth(agent_id)
@@ -302,6 +346,7 @@ class ControllerPresence:
     def rename_controller(self, controller_id: str, name: str) -> None:
         """The controller's owner renamed it: what its agents' bindings call it."""
         for agent_id in self._by_controller.get(controller_id, set()):
+            self._note_change(agent_id)
             binding = self._bindings[agent_id]
             self._bindings[agent_id] = replace(binding, controller_name=name)
 

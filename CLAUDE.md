@@ -98,9 +98,11 @@ calls `pg_notify('switch_message', …)` with the room, `seq` and row id, delive
 on commit (`db/notify_ddl.py`). One `MessageListener` (`messages/notify.py`)
 holds a dedicated `LISTEN` connection and wakes the subscribers for that room;
 each client then reads the rows after its own cursor, 200 at a time. The
-notification is a wake-up, never the payload. Invites and presence travel over
-in-process buses (`transport/invites.py`, `transport/ephemeral.py`), which is
-part of why switch-core runs as a single replica. Names such as
+notification is a wake-up, never the payload. Membership changes reach every
+process through a `NOTIFY` trigger on `client_rooms` and the signal bus
+(`signals.py`, `transport/membership_signals.py`); presence still travels over
+an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
+runs as a single replica. Names such as
 the `matrix_room_id` / `matrix_user_id` columns and wire fields, the
 `@localpart:server` id shape and `m.room.message` content types are kept as
 stable identifiers and wire shapes, not as a sign that Matrix is in use. In
@@ -115,9 +117,11 @@ calls `pg_notify('switch_message', …)` with the room, `seq` and row id, delive
 on commit (`db/notify_ddl.py`). One `MessageListener` (`messages/notify.py`)
 holds a dedicated `LISTEN` connection and wakes the subscribers for that room;
 each client then reads the rows after its own cursor, 200 at a time. The
-notification is a wake-up, never the payload. Invites and presence travel over
-in-process buses (`transport/invites.py`, `transport/ephemeral.py`), which is
-part of why switch-core runs as a single replica. Names such as
+notification is a wake-up, never the payload. Membership changes reach every
+process through a `NOTIFY` trigger on `client_rooms` and the signal bus
+(`signals.py`, `transport/membership_signals.py`); presence still travels over
+an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
+runs as a single replica. Names such as
 `matrix_room_id`, `matrix_user_id`, `MATRIX_SERVER_NAME`, the `@localpart:server`
 id shape and `m.room.message` content types are kept as stable identifiers and
 wire shapes, not as a sign that Matrix is in use.

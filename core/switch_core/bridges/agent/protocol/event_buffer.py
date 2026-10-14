@@ -47,12 +47,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import BigInteger, delete, func, literal, select, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import BigInteger, bindparam, delete, func, literal, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -306,26 +307,42 @@ _MESSAGE_KEY_SQL = (
     "COALESCE(m.content->'com.switch.attachment_group'->>'id', m.transport_event_id)"
 )
 
+# The unread counts of one room at several positions (`:throughs`, each a
+# `messages.seq` in the room), in one statement. A message counts at a
+# position when it is a message, not sent by the agent, not one of its own
+# events, and inside (`:baseline`, position]. Several rows of one message share
+# a key and count once, so each key is reduced to its first qualifying row, and
+# the count at a position is the number of keys whose first row is at or
+# before it. That is the same number as counting the distinct keys of the
+# qualifying rows up to that position, but the room's rows are read once for
+# all the positions instead of once per position. `:through` is the highest
+# of `:throughs`.
 _UNREAD_SQL = text(
     f"""
-    SELECT count(DISTINCT {_MESSAGE_KEY_SQL})
-    FROM messages m
-    WHERE m.room_id = :room_id
-      AND m.seq > :baseline
-      AND m.seq <= :through
-      AND m.seq > 0
-      AND m.event_type = 'm.room.message'
-      AND m.sender_id <> :me
-      AND NOT EXISTS (
-        SELECT 1 FROM agent_events e
-        WHERE e.agent_id = :agent_id
-          AND e.room_id = :room_id
-          AND e.type = 'message'
-          AND e.message_key = {_MESSAGE_KEY_SQL}
-          AND e.room_seq >= m.seq
-      )
+    WITH firsts AS (
+      SELECT min(m.seq) AS first_seq
+      FROM messages m
+      WHERE m.room_id = :room_id
+        AND m.seq > :baseline
+        AND m.seq <= :through
+        AND m.seq > 0
+        AND m.event_type = 'm.room.message'
+        AND m.sender_id <> :me
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_events e
+          WHERE e.agent_id = :agent_id
+            AND e.room_id = :room_id
+            AND e.type = 'message'
+            AND e.message_key = {_MESSAGE_KEY_SQL}
+            AND e.room_seq >= m.seq
+        )
+      GROUP BY {_MESSAGE_KEY_SQL}
+    )
+    SELECT t.through,
+           (SELECT count(*) FROM firsts f WHERE f.first_seq <= t.through)
+    FROM unnest(:throughs) AS t(through)
     """
-)
+).bindparams(bindparam("throughs", type_=ARRAY(BigInteger)))
 
 
 class EventBuffer:
@@ -1394,38 +1411,92 @@ class EventBuffer:
         can no longer be told apart. A count cut at the window says so in its
         `reason`.
         """
+        counts = await self.unread_batch(tenant_id, agent_id, [(room_id, through_seq)])
+        return counts[(room_id, through_seq)]
+
+    async def unread_batch(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        positions: Iterable[tuple[str, int]],
+    ) -> dict[tuple[str, int], Unread]:
+        """`unread` for every (room, `messages.seq`) pair in `positions`, keyed
+        by the pair.
+
+        A stream catching an agent up reports a count alongside every event it
+        is woken for, up to a few hundred in one batch. Counted one at a time,
+        each count read the room's baseline, its retention window and the
+        agent's own user id again, then rescanned the same stretch of the
+        room's log. Here the agent's baselines and user id are read once, and
+        each room in the batch costs two statements however many positions are
+        asked of it: its window start, and one scan that counts at all of its
+        positions together (`_UNREAD_SQL`). The counts are the ones `unread`
+        gives for each pair on its own.
+        """
+        wanted: dict[str, set[int]] = {}
+        for room_id, through_seq in positions:
+            wanted.setdefault(room_id, set()).add(through_seq)
+        if not wanted:
+            return {}
+        counts: dict[tuple[str, int], Unread] = {}
         async with tenant_session(self._session_factory, tenant_id) as session:
-            baseline = await session.scalar(
-                select(AgentRoomRead.caught_up_seq).where(
-                    AgentRoomRead.agent_id == agent_id,
-                    AgentRoomRead.room_id == room_id,
-                )
-            )
-            if baseline is None:
-                return Unread(count=None, reason=NO_BASELINE)
-            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
-            window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
-            reason = None
-            if baseline < window_start:
-                baseline, reason = window_start, COUNTED_FROM_WINDOW
+            baselines: dict[str, int] = {
+                room_id: seq
+                for room_id, seq in (
+                    await session.execute(
+                        select(
+                            AgentRoomRead.room_id, AgentRoomRead.caught_up_seq
+                        ).where(
+                            AgentRoomRead.agent_id == agent_id,
+                            AgentRoomRead.room_id.in_(wanted),
+                        )
+                    )
+                ).all()
+            }
+            for room_id in wanted.keys() - baselines.keys():
+                for through_seq in wanted[room_id]:
+                    counts[(room_id, through_seq)] = Unread(
+                        count=None, reason=NO_BASELINE
+                    )
+            if not baselines:
+                return counts
             me = await session.scalar(
                 select(Client.transport_user_id)
                 .join(Agent, Agent.client_id == Client.id)
                 .where(Agent.id == agent_id)
             )
-            started = time.perf_counter()
-            count = await session.scalar(
-                _UNREAD_SQL,
-                {
-                    "room_id": room_id,
-                    "baseline": baseline,
-                    "through": through_seq,
-                    "me": me or "",
-                    "agent_id": agent_id,
-                },
-            )
-        self._record_scan(_UNREAD, count or 0, started)
-        return Unread(count=count or 0, reason=reason)
+            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
+            for room_id, baseline in baselines.items():
+                window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
+                reason = None
+                if baseline < window_start:
+                    baseline, reason = window_start, COUNTED_FROM_WINDOW
+                throughs = sorted(wanted[room_id])
+                started = time.perf_counter()
+                at = {
+                    through: count
+                    for through, count in (
+                        await session.execute(
+                            _UNREAD_SQL,
+                            {
+                                "room_id": room_id,
+                                "baseline": baseline,
+                                "through": throughs[-1],
+                                "throughs": throughs,
+                                "me": me or "",
+                                "agent_id": agent_id,
+                            },
+                        )
+                    ).all()
+                }
+                # One scan of the room's log, recorded with what it counted at
+                # the furthest position asked, which every other count is part of.
+                self._record_scan(_UNREAD, at[throughs[-1]] or 0, started)
+                for through_seq in throughs:
+                    counts[(room_id, through_seq)] = Unread(
+                        count=at[through_seq] or 0, reason=reason
+                    )
+        return counts
 
     # ------------------------------------------------------------------
     # Leaving

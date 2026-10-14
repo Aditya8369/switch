@@ -34,6 +34,11 @@ from switch_core.db.agent_event_notify_ddl import (
 )
 from switch_core.db.base import Base
 from switch_core.db.encrypted_json import EncryptedJSONB
+from switch_core.db.membership_notify_ddl import (
+    CREATE_MEMBERSHIP_NOTIFY_FUNCTION,
+    CREATE_MEMBERSHIP_NOTIFY_TRIGGER,
+    DROP_MEMBERSHIP_NOTIFY_TRIGGER,
+)
 from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_FUNCTION,
     CREATE_NOTIFY_TRIGGER,
@@ -2732,6 +2737,20 @@ event.listen(
     Message.__table__,
     "before_drop",
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+
+# The trigger that signals every process when a client's membership changes,
+# so each process's copy of that client starts or stops reading the room. As
+# above, `create_all` builds it for the tests; real databases get it from a
+# migration. The SQL lives in `db/membership_notify_ddl.py`.
+for _ddl in (CREATE_MEMBERSHIP_NOTIFY_FUNCTION, CREATE_MEMBERSHIP_NOTIFY_TRIGGER):
+    event.listen(
+        ClientRoom.__table__, "after_create", DDL(_ddl).execute_if(dialect="postgresql")
+    )
+event.listen(
+    ClientRoom.__table__,
+    "before_drop",
+    DDL(DROP_MEMBERSHIP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
 
 # These attach the trigger that sends a Postgres `NOTIFY` on channel
