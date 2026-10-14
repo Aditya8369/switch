@@ -437,6 +437,10 @@
       0 1px 1px rgb(0 0 0 / 0.04), 0 2px 4px rgb(0 0 0 / 0.04), 0 4px 10px rgb(0 0 0 / 0.03);
     --composer-border: var(--border);
     --composer-border-focus: var(--border-1);
+    --composer-send-bg: #1b1817;
+    --composer-send-fg: var(--foreground-inverse);
+    --composer-send-bg-hover: color-mix(in srgb, #1b1817 90%, white);
+    --composer-send-bg-active: color-mix(in srgb, #1b1817, black 10%);
     --menu-faint: rgb(0 0 0 / 0.03);
     --menu-pill: rgb(0 0 0 / 0.06);
     --menu-tile: #ebebea;
@@ -775,6 +779,10 @@
     --composer-shadow: 0 1px 1px rgb(0 0 0 / 0.2), 0 2px 4px rgb(0 0 0 / 0.18);
     --composer-border: var(--border);
     --composer-border-focus: var(--border-1);
+    --composer-send-bg: var(--foreground);
+    --composer-send-fg: var(--foreground-inverse);
+    --composer-send-bg-hover: color-mix(in srgb, var(--foreground) 92%, black);
+    --composer-send-bg-active: color-mix(in srgb, var(--foreground) 85%, black);
     --menu-faint: rgb(255 255 255 / 0.03);
     --menu-pill: rgb(255 255 255 / 0.1);
     --menu-tile: #333333;

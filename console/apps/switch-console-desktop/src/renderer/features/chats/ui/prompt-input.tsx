@@ -192,10 +192,10 @@ export function PromptInputSubmit({
   return (
     <Button
       type="submit"
-      variant="default"
+      variant="ghost"
       size="icon-sm"
       className={cn(
-        'rounded-xl emdark:bg-[#A1C9D2] emdark:text-[#1a1a1a] emdark:hover:bg-[#B1D9E2] emdark:disabled:bg-[#A1C9D2]/50',
+        'rounded-xl border-none bg-(--composer-send-bg) text-(--composer-send-fg) hover:bg-(--composer-send-bg-hover) active:bg-(--composer-send-bg-active) disabled:opacity-50',
         className
       )}
       disabled={sending || disabled}
