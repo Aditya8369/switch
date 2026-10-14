@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import threading
-import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -413,6 +412,13 @@ class MattermostAdapter(PlatformAdapter):
 
         self._agent_bots: dict[str, dict[str, str]] = {}
         self._bot_drivers: dict[str, Driver] = {}
+        # Set to close an agent bot's socket for good: when the adapter stops,
+        # or the agent's identity is removed. Each socket runs in a thread of
+        # its own that reconnects whenever the connection drops, so without
+        # this a stopped bridge's sockets stayed open for the life of the
+        # process, handing it every post. A bridge handed from one process to
+        # another stops here and starts there.
+        self._ws_stops: dict[str, threading.Event] = {}
         self._identity_locks: dict[str, asyncio.Lock] = {}
         self._bot_id_to_username: dict[str, str] = {}
         self._bridge_bot_ids: set[str] = set()
@@ -515,9 +521,22 @@ class MattermostAdapter(PlatformAdapter):
         )
 
     async def stop(self) -> None:
+        for agent_name in list(self._ws_stops):
+            self._close_bot_socket(agent_name)
         self._admin_driver = None
         self._bot_drivers.clear()
         logger.info("Mattermost adapter stopped")
+
+    def _close_bot_socket(self, agent_name: str) -> None:
+        """Close an agent bot's socket and keep its thread from reconnecting.
+        The thread finishes once the driver notices, within its read timeout,
+        and hands nothing over meanwhile."""
+        stopped = self._ws_stops.pop(agent_name, None)
+        if stopped is not None:
+            stopped.set()
+        driver = self._bot_drivers.get(agent_name)
+        if driver is not None and getattr(driver, "websocket", None) is not None:
+            driver.disconnect()
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 
@@ -2179,25 +2198,33 @@ class MattermostAdapter(PlatformAdapter):
         except Exception:
             pass
 
+        stopped = threading.Event()
+        self._ws_stops[agent_name] = stopped
+
         def _run_ws(driver: Driver = bot_driver, name: str = agent_name) -> None:
             async def _handler(event_data: str) -> None:
+                if stopped.is_set():
+                    return
                 await self._ws_handler(event_data, name)
 
-            time.sleep(1)
+            if stopped.wait(1):
+                return
             backoff = 2
-            while True:
+            while not stopped.is_set():
                 try:
                     ws_loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(ws_loop)
                     ws_loop.run_until_complete(driver.init_websocket(_handler))
                 except Exception as e:
+                    if stopped.is_set():
+                        break
                     logger.debug(
                         "WebSocket for %s disconnected: %s, retrying in %ds",
                         name,
                         e,
                         backoff,
                     )
-                    time.sleep(backoff)
+                    stopped.wait(backoff)
                     backoff = min(backoff * 2, 30)
                 else:
                     backoff = 2
@@ -2352,6 +2379,7 @@ class MattermostAdapter(PlatformAdapter):
             pass
 
     async def remove_agent_identity(self, agent_name: str) -> None:
+        self._close_bot_socket(agent_name)
         self._agent_bots.pop(agent_name, None)
         self._bot_drivers.pop(agent_name, None)
 
