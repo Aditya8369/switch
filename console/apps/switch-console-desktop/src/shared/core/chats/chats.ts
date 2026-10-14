@@ -156,15 +156,29 @@ export function isSessionStartingNotice(message: ChatMessage): boolean {
   return message.sender.kind === 'agent' && message.body.trim() === SESSION_STARTING_MESSAGE;
 }
 
-/** The session-starting notices still current: each is its agent's latest message. */
-export function liveSessionStartingNotices(messages: readonly ChatMessage[]): Set<string> {
+/**
+ * The session-starting notices still current: each is its agent's latest
+ * message, and that agent shows no turn yet for the message it answers or any
+ * later one. `turnAgents` maps a message id to the agents with a turn under it.
+ */
+export function liveSessionStartingNotices(
+  messages: readonly ChatMessage[],
+  turnAgents: ReadonlyMap<string, ReadonlySet<string>>
+): Set<string> {
   const live = new Set<string>();
   const seen = new Set<string>();
   for (let at = messages.length - 1; at >= 0; at--) {
     const message = messages[at];
     if (message.sender.kind !== 'agent' || seen.has(message.sender.clientId)) continue;
     seen.add(message.sender.clientId);
-    if (isSessionStartingNotice(message)) live.add(message.messageId);
+    if (!isSessionStartingNotice(message)) continue;
+    let from = at;
+    while (from > 0 && messages[from].sender.kind !== 'human') from--;
+    const agentId = message.sender.agentId;
+    const working = messages
+      .slice(from)
+      .some((each) => agentId !== null && turnAgents.get(each.messageId)?.has(agentId));
+    if (!working) live.add(message.messageId);
   }
   return live;
 }
