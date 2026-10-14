@@ -1,9 +1,14 @@
 import { observer } from 'mobx-react-lite';
+import { useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { ChatHeaderControls, ChatHeaderTitle } from './components/chat-header';
 import { ChatPanel, useAgentActivities } from './components/chat-panel';
+import { agentChatsFlag } from './stores/agent-chats-flag';
 import { chatsStore } from './stores/chats';
 
 type ChatParams = { serverId: string; roomId: string; agentId: string | null };
@@ -33,8 +38,37 @@ const ChatTitlebar = observer(function ChatTitlebar() {
   );
 });
 
-const ChatMainPanel = observer(function ChatMainPanel() {
+/**
+ * With agent_chats off the chat view is not offered: a restored or linked chat
+ * opens as main shows it, on the managed agent's page, else as a room.
+ */
+function useLeaveWhenChatsOff(params: ChatParams): boolean | undefined {
+  const enabled = agentChatsFlag(params.serverId);
+  const managed = useManagedAgents(params.serverId);
+  const agent = managed.data?.find((each) => each.agentId === params.agentId);
+  useEffect(() => {
+    if (enabled !== false || managed.isLoading) return;
+    appState.history.prune(
+      (entry) =>
+        entry.kind === 'view' &&
+        entry.viewId === 'chat' &&
+        (entry.params as { roomId?: string }).roomId === params.roomId
+    );
+    if (agent)
+      appState.navigation.navigate('managedAgent', {
+        serverId: params.serverId,
+        agentId: agent.agentId,
+        name: managedAgentLabel(agent),
+      });
+    else appState.navigation.navigate('room', { roomId: params.roomId });
+  }, [enabled, managed.isLoading, agent, params.serverId, params.roomId]);
+  return enabled;
+}
+
+const ChatMainPanel = observer(function ChatMainPanel(): React.JSX.Element | null {
   const { params } = useParams('chat');
+  const enabled = useLeaveWhenChatsOff(params);
+  if (enabled !== true) return null;
   return (
     <ChatPanel
       key={`${params.serverId}:${params.roomId}`}
