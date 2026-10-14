@@ -8,6 +8,7 @@ import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
+import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
@@ -54,9 +55,9 @@ const Note = ({ children }: { children: ReactNode }) => (
 );
 
 /**
- * An agent's chats: its direct chats and the rooms it is in, beside the one
- * open. The open one is kept in the view's params; with none chosen it is the
- * newest direct chat.
+ * An agent's chats: its direct chats, beside the one open, and the rooms it is
+ * in, which open in the room view. The open chat is kept in the view's params;
+ * with none chosen it is the newest direct chat.
  */
 export const AgentChats = observer(function AgentChats({ agent }: { agent: ManagedAgentView }) {
   const { params, setParams } = useParams('managedAgent');
@@ -70,7 +71,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const agentRooms = switchRoomsStore.roomsFor(workspaceId, agentId);
   const { direct, rooms } = agentConversations(agentChats, agentRooms ?? []);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
-  const roomId = params.roomId ?? direct[0]?.roomId ?? null;
+  const roomId =
+    direct.find((chat) => chat.roomId === params.roomId)?.roomId ?? direct[0]?.roomId ?? null;
   const open = (id: string) => setParams({ roomId: id });
   const newChat = async () => {
     const chat = await directChats.start(serverId, agentId);
@@ -108,8 +110,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                 bridgeDisplayName:
                   switchRoomsStore.roomSummaryById(room.roomId)?.bridgeDisplayName ?? null,
               }}
-              isActive={room.roomId === roomId}
-              onOpen={() => open(room.roomId)}
+              isActive={false}
+              onOpen={() => openRoomView(room.roomId)}
             />
           ))}
           {!agentRooms && !roomsError && <Note>Loading…</Note>}
@@ -128,7 +130,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
         ) : (
           <EmptyState
             label="No chat open"
-            description="Start a chat with this agent, or open one of its rooms."
+            description="Start a chat with this agent."
             action={<Button onClick={() => void newChat()}>Start a chat</Button>}
           />
         )}

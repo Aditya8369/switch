@@ -3,6 +3,7 @@ import { useEffect, type ReactNode } from 'react';
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
+import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { FrozenBanner, frozenServer } from '@renderer/features/switch-servers/frozen-workspace';
 import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -93,6 +94,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
         <WorkspaceLayout
           leftSidebar={<LeftSidebar />}
           mainContent={mainContent}
+          persistentLayer={<RoomEmbedLayer />}
           banner={frozen && <FrozenBanner server={frozen} />}
           contentClassName={frozen ? FROZEN : undefined}
         />
