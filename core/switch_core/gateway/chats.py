@@ -2,8 +2,9 @@
 
 Every route except creating a chat requires the caller's membership of the
 room (`ChatService.require_member`); adding a member requires managing it.
-Owning an agent in a room makes its owner a member (`sync_owned_rooms`), so
-the list, the event stream and the room routes bring that up to date first.
+With `agent_chats` on, owning an agent in a chat one started keeps one a
+member of it (`sync_owned_rooms`), so the list, the event stream and the room
+routes bring that up to date first.
 Refusals are `ChatError`s, answered as `{"detail": {"code", "message"}}`.
 """
 

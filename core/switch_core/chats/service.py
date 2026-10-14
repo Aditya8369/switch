@@ -5,8 +5,10 @@ Membership is the only read authority. A person sees a room when their
 the tenant; a room's visibility and any claimed platform account do not count.
 Membership is granted by creating a chat, by a room manager (the room's owner
 or a tenant admin) adding a tenant member, or by a manager adding themselves.
-It is also granted to anyone who owns an agent in a room, for as long as they
-do: `sync_owned_rooms` puts them in and takes back what was held only for that.
+With the `agent_chats` feature flag on, it is also granted to a person in each
+chat they started that holds an agent they own, for as long as it does:
+`sync_owned_rooms` puts them in and takes back what was held only for that.
+Other people's chats and rooms set up elsewhere never gain an agent's owner.
 
 Requests a person may retry carry a request id, recorded in `chat_operations`
 per user. The same id with the same payload answers what the first attempt
@@ -27,7 +29,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import markdown
-from sqlalchemy import ColumnElement, delete, exists, false, select, update
+from sqlalchemy import ColumnElement, and_, delete, exists, false, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -126,8 +128,10 @@ class ChatService:
         usage_store: UsageStore,
         id_server_name: str,
         media_max_bytes: int,
+        agent_chats_enabled: bool,
     ) -> None:
         self.session_factory = session_factory
+        self.agent_chats_enabled = agent_chats_enabled
         self.listener = listener
         self._room_service = room_service
         self._provisioning = provisioning
@@ -248,7 +252,7 @@ class ChatService:
         client = await self.member_client(session, user.id)
         if client is not None and await self._is_in_room(session, client.id, room.id):
             return room, client
-        if room.archived_at is None and await self.owns_agent_in(
+        if room.archived_at is None and await self.joins_as_owner(
             session, user.id, room.id
         ):
             await self.sync_owned_rooms(tenant_id, user.id)
@@ -279,24 +283,30 @@ class ChatService:
 
     # ── Agent owners ─────────────────────────────────────────────────────────
 
-    async def owns_agent_in(
+    async def joins_as_owner(
         self, session: AsyncSession, user_id: str, room_id: str
     ) -> bool:
+        """True when `sync_owned_rooms` keeps the user in this room."""
+        if not self.agent_chats_enabled:
+            return False
         return bool(
             await session.scalar(
-                select(exists().where(Room.id == room_id, _owns_agent_in_room(user_id)))
+                select(exists().where(Room.id == room_id, _owner_joins(user_id)))
             )
         )
 
     async def sync_owned_rooms(self, tenant_id: str, user_id: str) -> None:
-        """Put the user in every live room holding an agent they own, and take
-        back each membership held only for that once they no longer do.
+        """Put the user in every live chat they started that holds an agent
+        they own, and take back each membership held only for that once they
+        no longer own an agent there. Does nothing with `agent_chats` off.
 
         Such a membership is marked by a `ChatOwnerGrant`; being invited,
         creating the chat or joining as a manager removes the mark, and the
         membership then stays when the agent goes. Cheap when nothing changed:
         two queries.
         """
+        if not self.agent_chats_enabled:
+            return
         async with self._lock("owned", tenant_id, user_id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 if not await self.has_tenant_role(session, tenant_id, user_id):
@@ -317,7 +327,7 @@ class ChatService:
                             .where(
                                 Room.tenant_id == tenant_id,
                                 Room.archived_at.is_(None),
-                                _owns_agent_in_room(user_id),
+                                _owner_joins(user_id),
                                 ~joined,
                             )
                             .order_by(Room.created_at)
@@ -637,7 +647,7 @@ class ChatService:
                 ):
                     return
                 client = found
-            if await self.owns_agent_in(session, target_user_id, room.id):
+            if await self.joins_as_owner(session, target_user_id, room.id):
                 raise ChatError(
                     409,
                     "AGENT_OWNER",
@@ -1128,6 +1138,16 @@ def _owns_agent_in_room(user_id: str) -> ColumnElement[bool]:
         room_agents.c.room_id == Room.id,
         room_agents.c.agent_id == Agent.id,
         Agent.owner_id == user_id,
+    )
+
+
+def _owner_joins(user_id: str) -> ColumnElement[bool]:
+    """True for a `Room` row `sync_owned_rooms` puts `user_id` in: a chat they
+    started through the chats API that holds an agent they own."""
+    return and_(
+        Room.created_by == user_id,
+        Room.metadata_.has_key("chat_operation_id"),
+        _owns_agent_in_room(user_id),
     )
 
 

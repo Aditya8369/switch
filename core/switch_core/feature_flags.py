@@ -44,8 +44,9 @@ AGENT_MANAGEMENT = "agent_management"
 SERVICE_CONNECTIONS = "service_connections"
 
 # Agent chats in Switch Console: an agent's page opens on its chats (its
-# direct chats and the rooms it is in) beside the conversation. Core has
-# nothing of its own behind it; Console reads it.
+# direct chats and the rooms it is in) beside the conversation. Core puts an
+# agent's owner back in each chat they started that holds the agent; with it
+# off, owning an agent gives no room membership.
 AGENT_CHATS = "agent_chats"
 
 # Every flag the server recognises.

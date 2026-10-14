@@ -844,7 +844,7 @@ async def test_an_invited_member_keeps_a_chat_that_loses_its_last_agent(
 ) -> None:
     agent = await chats.agent("helper", owner=chats.bob)
     room_id = await _room(chats, [agent], owner=chats.alice)
-    assert room_id in await _listed(chats, chats.bob)
+    assert room_id not in await _listed(chats, chats.bob)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=0.2)
@@ -977,7 +977,8 @@ async def test_an_owner_only_member_loses_access_with_the_last_agent(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.bob)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _left_chat(chats, chats.bob)
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
     assert room_id in await _listed(chats, chats.bob)
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -1101,39 +1102,84 @@ async def _reads(chats: _Harness, user: User, room_id: str) -> int:
     return response.status_code
 
 
-async def test_an_agent_owner_sees_bridged_rooms_and_dms_holding_their_agent(
+async def _left_chat(chats: _Harness, user: User) -> str:
+    """A chat `user` started with someone else's agent, then left."""
+    guest = await chats.agent(f"guest-{uuid.uuid4().hex[:8]}", owner=chats.admin)
+    room_id = await chats.new_chat(user, guest, uuid.uuid4().hex)
+    left = await chats.client.delete(
+        f"/chats/{room_id}/members/{user.id}", headers=chats.as_user(user)
+    )
+    assert left.status_code == 204, left.text
+    return room_id
+
+
+async def _grants(chats: _Harness) -> int:
+    async with chats.factory() as session:
+        return int(
+            await session.scalar(select(func.count()).select_from(ChatOwnerGrant)) or 0
+        )
+
+
+async def test_an_agent_owner_is_not_joined_to_bridged_rooms_holding_their_agent(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     channel = await _room(chats, [agent], name="general", bridge="slack")
     dm = await _room(chats, [agent], name="dm", bridge="discord", channel_type="direct")
 
-    listed = await _listed(chats, chats.alice)
-    assert set(listed) == {channel, dm}
-    assert listed[channel]["bridgeType"] == "slack"
-    assert listed[channel]["channelName"] == "general"
-    assert [a["id"] for a in listed[channel]["agents"]] == [agent.id]
-    assert listed[channel]["canManage"] is False
-    assert listed[channel]["ownsAgent"] is True
-    assert listed[dm]["bridgeType"] == "discord"
-    assert listed[dm]["channelType"] == "direct"
-
-    assert await _reads(chats, chats.alice, channel) == 200
-    sent = await chats.send(chats.alice, channel, "s1", "hello from the owner")
-    assert sent.status_code == 200, sent.text
-
-    # Owning nothing there, Bob is still kept out, though he owns the room.
-    assert await _reads(chats, chats.bob, channel) == 403
-    assert await _listed(chats, chats.bob) == {}
+    assert await _reads(chats, chats.alice, channel) == 403
+    assert await _reads(chats, chats.alice, dm) == 403
+    assert await _listed(chats, chats.alice) == {}
+    await chats.room_service.room_agents_changed(TENANT, channel)
+    assert await _listed(chats, chats.alice) == {}
+    assert await _grants(chats) == 0
 
 
-async def test_an_agent_owner_reads_a_room_before_ever_listing(
+async def test_an_agent_owner_is_not_joined_to_someone_elses_chat(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], bridge="mattermost")
+    room_id = await chats.new_chat(chats.bob, agent, "c1")
 
+    assert room_id not in await _listed(chats, chats.alice)
+    assert await _reads(chats, chats.alice, room_id) == 403
+    assert await _grants(chats) == 0
+
+    assert (await chats.invite(chats.bob, room_id, chats.alice)).status_code == 200
+    assert room_id in await _listed(chats, chats.alice)
+    left = await chats.client.delete(
+        f"/chats/{room_id}/members/{chats.alice.id}",
+        headers=chats.as_user(chats.alice),
+    )
+    assert left.status_code == 204
+
+
+async def test_with_agent_chats_off_owning_an_agent_joins_nothing(
+    chats: _Harness,
+) -> None:
+    chats.service.agent_chats_enabled = False
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await _left_chat(chats, chats.alice)
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+
+    assert await _listed(chats, chats.alice) == {}
+    assert await _reads(chats, chats.alice, room_id) == 403
+    assert await _grants(chats) == 0
+
+
+async def test_an_agent_owner_rejoins_a_chat_they_started_when_their_agent_arrives(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await _left_chat(chats, chats.alice)
+    assert await _reads(chats, chats.alice, room_id) == 403
+
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    listed = await _listed(chats, chats.alice)
+    assert set(listed) == {room_id}
+    assert listed[room_id]["ownsAgent"] is True
     assert await _reads(chats, chats.alice, room_id) == 200
+    assert await _grants(chats) == 1
 
 
 async def test_owning_an_agent_in_an_archived_room_grants_nothing(
@@ -1148,7 +1194,12 @@ async def test_owning_an_agent_in_an_archived_room_grants_nothing(
 
 async def test_owner_membership_is_granted_once(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent])
+    room_id = await _left_chat(chats, chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            room_agents.insert().values(room_id=room_id, agent_id=agent.id)
+        )
+        await session.commit()
 
     for _ in range(3):
         assert set(await _listed(chats, chats.alice)) == {room_id}
@@ -1171,15 +1222,15 @@ async def test_owner_membership_is_granted_once(chats: _Harness) -> None:
                 Message.event_type == "m.room.member",
             )
         )
-        grants = await session.scalar(select(func.count()).select_from(ChatOwnerGrant))
-    assert (memberships, arrivals, grants) == (1, 1, 1)
+    # One arrival from starting the chat, one from the owner rejoin.
+    assert (memberships, arrivals, await _grants(chats)) == (1, 2, 1)
 
 
 async def test_a_room_that_gains_the_owners_agent_is_announced_at_once(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [], bridge=None)
+    room_id = await _left_chat(chats, chats.alice)
 
     events = _stream(chats, chats.alice, {}, recheck=60.0)
     assert (await events.next())[0] == "ready"
@@ -1198,30 +1249,34 @@ async def test_a_room_that_gains_the_owners_agent_is_announced_at_once(
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
-async def test_the_periodic_recheck_finds_a_room_the_agent_joined_elsewhere(
+async def test_the_periodic_recheck_finds_a_chat_the_agent_joined_elsewhere(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await _left_chat(chats, chats.alice)
 
     events = _stream(chats, chats.alice, {}, recheck=0.2)
     assert (await events.next())[0] == "ready"
 
     # Written straight to the table, as another process would: no hook runs.
-    room_id = await _room(chats, [agent], bridge="slack")
+    async with chats.factory() as session:
+        await session.execute(
+            room_agents.insert().values(room_id=room_id, agent_id=agent.id)
+        )
+        await session.commit()
     name, summary = await events.next()
     assert name == "chat" and summary["roomId"] == room_id
-    assert summary["bridgeType"] == "slack"
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
 async def test_an_agent_owner_cannot_leave_or_be_removed(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.bob, agent, "c1")
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
     assert (await _listed(chats, chats.alice))[room_id]["ownsAgent"] is True
-    assert (await _listed(chats, chats.bob))[room_id]["ownsAgent"] is False
 
     removed = await chats.client.delete(
-        f"/chats/{room_id}/members/{chats.alice.id}", headers=chats.as_user(chats.bob)
+        f"/chats/{room_id}/members/{chats.alice.id}",
+        headers=chats.as_user(chats.admin),
     )
     assert removed.status_code == 409
     assert _code(removed) == "AGENT_OWNER"
@@ -1246,7 +1301,10 @@ async def test_losing_the_last_owned_agent_ends_the_owners_access(
 ) -> None:
     helper = await chats.agent("helper", owner=chats.alice)
     other = await chats.agent("other", owner=chats.alice)
-    room_id = await _room(chats, [helper, other])
+    room_id = await _left_chat(chats, chats.alice)
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[helper.id, other.id]
+    )
     assert room_id in await _listed(chats, chats.alice)
 
     events = _stream(chats, chats.alice, {}, recheck=60.0)
@@ -1264,18 +1322,16 @@ async def test_losing_the_last_owned_agent_ends_the_owners_access(
     )
     assert await _reads(chats, chats.alice, room_id) == 403
     assert await _listed(chats, chats.alice) == {}
-    async with chats.factory() as session:
-        assert (
-            await session.scalar(select(func.count()).select_from(ChatOwnerGrant)) == 0
-        )
+    assert await _grants(chats) == 0
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
-async def test_handing_an_agent_to_someone_else_moves_the_access(
+async def test_handing_an_agent_to_someone_else_ends_the_owners_access(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.admin)
+    room_id = await _left_chat(chats, chats.alice)
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
     assert room_id in await _listed(chats, chats.alice)
 
     async with chats.factory() as session:
@@ -1286,15 +1342,17 @@ async def test_handing_an_agent_to_someone_else_moves_the_access(
 
     assert await _listed(chats, chats.alice) == {}
     assert await _reads(chats, chats.alice, room_id) == 403
-    assert set(await _listed(chats, chats.bob)) == {room_id}
-    assert await _reads(chats, chats.bob, room_id) == 200
+    # Not a chat Bob started, so the new owner is not joined either.
+    assert await _listed(chats, chats.bob) == {}
+    assert await _reads(chats, chats.bob, room_id) == 403
 
 
 async def test_a_deleted_agent_takes_its_owners_access_with_it(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent])
+    room_id = await _left_chat(chats, chats.alice)
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
     assert room_id in await _listed(chats, chats.alice)
 
     async with chats.factory() as session:
@@ -1303,28 +1361,6 @@ async def test_a_deleted_agent_takes_its_owners_access_with_it(
     await chats.room_service.room_agents_changed(TENANT, room_id)
 
     assert await _reads(chats, chats.alice, room_id) == 403
-
-
-async def test_an_owner_who_was_also_invited_stays_when_the_agent_goes(
-    chats: _Harness,
-) -> None:
-    agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.bob, agent, "c1")
-    assert room_id in await _listed(chats, chats.alice)
-
-    assert (await chats.invite(chats.bob, room_id, chats.alice)).status_code == 200
-    other = await chats.agent("other", owner=chats.bob)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[other.id])
-    await chats.room_service.remove_agents_from_room(room_id, [agent.id])
-
-    assert room_id in await _listed(chats, chats.alice)
-    assert await _reads(chats, chats.alice, room_id) == 200
-    # No longer an owner there, so leaving is allowed again.
-    left = await chats.client.delete(
-        f"/chats/{room_id}/members/{chats.alice.id}",
-        headers=chats.as_user(chats.alice),
-    )
-    assert left.status_code == 204
 
 
 async def test_an_owner_who_created_the_chat_keeps_it_when_the_agent_goes(

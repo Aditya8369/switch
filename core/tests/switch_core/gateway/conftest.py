@@ -214,6 +214,7 @@ async def chats(
         usage_store=UsageStore(),
         id_server_name="switch.test",
         media_max_bytes=1024,
+        agent_chats_enabled=True,
     )
     room_service.on_room_agents_changed(service.sync_room)
 
