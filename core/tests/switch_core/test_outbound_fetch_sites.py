@@ -149,6 +149,7 @@ class TestConnectorConfigs:
             session_factory=MagicMock(),
             keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None),
             outbound_policy=OutboundPolicy.parse(""),
+            ownership=SoleOwner(),
         )
         service.register_connector_type(
             "opencode", OpenCodeConnector, OpenCodeConnectionConfig

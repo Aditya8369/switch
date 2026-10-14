@@ -55,6 +55,7 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.bridges.agent.server_connectors.signals import ConnectorSignals
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -875,7 +876,9 @@ async def run(config: SwitchConfig) -> None:
         keyring=config.keyring,
         telemetry=telemetry,
         outbound_policy=config.outbound_policy,
+        ownership=ownership,
     )
+    ConnectorSignals(lifecycle=connector_lifecycle, bus=signal_bus)
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
     )
