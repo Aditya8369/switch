@@ -204,11 +204,14 @@ async def test_applying_the_chain_records_the_expand_only_revisions(
                 )
             ).all()
         )
-    assert recorded["e2b0df5be5ff"] == "d7a3f9c2e4b8"
+    # Each is recorded with the revision it follows in the chain, whatever that
+    # is when the chain is extended or reordered.
+    script = ScriptDirectory.from_config(alembic_cfg)
+    for revision in ("e2b0df5be5ff", "e5956cbd3bdc"):
+        assert recorded[revision] == script.get_revision(revision).down_revision
     assert recorded["e5956cbd3bdc"] == "e2b0df5be5ff"
     for revision in recorded:
-        module = ScriptDirectory.from_config(alembic_cfg).get_revision(revision).module
-        assert module.expand_only is True
+        assert script.get_revision(revision).module.expand_only is True
 
     async with scratch_engine.begin() as connection:
         await connection.run_sync(_run, alembic_cfg, "e2b0df5be5ff")
