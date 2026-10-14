@@ -1,6 +1,7 @@
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
+import { agentChatsFlag } from './agent-chats-flag';
 import { ChatTitler } from './chat-titler';
 import { ChatsStore, chatsEventsFrom } from './chats-store';
 
@@ -21,12 +22,12 @@ export const chatsStore = new ChatsStore(
   chatsEventsFrom(events)
 );
 
-chatsStore.follow(() => ({
-  serverId: workspacesStore.activeServerId,
-  key: workspacesStore.active
-    ? `${workspacesStore.active.id}:${workspacesStore.active.tenantId}`
-    : null,
-}));
+chatsStore.follow(() => {
+  const serverId = workspacesStore.activeServerId;
+  const active = workspacesStore.active;
+  if (!serverId || agentChatsFlag(serverId) !== true) return { serverId: null, key: null };
+  return { serverId, key: active ? `${active.id}:${active.tenantId}` : null };
+});
 
 export const chatTitler = new ChatTitler({
   title: (message) => rpc.chats.title(message),
