@@ -14,10 +14,12 @@ export function Titlebar({
   leftSlot,
   rightSlot,
   className,
+  leftClassName,
 }: {
   leftSlot?: ReactNode;
   rightSlot?: ReactNode;
   className?: string;
+  leftClassName?: string;
 }) {
   const { setCollapsed, isLeftOpen } = useWorkspaceLayoutContext();
   return (
@@ -40,7 +42,12 @@ export function Titlebar({
       <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1">
         {!isLeftOpen && <div className="[-webkit-app-region:no-drag]"></div>}
         <div className="flex w-full items-center justify-between">
-          <div className="flex min-w-0 items-center justify-start [-webkit-app-region:no-drag]">
+          <div
+            className={cn(
+              'flex items-center justify-start [-webkit-app-region:no-drag]',
+              leftClassName
+            )}
+          >
             {!isLeftOpen && (
               <div className="ml-2 flex items-center gap-0.5 [-webkit-app-region:no-drag]">
                 <Tooltip>

@@ -76,6 +76,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   return (
     <Titlebar
       className={tabbed ? 'border-b border-border' : undefined}
+      leftClassName={tabbed ? 'min-w-0' : undefined}
       leftSlot={
         tabbed ? (
           <div className="flex min-w-0 items-center gap-3">

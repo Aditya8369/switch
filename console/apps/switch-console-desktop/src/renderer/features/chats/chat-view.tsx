@@ -20,6 +20,7 @@ const ChatTitlebar = observer(function ChatTitlebar() {
   const activities = useAgentActivities(params.serverId, chat);
   return (
     <Titlebar
+      leftClassName="min-w-0"
       leftSlot={
         <div className="flex min-w-0 items-center pr-2">
           {chat ? (
