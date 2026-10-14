@@ -84,10 +84,10 @@ async def processes(
                 session_factory=session_factory,
                 store=AgentConnectionStore(),
                 bus=harness.bus,
-                lease=harness.lease,
+                lease=harness.management.lease,
             )
         )
-        await harness.lease.renew()
+        await harness.management.lease.renew()
     for harness in harnesses:
         await harness.bus.start()
     for harness in harnesses:
@@ -219,14 +219,14 @@ class TestPresence:
         async with session_factory() as session:
             await session.execute(
                 update(SwitchCoreProcess)
-                .where(SwitchCoreProcess.id == here.lease.process_id)
+                .where(SwitchCoreProcess.id == here.management.lease.process_id)
                 .values(
                     beat_at=SwitchCoreProcess.beat_at - LEASE_TTL - timedelta(seconds=1)
                 )
             )
             await session.commit()
 
-        await there.management.service.signals.reconcile()
+        await there.management.service.signals.read_connections()
 
         assert not presence.is_live(agent_id)
 

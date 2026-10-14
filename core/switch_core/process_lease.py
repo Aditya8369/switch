@@ -1,15 +1,19 @@
 """This switch-core process's lease, and reading every process's.
 
-An agent's or a controller's socket lives in the memory of the one process
-holding it, and that process writes the connection's transitions to a row
-(`bridges/agent/protocol/connection_rows.py` for agents,
-`connection_ledger.py` for controllers). A process that dies writes no
-closing, so every process also holds a lease in `switch_core_processes`,
-whatever features it runs: it claims it at startup, renews it every
-`RENEW_INTERVAL`, and marks it stopped as it shuts down. A connection reads
-as online only while its holding process's lease is held: renewed within
+Every process holds one, under its process id (`process_identity.py`): it is
+how one process knows another is alive. An agent's or a controller's socket
+lives in the memory of the one process holding it, and that process writes the
+connection's transitions to a row (`bridges/agent/protocol/connection_rows.py`
+for agents, `management/connection_ledger.py` for controllers). A process that
+dies writes no closing, so each process also holds a lease in
+`switch_core_processes`: it claims it at startup, renews it every
+`RENEW_INTERVAL`, and marks it stopped as it shuts down. A connection reads as
+online only while its holding process's lease is held: renewed within
 `LEASE_TTL` and not stopped. One write per process per renewal, however many
 connections it holds.
+
+The lease also records the ids of the keys the process can read, which a
+process starting with a new front key checks (`db/key_rotation.py`).
 
 Leases are written and compared on the database's clock, never a host's.
 Leases not renewed for `PRUNE_AFTER` are deleted by whichever process renews
@@ -94,15 +98,27 @@ class ProcessLease:
         process_id: str,
         session_factory: async_sessionmaker[AsyncSession],
         processes: SwitchCoreProcessStore,
+        key_ids: list[str],
     ) -> None:
         self.process_id = process_id
         self._session_factory = session_factory
         self._processes = processes
+        # The ids of the keys this process can read, recorded on its row so a
+        # process starting with a new front key can check them
+        # (`db/key_rotation.py`).
+        self._key_ids = key_ids
+        # Set by `stop`. A renewal clears `stopped_at`, so once the process
+        # has released its lease (as it starts draining, while it still runs)
+        # no renewal may claim it back.
+        self._stopped = False
 
     async def renew(self) -> None:
-        """Claim or renew the lease, and prune leases long dead."""
+        """Claim or renew the lease, and prune leases long dead. Does nothing
+        once the lease is stopped: a draining process stays released."""
+        if self._stopped:
+            return
         async with self._session_factory() as session:
-            await self._processes.renew(session, self.process_id)
+            await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
         if pruned:
@@ -115,7 +131,10 @@ class ProcessLease:
 
     async def stop(self) -> None:
         """Mark the lease stopped: every connection this process still shows
-        open reads as offline from now."""
+        open reads as offline from now. Only the first call writes."""
+        if self._stopped:
+            return
+        self._stopped = True
         async with self._session_factory() as session:
             await self._processes.stop(session, self.process_id)
             await session.commit()

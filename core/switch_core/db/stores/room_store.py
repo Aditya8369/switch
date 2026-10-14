@@ -1,4 +1,5 @@
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, or_, select, update
@@ -15,6 +16,15 @@ from switch_core.db.models import (
     require_tenant_id,
     room_agents,
 )
+
+
+@dataclass(frozen=True)
+class Membership:
+    """A client's membership of one room, as `client_rooms` records it."""
+
+    room_id: str
+    transport_room_id: str
+    joined_at: datetime
 
 
 class RoomStore:
@@ -469,6 +479,25 @@ class RoomStore:
             .where(ClientRoom.client_id == client_id)
         )
         return list(result.scalars().all())
+
+    async def memberships_of(
+        self, session: AsyncSession, client_id: str
+    ) -> list[Membership]:
+        """Every room the client is a member of, with both its ids and when
+        the client joined, in one query."""
+        result = await session.execute(
+            select(ClientRoom.room_id, Room.transport_room_id, ClientRoom.joined_at)
+            .join(Room, Room.id == ClientRoom.room_id)
+            .where(ClientRoom.client_id == client_id)
+        )
+        return [
+            Membership(
+                room_id=room_id,
+                transport_room_id=transport_room_id,
+                joined_at=joined_at,
+            )
+            for room_id, transport_room_id, joined_at in result.all()
+        ]
 
     async def member_room_ids(
         self, session: AsyncSession, client_id: str, room_ids: list[str]

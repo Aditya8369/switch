@@ -24,7 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.agent_event_notify_ddl import (
@@ -34,6 +34,11 @@ from switch_core.db.agent_event_notify_ddl import (
 )
 from switch_core.db.base import Base
 from switch_core.db.encrypted_json import EncryptedJSONB
+from switch_core.db.membership_notify_ddl import (
+    CREATE_MEMBERSHIP_NOTIFY_FUNCTION,
+    CREATE_MEMBERSHIP_NOTIFY_TRIGGER,
+    DROP_MEMBERSHIP_NOTIFY_TRIGGER,
+)
 from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_FUNCTION,
     CREATE_NOTIFY_TRIGGER,
@@ -2138,12 +2143,13 @@ class TelemetrySnapshotWatermark(Base):
 class SwitchCoreProcess(Base):
     """A running switch-core process's lease (`process_lease.py`).
 
-    Every process claims a row at startup, renews `beat_at` every few
-    seconds, and sets `stopped_at` as it shuts down. An agent or controller
-    connection whose holding process's lease is stale, stopped or gone reads
-    as offline, which is how a process that died without writing its
-    connections' closings is noticed. One write per process per renewal,
-    however many connections it holds.
+    Every process claims a row at startup under its process id
+    (`process_identity.py`), renews `beat_at` every few seconds, and sets
+    `stopped_at` as it shuts down. An agent or controller connection whose
+    holding process's lease is stale, stopped or gone reads as offline, which
+    is how a process that died without writing its connections' closings is
+    noticed. One write per process per renewal, however many connections it
+    holds.
 
     Not tenant-scoped: a process serves every tenant. Rows long stale are
     pruned by the live processes.
@@ -2160,6 +2166,36 @@ class SwitchCoreProcess(Base):
     )
     stopped_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # The ids of the `SECRET_KEYS` this process can read, so a process
+    # starting with a new front key can tell whether every live one could read
+    # what it writes (`db/key_rotation.py`). Ids only, never key material.
+    # NULL for a process from before the column.
+    key_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+
+
+# ── Schema revisions ─────────────────────────────────────────────────────────
+
+
+class SchemaExpandOnlyRevision(Base):
+    """An applied schema revision that only added to the schema.
+
+    Written by `migrations/env.py` as Alembic applies a revision marked
+    `expand_only`, and deleted as it is undone, with the revision it follows.
+    A switch-core release older than the schema reads this chain back from the
+    database's head to its own (`db/schema_version.py`): if every revision in
+    between is here, it can serve on the newer schema, which is what lets two
+    releases run side by side during a rolling deploy. The older release has
+    no copy of those revisions' files, so the database is the only place it
+    can learn this.
+    """
+
+    __tablename__ = "schema_expand_only_revisions"
+
+    revision: Mapped[str] = mapped_column(Text, primary_key=True)
+    down_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -2884,6 +2920,20 @@ event.listen(
     Message.__table__,
     "before_drop",
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+
+# The trigger that signals every process when a client's membership changes,
+# so each process's copy of that client starts or stops reading the room. As
+# above, `create_all` builds it for the tests; real databases get it from a
+# migration. The SQL lives in `db/membership_notify_ddl.py`.
+for _ddl in (CREATE_MEMBERSHIP_NOTIFY_FUNCTION, CREATE_MEMBERSHIP_NOTIFY_TRIGGER):
+    event.listen(
+        ClientRoom.__table__, "after_create", DDL(_ddl).execute_if(dialect="postgresql")
+    )
+event.listen(
+    ClientRoom.__table__,
+    "before_drop",
+    DDL(DROP_MEMBERSHIP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
 
 # These attach the trigger that sends a Postgres `NOTIFY` on channel
@@ -3683,6 +3733,69 @@ class ServiceConnection(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class SignInFlow(TenantScoped, Base):
+    """A person part-way through signing in to a service from Switch Console.
+
+    A sign-in is half a dozen requests, from Console and from the person's
+    browser, and with several switch-core processes behind one address each
+    can land on any of them, so the flow lives here rather than in the memory
+    of the process that started it (`connections/sign_in_flows.py`).
+
+    `id` is the state Console chose for the flow, which travels in the
+    vendor's redirect, so the browser's requests find the flow by it and the
+    flow's tenant through `tenant_of_sign_in_flow`. `kind` is `github` for the
+    GitHub App's own sign-in and `service` for the catalog's OAuth sign-ins:
+    a person has at most one flow of each kind at a time. `status` moves by
+    conditional update only, so of two requests racing for one step exactly
+    one takes it.
+
+    Nothing secret is stored in the clear: the PKCE verifier and, once the code
+    is exchanged, the vendor's credentials are keyring-encrypted, and the
+    completion secret and browser nonce are kept as SHA-256 hashes, compared
+    against what Console and the browser present. `details` holds what the
+    flow asked the vendor for (its name, scopes and consent), none of it
+    secret. Rows expire after ten minutes, and expired ones are deleted as the
+    next flow in the workspace starts.
+    """
+
+    __tablename__ = "sign_in_flows"
+    __table_args__ = (
+        CheckConstraint("kind IN ('github', 'service')", name="ck_sign_in_flows_kind"),
+        CheckConstraint(
+            "status IN ('pending', 'authorizing', 'returning', 'delivered', "
+            "'checking', 'ready', 'failed')",
+            name="ck_sign_in_flows_status",
+        ),
+        CheckConstraint("mode IN ('loopback', 'core')", name="ck_sign_in_flows_mode"),
+        Index("ix_sign_in_flows_user", "tenant_id", "user_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_label: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    encrypted_verifier: Mapped[str] = mapped_column(Text, nullable=False)
+    completion_secret_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    browser_nonce_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 

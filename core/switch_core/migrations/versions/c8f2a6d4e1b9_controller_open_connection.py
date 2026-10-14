@@ -11,6 +11,9 @@ connection the controller last opened is recorded on its row: its id, its
 generation, the process holding it and where its stream resumes each agent.
 The process the socket reaches reads them, holds the connection itself and
 records that it does, and any other process holding a copy closes it.
+
+Expand only: the columns are nullable, and a process from before this
+revision neither reads nor writes them.
 """
 
 from collections.abc import Sequence
@@ -23,6 +26,7 @@ revision: str = "c8f2a6d4e1b9"
 down_revision: str | None = "b3e9d4a1c7f2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 
 def upgrade() -> None:

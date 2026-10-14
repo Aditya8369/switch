@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -62,9 +61,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.process_identity import new_process_id
 from switch_core.process_lease import LEASE_TTL, ProcessLease
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
+from tests.conftest import TEST_KEYRING
 from tests.db_buffer import db_buffer_on, seed_agent, seed_room
 
 AGENT = "agent-1"
@@ -109,15 +110,17 @@ class _Agent:
 
 
 async def _start_process(postgres_url: str, session_factory: SessionFactory) -> Process:
+    process_id = new_process_id("test-pod")
     bus = SignalBus(
         session_factory,
         lambda: create_async_engine(postgres_url, poolclass=NullPool),
-        process_id=str(uuid.uuid4()),
+        process_id=process_id,
     )
     lease = ProcessLease(
-        process_id=bus.process_id,
+        process_id=process_id,
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
+        key_ids=[key.id for key in TEST_KEYRING.keys],
     )
     registry = AgentConnectionRegistry()
     shared = SharedConnections(

@@ -1,7 +1,7 @@
 """Agent connections in Postgres, so every switch-core process can see them
 
 Revision ID: b3e9d4a1c7f2
-Revises: d7a3f9c2e4b8
+Revises: e5956cbd3bdc
 Create Date: 2026-10-14
 
 An agent's connection (its socket, heartbeat and the frames it is owed) stays
@@ -23,6 +23,9 @@ know about it is written here, on transitions only and never per heartbeat:
   above 2**33 so no number matches one a client holds from the per-process
   counters used before, and below 2**53 so a JavaScript client holds it
   exactly.
+
+Expand only: a process from before this revision keeps its agent connections
+in memory and never reads these tables.
 """
 
 from collections.abc import Sequence
@@ -32,9 +35,10 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "b3e9d4a1c7f2"
-down_revision: str | None = "d7a3f9c2e4b8"
+down_revision: str | None = "e5956cbd3bdc"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 _POLICY = (
     "CREATE POLICY tenant_isolation ON {table} FOR ALL "

@@ -125,6 +125,18 @@ class Actor[ConfigT: ClientConfig]:
     async def wait_ready(self) -> None:
         await self._ready.wait()
 
+    async def wait_receiving(self, timeout: float) -> bool:
+        """Block until this actor's client is taking events, so a room it is
+        added to from now on is one it reads from the start, up to `timeout`
+        seconds. False on timeout."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout)
+        except TimeoutError:
+            return False
+        return await self._transport.wait_receiving(max(0.0, deadline - loop.time()))
+
     async def set_display_name(self, display_name: str) -> None:
         """Change the name this actor shows under.
 
@@ -196,9 +208,12 @@ class Actor[ConfigT: ClientConfig]:
                 self.mark_joined(room_id, self._connected_at)
                 return True
 
-    async def join_room(self, room_id: str) -> None:
+    async def join_room(self, room_id: str, joined_at_ms: int) -> None:
+        """Join, and filter the room's rows from `joined_at_ms` on: when the
+        invitation came, or, for a membership another process wrote, the
+        membership row's own time."""
         if await self._transport.join_room(room_id):
-            self.mark_joined(room_id, int(time.time() * 1000))
+            self.mark_joined(room_id, joined_at_ms)
             logger.info("Actor %s joined %s", self.transport_user_id, room_id)
 
     # ── Writing ────────────────────────────────────────────────────────────────

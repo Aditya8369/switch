@@ -58,6 +58,9 @@ class FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         self.started.append(client.id)
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
 
 class NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:
@@ -76,7 +79,8 @@ def make_service(
     svc.client_lifecycle = FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = NoBridges()  # type: ignore[attr-defined]
     svc.config = SimpleNamespace(
-        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None),
+        third_party_avatars_enabled=True,
     )  # type: ignore[attr-defined]
     return svc
 

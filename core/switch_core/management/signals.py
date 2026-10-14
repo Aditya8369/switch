@@ -1,46 +1,50 @@
-"""Management's changes, carried to every switch-core process.
+"""Management's nudges and bindings, kept current in whichever process holds
+the controller.
 
 A change commits in the process that handled the request; the controller it
-affects may be streaming from any process, and every process keeps its own
-copy of Core's bindings and controller presence. So every change is acted on
-here at once and published on the `SignalBus` for the others, which do the same
-on receipt.
+affects may be streaming from any process, and every process answers that
+controller's agents' requests. So every change is acted on here at once (the
+local subscriptions and bindings, and on revocation the local presence) and
+published on the `SignalBus` for the others, which do the same on receipt.
 
-Nudges (`assignment_changed`, `operation_pending`, `revoked`) were already
-wake-ups, never the record: a controller woken pulls its assignment or its
-operations. Bindings and connections are re-read from the database by each
-process told of them, rather than carried in the signal, so a signal that
-arrives late or out of order changes nothing the database does not say:
+Nudges were already wake-ups, never the record: a controller woken pulls its
+assignment or its operations. A binding is a copy of the record, which is why
+a process that hears `controller.assignment_changed` or `controller.renamed`
+reads the controller's placed definitions again rather than trusting the
+signal (`bindings.reconcile_controller_bindings`). A move bumps the revision of
+both controllers, so both are re-read.
 
-- `binding_changed`: an agent was placed on a controller, moved, stopped,
-  started or unmanaged. Each process reads the agent's binding again and binds
-  or unbinds it in its own presence, which also closes the agent's own
-  connections it held once a controller runs the agent.
-- `renamed`: a controller was renamed, which its agents' bindings carry.
-- `connection_changed`: a controller opened a connection, a process took one
-  up, or a socket attached or went. Each process reads the controller's row
-  again: which process holds the live socket, so an agent run by a controller
-  connected anywhere reads as live everywhere; and whether a connection this
-  process holds was replaced or taken up elsewhere, in which case it is closed
-  `taken_over`.
+Which process holds each controller's socket is kept the same way. A
+controller opening a connection, another process taking one up, and a socket
+attaching or going are announced as `controller.connection_changed`, and each
+process told reads the controller's row again (`_read_connection`): an agent
+run by a controller connected to any process then reads as live in every one,
+and a connection this process holds that another process has since replaced
+or taken up is closed `taken_over`.
 
-Resync keeps all of it true across processes. When the signal connection comes
-back, and every `RECONCILE_SECONDS`, every process reads the bindings and the
-controllers' connections again, and re-nudges every controller it holds.
+Nothing here depends on a signal arriving. When the signal connection comes
+back, every binding and every controller's connection is read again and every
+controller held here is re-nudged from the database, so one that missed a
+signal while the connection was down pulls again, and one revoked meanwhile is
+closed. The periodic re-check does the same reads, but nudges a held
+controller only with what it has not been told yet (a newer revision, an
+operation it has not heard of), so a quiet controller is not made to pull
+every `RECHECK_SECONDS`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from switch_core.bridges.agent.protocol.controller_presence import DETACH_UNASSIGNED
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.management.bindings import binding_for, read_bindings
+from switch_core.management.bindings import (
+    reconcile_bindings,
+    reconcile_controller_bindings,
+)
 from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.tenant_context import no_tenant
 
@@ -68,16 +72,12 @@ logger = logging.getLogger(__name__)
 ASSIGNMENT_CHANGED_SIGNAL = "controller.assignment_changed"
 OPERATION_PENDING_SIGNAL = "controller.operation_pending"
 REVOKED_SIGNAL = "controller.revoked"
-BINDING_CHANGED_SIGNAL = "controller.binding_changed"
 RENAMED_SIGNAL = "controller.renamed"
 CONNECTION_CHANGED_SIGNAL = "controller.connection_changed"
 
-# How often every process reads the bindings and the controllers' connections
-# again in full, in case a signal was lost on its way.
-RECONCILE_SECONDS = 30.0
-
-# How many times a read is made again when the presence changed here while it
-# was being made, before it is left to the next full pass.
+# How many times a controller's row is read again when this process changed
+# that controller's connection while it was being read, before it is left to
+# the next re-check.
 _READ_ATTEMPTS = 3
 
 
@@ -90,8 +90,8 @@ class ControllerSignals:
         bus: SignalBus,
         session_factory: async_sessionmaker[AsyncSession],
         controllers: AgentControllerStore,
-        operations: AgentControllerOperationStore,
         definitions: AgentDefinitionStore,
+        operations: AgentControllerOperationStore,
         rooms: RoomStore,
         processes: SwitchCoreProcessStore,
         clock: Callable[[], datetime],
@@ -103,35 +103,51 @@ class ControllerSignals:
         self._bus = bus
         self._session_factory = session_factory
         self._controllers = controllers
-        self._operations = operations
         self._definitions = definitions
+        self._operations = operations
         self._rooms = rooms
         self._processes = processes
         self._clock = clock
-        self._tasks: set[asyncio.Task[None]] = set()
-        # Set once `reconcile_forever` ends: a signal arriving after that
-        # starts no read.
-        self._stopped = False
+        # What each controller has been nudged with from this process, so the
+        # periodic re-check tells a held controller only what is new to it.
+        self._nudged_revision: dict[str, int] = {}
+        self._nudged_operations: dict[str, set[str]] = {}
+        # Controllers, by (tenant id, controller id), whose bindings another
+        # process changed and this one has still to read.
+        self._bindings_owed = bus.pending_work(
+            "controller bindings", self._reconcile_controller
+        )
+        # Controllers, by (tenant id, controller id), whose connection another
+        # process changed and this one has still to read.
+        self._connections_owed = bus.pending_work(
+            "controller connections", self._read_connection_of
+        )
         bus.handle(ASSIGNMENT_CHANGED_SIGNAL, self._on_assignment_changed)
         bus.handle(OPERATION_PENDING_SIGNAL, self._on_operation_pending)
         bus.handle(REVOKED_SIGNAL, self._on_revoked)
-        bus.handle(BINDING_CHANGED_SIGNAL, self._on_binding_changed)
         bus.handle(RENAMED_SIGNAL, self._on_renamed)
         bus.handle(CONNECTION_CHANGED_SIGNAL, self._on_connection_changed)
         bus.on_resync(self.resync)
+        bus.on_recheck(self.recheck)
 
     # ── Announcing, from the process that made the change ─────────────────────
 
-    def assignment_changed(self, controller_id: str, revision: int) -> None:
-        self.notifier.assignment_changed(controller_id, revision)
+    def assignment_changed(
+        self, tenant_id: str, controller_id: str, revision: int
+    ) -> None:
+        """The process that committed the change has already bound its agents."""
+        self._nudge_assignment(controller_id, revision)
         self._bus.publish(
-            ASSIGNMENT_CHANGED_SIGNAL, controller_id=controller_id, revision=revision
+            ASSIGNMENT_CHANGED_SIGNAL,
+            tenant_id=tenant_id,
+            controller_id=controller_id,
+            revision=revision,
         )
 
     def operation_pending(
         self, controller_id: str, *, operation_id: str, kind: str, agent_id: str | None
     ) -> None:
-        self.notifier.operation_pending(
+        self._nudge_operation(
             controller_id, operation_id=operation_id, kind=kind, agent_id=agent_id
         )
         self._bus.publish(
@@ -146,25 +162,18 @@ class ControllerSignals:
         self._revoke_here(controller_id)
         self._bus.publish(REVOKED_SIGNAL, controller_id=controller_id)
 
-    def binding_changed(self, tenant_id: str, agent_id: str, reason: str) -> None:
-        """The agent's binding changed and this process's presence has it
-        already. `reason` is why an unbound agent left its controller, for the
-        process holding that controller's stream to say."""
-        self._bus.publish(
-            BINDING_CHANGED_SIGNAL,
-            tenant_id=tenant_id,
-            agent_id=agent_id,
-            reason=reason,
-        )
-
     def renamed(self, tenant_id: str, controller_id: str) -> None:
+        """The controller's owner renamed it. A rename bumps no assignment
+        revision, so it needs a signal of its own for the other processes to
+        re-read the name their bindings carry."""
         self._bus.publish(
             RENAMED_SIGNAL, tenant_id=tenant_id, controller_id=controller_id
         )
 
     def connection_changed(self, tenant_id: str, controller_id: str) -> None:
-        """The controller's connection row changed, and this process already
-        acts on it."""
+        """The controller's connection row changed (an open, a connection
+        taken up, a socket attaching or going), and this process already acts
+        on it."""
         self._bus.publish(
             CONNECTION_CHANGED_SIGNAL, tenant_id=tenant_id, controller_id=controller_id
         )
@@ -172,10 +181,14 @@ class ControllerSignals:
     # ── Receiving, in every other process ─────────────────────────────────────
 
     def _on_assignment_changed(self, signal: dict[str, Any]) -> None:
-        self.notifier.assignment_changed(signal["controller_id"], signal["revision"])
+        # Nudged at once, as before bindings were re-read here: the
+        # controller's pull may land on any process, so waiting for this
+        # one's read would only delay it.
+        self._nudge_assignment(signal["controller_id"], signal["revision"])
+        self._bindings_owed.add((signal["tenant_id"], signal["controller_id"]))
 
     def _on_operation_pending(self, signal: dict[str, Any]) -> None:
-        self.notifier.operation_pending(
+        self._nudge_operation(
             signal["controller_id"],
             operation_id=signal["operation_id"],
             kind=signal["operation_kind"],
@@ -185,104 +198,38 @@ class ControllerSignals:
     def _on_revoked(self, signal: dict[str, Any]) -> None:
         self._revoke_here(signal["controller_id"])
 
-    def _revoke_here(self, controller_id: str) -> None:
-        """The stream ends, the controller cannot open another here, and this
-        process's token cache forgets it."""
-        self.notifier.credential_revoked(controller_id)
-        self._presence.revoke_controller(controller_id)
-
-    def _spawn(self, work: Any) -> None:
-        if self._stopped:
-            work.close()
-            return
-        task = asyncio.create_task(work)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    def _on_binding_changed(self, signal: dict[str, Any]) -> None:
-        self._spawn(
-            self._logged(
-                self._read_binding(
-                    signal["tenant_id"], signal["agent_id"], signal["reason"]
-                ),
-                f"agent {signal['agent_id']}'s binding",
-            )
-        )
-
     def _on_renamed(self, signal: dict[str, Any]) -> None:
-        self._spawn(
-            self._logged(
-                self._read_name(signal["tenant_id"], signal["controller_id"]),
-                f"controller {signal['controller_id']}'s name",
-            )
-        )
+        self._bindings_owed.add((signal["tenant_id"], signal["controller_id"]))
 
     def _on_connection_changed(self, signal: dict[str, Any]) -> None:
-        self._spawn(
-            self._logged(
-                self._read_connection(signal["tenant_id"], signal["controller_id"]),
-                f"controller {signal['controller_id']}'s connection",
-            )
+        self._connections_owed.add((signal["tenant_id"], signal["controller_id"]))
+
+    async def _reconcile_controller(self, key: tuple[str, str]) -> None:
+        tenant_id, controller_id = key
+        await reconcile_controller_bindings(
+            session_factory=self._session_factory,
+            definitions=self._definitions,
+            controllers=self._controllers,
+            presence=self._presence,
+            tenant_id=tenant_id,
+            controller_id=controller_id,
         )
+        # An agent just bound to a controller another process holds needs its
+        # rooms here, as the controller's other agents have them, to be
+        # present in them at once: reading the connection again loads them.
+        if self._presence.holder_elsewhere(controller_id) is not None:
+            await self._read_connection(tenant_id, controller_id)
 
-    async def _logged(self, work: Any, what: str) -> None:
-        try:
-            await work
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.error(
-                "Could not read %s again after another process changed it; the "
-                "next full pass will",
-                what,
-                exc_info=True,
-            )
+    # ── Which process holds each controller's socket ──────────────────────────
 
-    async def _read_binding(self, tenant_id: str, agent_id: str, reason: str) -> None:
-        for _ in range(_READ_ATTEMPTS):
-            version = self._presence.version(agent_id)
-            async with tenant_session(self._session_factory, tenant_id) as session:
-                binding = await binding_for(
-                    session,
-                    tenant_id,
-                    agent_id,
-                    definitions=self._definitions,
-                    controllers=self._controllers,
-                )
-            if self._presence.version(agent_id) != version:
-                # Changed here while it was read: what was read may be older.
-                continue
-            if binding is None:
-                if self._presence.is_bound(agent_id):
-                    self._presence.unbind(agent_id, reason)
-            elif self._presence.binding(agent_id) != binding:
-                self._presence.bind(binding)
-                await self._read_rooms_if_held_elsewhere(tenant_id, agent_id)
-            return
-
-    async def _read_rooms_if_held_elsewhere(
-        self, tenant_id: str, agent_id: str
-    ) -> None:
-        """An agent just bound to a controller another process holds: its
-        rooms are read here, as they are for the controller's other agents
-        (`_rooms_if_held_elsewhere`), so it is present in them at once."""
-        if self._presence.process_holding(agent_id) is None:
-            return
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            rooms = await self._rooms.get_rooms_for_agent(
-                session, agent_id, include_archived=True
-            )
-        self._presence.set_rooms(agent_id, {room.id for room in rooms})
-
-    async def _read_name(self, tenant_id: str, controller_id: str) -> None:
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            controller = await self._controllers.get(session, tenant_id, controller_id)
-        if controller is not None:
-            self._presence.rename_controller(controller_id, controller.name)
+    async def _read_connection_of(self, key: tuple[str, str]) -> None:
+        tenant_id, controller_id = key
+        await self._read_connection(tenant_id, controller_id)
 
     async def _read_connection(self, tenant_id: str, controller_id: str) -> None:
+        """Read the controller's row again and act on it here."""
         for _ in range(_READ_ATTEMPTS):
-            version = self._presence.version(controller_id)
+            mark = self._presence.connection_mark()
             async with tenant_session(self._session_factory, tenant_id) as session:
                 controller = await self._controllers.get(
                     session, tenant_id, controller_id
@@ -291,11 +238,46 @@ class ControllerSignals:
                     return
                 leases = await read_leases(session, self._processes)
                 rooms = await self._rooms_if_held_elsewhere(session, controller, leases)
-            if self._presence.version(controller_id) != version:
+            if self._presence.connection_changed_since(controller_id, mark):
                 # Changed here while it was read: what was read may be older.
                 continue
             self._apply_connection(controller, leases, rooms)
             return
+
+    async def read_connections(self) -> None:
+        """Read every controller's connection row again, in every tenant, and
+        make this process's view of who holds each socket agree. Run at
+        startup, before the bridge serves, and on resync and each re-check."""
+        seen: set[str] = set()
+        elsewhere = self._presence.controllers_elsewhere()
+        with no_tenant():
+            tenant_ids = await all_tenant_ids(self._session_factory)
+        for tenant_id in tenant_ids:
+            mark = self._presence.connection_mark()
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                leases = await read_leases(session, self._processes)
+                found = [
+                    controller
+                    for controller in await self._controllers.list_with_connections(
+                        session, tenant_id
+                    )
+                    if controller.tenant_id == tenant_id
+                ]
+                rooms = {
+                    controller.id: await self._rooms_if_held_elsewhere(
+                        session, controller, leases
+                    )
+                    for controller in found
+                }
+            for controller in found:
+                seen.add(controller.id)
+                if self._presence.connection_changed_since(controller.id, mark):
+                    # Changed here while it was read; read it again on its own.
+                    await self._read_connection(tenant_id, controller.id)
+                    continue
+                self._apply_connection(controller, leases, rooms[controller.id])
+        for controller_id in elsewhere - seen:
+            self._presence.held_elsewhere(controller_id, None)
 
     async def _rooms_if_held_elsewhere(
         self,
@@ -355,14 +337,71 @@ class ControllerSignals:
         for agent_id, agent_rooms in rooms.items():
             self._presence.set_rooms(agent_id, agent_rooms)
 
-    # ── Resync ────────────────────────────────────────────────────────────────
+    # ── Acting here ───────────────────────────────────────────────────────────
+
+    def _nudge_assignment(self, controller_id: str, revision: int) -> None:
+        if revision > self._nudged_revision.get(controller_id, -1):
+            self._nudged_revision[controller_id] = revision
+        self.notifier.assignment_changed(controller_id, revision)
+
+    def _nudge_operation(
+        self, controller_id: str, *, operation_id: str, kind: str, agent_id: str | None
+    ) -> None:
+        self._nudged_operations.setdefault(controller_id, set()).add(operation_id)
+        self.notifier.operation_pending(
+            controller_id, operation_id=operation_id, kind=kind, agent_id=agent_id
+        )
+
+    def _revoke_here(self, controller_id: str) -> None:
+        """The stream ends, the controller cannot open another here, and this
+        process's token cache forgets it."""
+        self.notifier.credential_revoked(controller_id)
+        self._presence.revoke_controller(controller_id)
+
+    # ── Resync and re-check ───────────────────────────────────────────────────
 
     async def resync(self) -> None:
-        """Re-nudge every controller this process holds from what the database
-        says now (its assignment revision and its open operations, or its
-        revocation), then read the bindings and every controller's connection
-        again."""
-        for conn in self._presence.held_connections():
+        """Re-read every binding and every controller's connection, then
+        re-nudge every controller this process holds from what the database
+        says now: its assignment revision and its open operations, or its
+        revocation."""
+        await self._reconcile_all_bindings()
+        await self._read_all_connections()
+        await self._renudge_held(only_new=False)
+
+    async def recheck(self) -> None:
+        """What `resync` does, but a held controller is nudged only with what
+        this process has not told it yet."""
+        await self._reconcile_all_bindings()
+        await self._read_all_connections()
+        await self._renudge_held(only_new=True)
+
+    async def _read_all_connections(self) -> None:
+        try:
+            await self.read_connections()
+        except Exception:
+            logger.error("Could not re-read controller connections", exc_info=True)
+
+    async def _reconcile_all_bindings(self) -> None:
+        try:
+            await reconcile_bindings(
+                session_factory=self._session_factory,
+                definitions=self._definitions,
+                controllers=self._controllers,
+                presence=self._presence,
+            )
+        except Exception:
+            logger.error("Could not re-read controller bindings", exc_info=True)
+
+    async def _renudge_held(self, *, only_new: bool) -> None:
+        held = self._presence.held_connections()
+        # What a controller held elsewhere was told is no use here: if it
+        # connects to this process later, its opening frame carries the state.
+        held_ids = {conn.controller_id for conn in held}
+        for remembered in (self._nudged_revision, self._nudged_operations):
+            for controller_id in set(remembered) - held_ids:
+                del remembered[controller_id]
+        for conn in held:
             try:
                 async with tenant_session(
                     self._session_factory, conn.tenant_id
@@ -376,112 +415,26 @@ class ControllerSignals:
                     offered = await self._operations.list_offered(
                         session, conn.tenant_id, conn.controller_id, self._clock()
                     )
-                self.notifier.assignment_changed(
-                    conn.controller_id, controller.assignment_revision
-                )
+                revision = controller.assignment_revision
+                if not only_new or revision > self._nudged_revision.get(
+                    conn.controller_id, -1
+                ):
+                    self._nudge_assignment(conn.controller_id, revision)
+                told = self._nudged_operations.get(conn.controller_id, set())
                 for operation in offered:
-                    self.notifier.operation_pending(
+                    if only_new and operation.id in told:
+                        continue
+                    self._nudge_operation(
                         conn.controller_id,
                         operation_id=operation.id,
                         kind=operation.kind,
                         agent_id=operation.agent_id,
                     )
+                # Only the operations still offered need remembering.
+                self._nudged_operations[conn.controller_id] = {
+                    operation.id for operation in offered
+                }
             except Exception:
                 logger.error(
                     "Could not resync controller %s", conn.controller_id, exc_info=True
                 )
-        await self.reconcile()
-
-    async def reconcile(self) -> None:
-        """Read every binding and every controller's connection again, and
-        make this process's presence agree. Logs rather than raises: the next
-        pass tries again."""
-        try:
-            await self._reconcile_bindings()
-            await self._reconcile_connections()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.error(
-                "Could not read the controller bindings and connections again",
-                exc_info=True,
-            )
-
-    async def _reconcile_bindings(self) -> None:
-        bound_before = self._presence.bound_agent_ids()
-        versions = {
-            agent_id: self._presence.version(agent_id) for agent_id in bound_before
-        }
-        with no_tenant():
-            recorded = await read_bindings(
-                session_factory=self._session_factory,
-                definitions=self._definitions,
-                controllers=self._controllers,
-            )
-        placed = {binding.agent_id: binding for binding in recorded.bindings}
-
-        def unchanged(agent_id: str) -> bool:
-            # Bound or unbound here since the read began: newer than the read.
-            return self._presence.version(agent_id) == versions.get(agent_id, 0)
-
-        for agent_id in bound_before - set(placed):
-            if unchanged(agent_id):
-                self._presence.unbind(agent_id, DETACH_UNASSIGNED)
-        for binding in recorded.bindings:
-            if (
-                unchanged(binding.agent_id)
-                and self._presence.binding(binding.agent_id) != binding
-            ):
-                self._presence.bind(binding)
-        for controller_id in recorded.revoked:
-            if not self._presence.is_revoked(controller_id):
-                self._presence.revoke_controller(controller_id)
-
-    async def _reconcile_connections(self) -> None:
-        seen: set[str] = set()
-        elsewhere = self._presence.controllers_elsewhere()
-        with no_tenant():
-            tenant_ids = await all_tenant_ids(self._session_factory)
-        for tenant_id in tenant_ids:
-            versions = self._presence.versions()
-            async with tenant_session(self._session_factory, tenant_id) as session:
-                leases = await read_leases(session, self._processes)
-                found = [
-                    controller
-                    for controller in await self._controllers.list_with_connections(
-                        session, tenant_id
-                    )
-                    if controller.tenant_id == tenant_id
-                ]
-                rooms = {
-                    controller.id: await self._rooms_if_held_elsewhere(
-                        session, controller, leases
-                    )
-                    for controller in found
-                }
-            for controller in found:
-                seen.add(controller.id)
-                if self._presence.version(controller.id) != versions.get(
-                    controller.id, 0
-                ):
-                    # Changed here while it was read; read it again on its own.
-                    await self._read_connection(tenant_id, controller.id)
-                    continue
-                self._apply_connection(controller, leases, rooms[controller.id])
-        for controller_id in elsewhere - seen:
-            self._presence.held_elsewhere(controller_id, None)
-
-    async def reconcile_forever(self) -> None:
-        """Reconcile every `RECONCILE_SECONDS`, until cancelled."""
-        try:
-            while True:
-                await asyncio.sleep(RECONCILE_SECONDS)
-                await self.reconcile()
-        finally:
-            self._stopped = True
-            # Waited for, so none is left holding a database connection
-            # mid-transaction once the process has moved on.
-            pending = list(self._tasks)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)

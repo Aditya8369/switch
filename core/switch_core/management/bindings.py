@@ -8,16 +8,18 @@ tenant can be scoped to, so the tenants come from the exemption
 (`db/tenant_lookup.py`) and each tenant's definitions are then read under its
 own policy.
 
-Every process keeps its own copy, so a change committed by one is announced to
-the others (`management/signals.py`), which read the agent's binding again
-here (`binding_for`), and every process reads them all again now and then
-(`read_bindings`) in case an announcement was lost.
+The same reads keep every process's bindings current after startup. A
+placement changes in the process that served the request, and every other
+process holds the old binding until it reads the tables again: on a
+`controller.assignment_changed` or `controller.renamed` signal for one
+controller (`reconcile_controller_bindings`), and for all of them when the
+signal connection comes back and on each periodic re-check
+(`reconcile_bindings`). See `management/signals.py`.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -49,20 +51,101 @@ def binding_of(
     )
 
 
-@dataclass(frozen=True)
-class RecordedBindings:
-    bindings: list[Binding]
-    # Controllers already revoked that agents are still placed on.
-    revoked: set[str]
-
-
-async def read_bindings(
+async def load_bindings(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     definitions: AgentDefinitionStore,
     controllers: AgentControllerStore,
-) -> RecordedBindings:
-    """Every placed definition, in every tenant."""
+    presence: ControllerPresence,
+) -> int:
+    """Load every placed definition into `presence`, and mark the controllers
+    already revoked that agents are still placed on. Returns how many."""
+    bindings, revoked = await _read_bindings(
+        session_factory=session_factory,
+        definitions=definitions,
+        controllers=controllers,
+    )
+    presence.load(bindings)
+    for controller_id in revoked:
+        presence.revoke_controller(controller_id)
+    logger.info("Loaded %d controller binding(s) into Core", len(bindings))
+    return len(bindings)
+
+
+async def reconcile_bindings(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    definitions: AgentDefinitionStore,
+    controllers: AgentControllerStore,
+    presence: ControllerPresence,
+) -> None:
+    """Bring every binding in `presence` in line with the tables, changing
+    only what differs, and close the controllers revoked meanwhile."""
+    since = presence.change_mark()
+    bindings, revoked = await _read_bindings(
+        session_factory=session_factory,
+        definitions=definitions,
+        controllers=controllers,
+    )
+    presence.reconcile(
+        bindings,
+        agent_ids=presence.bound_agent_ids() | {b.agent_id for b in bindings},
+        since=since,
+    )
+    for controller_id in revoked:
+        if not presence.is_revoked(controller_id):
+            presence.revoke_controller(controller_id)
+
+
+async def reconcile_controller_bindings(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    definitions: AgentDefinitionStore,
+    controllers: AgentControllerStore,
+    presence: ControllerPresence,
+    tenant_id: str,
+    controller_id: str,
+) -> None:
+    """Bring the bindings of the agents on one controller in line with the
+    tables: the agents placed on it now, and the ones this process still has
+    bound to it. One of those that moved to another controller is bound
+    there, so the order in which the two controllers' signals arrive does not
+    matter."""
+    since = presence.change_mark()
+    bindings: list[Binding] = []
+    async with tenant_session(session_factory, tenant_id) as session:
+        controller = await controllers.get(session, tenant_id, controller_id)
+        placed = (
+            await definitions.list_for_controller(session, tenant_id, controller_id)
+            if controller is not None
+            else []
+        )
+        for row, _agent in placed:
+            assert controller is not None
+            bindings.append(binding_of(tenant_id, row, controller))
+        placed_here = {binding.agent_id for binding in bindings}
+        for agent_id in presence.agents_of(controller_id) - placed_here:
+            moved = await definitions.get_for_agent(session, tenant_id, agent_id)
+            if moved is None or moved.controller_id is None:
+                continue
+            elsewhere = await controllers.get(session, tenant_id, moved.controller_id)
+            if elsewhere is not None:
+                bindings.append(binding_of(tenant_id, moved, elsewhere))
+    presence.reconcile(
+        bindings,
+        agent_ids=presence.agents_of(controller_id) | placed_here,
+        since=since,
+    )
+
+
+async def _read_bindings(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    definitions: AgentDefinitionStore,
+    controllers: AgentControllerStore,
+) -> tuple[list[Binding], set[str]]:
+    """Every placed definition's binding, and the revoked controllers that
+    agents are still placed on."""
     bindings: list[Binding] = []
     revoked: set[str] = set()
     for tenant_id in await all_tenant_ids(session_factory):
@@ -87,46 +170,4 @@ async def read_bindings(
                 if controller.revoked_at is not None:
                     revoked.add(controller.id)
                 bindings.append(binding_of(tenant_id, row, controller))
-    return RecordedBindings(bindings=bindings, revoked=revoked)
-
-
-async def binding_for(
-    session: AsyncSession,
-    tenant_id: str,
-    agent_id: str,
-    *,
-    definitions: AgentDefinitionStore,
-    controllers: AgentControllerStore,
-) -> Binding | None:
-    """The agent's binding as recorded now, or None when it is not placed."""
-    row = await definitions.get_for_agent(session, tenant_id, agent_id)
-    if row is None or row.controller_id is None:
-        return None
-    controller = await controllers.get(session, tenant_id, row.controller_id)
-    if controller is None:
-        raise RuntimeError(
-            f"agent {agent_id} is placed on controller {row.controller_id}, "
-            "which does not exist"
-        )
-    return binding_of(tenant_id, row, controller)
-
-
-async def load_bindings(
-    *,
-    session_factory: async_sessionmaker[AsyncSession],
-    definitions: AgentDefinitionStore,
-    controllers: AgentControllerStore,
-    presence: ControllerPresence,
-) -> int:
-    """Load every placed definition into `presence`, and mark the controllers
-    already revoked that agents are still placed on. Returns how many."""
-    recorded = await read_bindings(
-        session_factory=session_factory,
-        definitions=definitions,
-        controllers=controllers,
-    )
-    presence.load(recorded.bindings)
-    for controller_id in recorded.revoked:
-        presence.revoke_controller(controller_id)
-    logger.info("Loaded %d controller binding(s) into Core", len(recorded.bindings))
-    return len(recorded.bindings)
+    return bindings, revoked

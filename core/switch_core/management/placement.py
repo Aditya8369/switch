@@ -2,7 +2,7 @@
 
 A controller's state is read from its connection's recorded transitions
 (`connection_ledger.py`) and the lease of the switch-core process holding it
-(`process_lease.py`), so every process answers alike and a restart changes
+(`switch_core/process_lease.py`), so every process answers alike and a restart changes
 nothing:
 
 - `revoked`: its credential is gone.

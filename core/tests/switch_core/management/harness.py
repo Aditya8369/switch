@@ -44,6 +44,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import IDLE
+from switch_core.config import ControllerRelease
 from switch_core.connections.broker import ServiceBroker
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -127,6 +128,13 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         return None
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
+    def get_by_agent_id(self, agent_id: str) -> None:
+        """No client is ever started here."""
+        return None
+
 
 class _NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:
@@ -143,7 +151,9 @@ def protocol_service(
     svc.api_key_cache = cache
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[assignment]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
-    svc.config = SimpleNamespace(keyring=TEST_KEYRING)  # type: ignore[assignment]
+    svc.config = SimpleNamespace(  # type: ignore[assignment]
+        keyring=TEST_KEYRING, third_party_avatars_enabled=True
+    )
     svc.telemetry = None
     svc.event_buffer = db_buffer_on(session_factory)
     svc.connections = AgentConnectionRegistry()
@@ -161,8 +171,8 @@ class Harness:
     # Mounted at `/gateway` on `app`, for a test to add routes to.
     gateway_app: FastAPI
     management: Management
-    # This process's lease, which the core wiring holds whatever features run.
-    lease: ProcessLease
+    # This process's signal bus, started only by a test that runs several
+    # processes against one database.
     bus: SignalBus
     protocol: AgentCore
     cache: ApiKeyCache
@@ -200,6 +210,8 @@ def build_harness(
     *,
     controller_auth_ttl_seconds: float = 5,
     server_url: str | None = SERVER_URL,
+    third_party_avatars: bool = True,
+    controller_release: ControllerRelease | None = None,
     signal_engine: Callable[[], Any] = _no_listening_engine,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
@@ -210,16 +222,14 @@ def build_harness(
         ttl_seconds=controller_auth_ttl_seconds, max_entries=64
     )
     protocol = protocol_service(session_factory, cache)
-    signal_bus = SignalBus(session_factory, signal_engine, process_id=str(uuid.uuid4()))
-    lease = ProcessLease(
-        process_id=signal_bus.process_id,
-        session_factory=session_factory,
-        processes=SwitchCoreProcessStore(),
-    )
+    process_id = str(uuid.uuid4())
+    signal_bus = SignalBus(session_factory, signal_engine, process_id=process_id)
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
         server_url=server_url,
+        third_party_avatars=third_party_avatars,
+        controller_release=controller_release,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
@@ -227,6 +237,12 @@ def build_harness(
         # Never started unless a test runs several processes: with one, every
         # nudge is delivered locally and what it would publish goes nowhere.
         signal_bus=signal_bus,
+        lease=ProcessLease(
+            process_id=process_id,
+            session_factory=session_factory,
+            processes=SwitchCoreProcessStore(),
+            key_ids=[key.id for key in TEST_KEYRING.keys],
+        ),
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:
@@ -260,7 +276,9 @@ def build_harness(
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        keyring=TEST_KEYRING, gateway_tenant_choice_enabled=False
+        keyring=TEST_KEYRING,
+        gateway_tenant_choice_enabled=False,
+        third_party_avatars_enabled=third_party_avatars,
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(
@@ -275,7 +293,6 @@ def build_harness(
         app=agent_app,
         gateway_app=gateway_app,
         management=management,
-        lease=lease,
         bus=signal_bus,
         protocol=protocol,
         cache=cache,
@@ -382,6 +399,36 @@ async def enroll_console(
     return EnrolledController(
         controller_id=body["controller_id"],
         credential=body["credential"],
+        access_token=token.json()["access_token"],
+        owner=owner,
+        harness=harness,
+    )
+
+
+async def enroll_daemon(
+    harness: Harness, client: httpx.AsyncClient, owner: User, name: str = "build-box"
+) -> EnrolledController:
+    """Enroll a headless controller for `owner` with a one-time code, as
+    `switch-agent-controller enroll` does, and exchange its credential."""
+    code = await client.post(
+        "/gateway/management/enrollment-codes", cookies=cookies_for(owner)
+    )
+    assert code.status_code == 201, code.text
+    body = fixture("enroll_request.json")
+    body["proof"]["code"] = code.json()["code"]
+    body["controller"]["name"] = name
+    enrolled = await client.post("/v1/management/controllers/enroll", json=body)
+    assert enrolled.status_code == 201, enrolled.text
+    controller_id = enrolled.json()["controller_id"]
+    credential = enrolled.json()["credential"]
+    token = await client.post(
+        f"/v1/management/controllers/{controller_id}/token",
+        json={"credential": credential},
+    )
+    assert token.status_code == 200, token.text
+    return EnrolledController(
+        controller_id=controller_id,
+        credential=credential,
         access_token=token.json()["access_token"],
         owner=owner,
         harness=harness,
@@ -566,7 +613,7 @@ async def connect(
     conn = presence.current_connection(controller.controller_id)
     assert conn is not None
     presence.attach_stream(conn)
-    await harness.lease.renew()
+    await harness.management.lease.renew()
     await harness.management.ledger.flush_all()
     return opened
 
@@ -582,7 +629,7 @@ async def ensure_connected(
     if conn is None or not conn.stream_attached:
         await connect(client, controller)
         return
-    await harness.lease.renew()
+    await harness.management.lease.renew()
     await harness.management.ledger.flush_all()
 
 

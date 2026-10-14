@@ -12,10 +12,12 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from switch_core.signals import SignalBus
+from switch_core import signals as signals_module
+from switch_core.signals import SIGNAL_CHANNEL, SignalBus
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -166,3 +168,141 @@ class TestPublishing:
         bus.handle("thing.changed", lambda _signal: None)
         with pytest.raises(ValueError, match="already registered"):
             bus.handle("thing.changed", lambda _signal: None)
+
+
+class _FailingOnce:
+    """A session factory whose first session fails on the statement, as a
+    database that refuses for a moment does."""
+
+    def __init__(self, real: async_sessionmaker[AsyncSession]) -> None:
+        self._real = real
+        self.failures = 1
+
+    def __call__(self) -> Any:
+        if self.failures:
+            self.failures -= 1
+            return _RefusingSession()
+        return self._real()
+
+
+class _RefusingSession:
+    async def __aenter__(self) -> _RefusingSession:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def execute(self, *_args: object, **_kwargs: object) -> None:
+        raise ConnectionError("the database refused")
+
+
+class TestNothingIsLost:
+    async def test_a_batch_that_fails_to_send_is_sent_again(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        make_bus: Callable[[], SignalBus],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(signals_module, "RETRY_SECONDS", 0.05)
+        sender = SignalBus(
+            _FailingOnce(session_factory),  # type: ignore[arg-type]
+            lambda: create_async_engine(postgres_url, poolclass=NullPool),
+            process_id=str(uuid.uuid4()),
+        )
+        receiver = make_bus()
+        received = Received()
+        receiver.handle("thing.changed", received)
+        try:
+            await _start(sender, receiver)
+            sender.publish("thing.changed", n=1)
+            sender.publish("thing.changed", n=2)
+            async with asyncio.timeout(DELIVERY_TIMEOUT):
+                while len(received.signals) < 2:
+                    await received.wait()
+        finally:
+            await sender.stop()
+            await receiver.stop()
+
+        assert [signal["n"] for signal in received.signals] == [1, 2]
+        assert sender.unsent == 0
+
+    async def test_every_recheck_runs_periodically(
+        self, make_bus: Callable[[], SignalBus], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(signals_module, "RECHECK_SECONDS", 0.02)
+        bus = make_bus()
+        runs: list[str] = []
+
+        async def failing() -> None:
+            runs.append("failing")
+            raise RuntimeError("one family's re-check failed")
+
+        async def working() -> None:
+            runs.append("working")
+
+        bus.on_recheck(failing)
+        bus.on_recheck(working)
+        try:
+            await bus.start()
+            async with asyncio.timeout(DELIVERY_TIMEOUT):
+                while runs.count("working") < 2:
+                    await asyncio.sleep(0.01)
+        finally:
+            await bus.stop()
+
+        # A failing re-check does not stop the others, now or next time.
+        assert runs.count("failing") >= 2
+
+    async def test_work_that_fails_is_kept_and_tried_again(
+        self, make_bus: Callable[[], SignalBus], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(signals_module, "RETRY_SECONDS", 0.02)
+        bus = make_bus()
+        attempts: list[str] = []
+        done = asyncio.Event()
+
+        async def reread(key: str) -> None:
+            attempts.append(key)
+            if len(attempts) == 1:
+                raise ConnectionError("the database refused")
+            done.set()
+
+        work = bus.pending_work("things", reread)
+        try:
+            await bus.start()
+            work.add("t1")
+            work.add("t1")
+            await asyncio.wait_for(done.wait(), DELIVERY_TIMEOUT)
+        finally:
+            await bus.stop()
+
+        # Added twice before its turn, so one piece of work, retried once.
+        assert attempts == ["t1", "t1"]
+        assert work.pending == 0
+
+    async def test_a_signal_with_no_sender_reaches_every_process(
+        self,
+        two_buses: tuple[SignalBus, SignalBus],
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """What a database trigger sends: no process skips it as its own."""
+        first, second = two_buses
+        heard_first, heard_second = Received(), Received()
+        first.handle("thing.changed", heard_first)
+        second.handle("thing.changed", heard_second)
+        await _start(first, second)
+
+        async with session_factory() as session:
+            await session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {
+                    "channel": SIGNAL_CHANNEL,
+                    "payload": '{"kind": "thing.changed", "thing_id": "t1"}',
+                },
+            )
+            await session.commit()
+        await heard_first.wait()
+        await heard_second.wait()
+
+        assert heard_first.signals == heard_second.signals

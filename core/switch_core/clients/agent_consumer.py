@@ -459,6 +459,20 @@ class AgentConsumer(Consumer[AgentActor]):
             room.room_id, greeting, format="markdown", metered=False
         )
 
+    async def on_invite(self, room: RoomRef, event: InboundMembership) -> None:
+        """Join, and tell the agent's controller, if this process holds it.
+
+        `on_self_join` tells it too, but only the process whose copy of the
+        agent heard its own arrival runs that. A copy that learned of the
+        membership from another process (`PostgresTransport._reconcile_membership`)
+        starts reading after the arrival, and a controller streaming from this
+        process would otherwise never hear the agent is in the room.
+        """
+        await super().on_invite(room, event)
+        meta = await self._resolve_room_meta(room.room_id)
+        if meta is not None:
+            self._connections.controllers.room_joined(self.agent.id, meta.room_id)
+
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """Forget the room's events, everywhere this agent could still read them.
 

@@ -11,9 +11,10 @@ all, is the controller's business.
 
 Core owns this state and never reads Management's tables. Management fills it
 through the narrow surface at the top of the class (`load`, `bind`, `unbind`,
-`revoke_controller`) at startup and after every change it commits, and each of
-those drops what the controller-token cache (`ControllerAuthCache`) holds for
-the controller or agent it touches. Everything
+`reconcile`, `revoke_controller`) at startup, after every change it commits,
+and when another process signals a change it committed (`management/signals.py`),
+and each of those drops what the controller-token cache (`ControllerAuthCache`)
+holds for the controller or agent it touches. Everything
 else here is read by Core: the presence readers through `AgentConnectionRegistry`,
 the bearer middleware's act-as check, and the controller stream.
 
@@ -205,6 +206,11 @@ class ControllerPresence:
         self._on_bound = on_bound
         self._bindings: dict[str, Binding] = {}
         self._by_controller: dict[str, set[str]] = {}
+        # A count of binding changes, and the count at each agent's last one,
+        # so a reconcile built from a read that started earlier can tell
+        # which agents changed under it (`change_mark`, `reconcile`).
+        self._changes = 0
+        self._changed_at: dict[str, int] = {}
         self._connections: dict[str, ControllerConnection] = {}
         self._superseded: dict[str, deque[str]] = {}
         self._revoked: set[str] = set()
@@ -221,22 +227,25 @@ class ControllerPresence:
         # as Management reads it from their rows. Dropped when that process's
         # lease lapses (`forget_processes`) or its row says the socket went.
         self._elsewhere: dict[str, str] = {}
-        # Bumped on every change to an agent's binding (keyed by agent) or a
-        # controller's connection (keyed by controller), so a reader that read
-        # the database before the change does not set it back (`version`).
-        self._versions: dict[str, int] = {}
+        # A count of changes to which process holds each controller's
+        # connection, and the count at each controller's last one, as for the
+        # bindings: so a read of the controllers' rows that started earlier
+        # can tell which controllers changed under it (`connection_mark`).
+        self._connection_changes = 0
+        self._connection_changed_at: dict[str, int] = {}
 
-    def version(self, key: str) -> int:
-        """How many times the binding of the agent, or the connection of the
-        controller, with this id has changed here."""
-        return self._versions.get(key, 0)
+    def connection_mark(self) -> int:
+        """Where the connection changes stand now. Taken before reading the
+        controllers' rows, so what is read is not applied over a change made
+        here since (`connection_changed_since`)."""
+        return self._connection_changes
 
-    def versions(self) -> dict[str, int]:
-        """Every `version`, as it stands now."""
-        return dict(self._versions)
+    def connection_changed_since(self, controller_id: str, mark: int) -> bool:
+        return self._connection_changed_at.get(controller_id, 0) > mark
 
-    def _bump(self, key: str) -> None:
-        self._versions[key] = self._versions.get(key, 0) + 1
+    def _note_connection_change(self, controller_id: str) -> None:
+        self._connection_changes += 1
+        self._connection_changed_at[controller_id] = self._connection_changes
 
     def use_auth_cache(self, cache: ControllerAuthCache) -> None:
         """The cache of controller-token reads to keep in step with the
@@ -277,9 +286,45 @@ class ControllerPresence:
         for binding in bindings:
             self.bind(binding)
 
+    def change_mark(self) -> int:
+        """Where the binding changes stand now. Taken before reading
+        Management's tables for `reconcile`."""
+        return self._changes
+
+    def _note_change(self, agent_id: str) -> None:
+        self._changes += 1
+        self._changed_at[agent_id] = self._changes
+
+    def reconcile(
+        self, bindings: Iterable[Binding], *, agent_ids: Iterable[str], since: int
+    ) -> None:
+        """Make the bindings of `agent_ids` what Management's tables said,
+        changing only what differs: an agent in `agent_ids` with no binding
+        in `bindings` is unbound.
+
+        `bindings` was read after `since` was taken (`change_mark`). An agent
+        this process bound or unbound after that has a newer answer than the
+        read, so it is left as it is: otherwise a re-check that read the
+        tables a moment before a request placed an agent would unbind it
+        again until the next re-check.
+        """
+        wanted = {binding.agent_id: binding for binding in bindings}
+        for agent_id in agent_ids:
+            if self._changed_at.get(agent_id, 0) > since:
+                continue
+            binding = wanted.get(agent_id)
+            if binding is None:
+                if agent_id in self._bindings:
+                    self.unbind(agent_id, DETACH_UNASSIGNED)
+            elif self._bindings.get(agent_id) != binding:
+                self.bind(binding)
+
+    def bound_agent_ids(self) -> set[str]:
+        return set(self._bindings)
+
     def bind(self, binding: Binding) -> None:
         """Bind an agent to a controller, moving it off any other."""
-        self._bump(binding.agent_id)
+        self._note_change(binding.agent_id)
         previous = self._bindings.get(binding.agent_id)
         if previous is not None:
             self._forget(previous)
@@ -312,7 +357,7 @@ class ControllerPresence:
 
     def unbind(self, agent_id: str, reason: str) -> None:
         """The agent is no longer controller-backed."""
-        self._bump(agent_id)
+        self._note_change(agent_id)
         previous = self._bindings.pop(agent_id, None)
         self._rooms.pop(agent_id, None)
         self._invalidate_agent_auth(agent_id)
@@ -330,6 +375,7 @@ class ControllerPresence:
     def rename_controller(self, controller_id: str, name: str) -> None:
         """The controller's owner renamed it: what its agents' bindings call it."""
         for agent_id in self._by_controller.get(controller_id, set()):
+            self._note_change(agent_id)
             binding = self._bindings[agent_id]
             self._bindings[agent_id] = replace(binding, controller_name=name)
 
@@ -361,9 +407,6 @@ class ControllerPresence:
 
     def is_bound(self, agent_id: str) -> bool:
         return agent_id in self._bindings
-
-    def bound_agent_ids(self) -> set[str]:
-        return set(self._bindings)
 
     def agents_of(self, controller_id: str) -> set[str]:
         return set(self._by_controller.get(controller_id, ()))
@@ -456,11 +499,15 @@ class ControllerPresence:
     def held_elsewhere(self, controller_id: str, process_id: str | None) -> None:
         """Which other process holds the controller's live socket, or None
         when no other process does."""
-        self._bump(controller_id)
+        self._note_connection_change(controller_id)
         if process_id is None:
             self._elsewhere.pop(controller_id, None)
         else:
             self._elsewhere[controller_id] = process_id
+
+    def holder_elsewhere(self, controller_id: str) -> str | None:
+        """The other process holding the controller's live socket, if any."""
+        return self._elsewhere.get(controller_id)
 
     def process_holding(self, agent_id: str) -> str | None:
         """The other process holding the live socket of the controller that
@@ -491,7 +538,7 @@ class ControllerPresence:
             if process_id in process_ids
         }
         for controller_id in gone:
-            self._bump(controller_id)
+            self._note_connection_change(controller_id)
             del self._elsewhere[controller_id]
         return gone
 
@@ -499,7 +546,7 @@ class ControllerPresence:
         """The controller's connection held here was taken over through
         another process: its stream ends with `taken_over`, and a late beat
         from it is told so."""
-        self._bump(controller_id)
+        self._note_connection_change(controller_id)
         previous = self._connections.pop(controller_id, None)
         if previous is not None:
             self._take_over(previous)
@@ -630,7 +677,7 @@ class ControllerPresence:
     ) -> ControllerConnection:
         if controller_id in self._revoked:
             raise ControllerRevokedError(controller_id)
-        self._bump(controller_id)
+        self._note_connection_change(controller_id)
         previous = self._connections.get(controller_id)
         if previous is not None:
             self._take_over(previous)
@@ -674,7 +721,7 @@ class ControllerPresence:
         """
         if not conn.stream_attached:
             self._record_connected(conn)
-        self._bump(conn.controller_id)
+        self._note_connection_change(conn.controller_id)
         self._elsewhere.pop(conn.controller_id, None)
         conn.stream_token += 1
         conn.stream_attached = True

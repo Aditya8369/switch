@@ -20,6 +20,19 @@ and any session listening on the channel can read what is sent.
 Reconnecting resyncs. Signals sent while the listening connection was down
 were never queued, so every registered resync runs once the connection is back,
 and each re-reads what its clients are owed.
+
+Nothing here is allowed to lose a change for good. A batch that fails to send
+is kept and sent again, as the controller connection ledger keeps its writes.
+And because a signal can still be missed (its sender died between the commit
+and the send, or a receiver was busy restarting), every family also registers
+a periodic re-check that compares what this process holds with the database.
+A missed signal then costs at most `RECHECK_SECONDS` of delay. That is only
+safe because every handler and every re-check re-reads state and is
+idempotent: signals from different processes arrive in no particular order.
+
+Work a signal asks for that needs the database goes through `PendingWork`:
+the handler adds a key and returns at once, one task re-reads each key, and a
+key whose re-read fails is kept and tried again.
 """
 
 from __future__ import annotations
@@ -28,7 +41,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Hashable
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
@@ -50,13 +63,88 @@ RECONNECT_BACKOFF_CAP = 15.0
 # Postgres refuses a payload of 8000 bytes or more. Ours are a few dozen.
 MAX_PAYLOAD_BYTES = 7999
 
+# How long a batch that failed to send, or a key whose re-read failed, waits
+# before it is tried again.
+RETRY_SECONDS = 2.0
+
+# How many unsent signals are kept while the database refuses them. Past this
+# the oldest are dropped and logged: by then the database has been unreachable
+# for a long while, and the periodic re-checks bring every process back in
+# line once it returns, so holding more would only cost memory.
+MAX_UNSENT = 10_000
+
+# How often every family's re-check runs, so that a signal missed for any
+# reason costs at most this long rather than lasting until a restart.
+RECHECK_SECONDS = 30.0
+
 SignalHandler = Callable[[dict[str, Any]], None]
 Resync = Callable[[], Awaitable[None]]
+Recheck = Callable[[], Awaitable[None]]
 EngineFactory = Callable[[], "AsyncEngine"]
 
 _NOTIFY_MANY = text(
     "SELECT pg_notify(:channel, payload) FROM unnest(CAST(:payloads AS text[])) AS payload"
 )
+
+
+class PendingWork[K: Hashable]:
+    """Keys whose state has to be re-read, worked one at a time by one task.
+
+    A key added again before its turn is still one piece of work, which is
+    what lets a burst of signals about one thing cost one read. A key whose
+    work raises is kept and tried again after `RETRY_SECONDS`, so a database
+    error on the receiving side delays a change rather than dropping it.
+    """
+
+    def __init__(self, name: str, work: Callable[[K], Awaitable[None]]) -> None:
+        self.name = name
+        self._work = work
+        # A dict rather than a set, so keys are worked in the order they came.
+        self._pending: dict[K, None] = {}
+        self._wake = asyncio.Event()
+
+    def add(self, key: K) -> None:
+        self._pending[key] = None
+        self._wake.set()
+
+    @property
+    def pending(self) -> int:
+        return len(self._pending)
+
+    async def run(self) -> None:
+        """Work keys as they are added, until cancelled."""
+        while True:
+            await self._wake.wait()
+            self._wake.clear()
+            failed = await self.work_all()
+            if failed:
+                logger.error(
+                    "%d %s re-read(s) failed; kept and retried in %.0fs",
+                    len(failed),
+                    self.name,
+                    RETRY_SECONDS,
+                )
+                await asyncio.sleep(RETRY_SECONDS)
+                self._wake.set()
+
+    async def work_all(self) -> list[K]:
+        """Work every key now pending. Returns the keys that failed, which
+        are pending again."""
+        failed: list[K] = []
+        while self._pending:
+            key = next(iter(self._pending))
+            del self._pending[key]
+            try:
+                await self._work(key)
+            except asyncio.CancelledError:
+                self._pending.setdefault(key, None)
+                raise
+            except Exception:
+                logger.warning("Re-reading %s %r failed", self.name, key, exc_info=True)
+                failed.append(key)
+        for key in failed:
+            self._pending.setdefault(key, None)
+        return failed
 
 
 class SignalBus:
@@ -76,6 +164,8 @@ class SignalBus:
         self._engine_factory = engine_factory
         self._handlers: dict[str, SignalHandler] = {}
         self._resyncs: list[Resync] = []
+        self._rechecks: list[Recheck] = []
+        self._work: list[PendingWork[Any]] = []
         self._outbox: list[str] = []
         self._has_outbox = asyncio.Event()
         self._inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -98,13 +188,34 @@ class SignalBus:
         """Run `resync` each time the listening connection is (re)established."""
         self._resyncs.append(resync)
 
+    def on_recheck(self, recheck: Recheck) -> None:
+        """Run `recheck` every `RECHECK_SECONDS` while the bus runs.
+
+        A family's re-check compares what this process holds with the
+        database and repairs any difference, so it must be idempotent and
+        cheap when nothing changed: a read, never a write."""
+        self._rechecks.append(recheck)
+
+    def pending_work[K: Hashable](
+        self, name: str, work: Callable[[K], Awaitable[None]]
+    ) -> PendingWork[K]:
+        """A `PendingWork` whose task runs while the bus does: where a
+        handler puts what it has to read from the database."""
+        pending = PendingWork(name, work)
+        self._work.append(pending)
+        if self._running:
+            self._tasks.append(
+                asyncio.create_task(pending.run(), name=f"signal-work-{name}")
+            )
+        return pending
+
     # ── Publishing ────────────────────────────────────────────────────────────
 
     def publish(self, kind: str, **fields: Any) -> None:
         """Send a signal to every process, after the change it announces has
-        committed. Never blocks the caller: the send is batched and retried by
-        the bus, and a send that fails is logged rather than raised, since the
-        change itself is already durable and resync covers the gap."""
+        committed. Never blocks the caller: the send is batched, and a batch
+        that fails is kept and sent again rather than raised, since the
+        change itself is already durable."""
         payload = json.dumps(
             {"kind": kind, "from": self.process_id, **fields}, separators=(",", ":")
         )
@@ -114,6 +225,10 @@ class SignalBus:
             )
         self._outbox.append(payload)
         self._has_outbox.set()
+
+    @property
+    def unsent(self) -> int:
+        return len(self._outbox)
 
     async def _send_forever(self) -> None:
         while self._running:
@@ -129,13 +244,31 @@ class SignalBus:
                     )
                     await session.commit()
             except asyncio.CancelledError:
+                self._outbox = batch + self._outbox
                 raise
             except Exception:
+                # The receivers' listening connections did not drop, so none
+                # of them will resync: a batch dropped here would be lost
+                # until the next re-check. Kept ahead of anything published
+                # since, so a process still receives one sender's signals in
+                # the order they were raised.
+                self._outbox = batch + self._outbox
+                if len(self._outbox) > MAX_UNSENT:
+                    dropped = len(self._outbox) - MAX_UNSENT
+                    self._outbox = self._outbox[dropped:]
+                    logger.error(
+                        "Dropped the %d oldest unsent signal(s); the periodic "
+                        "re-checks repair what they announced",
+                        dropped,
+                    )
                 logger.error(
-                    "Could not send %d signal(s); listeners resync on reconnect",
-                    len(batch),
+                    "Could not send %d signal(s); kept and retried in %.0fs",
+                    len(self._outbox),
+                    RETRY_SECONDS,
                     exc_info=True,
                 )
+                await asyncio.sleep(RETRY_SECONDS)
+                self._has_outbox.set()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -147,6 +280,11 @@ class SignalBus:
             asyncio.create_task(self._listen_forever(), name="signal-listener"),
             asyncio.create_task(self._dispatch_forever(), name="signal-dispatch"),
             asyncio.create_task(self._send_forever(), name="signal-sender"),
+            asyncio.create_task(self._recheck_forever(), name="signal-recheck"),
+        ]
+        self._tasks += [
+            asyncio.create_task(pending.run(), name=f"signal-work-{pending.name}")
+            for pending in self._work
         ]
 
     async def stop(self) -> None:
@@ -222,6 +360,22 @@ class SignalBus:
             logger.warning("Ignoring an unreadable signal: %r", payload[:200])
             return
         self._inbox.put_nowait(signal)
+
+    async def _recheck_forever(self) -> None:
+        while self._running:
+            await asyncio.sleep(RECHECK_SECONDS)
+            await self.recheck_all()
+
+    async def recheck_all(self) -> None:
+        """Run every family's re-check once, one after another so they never
+        compete for the pool, each failure logged and left to the next run."""
+        for recheck in self._rechecks:
+            try:
+                await recheck()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error("A signal re-check failed", exc_info=True)
 
     async def _resync_all(self) -> None:
         for resync in self._resyncs:

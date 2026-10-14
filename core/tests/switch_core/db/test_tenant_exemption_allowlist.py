@@ -88,9 +88,10 @@ _ALLOWED_MODULES = {
     # tenants, then read each one's definitions under its own policy, the same
     # boot-style fan-out `main` does.
     "switch_core.management.bindings",
-    # Each process keeps its own copy of the bindings and of which process
-    # holds each controller's socket, and reads them all again now and then in
-    # case a signal was lost: the same fan-out as the bindings at startup.
+    # Each process keeps its own copy of which process holds each
+    # controller's socket, and reads every tenant's controllers again at
+    # startup, on resync and on each re-check in case a signal was lost: the
+    # same fan-out as the bindings.
     "switch_core.management.signals",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
@@ -118,6 +119,12 @@ _ALLOWED_MODULES = {
     # the tenant it produced, so a wrong answer here is a miss rather than a
     # cross-tenant read.
     "switch_core.bridges.collaboration.install_service",
+    # A sign-in's browser steps (leaving for the vendor, coming back,
+    # continuing to Switch Console) carry no Switch session, only the flow's
+    # state, and may reach any process. The state is the one thing that names
+    # the flow's tenant, and the flow is then read scoped to it, so a wrong
+    # answer is a missing flow rather than a cross-tenant read.
+    "switch_core.connections.sign_in_flows",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of

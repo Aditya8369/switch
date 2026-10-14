@@ -29,9 +29,11 @@ incarnation was taken over, and its holder closes it `taken_over`.
 
 Liveness is the holding process's lease: a row counts while it is not closed
 and its process's lease is held. A lost signal costs a delay, never a wrong
-answer for long: every `RECONCILE_SECONDS`, and whenever the signal
-connection comes back, every tenant's rows are read again, and every lease
-check (`WATCH_SECONDS`) drops the copies of a process whose lease lapsed.
+answer for long: on the signal bus's periodic re-check, and whenever the
+signal connection comes back, every tenant's rows are read again, and every
+lease check (`WATCH_SECONDS`) drops the copies of a process whose lease
+lapsed. What a signal asks this process to read goes through the bus's
+`PendingWork`, so a read that fails is kept and tried again.
 
 Two requests are handed to the holder rather than served where they land: a
 `POST /connection/beat` from an old event-stream client (forwarded in batches,
@@ -71,7 +73,7 @@ from switch_core.process_lease import (
     RENEW_INTERVAL_SECONDS,
     ProcessLease,
 )
-from switch_core.signals import MAX_PAYLOAD_BYTES
+from switch_core.signals import MAX_PAYLOAD_BYTES, RETRY_SECONDS
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
@@ -95,18 +97,12 @@ INCARNATION_BATCH = 32
 BEAT_FORWARD_SECONDS = 0.5
 
 # How often every lease is checked, so a process that died stops counting as
-# the holder of its connections soon after its lease goes stale.
+# the holder of its connections soon after its lease goes stale, rather than
+# at the bus's next re-check.
 WATCH_SECONDS = RENEW_INTERVAL_SECONDS
-
-# How often every tenant's rows are read again in full. Covers a signal that
-# was lost on its way: the sender logs a failed send and drops it.
-RECONCILE_SECONDS = 30.0
 
 # How long a session command waits for its watcher's process to take it.
 RELAY_KEPT = timedelta(seconds=60)
-
-# How long a failed write waits before it is tried again.
-RETRY_SECONDS = 2.0
 
 # How many released rooms one `changed` signal carries; more are split over
 # several signals so each stays under the `NOTIFY` payload limit.
@@ -165,13 +161,21 @@ class SharedConnections:
         self._write_lock = asyncio.Lock()
         self._beats: dict[str, list[Any]] = {}
         self._beats_waiting = asyncio.Event()
-        self._tasks: set[asyncio.Task[None]] = set()
-        # Set once `run` ends: a signal arriving after that starts nothing.
-        self._stopped = False
+        # Agents, by (tenant id, agent id), whose connections another process
+        # changed and this one has still to read; and the rooms that process
+        # took off connections held here, to be told once the read is in.
+        self._changes_owed = bus.pending_work("agent connections", self._read_owed)
+        self._released_owed: dict[tuple[str, str], list[Released]] = {}
+        # Agents, by (tenant id, agent id), with session commands relayed to
+        # this process and not yet taken.
+        self._relays_owed = bus.pending_work(
+            "relayed session commands", self._take_relays
+        )
         bus.handle(CHANGED_SIGNAL, self._on_changed)
         bus.handle(BEATS_SIGNAL, self._on_beats)
         bus.handle(SESSION_COMMAND_SIGNAL, self._on_session_command)
         bus.on_resync(self.reload_all)
+        bus.on_recheck(self.reload_all)
         registry.use_rows(self)
 
     # ── What the registry asks of its rows ────────────────────────────────
@@ -276,7 +280,7 @@ class SharedConnections:
                 f"Agent {agent_id}'s connections are read in its tenant, and none "
                 "is bound"
             )
-        await self._refresh(tenant_id, agent_id, [])
+        await self._refresh(tenant_id, agent_id)
 
     def closed(self, conn: AgentConnection) -> None:
         if conn.tenant_id is None or conn.closure is None:
@@ -330,18 +334,21 @@ class SharedConnections:
     def _bump(self, agent_id: str) -> None:
         self._versions[agent_id] = self._versions.get(agent_id, 0) + 1
 
-    async def _refresh(
-        self, tenant_id: str, agent_id: str, released: list[Released]
-    ) -> None:
+    async def _refresh(self, tenant_id: str, agent_id: str) -> None:
         async with self._registry.slots(agent_id):
             async with tenant_session(self._session_factory, tenant_id) as session:
                 rows = await self._read_agent(session, agent_id)
             self._apply(agent_id, tenant_id, rows)
-            self._registry.notify_released(released)
+            # Told only once the read is in, so the rooms the stream reports
+            # and the rooms it is told it lost agree.
+            self._registry.notify_released(
+                self._released_owed.pop((tenant_id, agent_id), [])
+            )
 
     async def reload_all(self) -> None:
         """Read every tenant's rows again, and take any session commands
-        waiting for a watcher held here."""
+        waiting for a stream held here. Run when the signal connection comes
+        back and on the bus's periodic re-check."""
         with no_tenant():
             for tenant_id in await all_tenant_ids(self._session_factory):
                 try:
@@ -395,37 +402,17 @@ class SharedConnections:
 
     # ── Signals from the other processes ──────────────────────────────────
 
-    def _spawn(self, work: Any) -> None:
-        if self._stopped:
-            work.close()
-            return
-        task = asyncio.create_task(work)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
     def _on_changed(self, signal: dict[str, Any]) -> None:
-        released = [
+        key = (signal["tenant_id"], signal["agent_id"])
+        self._released_owed.setdefault(key, []).extend(
             Released(connection_id=entry[0], room_id=entry[1], session_id=entry[2])
             for entry in signal.get("released", [])
-        ]
-        self._spawn(
-            self._refresh_logged(signal["tenant_id"], signal["agent_id"], released)
         )
+        self._changes_owed.add(key)
 
-    async def _refresh_logged(
-        self, tenant_id: str, agent_id: str, released: list[Released]
-    ) -> None:
-        try:
-            await self._refresh(tenant_id, agent_id, released)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.error(
-                "Could not read agent %s's connections again after another process "
-                "changed them; the next full pass will",
-                agent_id,
-                exc_info=True,
-            )
+    async def _read_owed(self, key: tuple[str, str]) -> None:
+        tenant_id, agent_id = key
+        await self._refresh(tenant_id, agent_id)
 
     def _on_beats(self, signal: dict[str, Any]) -> None:
         for agent_id, connection_id, generation in signal["beats"]:
@@ -447,25 +434,15 @@ class SharedConnections:
     def _on_session_command(self, signal: dict[str, Any]) -> None:
         if signal["process_id"] != self.process_id:
             return
-        self._spawn(self._take_relays(signal["tenant_id"], signal["agent_id"]))
+        self._relays_owed.add((signal["tenant_id"], signal["agent_id"]))
 
-    async def _take_relays(self, tenant_id: str, agent_id: str) -> None:
-        try:
-            async with tenant_session(self._session_factory, tenant_id) as session:
-                relayed = await self._store.take_relays(
-                    session, tenant_id, process_id=self.process_id, agent_id=agent_id
-                )
-                await session.commit()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.error(
-                "Could not take the session commands relayed for agent %s; the "
-                "next full pass will",
-                agent_id,
-                exc_info=True,
+    async def _take_relays(self, key: tuple[str, str]) -> None:
+        tenant_id, agent_id = key
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            relayed = await self._store.take_relays(
+                session, tenant_id, process_id=self.process_id, agent_id=agent_id
             )
-            return
+            await session.commit()
         self._deliver(relayed)
 
     def _publish_changed(
@@ -488,21 +465,14 @@ class SharedConnections:
 
     async def run(self) -> None:
         """Write closings and relays, forward beats and watch the leases, until
-        cancelled."""
-        try:
-            # A task group rather than `gather`: cancelled, it waits for every
-            # loop to unwind, so none is left holding a database connection.
-            async with asyncio.TaskGroup() as group:
-                group.create_task(self._write_forever())
-                group.create_task(self._forward_beats_forever())
-                group.create_task(self._watch_forever())
-        finally:
-            self._stopped = True
-            await _cancel_all(self._tasks)
-
-    async def stop(self) -> None:
-        """Write what is still queued. Raises the first failure."""
-        await self.flush()
+        cancelled. What signals ask this process to read is worked by the
+        signal bus, which runs it (`PendingWork`)."""
+        # A task group rather than `gather`: cancelled, it waits for every
+        # loop to unwind, so none is left holding a database connection.
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self._write_forever())
+            group.create_task(self._forward_beats_forever())
+            group.create_task(self._watch_forever())
 
     async def flush(self) -> None:
         """Write every queued closing and relay. Raises the first failure,
@@ -583,10 +553,8 @@ class SharedConnections:
             await asyncio.sleep(BEAT_FORWARD_SECONDS)
 
     async def _watch_forever(self) -> None:
-        since_reload = 0.0
         while True:
             await asyncio.sleep(WATCH_SECONDS)
-            since_reload += WATCH_SECONDS
             try:
                 leases = await self._lease.read_all()
                 lapsed = {
@@ -594,30 +562,22 @@ class SharedConnections:
                     for process_id in self._registry.held_by_processes()
                     if not leases.holds(process_id)
                 }
-                if lapsed:
-                    agents = self._registry.drop_copies_held_by(lapsed)
-                    logger.warning(
-                        "Switch-core process(es) %s stopped holding their lease; "
-                        "their connections of %d agent(s) no longer count",
-                        ", ".join(sorted(lapsed)),
-                        len(agents),
-                    )
-                if lapsed or since_reload >= RECONCILE_SECONDS:
-                    since_reload = 0.0
-                    await self.reload_all()
+                if not lapsed:
+                    continue
+                agents = self._registry.drop_copies_held_by(lapsed)
+                logger.warning(
+                    "Switch-core process(es) %s stopped holding their lease; "
+                    "their connections of %d agent(s) no longer count",
+                    ", ".join(sorted(lapsed)),
+                    len(agents),
+                )
+                # The placements those processes held go with them too, which
+                # only a read of the rows can tell apart.
+                await self.reload_all()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Checking the other processes' connections failed")
-
-
-async def _cancel_all(tasks: set[asyncio.Task[None]]) -> None:
-    """Cancel these tasks and wait for them, so none is left holding a
-    database connection mid-transaction once its caller has gone."""
-    pending = list(tasks)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _chunks(beats: list[list[Any]]) -> list[list[list[Any]]]:

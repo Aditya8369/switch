@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_url,
     normalise_icon_url,
 )
@@ -44,6 +45,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerPresence,
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
+from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -84,6 +86,7 @@ from switch_core.management.schemas import (
     DefinitionV1,
     StatusReport,
     assignment_entry,
+    controller_release_view,
     controller_view,
     managed_agent_view,
     operation_view,
@@ -118,6 +121,12 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
+    # stores none rather than the generated one, which carries its name.
+    third_party_avatars: bool
+    # The controller release every controller is told to run; None when the
+    # deployment names none, and then controllers are told nothing.
+    controller_release: ControllerRelease | None
 
 
 @dataclass(frozen=True)
@@ -345,7 +354,7 @@ class ManagementService:
             self._announce_revoked(replaced)
             for row in moved:
                 await self._bind(session, tenant_id, row)
-            self._nudge(revisions)
+            self._nudge(tenant_id, revisions)
             logger.info(
                 "Cloud machine %s enrolled again; revoked its previous controller %s "
                 "and moved its %d agent(s) to %s",
@@ -475,6 +484,9 @@ class ManagementService:
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
+            "controller_release": controller_release_view(
+                controller, self.settings.controller_release
+            ),
         }
 
     async def record_opened(
@@ -703,7 +715,12 @@ class ManagementService:
         )
         leases = await self.leases(session)
         return [
-            controller_view(controller, self.state_of(controller, leases), leases)
+            controller_view(
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
+            )
             for controller in controllers
         ]
 
@@ -758,7 +775,10 @@ class ManagementService:
         if not details:
             leases = await self.leases(session)
             view = controller_view(
-                controller, self.state_of(controller, leases), leases
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
             )
             await session.commit()
             return view
@@ -777,7 +797,12 @@ class ManagementService:
             session, tenant_id, controller_id, changes
         )
         leases = await self.leases(session)
-        view = controller_view(controller, self.state_of(controller, leases), leases)
+        view = controller_view(
+            controller,
+            self.state_of(controller, leases),
+            leases,
+            self.settings.controller_release,
+        )
         await session.commit()
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
@@ -1131,18 +1156,16 @@ class ManagementService:
             )
         return revisions
 
-    def _nudge(self, revisions: dict[str, int]) -> None:
+    def _nudge(self, tenant_id: str, revisions: dict[str, int]) -> None:
         for controller_id, revision in revisions.items():
-            self.signals.assignment_changed(controller_id, revision)
+            self.signals.assignment_changed(tenant_id, controller_id, revision)
 
     async def _bind(
         self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
     ) -> None:
-        """Tell Core where the agent runs now, after the change has committed,
-        here and in every other process."""
+        """Tell Core where the agent runs now, after the change has committed."""
         if row.controller_id is None:
             self.presence.unbind(row.agent_id, DETACH_UNASSIGNED)
-            self.signals.binding_changed(tenant_id, row.agent_id, DETACH_UNASSIGNED)
             return
         controller = await self.controllers.get(session, tenant_id, row.controller_id)
         if controller is None:
@@ -1151,7 +1174,28 @@ class ManagementService:
                 "which does not exist"
             )
         self.presence.bind(binding_of(tenant_id, row, controller))
-        self.signals.binding_changed(tenant_id, row.agent_id, DETACH_UNASSIGNED)
+
+    async def check_new_managed_agent(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        request: CreateManagedAgentRequest,
+    ) -> None:
+        """The checks `create_managed_agent` makes before it registers
+        anything, raising as it would, with nothing created."""
+        await self._check_target(
+            session,
+            tenant_id,
+            owner_id,
+            request.controller_id,
+            request.definition.provider,
+            check_placement=True,
+        )
+        try:
+            normalise_icon_url(request.icon_url)
+        except InvalidIconUrl as exc:
+            raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
 
     async def create_managed_agent(
         self,
@@ -1174,9 +1218,12 @@ class ManagementService:
         )
         definition = with_directory(request.definition, controller, request.name)
         try:
-            icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
-                request.name
+            icon_url = drop_third_party_avatar(
+                normalise_icon_url(request.icon_url),
+                third_party_avatars=self.settings.third_party_avatars,
             )
+            if icon_url is None and self.settings.third_party_avatars:
+                icon_url = generated_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)
@@ -1213,7 +1260,7 @@ class ManagementService:
         )
         await session.commit()
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info(
             "Created managed agent %s on controller %s",
             result.agent_id,
@@ -1365,7 +1412,7 @@ class ManagementService:
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
         return await self._view(
             session, tenant_id, row, agent, {}, await self.leases(session)
@@ -1389,8 +1436,7 @@ class ManagementService:
         )
         await session.commit()
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
-        self.signals.binding_changed(tenant_id, agent_id, DETACH_UNASSIGNED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
 
     async def forget_deleted_agent(
         self, session: AsyncSession, tenant_id: str, agent_id: str
@@ -1415,8 +1461,7 @@ class ManagementService:
         )
         await session.commit()
         self.presence.unbind(agent_id, DETACH_DELETED)
-        self.signals.binding_changed(tenant_id, agent_id, DETACH_DELETED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info("Stopped managing agent %s, which is being deleted", agent_id)
 
     # ── Operations, owner side ────────────────────────────────────────────────
