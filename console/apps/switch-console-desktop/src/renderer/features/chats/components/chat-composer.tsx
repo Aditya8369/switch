@@ -15,11 +15,9 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { cn } from '@renderer/utils/utils';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
-import { type ContextMeter, contextBlocker, contextMeter, isCompacting } from '../chat-context';
+import { contextBlocker, isCompacting } from '../chat-context';
 import { snippetOf } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
@@ -67,31 +65,6 @@ function stopBlocker(activity: AgentActivity | null): string | null {
   if (activity.client?.hasPendingCommand())
     return 'Waiting for the previous command to be confirmed.';
   return null;
-}
-
-function ContextDonut({ meter }: { meter: ContextMeter }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="flex" aria-label={meter.label} />}>
-        <svg viewBox="0 0 16 16" className="size-3.5 -rotate-90" aria-hidden>
-          <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2.5" className="stroke-border" />
-          {meter.fraction !== null && (
-            <circle
-              cx="8"
-              cy="8"
-              r="6"
-              fill="none"
-              strokeWidth="2.5"
-              pathLength={100}
-              strokeDasharray={`${meter.fraction * 100} 100`}
-              className={meter.warning ? 'stroke-foreground-warning' : 'stroke-foreground-muted'}
-            />
-          )}
-        </svg>
-      </TooltipTrigger>
-      <TooltipContent>{meter.label}</TooltipContent>
-    </Tooltip>
-  );
 }
 
 /**
@@ -220,7 +193,6 @@ export const ChatComposer = observer(function ChatComposer({
           working: activity.working,
         })
       : null;
-  const meter = contextMeter(session?.context);
   const compacting = session ? isCompacting(session, activity?.view?.notices ?? []) : false;
   const unknownCommands =
     activity?.view?.snapshot?.commandStatuses.filter((each) => each.status === 'unknown') ?? [];
@@ -365,18 +337,11 @@ export const ChatComposer = observer(function ChatComposer({
             >
               <PopoverTrigger
                 render={<Button variant="ghost" size="sm" />}
-                className={cn(
-                  'h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted',
-                  meter?.warning && 'text-foreground-warning'
-                )}
+                className="h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted"
                 aria-label="Context actions"
               >
-                {compacting ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  meter && <ContextDonut meter={meter} />
-                )}
-                {compacting ? 'Compacting…' : meter ? `Context ${meter.used}` : 'Context'}
+                {compacting && <Loader2 className="size-3.5 animate-spin" />}
+                {compacting ? 'Compacting…' : 'Context'}
                 <ChevronDown className="size-3" />
               </PopoverTrigger>
               <PopoverContent
