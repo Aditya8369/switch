@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { TemplateSummary } from '@main/core/agent-templates/template-summary';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -92,67 +91,6 @@ function hasFiles(e: React.DragEvent): boolean {
   return Array.from(e.dataTransfer.types).includes('Files');
 }
 
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`;
-}
-
-/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs".
- * An agent template's room is optional, so its card names the agent alone. */
-function summaryLine(s: TemplateSummary): string {
-  const parts: string[] = [];
-  if (s.rooms > 0 && s.kind !== 'agent') parts.push(plural(s.rooms, 'room'));
-  if (s.agents > 0) parts.push(s.kind === 'agent' ? 'an agent' : plural(s.agents, 'agent'));
-  const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
-  const inputs = s.inputs === 0 ? 'nothing to fill in' : plural(s.inputs, 'input');
-  return `${creates} · ${inputs}`;
-}
-
-// The listing endpoint returns no document text, and the summary line
-// needs the document. Each card fetches its own once per version of the
-// template and keeps it for the session.
-const summaryCache = new Map<string, Promise<TemplateSummary>>();
-
-function fetchSummary(workspaceId: string, item: TemplateListEntry): Promise<TemplateSummary> {
-  // The version is part of the key, so an edit made elsewhere refreshes the
-  // card as soon as the listing reports it.
-  const key = `${workspaceId}:${item.id}:${item.server.version}`;
-  let pending = summaryCache.get(key);
-  if (!pending) {
-    pending = (async () => {
-      const { definition } = await rpc.workspaces.getTemplateDetail({
-        workspaceId,
-        templateId: item.id,
-      });
-      return rpc.agentTemplates.summarize({ yamlText: definition });
-    })();
-    pending.catch(() => summaryCache.delete(key));
-    summaryCache.set(key, pending);
-  }
-  return pending;
-}
-
-function useTemplateSummary(
-  workspaceId: string | null,
-  item: TemplateListEntry
-): TemplateSummary | null {
-  const [summary, setSummary] = useState<TemplateSummary | null>(null);
-  useEffect(() => {
-    if (workspaceId === null) return;
-    let cancelled = false;
-    fetchSummary(workspaceId, item)
-      .then((s) => {
-        if (!cancelled) setSummary(s);
-      })
-      .catch(() => {
-        // The card renders without the summary line when the document cannot be fetched.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId, item]);
-  return summary;
-}
-
 function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
   const initial = (name.trim()[0] ?? '?').toUpperCase();
   return (
@@ -169,7 +107,6 @@ function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
 }
 
 function TemplateCard({
-  workspaceId,
   item,
   meId,
   busy,
@@ -177,7 +114,6 @@ function TemplateCard({
   onUse,
   onDelete,
 }: {
-  workspaceId: string | null;
   item: TemplateListEntry;
   meId: string | null;
   busy: boolean;
@@ -187,7 +123,6 @@ function TemplateCard({
   onDelete: (() => void) | null;
 }) {
   const Icon = KIND_ICON[item.kind];
-  const summary = useTemplateSummary(workspaceId, item);
   const official = item.server.official;
   const mine = !official && meId !== null && item.server.ownerId === meId;
   return (
@@ -213,9 +148,6 @@ function TemplateCard({
           {item.description || <span className="italic">No description.</span>}
         </p>
         <div className="mt-auto flex flex-col gap-1.5 pt-1 pr-16">
-          <span className="text-xs text-foreground-passive">
-            {summary ? summaryLine(summary) : ' '}
-          </span>
           {!official && <OwnerRow name={item.server.creator} mine={mine} />}
         </div>
       </div>
@@ -412,7 +344,6 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const card = (item: TemplateListEntry) => (
     <TemplateCard
       key={item.id}
-      workspaceId={workspaceId}
       item={item}
       meId={meId}
       busy={false}
