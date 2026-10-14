@@ -28,9 +28,12 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_TTL_SECONDS
 from switch_core.db.models import AgentController, SwitchCoreProcess
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
-from switch_core.db.stores.switch_core_process_store import ProcessLeaseRow
+from switch_core.db.stores.switch_core_process_store import (
+    ProcessLeaseRow,
+    SwitchCoreProcessStore,
+)
 from switch_core.management.connection_ledger import ControllerConnectionLedger
-from switch_core.management.process_lease import LEASE_TTL, ProcessLeases
+from switch_core.process_lease import LEASE_TTL, ProcessLeases
 from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
@@ -135,19 +138,23 @@ class TestLeases:
         return ProcessLeases(read_at=self.now, leases=rows)
 
     def test_a_fresh_lease_holds(self) -> None:
-        leases = self._leases(p=ProcessLeaseRow(beat_at=self.now, stopped_at=None))
+        leases = self._leases(
+            p=ProcessLeaseRow(beat_at=self.now, stopped_at=None, key_ids=None)
+        )
         assert leases.holds("p")
 
     def test_a_lease_older_than_the_ttl_does_not(self) -> None:
         beat_at = self.now - LEASE_TTL
-        leases = self._leases(p=ProcessLeaseRow(beat_at=beat_at, stopped_at=None))
+        leases = self._leases(
+            p=ProcessLeaseRow(beat_at=beat_at, stopped_at=None, key_ids=None)
+        )
         assert not leases.holds("p")
         assert leases.ended("p") == (beat_at, "server_lost")
 
     def test_a_stopped_lease_does_not(self) -> None:
         stopped_at = self.now - timedelta(seconds=1)
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=self.now, stopped_at=stopped_at)
+            p=ProcessLeaseRow(beat_at=self.now, stopped_at=stopped_at, key_ids=None)
         )
         assert not leases.holds("p")
         assert leases.ended("p") == (stopped_at, "server_shutdown")
@@ -546,3 +553,18 @@ class TestTheLedger:
         row = await _row(harness, controller.controller_id)
         assert row.disconnect_reason == "heartbeat_lapsed"
         assert store.failures == 0
+
+
+async def test_a_released_lease_is_not_claimed_back_by_its_renewal(
+    harness: Harness,
+) -> None:
+    """A draining process releases its lease while it still runs, and its
+    renewal loop may tick once more before it is cancelled."""
+    lease = harness.management.lease
+    await lease.renew()
+    await lease.stop()
+    await lease.renew()
+
+    async with harness.session_factory() as session:
+        _, leases = await SwitchCoreProcessStore().read(session)
+    assert leases[lease.process_id].stopped_at is not None

@@ -11,7 +11,7 @@ machines and managed agents exist.
 
 Each process writes its controllers' connection transitions
 (`connection_ledger.py`), read against the lease the server holds for the
-process whether or not management is on (`process_lease.py`): `run` writes
+process whether or not management is on (`switch_core/process_lease.py`): `run` writes
 transitions until cancelled, and `flush` writes what is left as the process
 drains, before the server marks its lease stopped.
 """
@@ -51,9 +51,9 @@ from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
-from switch_core.management.process_lease import ProcessLease
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
+from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
 
 logger = logging.getLogger(__name__)

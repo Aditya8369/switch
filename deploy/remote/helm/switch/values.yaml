@@ -120,6 +120,10 @@ secrets:
   # each secret at least 32 characters. Every signing and encryption key is
   # derived from these. To rotate, put a new entry first and keep the old one
   # until a boot has re-encrypted stored values (docs/old/key-rotation.md).
+  # With more than one replica, rotate in two upgrades: first add the new entry
+  # last, then once every pod runs with it, move it first. A pod whose first
+  # key a running pod lacks refuses to start, since that pod could not read
+  # what it writes.
   # Generate one with: echo "$(date +%Y%m):$(openssl rand -hex 32)"
   secretKeys: ""
   # Legacy: the single secret used before secretKeys. Keep it set through the

@@ -198,7 +198,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     # This process's lease in `switch_core_processes`, a table with no tenant
     # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
     # so its lease belongs to none. It touches only that table.
-    "switch_core.management.process_lease",
+    "switch_core.process_lease",
     # The boot-time re-encryption sweep's per-tenant pass binds a tenant
     # (`tenant_session`); this raw call is its separate pass over
     # the global tables' encrypted values (`trust_settings`'s key,

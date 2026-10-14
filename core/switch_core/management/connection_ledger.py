@@ -12,7 +12,7 @@ once:
 - disconnected: `disconnected_at` and `disconnect_reason` (`socket_closed`,
   `server_shutdown`, `heartbeat_lapsed`, `taken_over`, `revoked`).
 
-That row, and the lease of the process it names (`process_lease.py`), are
+That row, and the lease of the process it names (`switch_core/process_lease.py`), are
 what a machine's state is read from (`placement.controller_state`).
 
 Which write wins, across processes: a connecting comes from the process

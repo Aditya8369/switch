@@ -66,8 +66,8 @@ from switch_core.gateway.providers import router as providers_router
 from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
-from switch_core.management.process_lease import ProcessLease
 from switch_core.management.wiring import Management, build_management
+from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
 from tests.db_buffer import db_buffer_on
 from tests.switch_core.connections.fake_vendor import FakeVendor
@@ -224,6 +224,7 @@ def build_harness(
             process_id=process_id,
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
+            key_ids=[key.id for key in TEST_KEYRING.keys],
         ),
     )
 

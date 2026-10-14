@@ -24,7 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.agent_event_notify_ddl import (
@@ -2136,7 +2136,7 @@ class TelemetrySnapshotWatermark(Base):
 
 
 class SwitchCoreProcess(Base):
-    """A running switch-core process's lease (`management/process_lease.py`).
+    """A running switch-core process's lease (`process_lease.py`).
 
     Every process claims a row at startup under its process id
     (`process_identity.py`), renews `beat_at` every few seconds, and sets
@@ -2161,6 +2161,36 @@ class SwitchCoreProcess(Base):
     )
     stopped_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # The ids of the `SECRET_KEYS` this process can read, so a process
+    # starting with a new front key can tell whether every live one could read
+    # what it writes (`db/key_rotation.py`). Ids only, never key material.
+    # NULL for a process from before the column.
+    key_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+
+
+# ── Schema revisions ─────────────────────────────────────────────────────────
+
+
+class SchemaExpandOnlyRevision(Base):
+    """An applied schema revision that only added to the schema.
+
+    Written by `migrations/env.py` as Alembic applies a revision marked
+    `expand_only`, and deleted as it is undone, with the revision it follows.
+    A switch-core release older than the schema reads this chain back from the
+    database's head to its own (`db/schema_version.py`): if every revision in
+    between is here, it can serve on the newer schema, which is what lets two
+    releases run side by side during a rolling deploy. The older release has
+    no copy of those revisions' files, so the database is the only place it
+    can learn this.
+    """
+
+    __tablename__ = "schema_expand_only_revisions"
+
+    revision: Mapped[str] = mapped_column(Text, primary_key=True)
+    down_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

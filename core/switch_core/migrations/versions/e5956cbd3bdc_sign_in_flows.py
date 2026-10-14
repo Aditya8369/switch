@@ -16,7 +16,7 @@ The lookup's DDL is a frozen copy of `switch_core/db/tenant_lookup.py`'s, as
 every revision in this chain copies rather than imports.
 
 Revision ID: e5956cbd3bdc
-Revises: d7a3f9c2e4b8
+Revises: e2b0df5be5ff
 Create Date: 2026-10-14 12:00:00.000000
 
 """
@@ -28,9 +28,10 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "e5956cbd3bdc"
-down_revision: str | None = "d7a3f9c2e4b8"
+down_revision: str | None = "e2b0df5be5ff"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 SECURE_SEARCH_PATH = "pg_catalog, public, pg_temp"
 
