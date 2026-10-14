@@ -434,7 +434,9 @@
     --menu-field: #f6f6f5;
     --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.12);
     --composer-shadow:
-      0 1px 2px rgb(0 0 0 / 0.04), 0 4px 12px rgb(0 0 0 / 0.04), 0 12px 32px rgb(0 0 0 / 0.03);
+      0 1px 1px rgb(0 0 0 / 0.04), 0 2px 4px rgb(0 0 0 / 0.04), 0 4px 10px rgb(0 0 0 / 0.03);
+    --composer-border: var(--border);
+    --composer-border-focus: var(--border-1);
     --menu-faint: rgb(0 0 0 / 0.03);
     --menu-pill: rgb(0 0 0 / 0.06);
     --menu-tile: #ebebea;
@@ -770,7 +772,9 @@
     --menu-surface: #262626;
     --menu-field: #1e1e1e;
     --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.28);
-    --composer-shadow: 0 1px 2px rgb(0 0 0 / 0.2), 0 4px 12px rgb(0 0 0 / 0.12);
+    --composer-shadow: 0 1px 1px rgb(0 0 0 / 0.2), 0 2px 4px rgb(0 0 0 / 0.18);
+    --composer-border: var(--border);
+    --composer-border-focus: var(--border-1);
     --menu-faint: rgb(255 255 255 / 0.03);
     --menu-pill: rgb(255 255 255 / 0.1);
     --menu-tile: #333333;
