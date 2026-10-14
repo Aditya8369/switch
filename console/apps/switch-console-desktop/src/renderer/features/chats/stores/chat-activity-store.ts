@@ -461,6 +461,11 @@ export class AgentActivities {
     for (const [key, { activity }] of this.entries)
       if (activity.serverId === serverId && (roomId === null || activity.roomId === roomId))
         runInAction(() => this.entries.delete(key));
+    for (const key of this.parked.keys()) {
+      const [parkedServer, , parkedRoom] = JSON.parse(key) as [string, string | null, string];
+      if (parkedServer === serverId && (roomId === null || parkedRoom === roomId))
+        this.parked.delete(key);
+    }
     this.syncWatches();
   }
 }

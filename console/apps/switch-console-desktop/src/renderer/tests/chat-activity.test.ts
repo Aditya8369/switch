@@ -525,6 +525,26 @@ describe('AgentActivities', () => {
     activities.release(reopened);
   });
 
+  it('forgets a lost command when the server or room is dropped', async () => {
+    const { api } = fakeApi([]);
+    const activities = new AgentActivities(api);
+    api.control = async () => {
+      throw rpcError('GatewayError', 'socket hang up', { kind: 'network' });
+    };
+    for (const drop of [
+      () => activities.drop('server', null),
+      () => activities.drop('server', 'room-1'),
+    ]) {
+      const first = activities.acquire('server', null, 'room-1', 'agent-a');
+      await first.control('reset');
+      activities.release(first);
+      drop();
+      const reopened = activities.acquire('server', null, 'room-1', 'agent-a');
+      expect(reopened.controls).toHaveLength(0);
+      activities.release(reopened);
+    }
+  });
+
   it('drops rows and settled requests a snapshot no longer has, keeping live ones from during the read', async () => {
     const { api } = fakeApi([
       { items: [row('t1', 'turn')], approvals: [approval('t1', { state: 'answered' })] },
