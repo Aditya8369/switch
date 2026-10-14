@@ -5,6 +5,7 @@ import {
   type ChatApproval,
   chatApprovalSchema,
 } from '@shared/core/chats/activity';
+import type { ChatStreamState } from '@shared/core/chats/chats';
 import { sseFrames, STALL_MS } from './chat-stream';
 
 /**
@@ -19,6 +20,8 @@ export type ChatActivitySink = {
   activity: (item: ChatActivityItem) => void;
   approval: (approval: ChatApproval) => void;
   resync: () => void;
+  /** `offline` when the feed drops, with why; `live` once it is back. */
+  state: (state: ChatStreamState, detail: string | null) => void;
 };
 
 export type ChatActivityStreamDeps = {
@@ -64,10 +67,12 @@ export class ChatActivityStream {
           throw new Error('The server closed the activity feed.');
         } catch (error) {
           if (this.stopped) return;
+          const detail = error instanceof Error ? error.message : String(error);
           log.warn('Chat activity feed dropped; agent activity may lag until it reconnects', {
             event: 'chat_activity_stream_offline',
-            error: error instanceof Error ? error.message : String(error),
+            error: detail,
           });
+          this.deps.sink.state('offline', detail);
           if (this.deps.isUnauthorized(error)) return;
           const wait = this.deps.backoffMs(this.attempt++);
           await new Promise<void>((resolve) => {
@@ -121,6 +126,7 @@ export class ChatActivityStream {
     switch (event) {
       case 'ready':
         this.attempt = 0;
+        this.deps.sink.state('live', null);
         this.deps.sink.resync();
         return;
       case 'resync':

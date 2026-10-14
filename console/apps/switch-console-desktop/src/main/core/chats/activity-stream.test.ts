@@ -42,10 +42,13 @@ describe('ChatActivityStream', () => {
         activity: (row) => seen.push(`activity:${row.messageId}`),
         approval: () => seen.push('approval'),
         resync: () => seen.push('resync'),
+        state: (state) => seen.push(state),
       },
     });
     stream.start();
-    await vi.waitFor(() => expect(seen).toEqual(['resync', 'activity:m1', 'resync']));
+    await vi.waitFor(() =>
+      expect(seen).toEqual(['live', 'resync', 'activity:m1', 'resync', 'offline'])
+    );
     stream.stop();
   });
 });

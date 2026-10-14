@@ -2,6 +2,7 @@ import { events, rpc } from '@renderer/lib/ipc';
 import {
   chatActivityChannel,
   chatActivityResyncChannel,
+  chatActivityStateChannel,
   chatApprovalChannel,
   chatRemovedChannel,
   chatResetChannel,
@@ -25,6 +26,9 @@ events.on(chatApprovalChannel, ({ serverId, approval }) =>
   agentActivities.applyApproval(serverId, approval)
 );
 events.on(chatActivityResyncChannel, ({ serverId }) => agentActivities.resync(serverId));
+events.on(chatActivityStateChannel, ({ serverId, state, detail }) =>
+  agentActivities.feedState(serverId, state, detail)
+);
 events.on(chatRemovedChannel, ({ serverId, roomId, reason }) => {
   if (reason === 'access') agentActivities.drop(serverId, roomId);
 });

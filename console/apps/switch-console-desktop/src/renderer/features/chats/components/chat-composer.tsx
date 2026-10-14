@@ -1,4 +1,4 @@
-import { ChevronDown, Minimize2, Plus, RotateCcw, X } from 'lucide-react';
+import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
@@ -81,22 +81,34 @@ const ControlStatus = observer(function ControlStatus({
           ? timeline.messages.findLast((message) => message.threadRootId === control.commandId)
           : undefined;
         const failed = control.state === 'failed';
+        const unknown = control.state === 'unknown';
         return (
           <div
             key={control.requestId}
-            role={failed ? 'alert' : 'status'}
-            className={`mb-2 flex items-start gap-2 text-xs ${failed ? 'text-foreground-destructive' : 'text-foreground-muted'}`}
+            role={failed || unknown ? 'alert' : 'status'}
+            className={`mb-2 flex items-start gap-2 text-xs ${failed || unknown ? 'text-foreground-destructive' : 'text-foreground-muted'}`}
           >
             <span className="min-w-0 flex-1">
               {failed
                 ? `${label} was not sent: ${control.error}`
-                : control.state === 'sending'
-                  ? `Sending ${label}…`
-                  : reply
-                    ? `${label}: ${snippetOf(reply)}`
-                    : `${label} requested — waiting for ${who} to answer.`}
+                : unknown
+                  ? `${label} outcome unknown: ${control.error} Retrying sends the same ${label}, never a second one.`
+                  : control.state === 'sending'
+                    ? `Sending ${label}…`
+                    : reply
+                      ? `${label}: ${snippetOf(reply)}`
+                      : `${label} requested — waiting for ${who} to answer.`}
             </span>
-            {control.state !== 'sending' && (
+            {unknown && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void activity.retryControl(control.requestId)}
+              >
+                <RotateCw className="size-3" /> Retry
+              </Button>
+            )}
+            {control.state !== 'sending' && !unknown && (
               <button
                 type="button"
                 aria-label="Dismiss"

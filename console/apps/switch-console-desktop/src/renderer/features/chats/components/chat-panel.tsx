@@ -171,7 +171,7 @@ export const ChatPanel = observer(function ChatPanel({
         <MessageScrollerButton className="absolute bottom-3 left-1/2 -translate-x-1/2" />
         <FollowOwnSends timeline={timeline} />
       </MessageScroller>
-      <ActivityUnavailable activities={activities} />
+      <ActivityUnavailable serverId={serverId} activities={activities} />
       <ChatComposer
         serverId={serverId}
         timeline={timeline}
@@ -205,23 +205,41 @@ const FollowOwnSends = observer(function FollowOwnSends({ timeline }: { timeline
   return null;
 });
 
-/** Why an agent's activity may be missing or stale: its feed or its host lookup failed. */
+/**
+ * Why an agent's activity may be missing or stale: the live activity feed is
+ * down, or a snapshot read or host lookup failed.
+ */
 const ActivityUnavailable = observer(function ActivityUnavailable({
+  serverId,
   activities,
 }: {
+  serverId: string;
   activities: AgentActivity[];
 }) {
+  const feedDown = activities.length > 0 && agentActivities.feedDown.has(serverId);
   const notes = activities.flatMap((activity) =>
     [activity.feedError, activity.resolveError].filter((note) => note !== null)
   );
   const unique = [...new Set(notes)];
-  if (!unique.length) return null;
   return (
-    <p
-      role="alert"
-      className="mx-auto w-full max-w-[860px] px-5 pb-1 text-xs text-foreground-destructive"
-    >
-      {unique.join(' ')}
-    </p>
+    <>
+      {feedDown && (
+        <p
+          role="status"
+          title={agentActivities.feedDown.get(serverId) ?? undefined}
+          className="mx-auto w-full max-w-[860px] px-5 pb-1 text-xs text-foreground-warning"
+        >
+          Live activity is reconnecting — progress may be stale.
+        </p>
+      )}
+      {unique.length > 0 && (
+        <p
+          role="alert"
+          className="mx-auto w-full max-w-[860px] px-5 pb-1 text-xs text-foreground-destructive"
+        >
+          {unique.join(' ')}
+        </p>
+      )}
+    </>
   );
 });

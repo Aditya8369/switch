@@ -55,3 +55,10 @@ export const chatApprovalChannel = defineEvent<{ serverId: string; approval: Cha
  * activity snapshot of every room shown.
  */
 export const chatActivityResyncChannel = defineEvent<{ serverId: string }>('chat:activity-resync');
+
+/** The activity feed dropped (`offline`) or is back (`live`); same shape as {@link chatStreamStateChannel}. */
+export const chatActivityStateChannel = defineEvent<{
+  serverId: string;
+  state: ChatStreamState;
+  detail: string | null;
+}>('chat:activity-state');

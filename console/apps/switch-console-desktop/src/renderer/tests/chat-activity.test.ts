@@ -15,6 +15,7 @@ import {
 } from '@renderer/features/chats/stores/chat-activity-store';
 import type { ChatActivityItem, ChatApproval, RoomActivity } from '@shared/core/chats/activity';
 import type { ChatMessage } from '@shared/core/chats/chats';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 let clock = 0;
 function row(
@@ -302,6 +303,12 @@ describe('bindTurns', () => {
   });
 });
 
+function rpcError(code: string, message: string, data: Record<string, unknown>): RpcError {
+  return new RpcError({ code, message, data } as unknown as ConstructorParameters<
+    typeof RpcError
+  >[0]);
+}
+
 function fakeApi(snapshots: RoomActivity[]) {
   const reads: string[] = [];
   const controls: unknown[] = [];
@@ -390,6 +397,7 @@ describe('AgentActivities', () => {
     const { api } = fakeApi([]);
     const activities = new AgentActivities(api);
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await activities.loadRoom('server', 'room-1');
     activities.applyItem('server', row('t1', 'turn'));
     activities.applyApproval('server', approval('t1'));
     await activity.answer(approval('t1'), { answer: 'yes' });
@@ -404,7 +412,7 @@ describe('AgentActivities', () => {
   it('keeps a settled request settled when a resync snapshot still has it open', async () => {
     const { api } = fakeApi([
       { items: [row('t1', 'turn')], approvals: [] },
-      { items: [], approvals: [approval('t1'), approval('t2')] },
+      { items: [row('t1', 'turn')], approvals: [approval('t1'), approval('t2')] },
     ]);
     const activities = new AgentActivities(api);
     const activity = activities.acquire('server', null, 'room-1', 'agent-a');
@@ -434,12 +442,73 @@ describe('AgentActivities', () => {
     ]);
     expect(activity.controls[0]).toMatchObject({ state: 'requested', commandId: 'cmd-1' });
     api.control = async () => {
-      throw new Error('That agent is not in this chat.');
+      throw rpcError('ChatApiError', 'That agent is not in this chat.', {
+        apiCode: 'NOT_A_MEMBER',
+      });
     };
     await activity.control('reset');
     expect(activity.controls[1]).toMatchObject({ state: 'failed' });
     expect(activity.controls[1].error).toContain('That agent is not in this chat.');
     activities.release(activity);
+  });
+
+  it('keeps the request id of a command whose answer was lost until a retry settles it', async () => {
+    const { api, controls } = fakeApi([]);
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    const sent = () => (controls as { requestId: string }[]).map((input) => input.requestId);
+    api.control = async (input) => {
+      controls.push(input);
+      throw rpcError('GatewayError', 'socket hang up', { kind: 'network' });
+    };
+    await activity.control('reset');
+    expect(activity.controls[0]).toMatchObject({ state: 'unknown' });
+    // A second click, the Retry button and a feed reconnect all reuse the request id.
+    await activity.control('reset');
+    await activity.retryControl(activity.controls[0].requestId);
+    activity.dismissControl(activity.controls[0].requestId);
+    expect(activity.controls).toHaveLength(1);
+    api.control = async (input) => {
+      controls.push(input);
+      return 'cmd-1';
+    };
+    activities.resync('server');
+    await vi.waitFor(() => expect(activity.controls[0]).toMatchObject({ state: 'requested' }));
+    expect(new Set(sent()).size).toBe(1);
+    expect(sent()).toHaveLength(4);
+    // Settled: the next Reset is a new request.
+    await activity.control('reset');
+    expect(new Set(sent()).size).toBe(2);
+    activities.release(activity);
+  });
+
+  it('drops rows and settled requests a snapshot no longer has, keeping live ones from during the read', async () => {
+    const { api } = fakeApi([
+      { items: [row('t1', 'turn')], approvals: [approval('t1', { state: 'answered' })] },
+    ]);
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(activity.working).toBe(true));
+    expect(activity.approvals.size).toBe(1);
+    let release!: (snapshot: RoomActivity) => void;
+    api.roomActivity = () => new Promise((resolve) => (release = resolve));
+    const load = activities.loadRoom('server', 'room-1');
+    // Arrives over the live feed while the snapshot is read; the snapshot predates it.
+    activities.applyItem('server', row('t2', 'turn'));
+    activities.applyApproval('server', approval('t2'));
+    release({ items: [], approvals: [] });
+    await load;
+    expect(activity.allTurns.map((turn) => turn.turnId)).toEqual(['t2']);
+    expect([...activity.approvals.values()].map((each) => each.turnId)).toEqual(['t2']);
+    activities.release(activity);
+  });
+
+  it('says the activity feed is down until it is live again', () => {
+    const activities = new AgentActivities(fakeApi([]).api);
+    activities.feedState('server', 'offline', 'The server closed the activity feed.');
+    expect(activities.feedDown.get('server')).toBe('The server closed the activity feed.');
+    activities.feedState('server', 'live', null);
+    expect(activities.feedDown.has('server')).toBe(false);
   });
 
   it('reads reasoning and tool details from a local host for its own session only', async () => {
@@ -459,8 +528,6 @@ describe('AgentActivities', () => {
       target: 'local',
       hostAgentKey: 'console-a',
       sessionId: 's1',
-      controllerId: null,
-      generation: null,
     });
     api.reasoning = async (_key, _session, turnIds) => {
       asked.push(turnIds ?? []);

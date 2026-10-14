@@ -8,6 +8,7 @@ import type {
   ChatControlCommand,
   RoomActivity,
 } from '@shared/core/chats/activity';
+import type { ChatStreamState } from '@shared/core/chats/chats';
 import type { ReasoningList, ReasoningTurn, ToolDetail } from '@shared/core/sessions/reasoning';
 import { bindTurns, groupTurns, itemKey, type TurnActivity } from '../activity-join';
 import { chatFailure } from './chat-errors';
@@ -51,11 +52,16 @@ export type ActivityApi = {
   }) => Promise<ChatApproval>;
 };
 
-/** A Stop, Reset or Compact sent from here: `requested` once Switch posted it, not once done. */
+/**
+ * A Stop, Reset or Compact sent from here: `requested` once Switch posted it,
+ * not once done. `unknown`: no answer came back, so it may have been posted;
+ * it is only ever sent again under the same request id, which Switch answers
+ * with the command it already posted.
+ */
 export type ControlRequest = {
   requestId: string;
   command: ChatControlCommand;
-  state: 'sending' | 'requested' | 'failed';
+  state: 'sending' | 'requested' | 'failed' | 'unknown';
   /** The room message the command is; the agent's answer threads under it. */
   commandId: string | null;
   error: string | null;
@@ -76,6 +82,9 @@ export class AgentActivity {
   /** Tool item id → what the call was given and gave back; local and SSH hosts only. */
   toolDetails = new Map<string, ToolDetail>();
   private resolving = false;
+  /** Counts rows taken; each held row remembers when, so a snapshot only drops rows older than its request. */
+  private taken = 0;
+  private readonly takenAt = new Map<string, number>();
 
   constructor(
     readonly serverId: string,
@@ -84,9 +93,11 @@ export class AgentActivity {
     readonly agentId: string,
     private readonly api: ActivityApi
   ) {
-    makeAutoObservable<AgentActivity, 'api' | 'resolving'>(this, {
+    makeAutoObservable<AgentActivity, 'api' | 'resolving' | 'taken' | 'takenAt'>(this, {
       api: false,
       resolving: false,
+      taken: false,
+      takenAt: false,
       target: observable.ref,
     });
   }
@@ -98,6 +109,7 @@ export class AgentActivity {
     const held = this.items.get(key);
     if (held && held.revision >= item.revision) return;
     this.items.set(key, item);
+    this.takenAt.set(`i${key}`, ++this.taken);
   }
 
   /** Take a request of this agent in this room; a settled one is never reopened by an older copy. */
@@ -107,10 +119,33 @@ export class AgentActivity {
     const held = this.approvals.get(key);
     if (held && held.state !== 'open' && approval.state === 'open') return;
     this.approvals.set(key, approval);
+    this.takenAt.set(`a${key}`, ++this.taken);
   }
 
-  applySnapshot(snapshot: RoomActivity): void {
+  /** Where the row count stands; take it when a snapshot is requested and pass it to {@link applySnapshot}. */
+  get mark(): number {
+    return this.taken;
+  }
+
+  /**
+   * The snapshot is the room's whole activity as of its request: a row held
+   * from before `mark` that it lacks has aged out or been pruned, and goes.
+   * Rows taken from the live feed since `mark` stay.
+   */
+  applySnapshot(snapshot: RoomActivity, mark: number): void {
     this.feedError = null;
+    const items = new Set(snapshot.items.map(itemKey));
+    for (const key of [...this.items.keys()])
+      if (!items.has(key) && (this.takenAt.get(`i${key}`) ?? 0) <= mark) {
+        this.items.delete(key);
+        this.takenAt.delete(`i${key}`);
+      }
+    const approvals = new Set(snapshot.approvals.map(approvalKey));
+    for (const key of [...this.approvals.keys()])
+      if (!approvals.has(key) && (this.takenAt.get(`a${key}`) ?? 0) <= mark) {
+        this.approvals.delete(key);
+        this.takenAt.delete(`a${key}`);
+      }
     for (const item of snapshot.items) this.applyItem(item);
     for (const approval of snapshot.approvals) this.applyApproval(approval);
   }
@@ -160,22 +195,48 @@ export class AgentActivity {
     }
   }
 
-  /** Post a command to the room for this agent; the request id stays with it. */
+  /**
+   * Post a command to the room for this agent. A command of the same kind
+   * whose outcome is unknown is sent again under its own request id instead,
+   * so a Reset that landed before its answer was lost never runs twice.
+   */
   async control(command: ChatControlCommand): Promise<void> {
-    const control: ControlRequest = {
+    const unknown = this.controls.find(
+      (control) => control.state === 'unknown' && control.command === command
+    );
+    if (unknown) return this.post(unknown);
+    this.controls.push({
       requestId: crypto.randomUUID(),
       command,
       state: 'sending',
       commandId: null,
       error: null,
-    };
-    this.controls.push(control);
-    const held = this.controls.at(-1)!;
+    });
+    return this.post(this.controls.at(-1)!);
+  }
+
+  /** Send a command whose outcome is unknown again, under the same request id. */
+  async retryControl(requestId: string): Promise<void> {
+    const control = this.controls.find((each) => each.requestId === requestId);
+    if (control?.state === 'unknown') await this.post(control);
+  }
+
+  /** Settle every command whose outcome is unknown, e.g. once the feed is back. */
+  retryUnknownControls(): void {
+    for (const control of this.controls) if (control.state === 'unknown') void this.post(control);
+  }
+
+  private async post(held: ControlRequest): Promise<void> {
+    const command = held.command;
+    runInAction(() => {
+      held.state = 'sending';
+      held.error = null;
+    });
     try {
       const commandId = await this.api.control({
         serverId: this.serverId,
         roomId: this.roomId,
-        requestId: control.requestId,
+        requestId: held.requestId,
         agentId: this.agentId,
         command,
       });
@@ -184,15 +245,19 @@ export class AgentActivity {
         held.commandId = commandId;
       });
     } catch (error) {
+      const failure = chatFailure(error);
       runInAction(() => {
-        held.state = 'failed';
-        held.error = chatFailure(error).message;
+        held.state = failure.uncertain ? 'unknown' : 'failed';
+        held.error = failure.message;
       });
     }
   }
 
+  /** Forget a settled command; one whose outcome is unknown stays until a retry settles it. */
   dismissControl(requestId: string): void {
-    this.controls = this.controls.filter((control) => control.requestId !== requestId);
+    this.controls = this.controls.filter(
+      (control) => control.requestId !== requestId || control.state === 'unknown'
+    );
   }
 
   /** Answer a request as the signed-in person; the answered copy replaces the held one. */
@@ -210,7 +275,7 @@ export class AgentActivity {
   /** Ask the host for the reasoning and tool details of these turns; local and SSH hosts only. */
   async readReasoning(turns: TurnActivity[]): Promise<void> {
     const target = this.target;
-    if (target?.kind !== 'session' || target.target === 'controller') return;
+    if (target?.kind !== 'session') return;
     const turnIds = turns
       .filter((turn) => turn.sessionId === target.sessionId)
       .map((turn) => turn.turnId);
@@ -232,6 +297,8 @@ export class AgentActivities {
     {},
     { deep: false }
   );
+  /** The activity feed's connection for each server, when it is down: why. Absent while live. */
+  readonly feedDown = observable.map<string, string | null>({}, { deep: false });
   private readonly watches = new Map<string, () => void>();
   /** Rooms whose snapshot is due, read once per room however many agents asked. */
   private readonly due = new Set<string>();
@@ -271,10 +338,15 @@ export class AgentActivities {
   }
 
   async loadRoom(serverId: string, roomId: string): Promise<void> {
+    const marks = new Map(
+      this.inRoom(serverId, roomId).map((activity) => [activity, activity.mark])
+    );
     try {
       const snapshot = await this.api.roomActivity(serverId, roomId);
       runInAction(() => {
-        for (const activity of this.inRoom(serverId, roomId)) activity.applySnapshot(snapshot);
+        // An activity acquired while the snapshot was read held nothing older than it.
+        for (const activity of this.inRoom(serverId, roomId))
+          activity.applySnapshot(snapshot, marks.get(activity) ?? 0);
       });
     } catch (error) {
       const message = failureText(error, "The agents' activity in this chat could not be read.");
@@ -284,14 +356,24 @@ export class AgentActivities {
     }
   }
 
-  /** The feed reconnected or may have missed changes: read every room shown again. */
+  /**
+   * The feed reconnected or may have missed changes: read every room shown
+   * again, and settle the commands whose outcome was lost.
+   */
   resync(serverId: string): void {
-    const rooms = new Set(
-      [...this.entries.values()]
-        .filter(({ activity }) => activity.serverId === serverId)
-        .map(({ activity }) => activity.roomId)
-    );
-    for (const roomId of rooms) this.scheduleLoad(serverId, roomId);
+    const shown = [...this.entries.values()]
+      .map(({ activity }) => activity)
+      .filter((activity) => activity.serverId === serverId);
+    for (const roomId of new Set(shown.map((activity) => activity.roomId)))
+      this.scheduleLoad(serverId, roomId);
+    for (const activity of shown) activity.retryUnknownControls();
+  }
+
+  feedState(serverId: string, state: ChatStreamState, detail: string | null): void {
+    runInAction(() => {
+      if (state === 'offline') this.feedDown.set(serverId, detail);
+      else if (state === 'live') this.feedDown.delete(serverId);
+    });
   }
 
   applyItem(serverId: string, item: ChatActivityItem): void {
@@ -363,6 +445,7 @@ export class AgentActivities {
 
   /** Forget everything for a room the person lost, or a whole server on reset. */
   drop(serverId: string, roomId: string | null): void {
+    if (roomId === null) runInAction(() => this.feedDown.delete(serverId));
     for (const [key, { activity }] of this.entries)
       if (activity.serverId === serverId && (roomId === null || activity.roomId === roomId))
         runInAction(() => this.entries.delete(key));

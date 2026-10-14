@@ -5,6 +5,7 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
   chatActivityChannel,
+  chatActivityStateChannel,
   chatActivityResyncChannel,
   chatApprovalChannel,
   chatMessageChannel,
@@ -85,6 +86,7 @@ function makeActivityStream(serverId: string, workspaceId: string): ChatActivity
       activity: (item) => events.emit(chatActivityChannel, { serverId, item }),
       approval: (approval) => events.emit(chatApprovalChannel, { serverId, approval }),
       resync: () => events.emit(chatActivityResyncChannel, { serverId }),
+      state: (state, detail) => events.emit(chatActivityStateChannel, { serverId, state, detail }),
     },
   });
 }
