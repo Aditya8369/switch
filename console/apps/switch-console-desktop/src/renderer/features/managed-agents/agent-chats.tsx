@@ -14,6 +14,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
+import type { ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 function Section({
@@ -54,6 +55,22 @@ const Note = ({ children }: { children: ReactNode }) => (
   <p className="px-2 py-1 text-xs text-foreground-muted">{children}</p>
 );
 
+function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
+  // The chats store follows the window's server; another server's chats are not in it.
+  const agentChats = chatsStore.serverId === serverId ? chatsStore.chatsOfAgent(agentId) : [];
+  const agentRooms = switchRoomsStore.roomsFor(workspaceId, agentId);
+  return { agentRooms, ...agentConversations(agentChats, agentRooms ?? []) };
+}
+
+/** The direct chat open on an agent's Chats tab: the one in the params, else its newest. */
+export function openAgentChat(
+  agent: ManagedAgentView,
+  roomId: string | undefined
+): ChatSummary | null {
+  const { direct } = conversationsOf(agent);
+  return direct.find((chat) => chat.roomId === roomId) ?? direct[0] ?? null;
+}
+
 /**
  * An agent's chats: its direct chats, beside the one open, and the rooms it is
  * in, which open in the room view. The open chat is kept in the view's params;
@@ -66,13 +83,9 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     void switchRoomsStore.fetchAgentRooms(workspaceId, agentId);
   }, [workspaceId, agentId]);
 
-  // The chats store follows the window's server; another server's chats are not in it.
-  const agentChats = chatsStore.serverId === serverId ? chatsStore.chatsOfAgent(agentId) : [];
-  const agentRooms = switchRoomsStore.roomsFor(workspaceId, agentId);
-  const { direct, rooms } = agentConversations(agentChats, agentRooms ?? []);
+  const { agentRooms, direct, rooms } = conversationsOf(agent);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
-  const roomId =
-    direct.find((chat) => chat.roomId === params.roomId)?.roomId ?? direct[0]?.roomId ?? null;
+  const roomId = openAgentChat(agent, params.roomId)?.roomId ?? null;
   const open = (id: string) => setParams({ roomId: id });
   const newChat = async () => {
     const chat = await directChats.start(serverId, agentId);
@@ -118,15 +131,20 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           {agentRooms && rooms.length === 0 && <Note>Not in any room yet.</Note>}
         </Section>
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1">
         {roomId ? (
-          <ChatPanel
-            key={`${serverId}:${roomId}`}
-            serverId={serverId}
-            roomId={roomId}
-            agentId={agentId}
-            showHeader
-          />
+          <>
+            <ChatPanel
+              key={`${serverId}:${roomId}`}
+              serverId={serverId}
+              roomId={roomId}
+              agentId={agentId}
+            />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"
+            />
+          </>
         ) : (
           <EmptyState
             label="No chat open"

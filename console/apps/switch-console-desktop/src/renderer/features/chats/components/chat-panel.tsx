@@ -16,7 +16,6 @@ import {
   useMessageScroller,
 } from '../ui/message-scroller';
 import { ChatComposer } from './chat-composer';
-import { ChatHeader } from './chat-header';
 import { ChatTimelineView } from './chat-timeline';
 
 /** How often the session behind each agent is looked up again while the chat is open. */
@@ -71,14 +70,11 @@ export const ChatPanel = observer(function ChatPanel({
   serverId,
   roomId,
   agentId,
-  showHeader,
 }: {
   serverId: string;
   roomId: string;
   /** The agent the chat was opened for, preselected in a room with several. */
   agentId: string | null;
-  /** The chat view carries the header in its title bar; the room view shows it here. */
-  showHeader: boolean;
 }) {
   const timeline = chatsStore.timelines.get(serverId, roomId);
   const chat = chatsStore.chat(roomId);
@@ -159,15 +155,6 @@ export const ChatPanel = observer(function ChatPanel({
 
   return (
     <div data-chat-panel className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      {showHeader && chat && (
-        <div className="relative z-10 flex h-11 shrink-0 items-center bg-background px-4">
-          <ChatHeader serverId={serverId} chat={chat} activities={activities} />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-full h-6 bg-linear-to-b from-background to-transparent"
-          />
-        </div>
-      )}
       {timeline.loadError && (
         <div
           role="alert"

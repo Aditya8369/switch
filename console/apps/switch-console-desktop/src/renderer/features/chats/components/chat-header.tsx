@@ -1,6 +1,6 @@
 import { ExternalLink, MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -35,12 +35,6 @@ async function restartSession(activity: AgentActivity): Promise<void> {
   await activity.client?.connect();
 }
 
-type HeaderProps = {
-  serverId: string;
-  chat: ChatSummary;
-  activities: AgentActivity[];
-};
-
 /** Who and where: the chat's agents, its name and its channel. */
 export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: ChatSummary }) {
   const agent = chat.agents[0] ?? null;
@@ -72,13 +66,19 @@ export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: Ch
 /**
  * Whether an agent is working, the live feed's state, and the chat's menu —
  * its members, the room actions the person may take, and the agent's session
- * for those who can reach it.
+ * for those who can reach it, then any `children` after a separator.
  */
 export const ChatHeaderControls = observer(function ChatHeaderControls({
   serverId,
   chat,
   activities,
-}: HeaderProps) {
+  children,
+}: {
+  serverId: string;
+  chat: ChatSummary;
+  activities: AgentActivity[];
+  children?: ReactNode;
+}) {
   const working = activities.some((activity) => activity.working);
   const stream = STREAM_LABEL[chatsStore.streamState];
   const sessionActivities = activities.filter(
@@ -146,18 +146,10 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
               </DropdownMenuItem>
             );
           })}
+          {children && <DropdownMenuSeparator />}
+          {children}
         </DropdownMenuContent>
       </DropdownMenu>
-    </div>
-  );
-});
-
-/** The chat's header in one row: its name on the left, its controls on the right. */
-export const ChatHeader = observer(function ChatHeader(props: HeaderProps) {
-  return (
-    <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-      <span className="truncate text-sm font-medium">{props.chat.name}</span>
-      <ChatHeaderControls {...props} />
     </div>
   );
 });

@@ -76,7 +76,6 @@ const ChatMainPanel = observer(function ChatMainPanel(): React.JSX.Element | nul
       serverId={params.serverId}
       roomId={params.roomId}
       agentId={params.agentId}
-      showHeader={false}
     />
   );
 });

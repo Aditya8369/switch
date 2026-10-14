@@ -3,6 +3,8 @@ import { MoreVertical, Play, Square, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { ChatHeaderControls } from '@renderer/features/chats/components/chat-header';
+import { useAgentActivities } from '@renderer/features/chats/components/chat-panel';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import {
   ServerStatusPill,
@@ -27,8 +29,9 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { cn } from '@renderer/utils/utils';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { AgentChats } from './agent-chats';
+import { AgentChats, openAgentChat } from './agent-chats';
 import { type AgentTab, agentTabStore } from './agent-tab-store';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
@@ -54,6 +57,9 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const server = switchServersStore.servers.find((s) => s.id === params.serverId) ?? null;
   const label = agent ? managedAgentLabel(agent) : params.name;
   const tabbed = useFeatureFlags(params.serverId).agent_chats;
+  const tab = agentTabStore.tabFor(params.agentId);
+  const chat = tabbed && agent && tab === 'chats' ? openAgentChat(agent, params.roomId) : null;
+  const activities = useAgentActivities(params.serverId, chat ?? undefined);
   const breadcrumb = (
     <TitlebarBreadcrumb
       crumbs={[
@@ -73,34 +79,56 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       ]}
     />
   );
+  const pill = server && <ServerStatusPill server={server} />;
+  if (!tabbed)
+    return (
+      <Titlebar
+        leftSlot={breadcrumb}
+        rightSlot={
+          <div className="mr-1 flex items-center gap-1.5">
+            {pill}
+            {agent && <ManagedAgentActionsMenu agent={agent} />}
+          </div>
+        }
+      />
+    );
   return (
     <Titlebar
-      className={tabbed ? 'border-b border-border' : undefined}
-      leftClassName={tabbed ? 'min-w-0' : undefined}
+      className="border-b border-border"
+      leftClassName={cn(
+        'w-[300px] shrink-0 self-stretch',
+        tab === 'chats' && 'border-r border-border'
+      )}
       leftSlot={
-        tabbed ? (
-          <div className="flex min-w-0 items-center gap-3">
-            {breadcrumb}
-            <SegmentedControl
-              value={agentTabStore.tabFor(params.agentId)}
-              onChange={(tab) => agentTabStore.setTab(params.agentId, tab)}
-              options={TABS}
-              ariaLabel="Agent view"
-            />
-          </div>
-        ) : (
-          breadcrumb
-        )
-      }
-      rightSlot={
-        <div className="mr-1 flex items-center gap-1.5">
-          {server &&
-            (!tabbed ||
-              (serverState(server) !== 'connected' && serverState(server) !== 'running-local')) && (
-              <ServerStatusPill server={server} />
-            )}
-          {agent && <ManagedAgentActionsMenu agent={agent} />}
+        <div className="flex min-w-0 items-center gap-3">
+          {breadcrumb}
+          <SegmentedControl
+            value={tab}
+            onChange={(next) => agentTabStore.setTab(params.agentId, next)}
+            options={TABS}
+            ariaLabel="Agent view"
+          />
         </div>
+      }
+      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4"
+      rightSlot={
+        <>
+          <span className="truncate text-sm font-medium">{chat?.name}</span>
+          <div className="mr-1 flex shrink-0 items-center gap-1.5">
+            {server &&
+              serverState(server) !== 'connected' &&
+              serverState(server) !== 'running-local' &&
+              pill}
+            {agent &&
+              (chat ? (
+                <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
+                  <ManagedAgentActionItems agent={agent} />
+                </ChatHeaderControls>
+              ) : (
+                <ManagedAgentActionsMenu agent={agent} />
+              ))}
+          </div>
+        </>
       }
     />
   );
@@ -108,6 +136,28 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
 
 /** Starting, stopping and deleting the agent, from the titlebar's menu as a Console agent's actions are. */
 function ManagedAgentActionsMenu({ agent }: { agent: ManagedAgentView }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="size-7 p-0"
+            aria-label={`${managedAgentLabel(agent)} actions`}
+          >
+            <MoreVertical className="size-4" />
+          </Button>
+        }
+      />
+      <DropdownMenuContent align="end">
+        <ManagedAgentActionItems agent={agent} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
   const label = managedAgentLabel(agent);
   const queryClient = useQueryClient();
   const { navigate } = useNavigate();
@@ -153,33 +203,24 @@ function ManagedAgentActionsMenu({ agent }: { agent: ManagedAgentView }) {
     });
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button variant="ghost" size="sm" className="size-7 p-0" aria-label={`${label} actions`}>
-            <MoreVertical className="size-4" />
-          </Button>
-        }
-      />
-      <DropdownMenuContent align="end">
-        {agent.desiredState === 'running' ? (
-          <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('stopped')}>
-            <Square className="size-4" />
-            Stop
-          </DropdownMenuItem>
-        ) : (
-          <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('running')}>
-            <Play className="size-4" />
-            Start
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" disabled={busy} onClick={remove}>
-          <Trash2 className="size-4" />
-          Delete agent…
+    <>
+      {agent.desiredState === 'running' ? (
+        <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('stopped')}>
+          <Square className="size-4" />
+          Stop
         </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      ) : (
+        <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('running')}>
+          <Play className="size-4" />
+          Start
+        </DropdownMenuItem>
+      )}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem variant="destructive" disabled={busy} onClick={remove}>
+        <Trash2 className="size-4" />
+        Delete agent…
+      </DropdownMenuItem>
+    </>
   );
 }
 
