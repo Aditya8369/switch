@@ -151,7 +151,11 @@ export async function handleControlMessage(
   const { links, watcher } = context;
   // The sessions directory is shared by every agent on the machine.
   const named = namedSession(message);
-  if (named !== null) await assertOwnSession(context.agentId, named);
+  const owner = named === null ? null : await sessionOwner(named);
+  // A session with no config yet may be waited on or forgotten, nothing else.
+  const unconfigured = owner === null && ('subscribe' in message || 'forget' in message);
+  if (named !== null && !unconfigured && owner !== context.agentId)
+    throw notOwnSession(context.agentId, named);
   if ('request' in message) {
     const sessionRoot = sharedSessionRoot(message.sessionId);
     if (message.request.type === 'reasoning')
@@ -169,13 +173,20 @@ export async function handleControlMessage(
     const sessionId = message.subscribe;
     const sessionRoot = sharedSessionRoot(sessionId);
     if (!peer.subscriptions.has(sessionId)) {
-      const offEvents = links.subscribe(sessionRoot, (event) => peer.send({ sessionId, event }));
+      const unsubscribe = () => {
+        peer.subscriptions.get(sessionId)?.();
+        peer.subscriptions.delete(sessionId);
+      };
+      const send = unconfigured
+        ? ownedSender(context.agentId, sessionId, peer.send, unsubscribe)
+        : peer.send;
+      const offEvents = links.subscribe(sessionRoot, (event) => send({ sessionId, event }));
       const offFailure = links.onFailure((failed, failure) => {
-        if (failed === sessionRoot) peer.send({ sessionId, failure });
+        if (failed === sessionRoot) send({ sessionId, failure });
       });
       // A host that comes up again has put its failure behind it.
       const offReady = links.onReady((ready) => {
-        if (ready === sessionRoot) peer.send({ sessionId, failure: null });
+        if (ready === sessionRoot) send({ sessionId, failure: null });
       });
       peer.subscriptions.set(sessionId, () => {
         offEvents();
@@ -185,7 +196,7 @@ export async function handleControlMessage(
     }
     // Answered with the failure already recorded, so a subscriber that
     // arrives after the host stopped still hears why.
-    return { failure: links.failure(sessionRoot) };
+    return { failure: unconfigured ? null : links.failure(sessionRoot) };
   }
   if ('unsubscribe' in message) {
     peer.subscriptions.get(message.unsubscribe)?.();
@@ -257,21 +268,61 @@ function namedSession(message: ControlMessage): string | null {
   return null;
 }
 
-/** Refuses a session whose saved configuration does not name `agentId` as its agent. */
-async function assertOwnSession(agentId: string, sessionId: string): Promise<void> {
-  let owner: unknown = null;
+/** The agent a session's saved configuration names, or null while it has none. */
+async function sessionOwner(sessionId: string): Promise<unknown> {
   try {
     const text = await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8');
-    owner = (JSON.parse(text) as { session?: { agentId?: unknown } } | null)?.session?.agentId;
+    const owner = (JSON.parse(text) as { session?: { agentId?: unknown } } | null)?.session
+      ?.agentId;
+    return owner ?? undefined;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError))
-      throw error;
+    // A config being written can read as truncated JSON.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError)
+      return null;
+    throw error;
   }
-  if (owner !== agentId)
-    throw new ControlError(
-      'not_own_session',
-      `Session ${sessionId} is not a session of agent ${agentId}.`
-    );
+}
+
+function notOwnSession(agentId: string, sessionId: string): ControlError {
+  return new ControlError(
+    'not_own_session',
+    `Session ${sessionId} is not a session of agent ${agentId}.`
+  );
+}
+
+/**
+ * `send` for a subscription made before the session had a config: holds
+ * every push until a config names `agentId`, and ends the subscription with
+ * a failure once one names another agent. Pushes keep their order.
+ */
+function ownedSender(
+  agentId: string,
+  sessionId: string,
+  send: (push: ControlPush) => void,
+  unsubscribe: () => void
+): (push: ControlPush) => void {
+  let state: 'unknown' | 'own' | 'foreign' = 'unknown';
+  let chain = Promise.resolve();
+  return (push) => {
+    chain = chain
+      .then(async () => {
+        if (state === 'unknown') {
+          const owner = await sessionOwner(sessionId);
+          if (owner === null) return;
+          state = owner === agentId ? 'own' : 'foreign';
+          if (state === 'foreign') {
+            unsubscribe();
+            send({ sessionId, failure: notOwnSession(agentId, sessionId).message });
+          }
+        }
+        if (state === 'own') send(push);
+      })
+      .catch((error: unknown) => {
+        state = 'foreign';
+        unsubscribe();
+        send({ sessionId, failure: `Session ${sessionId} could not be checked: ${String(error)}` });
+      });
+  };
 }
 
 /** How long a request waits for the session's host to be ready. */

@@ -211,13 +211,14 @@ it('never reads or commands a session of another agent', async () => {
   const refused = 'not a session of agent agent';
   for (const id of ['theirs', 'unknown']) {
     await expect(console.request(id, { type: 'snapshot' })).rejects.toThrow(refused);
-    await expect(
-      console.subscribe(
-        id,
-        () => {},
-        () => {}
-      )
-    ).rejects.toThrow(refused);
+    if (id === 'theirs')
+      await expect(
+        console.subscribe(
+          id,
+          () => {},
+          () => {}
+        )
+      ).rejects.toThrow(refused);
     await expect(console.send({ journal: id })).rejects.toThrow(refused);
     const chunk = {
       transferId: 't1',
@@ -232,12 +233,64 @@ it('never reads or commands a session of another agent', async () => {
     };
     await expect(console.send({ attachment: chunk })).rejects.toThrow(refused);
     await expect(console.place(id, 'room')).rejects.toThrow(refused);
-    await expect(console.forget(id)).rejects.toThrow(refused);
+    if (id === 'theirs') await expect(console.forget(id)).rejects.toThrow(refused);
     await expect(console.reasoning(id, null)).rejects.toThrow(refused);
   }
   expect(sent).not.toHaveBeenCalled();
   expect(placed).not.toHaveBeenCalled();
-  expect(forgot).not.toHaveBeenCalled();
+  expect(forgot).not.toHaveBeenCalledWith('theirs');
+
+  unbind();
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('forgets a session with no config and waits on one until its config is saved', async () => {
+  const { base, links, stop, serving, client, watcher } = await started();
+  const forgot = vi.fn();
+  const unbind = watcher.bind({ place: vi.fn(), forget: forgot });
+  const console = client();
+  await console.ready;
+
+  await console.forget('deleted');
+  expect(forgot).toHaveBeenCalledWith('deleted');
+
+  const watch = async (id: string) => {
+    const root = join(base, id);
+    await mkdir(root, { recursive: true });
+    const child = host();
+    links.attach(root, child as unknown as ChildProcess);
+    const heard: number[] = [];
+    const failures: (string | null)[] = [];
+    const off = await console.subscribe(
+      id,
+      (pushed) => heard.push(pushed.sequence),
+      (failure) => failures.push(failure)
+    );
+    return { child, heard, failures, off };
+  };
+
+  const mine = await watch('starting');
+  expect(mine.failures).toEqual([null]);
+  mine.child.emit('message', { kind: 'event', event: event(1) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(mine.heard).toEqual([]);
+  await saved(base, 'starting', 'agent');
+  mine.child.emit('message', { kind: 'event', event: event(2) });
+  await vi.waitFor(() => expect(mine.heard).toEqual([2]));
+  mine.off();
+
+  const foreign = await watch('claimed');
+  await saved(base, 'claimed', 'other');
+  foreign.child.emit('message', { kind: 'event', event: event(1) });
+  await vi.waitFor(() =>
+    expect(foreign.failures).toEqual([null, 'Session claimed is not a session of agent agent.'])
+  );
+  foreign.child.emit('message', { kind: 'event', event: event(2) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(foreign.heard).toEqual([]);
+  await expect(console.place('claimed', 'room')).rejects.toThrow('not a session of agent agent');
 
   unbind();
   console.close();
