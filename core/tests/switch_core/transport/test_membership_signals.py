@@ -16,11 +16,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from switch_core.db.models import TENANT_ZERO_ID, Client, ClientRoom, Room
+from switch_core.db.models import TENANT_ZERO_ID, Client, ClientRoom, Message, Room
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
@@ -227,6 +227,55 @@ def _provisioning(
     )
 
 
+async def _is_member(
+    session_factory: async_sessionmaker[AsyncSession], client_id: str, room_id: str
+) -> bool:
+    async with session_factory() as session:
+        row = await session.get(
+            ClientRoom, {"client_id": client_id, "room_id": room_id}
+        )
+        return row is not None
+
+
+async def _arrivals(
+    session_factory: async_sessionmaker[AsyncSession], room_id: str, user_id: str
+) -> int:
+    async with session_factory() as session:
+        return int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Message)
+                .where(
+                    Message.room_id == room_id,
+                    Message.sender_id == user_id,
+                    Message.event_type == "m.room.member",
+                )
+            )
+            or 0
+        )
+
+
+def _kick_after_read(
+    transport: PostgresTransport,
+    kick: Callable[[], Any],
+    room_id: str,
+    kicked: list[bool],
+) -> None:
+    """Make the transport's next membership read that includes `room_id`
+    return what it read only after `kick` has committed."""
+    store = transport._room_store
+    real = store.memberships_of
+
+    async def read_then_kick(session: Any, client_id: str) -> Any:
+        memberships = await real(session, client_id)
+        if not kicked and any(m.room_id == room_id for m in memberships):
+            await kick()
+            kicked.append(True)
+        return memberships
+
+    store.memberships_of = read_then_kick  # type: ignore[method-assign]
+
+
 async def _say(
     session_factory: async_sessionmaker[AsyncSession],
     speaker: PostgresTransport,
@@ -356,6 +405,48 @@ class TestAcrossProcesses:
         # from whenever its own clock heard of it.
         assert there.invited_at == [joined_at_ms]
 
+    async def test_a_kick_during_the_other_process_recheck_sticks(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        room_and_client: tuple[str, str, str, str, str],
+        two_processes: tuple[_Process, _Process],
+    ) -> None:
+        """Added through one process and kicked through it while the other
+        is re-reading for the add. The other's join must not write back the
+        membership its read saw."""
+        _, _, client_id, user_id, speaker_id = room_and_client
+        here, there = two_processes
+        async with session_factory() as session:
+            room = Room(
+                transport_room_id=f"!second-{uuid.uuid4().hex[:8]}:test",
+                name="another room",
+                description="",
+            )
+            session.add(room)
+            await session.flush()
+            await RoomStore().add_client(session, speaker_id, room.id)
+            await session.commit()
+            second_id, second_transport_id = room.id, room.transport_room_id
+        kicked: list[bool] = []
+
+        async def kick() -> None:
+            await _provisioning(session_factory, here.invites).kick_user(
+                second_transport_id, user_id
+            )
+
+        _kick_after_read(there.transport, kick, second_id, kicked)
+
+        await _provisioning(session_factory, here.invites).invite_to_room(
+            second_transport_id, user_id
+        )
+        await _eventually(lambda: bool(kicked))
+        # Long enough for both processes to act on the signals that follow.
+        await asyncio.sleep(1.5)
+
+        assert not await _is_member(session_factory, client_id, second_id)
+        assert await _arrivals(session_factory, second_id, user_id) == 1
+        assert second_id not in there.transport._watching
+
 
 class TestRecheck:
     async def test_a_removal_whose_signal_was_missed_is_caught_by_the_recheck(
@@ -444,6 +535,39 @@ class TestRecheck:
             await _eventually(lambda: room_id in process.transport._watching)
 
             assert process.invited_at == []
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_a_kick_during_a_recheck_sticks(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        room_and_client: tuple[str, str, str, str, str],
+    ) -> None:
+        """The periodic re-check reads the rows, then a kick in the same
+        process commits and drops the room. The re-check finds the room it
+        read unwatched, and must not join it back."""
+        room_id, transport_room_id, client_id, user_id, _ = room_and_client
+        process = _process(postgres_url, session_factory, client_id, user_id)
+        task = asyncio.create_task(process.transport.receive_forever())
+        try:
+            await _eventually(lambda: room_id in process.transport._watching)
+            kicked: list[bool] = []
+
+            async def kick() -> None:
+                await _provisioning(session_factory, process.invites).kick_user(
+                    transport_room_id, user_id
+                )
+
+            _kick_after_read(process.transport, kick, room_id, kicked)
+
+            await process.membership.reconcile_all()
+
+            assert kicked
+            assert not await _is_member(session_factory, client_id, room_id)
+            assert await _arrivals(session_factory, room_id, user_id) == 0
+            assert room_id not in process.transport._watching
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
