@@ -26,16 +26,22 @@ itself never reaches anyone by these rules, so agents cannot set each other
 off. Permissions are not decided here; the caller applies the agent's policy
 afterwards, as it does for a mention.
 
-Every evaluation is logged at INFO with its outcome and the reason, so each
-route can be followed in the server's log.
+The router (`delivery/router.py`) asks these rules about a message that no
+explicit rule named anyone in, before the message is written. What they read
+about the room (the thread, the channel's latest messages, the handles that
+reach an agent) is read once for the message and shared by every agent in
+the room (`RoomConversation`), so the cost does not grow with the number of
+agents. Every delivery, and every one the agent's policy refused, is logged
+at INFO with the rule and the reason, so each route can be followed in the
+server's log; an agent no rule chose is logged at DEBUG.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -46,7 +52,6 @@ from switch_core.clients.admin_messages import (
     SENDER_IS_APP_MARKER,
 )
 from switch_core.clients.mentions import NAME_CHAR
-from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
 from switch_core.delivery.addressing import IncomingMessage
 
 if TYPE_CHECKING:
@@ -60,7 +65,6 @@ if TYPE_CHECKING:
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.delivery.addressing import AddressingResolver
 
-logger = logging.getLogger(__name__)
 
 # How many of a thread's most recent messages are read when looking for the
 # agent that spoke or was tagged last.
@@ -116,18 +120,10 @@ def mentions_anyone(body: str) -> bool:
     return _MENTION.search(body) is not None
 
 
-# The reason given when a thread reply reaches an agent that is not taking part
-# in the thread. Agents' clients remember threads that answered this way, so
-# later replies in them cost nothing.
 NOT_TAKING_PART = "the agent is not taking part in this thread"
 # A thread belongs to the agent that spoke or was tagged most recently in it.
 ANOTHER_AGENT_SPOKE = "another agent spoke more recently in this thread"
 ANOTHER_AGENT_TAGGED = "another agent was tagged more recently in this thread"
-# The reasons that mean this agent cannot get this thread's next reply until it
-# posts there or is tagged there, both of which its client sees.
-NOT_THIS_AGENTS_THREAD = frozenset(
-    {NOT_TAKING_PART, ANOTHER_AGENT_SPOKE, ANOTHER_AGENT_TAGGED}
-)
 
 
 class ConversationRoute(StrEnum):
@@ -161,13 +157,16 @@ class ConversationSettings:
 
 @dataclass(frozen=True)
 class ConversationMessage:
-    """The message being decided: what addressing knows, plus where it sits."""
+    """The message being decided: what addressing knows, plus where it sits
+    and when it was sent. It is decided before it is written, so `sent_at` is
+    the time it is being written, not a time read back from its row."""
 
     event_id: str
     sender: str
     body: str
     content: Mapping[str, object]
     thread_root_id: str | None
+    sent_at: datetime
 
 
 def may_follow(
@@ -215,66 +214,101 @@ def _is_automatic(row: Message) -> bool:
 
 
 class ConversationRules:
-    """Decides, for one agent, whether a message reaches it by following the
-    conversation."""
+    """The rules, one per process. `for_message` gives one message's view of
+    its room, which decides the message for each agent in turn."""
 
     def __init__(
         self,
         *,
         settings: ConversationSettings,
-        addressing: AddressingResolver,
         message_store: MessageStore,
         room_store: RoomStore,
         agent_store: AgentStore,
         room_role_store: RoomRoleStore,
     ) -> None:
         self._settings = settings
-        self._addressing = addressing
-        self._message_store = message_store
-        self._room_store = room_store
-        self._agent_store = agent_store
-        self._room_role_store = room_role_store
+        self.message_store = message_store
+        self.room_store = room_store
+        self.agent_store = agent_store
+        self.room_role_store = room_role_store
 
     @property
     def settings(self) -> ConversationSettings:
         return self._settings
 
-    async def decide(
+    def for_message(
         self,
-        session: AsyncSession,
         *,
-        agent: Agent,
-        agent_user_id: str,
+        addressing: AddressingResolver,
         room_id: str,
         channel_type: str | None,
+        follow_ups_enabled: bool,
+        main_agent_id: str | None,
         message: ConversationMessage,
-    ) -> ConversationDecision:
-        """Which rule delivers `message` to `agent`, if any.
-
-        The caller has already checked `may_follow`.
-        """
-        principal = await self._addressing.resolve_sender(
-            session, message.sender, message.content
+    ) -> RoomConversation:
+        """`message`'s room as the rules see it, for a message that has passed
+        `may_follow`. `follow_ups_enabled` and `main_agent_id` are the room's
+        settings, read with the room."""
+        return RoomConversation(
+            rules=self,
+            addressing=addressing,
+            room_id=room_id,
+            channel_type=channel_type,
+            follow_ups_enabled=follow_ups_enabled,
+            main_agent_id=main_agent_id,
+            message=message,
         )
-        if principal is None or principal.kind != "user":
+
+
+class RoomConversation:
+    """One message's room, as the rules read it: read the first time an
+    agent's decision asks, and kept for the other agents in the room.
+
+    The message itself may already be a row (a test writes it first); it is
+    left out of everything read, so the rules see only what came before it.
+    """
+
+    def __init__(
+        self,
+        *,
+        rules: ConversationRules,
+        addressing: AddressingResolver,
+        room_id: str,
+        channel_type: str | None,
+        follow_ups_enabled: bool,
+        main_agent_id: str | None,
+        message: ConversationMessage,
+    ) -> None:
+        self._rules = rules
+        self._settings = rules.settings
+        self._addressing = addressing
+        self._room_id = room_id
+        self._channel_type = channel_type
+        self._follow_ups_enabled = follow_ups_enabled
+        self._main_agent_id = main_agent_id
+        self._message = message
+        self._sent_by_person: bool | None = None
+        self._sender_kinds: dict[str, str | None] = {}
+        self._thread_rows: list[Message] | None = None
+        self._channel_rows: list[Message] | None = None
+        self._agent_names: set[str] | None = None
+
+    async def decide(
+        self, session: AsyncSession, *, agent: Agent, agent_user_id: str
+    ) -> ConversationDecision:
+        """Which rule delivers the message to `agent`, if any."""
+        message = self._message
+        is_main_agent = self._main_agent_id == agent.id
+        if not self._follow_ups_enabled and not is_main_agent:
+            # Settled from the room's settings alone: nothing to read.
+            return ConversationDecision(
+                None, "follow-ups are switched off in this room"
+            )
+        if not await self._from_a_person(session):
             return ConversationDecision(None, "not sent by a person")
 
-        current = await self._message_store.get_by_transport_event_id(
-            session, message.event_id
-        )
-        if current is None:
-            logger.warning(
-                "Follow the conversation: message %s in room %s is not in the "
-                "room's history yet, so no rule can be checked",
-                message.event_id,
-                room_id,
-            )
-            return ConversationDecision(None, "message not in history")
-
-        room = await self._room_store.get(session, room_id)
-        metadata = room.metadata_ if room is not None else None
-        follow_up: ConversationDecision | None = None
-        if not follow_ups_enabled_in(metadata):
+        follow_up: ConversationDecision
+        if not self._follow_ups_enabled:
             follow_up = ConversationDecision(
                 None, "follow-ups are switched off in this room"
             )
@@ -285,27 +319,61 @@ class ConversationRules:
                 session,
                 agent=agent,
                 agent_user_id=agent_user_id,
-                room_id=room_id,
-                channel_type=channel_type,
                 thread_root_id=message.thread_root_id,
-                before_seq=current.seq,
             )
         else:
             follow_up = await self._channel_follow_up(
-                session,
-                agent=agent,
-                agent_user_id=agent_user_id,
-                room_id=room_id,
-                channel_type=channel_type,
-                current=current,
+                session, agent=agent, agent_user_id=agent_user_id
             )
         if follow_up.route is not None:
             return follow_up
-        if main_agent_in(metadata) == agent.id:
+        if is_main_agent:
             return ConversationDecision(
                 ConversationRoute.MAIN_AGENT, "the room's main agent"
             )
         return follow_up
+
+    async def _from_a_person(self, session: AsyncSession) -> bool:
+        if self._sent_by_person is None:
+            message = self._message
+            principal = await self._addressing.resolve_sender(
+                session, message.sender, message.content
+            )
+            self._sent_by_person = principal is not None and principal.kind == "user"
+        return self._sent_by_person
+
+    async def _sender_kind(self, session: AsyncSession, row: Message) -> str | None:
+        if row.sender_id not in self._sender_kinds:
+            principal = await self._addressing.resolve_sender(
+                session, row.sender_id, row.content or {}
+            )
+            self._sender_kinds[row.sender_id] = principal.kind if principal else None
+        return self._sender_kinds[row.sender_id]
+
+    def _before_message(self, rows: list[Message], limit: int) -> list[Message]:
+        event_id = self._message.event_id
+        return [row for row in rows if row.transport_event_id != event_id][:limit]
+
+    async def _thread(
+        self, session: AsyncSession, thread_root_id: str
+    ) -> list[Message]:
+        if self._thread_rows is None:
+            rows = await self._rules.message_store.list_thread_newest_first(
+                session,
+                self._room_id,
+                thread_root_event_id=thread_root_id,
+                limit=THREAD_LOOKBACK + 1,
+            )
+            self._thread_rows = self._before_message(rows, THREAD_LOOKBACK)
+        return self._thread_rows
+
+    async def _channel(self, session: AsyncSession) -> list[Message]:
+        if self._channel_rows is None:
+            rows = await self._rules.message_store.list_top_level_newest_first(
+                session, self._room_id, limit=CHANNEL_LOOKBACK + 1
+            )
+            self._channel_rows = self._before_message(rows, CHANNEL_LOOKBACK)
+        return self._channel_rows
 
     async def _addressed_agent(
         self,
@@ -313,16 +381,14 @@ class ConversationRules:
         *,
         agent: Agent,
         agent_user_id: str,
-        room_id: str,
-        channel_type: str | None,
         row: Message,
     ) -> bool:
         return await self._addressing.addresses(
             session,
             agent=agent,
             agent_user_id=agent_user_id,
-            room_id=room_id,
-            channel_type=channel_type,
+            room_id=self._room_id,
+            channel_type=self._channel_type,
             message=_as_incoming(row),
         )
 
@@ -332,10 +398,7 @@ class ConversationRules:
         *,
         agent: Agent,
         agent_user_id: str,
-        room_id: str,
-        channel_type: str | None,
         thread_root_id: str,
-        before_seq: int,
     ) -> ConversationDecision:
         """Whether this agent owns the thread: it spoke most recently, or a
         person tagged it most recently, of all the agents in the thread.
@@ -345,16 +408,7 @@ class ConversationRules:
         agents gives the thread to all of them until one answers. A person
         tagging another person doesn't move it.
         """
-        rows = await self._message_store.list_thread_newest_first(
-            session,
-            room_id,
-            thread_root_event_id=thread_root_id,
-            before_seq=before_seq,
-            limit=THREAD_LOOKBACK,
-        )
-        sender_kinds: dict[str, str | None] = {}
-        agent_names: set[str] | None = None
-        for row in rows:
+        for row in await self._thread(session, thread_root_id):
             if _is_automatic(row):
                 continue
             if row.sender_id == agent_user_id:
@@ -362,62 +416,46 @@ class ConversationRules:
                     ConversationRoute.THREAD_FOLLOW_UP,
                     "the agent spoke most recently in this thread",
                 )
-            if row.sender_id not in sender_kinds:
-                principal = await self._addressing.resolve_sender(
-                    session, row.sender_id, row.content or {}
-                )
-                sender_kinds[row.sender_id] = principal.kind if principal else None
-            if sender_kinds[row.sender_id] == "agent":
+            if await self._sender_kind(session, row) == "agent":
                 return ConversationDecision(None, ANOTHER_AGENT_SPOKE)
             if await self._addressed_agent(
-                session,
-                agent=agent,
-                agent_user_id=agent_user_id,
-                room_id=room_id,
-                channel_type=channel_type,
-                row=row,
+                session, agent=agent, agent_user_id=agent_user_id, row=row
             ):
                 return ConversationDecision(
                     ConversationRoute.THREAD_FOLLOW_UP,
                     "the agent was tagged most recently in this thread",
                 )
             names = mentioned_names(row.body or "")
-            if names:
-                if agent_names is None:
-                    agent_names = await self._room_agent_names(session, room_id)
-                if names & agent_names:
-                    return ConversationDecision(None, ANOTHER_AGENT_TAGGED)
+            if names and names & await self._room_agent_names(session):
+                return ConversationDecision(None, ANOTHER_AGENT_TAGGED)
         return ConversationDecision(None, NOT_TAKING_PART)
 
-    async def _room_agent_names(self, session: AsyncSession, room_id: str) -> set[str]:
+    async def _room_agent_names(self, session: AsyncSession) -> set[str]:
         """Every handle that reaches an agent in this room, lowercased: names,
         room aliases and room roles."""
+        if self._agent_names is not None:
+            return self._agent_names
+        rules = self._rules
         names: set[str] = set()
-        for agent_id in await self._room_store.get_agent_ids(session, room_id):
-            agent = await self._agent_store.get(session, agent_id)
+        for agent_id in await rules.room_store.get_agent_ids(session, self._room_id):
+            agent = await rules.agent_store.get(session, agent_id)
             if agent is not None:
                 names.add(agent.name.lower())
         names.update(
             alias.lower()
             for alias in (
-                await self._room_store.list_aliases(session, room_id)
+                await rules.room_store.list_aliases(session, self._room_id)
             ).values()
         )
         names.update(
             role.name.lower()
-            for role in await self._room_role_store.list_roles(session, room_id)
+            for role in await rules.room_role_store.list_roles(session, self._room_id)
         )
+        self._agent_names = names
         return names
 
     async def _channel_follow_up(
-        self,
-        session: AsyncSession,
-        *,
-        agent: Agent,
-        agent_user_id: str,
-        room_id: str,
-        channel_type: str | None,
-        current: Message,
+        self, session: AsyncSession, *, agent: Agent, agent_user_id: str
     ) -> ConversationDecision:
         """Walk back through the channel's top-level messages for an unbroken
         exchange between the sender and this agent.
@@ -428,28 +466,28 @@ class ConversationRules:
         way. Anyone else posting ends it, and so does the sender turning to
         someone else with a mention.
         """
-        rows = await self._message_store.list_top_level_before(
-            session, room_id, before_seq=current.seq, limit=CHANNEL_LOOKBACK
-        )
-        later_sent_at = current.sent_at
+        message = self._message
+        window = self._settings.window_seconds
+        rows = await self._channel(session)
+        later_sent_at = message.sent_at
         agent_answered = False
         for index, row in enumerate(rows):
             if _is_automatic(row):
                 continue
             gap = (later_sent_at - row.sent_at).total_seconds()  # type: ignore[operator]
-            if gap > self._settings.window_seconds:
+            if gap > window:
                 return ConversationDecision(None, "too long since the last message")
-            later_sent_at = row.sent_at
+            later_sent_at = row.sent_at  # type: ignore[assignment]
             if row.sender_id == agent_user_id:
                 if not agent_answered:
-                    since_answer = (current.sent_at - row.sent_at).total_seconds()  # type: ignore[operator]
-                    if since_answer > self._settings.window_seconds:
+                    since_answer = (message.sent_at - row.sent_at).total_seconds()  # type: ignore[operator]
+                    if since_answer > window:
                         return ConversationDecision(
                             None, "too long since the agent's last answer"
                         )
                 agent_answered = True
                 continue
-            if row.sender_id != current.sender_id:
+            if row.sender_id != message.sender:
                 if agent_answered or any(
                     earlier.sender_id == agent_user_id and not _is_automatic(earlier)
                     for earlier in rows[index + 1 :]
@@ -459,12 +497,7 @@ class ConversationRules:
                     )
                 return ConversationDecision(None, "no recent exchange with this agent")
             if await self._addressed_agent(
-                session,
-                agent=agent,
-                agent_user_id=agent_user_id,
-                room_id=room_id,
-                channel_type=channel_type,
-                row=row,
+                session, agent=agent, agent_user_id=agent_user_id, row=row
             ):
                 if agent_answered:
                     return ConversationDecision(

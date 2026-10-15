@@ -225,16 +225,13 @@ class MessageStore:
         room_id: str,
         *,
         thread_root_event_id: str,
-        before_seq: int,
         limit: int,
     ) -> list[Message]:
-        """A thread's messages from before `before_seq`, its root included,
-        newest first."""
+        """A thread's newest messages, its root included, newest first."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
-                Message.seq < before_seq,
                 or_(
                     Message.thread_root_event_id == thread_root_event_id,
                     Message.transport_event_id == thread_root_event_id,
@@ -245,16 +242,15 @@ class MessageStore:
         )
         return list(result.scalars().all())
 
-    async def list_top_level_before(
-        self, session: AsyncSession, room_id: str, *, before_seq: int, limit: int
+    async def list_top_level_newest_first(
+        self, session: AsyncSession, room_id: str, *, limit: int
     ) -> list[Message]:
-        """The room's newest top-level messages from before `before_seq`,
-        newest first. Replies inside threads are left out."""
+        """The room's newest top-level messages, newest first. Replies inside
+        threads are left out."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
-                Message.seq < before_seq,
                 Message.thread_root_event_id.is_(None),
             )
             .order_by(Message.seq.desc())

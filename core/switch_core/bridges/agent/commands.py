@@ -28,6 +28,8 @@ from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
     from switch_core.db.models import Agent
@@ -639,7 +641,7 @@ _FOLLOW_THE_CONVERSATION_OFF = (
 
 
 async def _reject_if_following_is_off(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> bool:
     """True, after saying so, when the server has the feature off: a command
     must not claim a change that nothing will act on."""
@@ -662,7 +664,7 @@ _FOLLOW_UPS_OFF = (
 
 
 async def _cmd_follow_ups(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -692,37 +694,12 @@ async def _cmd_follow_ups(
             )
             await session.commit()
         enabled = await client._room_store.follow_ups_enabled(session, meta.room_id)
-        main_agent_id = await client._room_store.main_agent_id(session, meta.room_id)
 
-    body = _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF
-    await _announce_room_settings(
-        client, room, event, body, enabled=enabled, main_agent_id=main_agent_id
-    )
-
-
-async def _announce_room_settings(
-    client: AgentConsumer,
-    room: RoomRef,
-    event: CommandEvent,
-    body: str,
-    *,
-    enabled: bool,
-    main_agent_id: str | None,
-) -> None:
-    """Reply in the command's thread with the room's current settings attached,
-    so agents' clients update what they cached about the room."""
-    host = cast("CommandConsumer", client)
-    await host.announce_room_settings(
-        room.room_id,
-        body,
-        thread_root_id=event.thread_id,
-        follow_ups_enabled=enabled,
-        main_agent_id=main_agent_id,
-    )
+    await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
 
 
 async def _cmd_assign_agent(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -736,7 +713,6 @@ async def _cmd_assign_agent(
 
     tokens = _mention_tokens(event.args)
     async with client.session_factory() as session:
-        enabled = await client._room_store.follow_ups_enabled(session, meta.room_id)
         current_id = await client._room_store.main_agent_id(session, meta.room_id)
         current = (
             await client._agent_store.get(session, current_id) if current_id else None
@@ -764,13 +740,15 @@ async def _cmd_assign_agent(
                 f"No agent named `{token}` in this room. Run `!list-agents`.",
             )
             return
+        # Admin-owned: the Switch app's client runs it.
+        host = cast("CommandConsumer", client)
         resolver = AddressingResolver(
-            room_store=client._room_store,
-            room_role_store=client._room_role_store,
-            client_store=client.client_store,
-            agent_store=client._agent_store,
-            external_user_store=client._external_user_store,
-            live_connection_ids=client._connections.live_connection_ids,
+            room_store=host._room_store,
+            room_role_store=host._room_role_store,
+            client_store=host.client_store,
+            agent_store=host._agent_store,
+            external_user_store=host._external_user_store,
+            live_connection_ids=host._connections.live_connection_ids,
         )
         decision = await resolver.permitted(
             session, agent=target, room_id=meta.room_id, sender=event.user_id
@@ -793,19 +771,17 @@ async def _cmd_assign_agent(
         if current is not None and current.id != target.id
         else ""
     )
-    await _announce_room_settings(
+    await _reply(
         client,
         room,
         event,
         f"From now on, every message here goes to **{_label(target)}**{replaced} "
         "unless it mentions someone else. Clear it with `!unassign-agent`.",
-        enabled=enabled,
-        main_agent_id=target.id,
     )
 
 
 async def _cmd_unassign_agent(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -818,7 +794,6 @@ async def _cmd_unassign_agent(
         return
 
     async with client.session_factory() as session:
-        enabled = await client._room_store.follow_ups_enabled(session, meta.room_id)
         current_id = await client._room_store.main_agent_id(session, meta.room_id)
         if current_id is None:
             await _reply(client, room, event, "No agent is assigned in this room.")
@@ -827,14 +802,12 @@ async def _cmd_unassign_agent(
         await client._room_store.set_main_agent(session, meta.room_id, None)
         await session.commit()
 
-    await _announce_room_settings(
+    await _reply(
         client,
         room,
         event,
         f"**{_label(current)}** is no longer assigned. Agents here only get "
         "messages that mention them, or follow-ups.",
-        enabled=enabled,
-        main_agent_id=None,
     )
 
 
@@ -847,7 +820,7 @@ def _label(agent: Agent | None) -> str:
 
 
 async def _room_agent_by_name_or_alias(
-    client: AgentConsumer, session: AsyncSession, room_id: str, token: str
+    client: AgentRecipient, session: AsyncSession, room_id: str, token: str
 ) -> Agent | None:
     """The room member `token` names, by its name or its alias in this room."""
     for agent_id in await client._room_store.get_agent_ids(session, room_id):

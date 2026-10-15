@@ -54,10 +54,8 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
-    ADMIN_MARKER,
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
-    ROOM_SETTINGS_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
@@ -80,14 +78,6 @@ from switch_core.delivery.addressing import (
     AddressingDecision,
     AddressingResolver,
     IncomingMessage,
-)
-from switch_core.delivery.conversation import (
-    NOT_THIS_AGENTS_THREAD,
-    ConversationMessage,
-    ConversationRoute,
-    ConversationRules,
-    ConversationSettings,
-    may_follow,
 )
 from switch_core.events import (
     CommandEvent,
@@ -128,6 +118,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.reference_store import ReferenceStore
     from switch_core.db.stores.room_role_store import RoomRoleStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.delivery.conversation import ConversationDecision
     from switch_core.telemetry.messages import MessageTelemetry
 
 logger = logging.getLogger(__name__)
@@ -376,19 +367,6 @@ _ADDRESSING_DENIED_MESSAGE = ADDRESSING_DENIED_MESSAGE
 _ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 
 
-# How many (room, thread) entries each agent's client remembers for the free
-# check. The oldest are forgotten first; forgetting only costs one history read.
-_THREAD_MEMORY_LIMIT = 10_000
-
-
-class _FollowOutcome(NamedTuple):
-    """Whether following the conversation delivered the message, and whether
-    the agent was live to receive it."""
-
-    delivered: bool
-    agent_live: bool
-
-
 class _GateOutcome(NamedTuple):
     """Whether a message that tags this agent really addresses it, plus the
     refusal to post when it does not. The refusal is returned rather than sent
@@ -525,33 +503,7 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        sender_name = event.sender_name
-        if not sender_name:
-            sender_name = event.sender
-            logger.error(
-                "Message received without sender name, using the sender id: %s",
-                sender_name,
-            )
-
-        def own_event(row: InboundEvent) -> OwnEvent:
-            assert isinstance(row, InboundMessage)
-            agent_event = message_event(
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                event=row,
-                addressed=True,
-                sender_name=sender_name,
-                body=row.body,
-                thread_id=thread_id,
-            )
-            # Serialising runs once per agent per message, so only when it
-            # will be seen.
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Enqueuing event %s", agent_event.model_dump_json(indent=2)
-                )
-            return OwnEvent(agent_event, room_seq=row.seq, message_key=row.event_id)
+        own_event = _message_own_event(meta, event, thread_id)
 
         async def after(row: InboundEvent) -> None:
             assert isinstance(row, InboundMessage)
@@ -568,6 +520,86 @@ class AgentRecipient:
             after=after if addressed or refusal is not None else None,
             named=named,
         )
+
+    async def decide_follow_up(
+        self,
+        session: AsyncSession,
+        event: InboundMessage,
+        decision: ConversationDecision,
+    ) -> Delivery:
+        """Whether a message that names nobody is one of the agent's own events
+        by following the conversation (`delivery/conversation.py`): when a rule
+        chose the agent, and its addressing policy and budget let the sender
+        through.
+
+        Quieter than a mention on every other count. A sender the policy
+        refuses, or an agent over its budget, gets no refusal, and an agent
+        with no session gets no "unavailable" notice: the sender did not ask
+        this agent for anything, so telling them so would be noise in someone
+        else's conversation. Every outcome is logged, which is how each route
+        can be followed in the server's log.
+        """
+        meta = self._meta
+        outcome = "nobody"
+        delivered = False
+        if decision.route is not None:
+            agent = await self._fresh_agent(session)
+            gate = await self._gate_addressed(session, agent, event, meta)
+            delivered = gate.addressed
+            outcome = "delivered" if delivered else "dropped_not_permitted"
+        # Every agent in the room is asked about every message that names
+        # nobody, so "nobody" is the common answer: kept out of INFO, where it
+        # would be a line per agent per message in a busy room.
+        logger.log(
+            logging.DEBUG if outcome == "nobody" else logging.INFO,
+            "Follow the conversation: room=%s message=%s agent=%s route=%s "
+            "outcome=%s reason=%s",
+            meta.room_id,
+            event.event_id,
+            self.agent.name,
+            decision.route or "none",
+            outcome,
+            decision.reason
+            if outcome != "dropped_not_permitted"
+            else "the sender may not instruct this agent, or it is over budget",
+        )
+        if not delivered:
+            return NOTHING
+
+        async def after(row: InboundEvent) -> None:
+            assert isinstance(row, InboundMessage)
+            await self._after_follow_up(row)
+
+        return Delivery(
+            own_event=_message_own_event(meta, event, event.thread_root_id),
+            after=after,
+        )
+
+    async def _after_follow_up(self, event: InboundMessage) -> None:
+        """What a follow-up leaves to do once it has committed: wake the
+        agent's cloud machine if it is asleep, so a session can start, and
+        report that the agent was asked something. Nothing is posted."""
+        meta = self._meta
+        async with self.session_factory() as session:
+            agent = await self._fresh_agent(session)
+            agent_live = await self._is_available(session, agent, meta.room_id)
+        if not agent_live:
+            await self._wake_for_follow_up()
+        self._report_addressed(meta, event, agent_live=agent_live, has_attachment=False)
+
+    async def _wake_for_follow_up(self) -> None:
+        """Start the cloud machine of an agent run by a controller that is
+        asleep, as a mention would, without the notice a mention posts."""
+        controllers = self._connections.controllers
+        binding = controllers.binding(self.agent.id)
+        if (
+            binding is None
+            or not binding.running
+            or controllers.is_revoked(binding.controller_id)
+            or controllers.is_live(self.agent.id)
+        ):
+            return
+        await self._wake_cloud_machine(binding.controller_id)
 
     async def _after_message(
         self,
@@ -1619,6 +1651,40 @@ class AgentRecipient:
             re.IGNORECASE,
         )
         return pattern.sub("", text).strip()
+
+
+def _message_own_event(
+    meta: RoomMeta, event: InboundMessage, thread_id: str | None
+) -> Callable[[InboundEvent], OwnEvent]:
+    """How an agent's own event for a message is built once the message is
+    written."""
+    sender_name = event.sender_name
+    if not sender_name:
+        sender_name = event.sender
+        logger.error(
+            "Message received without sender name, using the sender id: %s",
+            sender_name,
+        )
+
+    def own_event(row: InboundEvent) -> OwnEvent:
+        assert isinstance(row, InboundMessage)
+        agent_event = message_event(
+            room_id=meta.room_id,
+            bridge_id=meta.bridge_id,
+            channel_type=meta.channel_type,
+            event=row,
+            addressed=True,
+            sender_name=sender_name,
+            body=row.body,
+            thread_id=thread_id,
+        )
+        # Serialising runs once per agent per message, so only when it will
+        # be seen.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
+        return OwnEvent(agent_event, room_seq=row.seq, message_key=row.event_id)
+
+    return own_event
 
 
 def file_index(part: InboundMedia) -> int:

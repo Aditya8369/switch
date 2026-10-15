@@ -42,7 +42,6 @@ def _host(
     session_factory: async_sessionmaker[AsyncSession], room_id: str
 ) -> tuple[SimpleNamespace, list[str]]:
     posted: list[str] = []
-    announced: list[dict[str, object]] = []
 
     async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return SimpleNamespace(room_id=room_id, name="room")
@@ -50,19 +49,11 @@ def _host(
     async def _reply_command(_room_id: str, body: str, **_kw: object) -> None:
         posted.append(body)
 
-    async def _announce_room_settings(
-        _room_id: str, body: str, **settings: object
-    ) -> None:
-        posted.append(body)
-        announced.append(settings)
-
     host = SimpleNamespace(
         session_factory=session_factory,
         _resolve_room_meta=_resolve_room_meta,
         reply_command=_reply_command,
         send_message=_reply_command,
-        announce_room_settings=_announce_room_settings,
-        announced=announced,
         _room_store=RoomStore(),
         _agent_store=AgentStore(),
         _room_role_store=RoomRoleStore(),
@@ -119,12 +110,6 @@ class TestFollowUpsCommand:
 
         await _run(host, "off")
         assert "Follow-ups are **off**" in posted[-1]
-        # Agents' clients are told, so their cached view of the room changes.
-        assert host.announced[-1] == {
-            "thread_root_id": None,
-            "follow_ups_enabled": False,
-            "main_agent_id": None,
-        }
         async with session_factory() as session:
             assert not await store.follow_ups_enabled(session, room_id)
             room = await store.get(session, room_id)
@@ -233,7 +218,6 @@ class TestAssignAgent:
         await _assign(host, f"@{manager}", "@someone:test")
         assert posted[-1].startswith("From now on, every message here goes to")
         assert f"@{manager}" not in posted[-1]  # names it without mentioning it
-        assert host.announced[-1]["main_agent_id"] == ids[manager]
         async with session_factory() as session:
             assert await RoomStore().main_agent_id(session, room_id) == ids[manager]
 
@@ -242,7 +226,6 @@ class TestAssignAgent:
 
         await _unassign(host, "@someone:test")
         assert "is no longer assigned" in posted[-1]
-        assert host.announced[-1]["main_agent_id"] is None
         async with session_factory() as session:
             assert await RoomStore().main_agent_id(session, room_id) is None
 
@@ -262,7 +245,8 @@ class TestAssignAgent:
 
         await _assign(host, "@boss", "@someone:test")
 
-        assert host.announced[-1]["main_agent_id"] == ids[manager]
+        async with session_factory() as session:
+            assert await RoomStore().main_agent_id(session, room_id) == ids[manager]
 
     async def test_an_agent_not_in_the_room(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -274,7 +258,8 @@ class TestAssignAgent:
         await _assign(host, "@nobody-here", "@someone:test")
 
         assert posted[-1].startswith("No agent named `nobody-here`")
-        assert host.announced == []
+        async with session_factory() as session:
+            assert await RoomStore().main_agent_id(session, room_id) is None
 
     async def test_only_an_agent_that_takes_your_instructions(
         self, session_factory: async_sessionmaker[AsyncSession]

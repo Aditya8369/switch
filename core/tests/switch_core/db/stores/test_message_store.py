@@ -410,25 +410,22 @@ class TestConversationHistory:
                 _message(other.id, "$elsewhere", thread_root_event_id="$root"),
                 [],
             )
-            now = await store.create(
-                session, _message(room.id, "$now", thread_root_event_id="$root"), []
-            )
             await store.create(
-                session, _message(room.id, "$later", thread_root_event_id="$root"), []
+                session, _message(room.id, "$r2", thread_root_event_id="$root"), []
             )
             await session.commit()
 
             rows = await store.list_thread_newest_first(
-                session,
-                room.id,
-                thread_root_event_id="$root",
-                before_seq=now.seq,
-                limit=10,
+                session, room.id, thread_root_event_id="$root", limit=10
+            )
+            newest = await store.list_thread_newest_first(
+                session, room.id, thread_root_event_id="$root", limit=1
             )
 
-        assert [r.transport_event_id for r in rows] == ["$r1", "$root"]
+        assert [r.transport_event_id for r in rows] == ["$r2", "$r1", "$root"]
+        assert [r.transport_event_id for r in newest] == ["$r2"]
 
-    async def test_top_level_before_a_message_is_newest_first_without_replies(
+    async def test_top_level_newest_first_without_replies(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = MessageStore()
@@ -440,12 +437,9 @@ class TestConversationHistory:
                 session, _message(room.id, "$reply", thread_root_event_id="$a"), []
             )
             await store.create(session, _message(room.id, "$c"), [])
-            current = await store.create(session, _message(room.id, "$now"), [])
             await session.commit()
 
-            rows = await store.list_top_level_before(
-                session, room.id, before_seq=current.seq, limit=2
-            )
+            rows = await store.list_top_level_newest_first(session, room.id, limit=2)
 
         assert [r.transport_event_id for r in rows] == ["$c", "$b"]
 

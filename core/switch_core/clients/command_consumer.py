@@ -9,7 +9,6 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
-    ROOM_SETTINGS_MARKER,
     AdminMessageType,
     admin_extra_content,
 )
@@ -128,33 +127,6 @@ class CommandConsumer(Consumer[SystemActor]):
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
-            metered=False,
-        )
-
-    async def announce_room_settings(
-        self,
-        room_id: str,
-        body: str,
-        *,
-        thread_root_id: str | None,
-        follow_ups_enabled: bool,
-        main_agent_id: str | None,
-    ) -> None:
-        """Post a command result that changed the room's follow-the-conversation
-        settings, carrying the new settings so agents' clients can update what
-        they cached about the room."""
-        await self.actor.send_message(
-            room_id,
-            body,
-            format="markdown",
-            thread_root_id=thread_root_id,
-            extra_content={
-                **admin_extra_content(AdminMessageType.COMMAND_RESULT),
-                ROOM_SETTINGS_MARKER: {
-                    "follow_ups": follow_ups_enabled,
-                    "main_agent_id": main_agent_id,
-                },
-            },
             metered=False,
         )
 

@@ -167,6 +167,7 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import GROUP_SWEEP_SECONDS, MessageRouter
 from switch_core.gateway.app import create_gateway_app
@@ -750,6 +751,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         message_store=message_store,
         client_store=client_store,
         budget_store=budget_store,
+        conversation=ConversationRules(
+            settings=ConversationSettings.from_config(config),
+            message_store=message_store,
+            room_store=room_store,
+            agent_store=agent_store,
+            room_role_store=room_role_store,
+        ),
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)

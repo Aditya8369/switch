@@ -8,46 +8,27 @@ window.
 
 from __future__ import annotations
 
-import logging
-from collections import OrderedDict
-from typing import Any
-
 import pytest
 
-from switch_core.addressing import owner_only_policy
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.budgets import BudgetGuard
-from switch_core.clients.actor import AgentActor
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
-    ROOM_SETTINGS_MARKER,
     SENDER_IS_APP_MARKER,
 )
-from switch_core.clients.agent_consumer import AgentConsumer
-from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.stores.agent_session_store import AgentSessionStore
-from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.budget_store import BudgetStore
-from switch_core.db.stores.client_store import ClientStore
-from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.conversation import (
     ConversationMessage,
-    ConversationRules,
     ConversationSettings,
     is_small_talk,
     may_follow,
 )
-from switch_core.transport import InboundMessage, RoomRef
 from tests.switch_core.delivery.world import (
     CHANNEL,
     MAIN,
+    T0,
     THREAD,
     World,
-    _resolver,
     _settings,
 )
 
@@ -61,6 +42,7 @@ def _msg(body: str = "what next?", **content: object) -> ConversationMessage:
         body=body,
         content=content,
         thread_root_id=None,
+        sent_at=T0,
     )
 
 
@@ -491,333 +473,6 @@ class TestFollowUpsOff:
         assert await world.route("helper", reply) == THREAD
 
 
-# ── Through the agent's client: permissions and the log line ────────────────
-
-
-def _consumer(
-    world: World, agent_name: str, settings: ConversationSettings
-) -> AgentConsumer:
-    agent = world.agents[agent_name]
-    actor = object.__new__(AgentActor)
-    actor.session_factory = world.session_factory  # type: ignore[assignment]
-    actor.client_store = ClientStore()
-    actor.transport_user_id = world.mxid(agent_name)
-    actor.client_id = agent.client_id
-    actor.tenant_id = agent.tenant_id
-    actor._agent = agent
-    consumer = object.__new__(AgentConsumer)
-    consumer.actor = actor
-    consumer._agent_store = AgentStore()
-    consumer._room_store = RoomStore()
-    consumer._room_role_store = RoomRoleStore()
-    consumer._agent_session_store = AgentSessionStore()
-    consumer._external_user_store = ExternalUserStore()
-    consumer._connections = AgentConnectionRegistry()
-    consumer._addressing = _resolver()
-    consumer._conversation = ConversationRules(
-        settings=settings,
-        addressing=consumer._addressing,
-        message_store=world.store,
-        room_store=RoomStore(),
-        agent_store=AgentStore(),
-        room_role_store=RoomRoleStore(),
-    )
-    consumer._budget_guard = BudgetGuard(BudgetStore())
-    consumer._last_top_level_post_ms = {}
-    consumer._thread_membership = OrderedDict()
-    consumer._room_meta = {}
-    return consumer
-
-
-async def _inbound(world: World, event_id: str, timestamp: int = 0) -> InboundMessage:
-    async with world.session_factory() as session:
-        row = await world.store.get_by_transport_event_id(session, event_id)
-    assert row is not None
-    return InboundMessage(
-        room_id="!transport:test",
-        event_id=event_id,
-        sender=row.sender_id,
-        timestamp=timestamp,
-        content=dict(row.content),
-        body=row.body or "",
-        thread_root_id=row.thread_root_event_id,
-    )
-
-
-def _meta(
-    world: World, *, follow_ups_enabled: bool = True, main_agent_id: str | None = None
-) -> RoomMeta:
-    return RoomMeta(
-        room_id=world.room_id,
-        name="room",
-        channel_type="channel_public",
-        follow_ups_enabled=follow_ups_enabled,
-        main_agent_id=main_agent_id,
-    )
-
-
-class TestThroughTheClient:
-    async def test_delivered_and_logged(
-        self, world: World, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        answer = await world.post("helper", "It starts the stack", at=0)
-        reply = await world.post("alice", "why?", at=30, thread=answer)
-        consumer = _consumer(world, "helper", _settings())
-
-        with caplog.at_level(logging.INFO, logger="switch_core.clients.agent_consumer"):
-            delivered = await consumer._follow_the_conversation(
-                await _inbound(world, reply), _meta(world)
-            )
-
-        assert delivered.delivered
-        assert (
-            f"message={reply} agent=helper route=thread_follow_up outcome=delivered"
-            in caplog.text
-        )
-
-    async def test_nobody_is_logged_with_the_reason(
-        self, world: World, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        question = await world.post("alice", "anyone know why the deploy failed?", at=0)
-        consumer = _consumer(world, "helper", _settings())
-        # The agent posted here a moment ago, so the history is worth reading.
-        consumer._last_top_level_post_ms["!transport:test"] = 0
-
-        with caplog.at_level(logging.INFO, logger="switch_core.clients.agent_consumer"):
-            delivered = await consumer._follow_the_conversation(
-                await _inbound(world, question), _meta(world)
-            )
-
-        assert not delivered.delivered
-        assert "route=none outcome=nobody reason=no recent exchange" in caplog.text
-
-    async def test_dropped_quietly_when_the_sender_may_not_instruct_the_agent(
-        self, world: World, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        # helper answers only its owner, who has claimed alice's account, not bob's.
-        async with world.session_factory() as session:
-            agent = await AgentStore().get(session, world.agents["helper"].id)
-            assert agent is not None
-            agent.addressing_policy = owner_only_policy([]).model_dump(mode="json")
-            await session.commit()
-        answer = await world.post("helper", "It starts the stack", at=0)
-        from_bob = await world.post("bob", "why?", at=30, thread=answer)
-        from_alice = await world.post("alice", "why?", at=40, thread=answer)
-        consumer = _consumer(world, "helper", _settings())
-
-        with caplog.at_level(logging.INFO, logger="switch_core.clients.agent_consumer"):
-            bob_delivered = await consumer._follow_the_conversation(
-                await _inbound(world, from_bob), _meta(world)
-            )
-            alice_delivered = await consumer._follow_the_conversation(
-                await _inbound(world, from_alice), _meta(world)
-            )
-
-        assert not bob_delivered.delivered
-        assert alice_delivered.delivered
-        assert (
-            f"message={from_bob} agent=helper route=thread_follow_up "
-            "outcome=dropped_not_permitted" in caplog.text
-        )
-
-    async def test_no_rule_runs_while_the_flag_is_off(self, world: World) -> None:
-        answer = await world.post("helper", "It starts the stack", at=0)
-        reply = await world.post("alice", "why?", at=30, thread=answer)
-        opened: list[object] = []
-
-        def counting() -> Any:
-            opened.append(object())
-            return world.session_factory()
-
-        consumer = _consumer(
-            world,
-            "helper",
-            ConversationSettings(enabled=False, window_seconds=300),
-        )
-        consumer.actor.session_factory = counting  # type: ignore[assignment]
-
-        delivered = await consumer._follow_the_conversation(
-            await _inbound(world, reply), _meta(world)
-        )
-
-        assert not delivered.delivered
-        assert opened == []
-
-
-# ── The free check that runs before any history is read ─────────────────────
-
-
-class TestTheFreeCheck:
-    """`_might_follow` keeps busy rooms free: no session unless a rule could
-    apply. It may only say no where the rules would also say no."""
-
-    def _counting(self, world: World, consumer: AgentConsumer) -> list[object]:
-        opened: list[object] = []
-
-        def counting() -> Any:
-            opened.append(object())
-            return world.session_factory()
-
-        consumer.actor.session_factory = counting  # type: ignore[assignment]
-        return opened
-
-    async def test_chatter_with_no_recent_post_costs_nothing(
-        self, world: World
-    ) -> None:
-        question = await world.post("bob", "lunch at 1?", at=0)
-        consumer = _consumer(world, "helper", _settings())
-        opened = self._counting(world, consumer)
-
-        delivered = await consumer._follow_the_conversation(
-            await _inbound(world, question, timestamp=1_000_000), _meta(world)
-        )
-
-        assert not delivered.delivered
-        assert opened == []
-
-    async def test_a_recent_post_lets_a_channel_follow_up_through(
-        self, world: World
-    ) -> None:
-        await world.post("alice", "@helper first", at=0)
-        await world.post("helper", "answer", at=20)
-        follow_up = await world.post("alice", "and then?", at=40)
-        consumer = _consumer(world, "helper", _settings())
-        consumer._last_top_level_post_ms["!transport:test"] = 1_000_000
-
-        delivered = await consumer._follow_the_conversation(
-            await _inbound(world, follow_up, timestamp=1_020_000), _meta(world)
-        )
-
-        assert delivered.delivered
-
-    async def test_an_old_post_does_not(self, world: World) -> None:
-        question = await world.post("alice", "and then?", at=0)
-        consumer = _consumer(world, "helper", _settings())
-        consumer._last_top_level_post_ms["!transport:test"] = 1_000_000
-        opened = self._counting(world, consumer)
-
-        await consumer._follow_the_conversation(
-            await _inbound(world, question, timestamp=1_000_000 + 301_000),
-            _meta(world),
-        )
-
-        assert opened == []
-
-    async def test_a_room_with_follow_ups_off_costs_nothing(self, world: World) -> None:
-        answer = await world.post("helper", "Done", at=0)
-        reply = await world.post("alice", "why?", at=30, thread=answer)
-        consumer = _consumer(world, "helper", _settings())
-        opened = self._counting(world, consumer)
-
-        delivered = await consumer._follow_the_conversation(
-            await _inbound(world, reply), _meta(world, follow_ups_enabled=False)
-        )
-
-        assert not delivered.delivered
-        assert opened == []
-
-    async def test_the_main_agent_always_checks(self, world: World) -> None:
-        await world.assign("helper")
-        question = await world.post("bob", "anyone know why the deploy failed?", at=0)
-        consumer = _consumer(world, "helper", _settings())
-
-        delivered = await consumer._follow_the_conversation(
-            await _inbound(world, question),
-            _meta(world, main_agent_id=world.agents["helper"].id),
-        )
-
-        assert delivered.delivered
-
-    def test_its_own_top_level_posts_are_remembered(self, world: World) -> None:
-        consumer = _consumer(world, "helper", _settings())
-        consumer.actor.room_join_times = {}  # type: ignore[attr-defined]
-        consumer._startup_ts = 0
-        room = RoomRef(room_id="!transport:test")
-
-        def own(timestamp: int, **kwargs: Any) -> InboundMessage:
-            return InboundMessage(
-                room_id="!transport:test",
-                event_id=f"$own{timestamp}",
-                sender=world.mxid("helper"),
-                timestamp=timestamp,
-                body="hi",
-                **kwargs,
-            )
-
-        consumer._should_ignore(room, own(5))
-        consumer._should_ignore(room, own(6, thread_root_id="$root"))
-        consumer._should_ignore(room, own(7, content={AUTO_REPLY_FLAG: True}))
-
-        assert consumer._last_top_level_post_ms == {"!transport:test": 5}
-
-    async def test_a_settings_notice_updates_the_cached_room(
-        self, world: World
-    ) -> None:
-        consumer = _consumer(world, "helper", _settings())
-        room = RoomRef(room_id="!transport:test")
-        meta = _meta(world)
-        notice = InboundMessage(
-            room_id="!transport:test",
-            event_id="$notice",
-            sender=world.mxid("admin"),
-            timestamp=1,
-            body="From now on…",
-            content={
-                ADMIN_MARKER: {"type": "command_result"},
-                ROOM_SETTINGS_MARKER: {"follow_ups": False, "main_agent_id": "a-1"},
-            },
-        )
-
-        await consumer._apply_room_settings_notice(room, meta, notice)
-
-        cached = consumer._room_meta["!transport:test"]
-        assert cached is not None
-        assert not cached.follow_ups_enabled
-        assert cached.main_agent_id == "a-1"
-
-    async def test_a_settings_marker_without_the_admin_marker_is_ignored(
-        self, world: World
-    ) -> None:
-        consumer = _consumer(world, "helper", _settings())
-        forged = InboundMessage(
-            room_id="!transport:test",
-            event_id="$forged",
-            sender="@someone:test",
-            timestamp=1,
-            body="hi",
-            content={ROOM_SETTINGS_MARKER: {"follow_ups": False, "main_agent_id": "x"}},
-        )
-
-        await consumer._apply_room_settings_notice(
-            RoomRef(room_id="!transport:test"), _meta(world), forged
-        )
-
-        assert consumer._room_meta == {}
-
-    async def test_a_settings_notice_from_anyone_but_the_switch_app_is_ignored(
-        self, world: World
-    ) -> None:
-        # Both markers present, but sent by a person: not trusted.
-        consumer = _consumer(world, "helper", _settings())
-        forged = InboundMessage(
-            room_id="!transport:test",
-            event_id="$forged",
-            sender=world.mxid("alice"),
-            timestamp=1,
-            body="hi",
-            content={
-                ADMIN_MARKER: {"type": "command_result"},
-                ROOM_SETTINGS_MARKER: {"follow_ups": False, "main_agent_id": None},
-            },
-        )
-
-        await consumer._apply_room_settings_notice(
-            RoomRef(room_id="!transport:test"), _meta(world), forged
-        )
-
-        assert consumer._room_meta == {}
-
-
 # ── Fixes from review ───────────────────────────────────────────────────────
 
 
@@ -895,53 +550,3 @@ class TestReviewFixes:
         assert may_follow(
             _settings(), channel_type=None, message=_msg("mail ops@example.com")
         )
-
-
-class TestTheThreadMemory:
-    """The free check remembers which threads each agent takes part in."""
-
-    def _counting(self, world: World, consumer: AgentConsumer) -> list[object]:
-        opened: list[object] = []
-
-        def counting() -> Any:
-            opened.append(object())
-            return world.session_factory()
-
-        consumer.actor.session_factory = counting  # type: ignore[assignment]
-        return opened
-
-    async def test_an_unrelated_thread_is_read_once_then_free(
-        self, world: World
-    ) -> None:
-        root = await world.post("bob", "lunch?", at=0)
-        first = await world.post("alice", "1pm?", at=10, thread=root)
-        second = await world.post("bob", "sure", at=20, thread=root)
-        consumer = _consumer(world, "helper", _settings())
-        opened = self._counting(world, consumer)
-
-        await consumer._follow_the_conversation(
-            await _inbound(world, first), _meta(world)
-        )
-        reads_after_first = len(opened)
-        await consumer._follow_the_conversation(
-            await _inbound(world, second), _meta(world)
-        )
-
-        assert reads_after_first == 1
-        assert len(opened) == 1  # the second reply cost nothing
-
-    async def test_its_own_answer_starts_a_known_thread(self, world: World) -> None:
-        consumer = _consumer(world, "helper", _settings())
-        consumer.actor.room_join_times = {}  # type: ignore[attr-defined]
-        consumer._startup_ts = 0
-        answer = InboundMessage(
-            room_id="!transport:test",
-            event_id="$answer",
-            sender=world.mxid("helper"),
-            timestamp=1,
-            body="It starts the stack",
-        )
-
-        consumer._should_ignore(RoomRef(room_id="!transport:test"), answer)
-
-        assert consumer._thread_membership[("!transport:test", "$answer")] is True

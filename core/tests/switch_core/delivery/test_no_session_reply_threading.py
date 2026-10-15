@@ -16,11 +16,6 @@ from switch_core.delivery.recipient import (
 from switch_core.transport import InboundMessage, RoomRef
 
 
-async def _not_followed(_event: object, _meta: object) -> object:
-    """Following the conversation delivers nothing in these tests."""
-    return SimpleNamespace(delivered=False, agent_live=False)
-
-
 @asynccontextmanager
 async def _session_factory():  # type: ignore[no-untyped-def]
     yield object()
@@ -84,8 +79,6 @@ def _fake_self(
         _meta=_meta(),
         _room=RoomRef(room_id="!matrix:server"),
         _addressed_without_lookup=_addressed_without_lookup,
-        _follow_the_conversation=_not_followed,
-        _remember_thread=lambda *_a: None,
         _compute_addressed=_compute_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,

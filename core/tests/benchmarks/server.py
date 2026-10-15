@@ -60,6 +60,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
 from switch_core.main import (
@@ -523,6 +524,13 @@ async def _serve(
         message_store=session_env.message_store,
         client_store=session_env.client_store,
         budget_store=BudgetStore(),
+        conversation=ConversationRules(
+            settings=ConversationSettings.from_config(config),
+            message_store=session_env.message_store,
+            room_store=session_env.room_store,
+            agent_store=session_env.agent_store,
+            room_role_store=session_env.room_role_store,
+        ),
     )
 
     provisioning: Provisioning = PostgresProvisioning(

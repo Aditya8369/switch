@@ -27,7 +27,11 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import (
+    RoomStore,
+    follow_ups_enabled_in,
+    main_agent_in,
+)
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.delivery.conversation import (
     ConversationDecision,
@@ -106,7 +110,6 @@ class World:
     def rules(self, settings: ConversationSettings) -> ConversationRules:
         return ConversationRules(
             settings=settings,
-            addressing=_resolver(),
             message_store=self.store,
             room_store=RoomStore(),
             agent_store=AgentStore(),
@@ -125,25 +128,31 @@ class World:
         async with self.session_factory() as session:
             row = await self.store.get_by_transport_event_id(session, event_id)
             assert row is not None
+            room = await RoomStore().get(session, self.room_id)
+            assert room is not None
             message = ConversationMessage(
                 event_id=event_id,
                 sender=row.sender_id,
                 body=row.body or "",
                 content=row.content,
                 thread_root_id=row.thread_root_event_id,
+                sent_at=row.sent_at,  # type: ignore[arg-type]
             )
             assert may_follow(
                 settings,
                 channel_type=channel_type,
                 message=message,
             )
-            return await self.rules(settings).decide(
-                session,
-                agent=self.agents[agent],
-                agent_user_id=self.mxid(agent),
+            conversation = self.rules(settings).for_message(
+                addressing=_resolver(),
                 room_id=self.room_id,
                 channel_type=channel_type,
+                follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
+                main_agent_id=main_agent_in(room.metadata_),
                 message=message,
+            )
+            return await conversation.decide(
+                session, agent=self.agents[agent], agent_user_id=self.mxid(agent)
             )
 
     async def route(self, agent: str, event_id: str, **kwargs: Any) -> str | None:

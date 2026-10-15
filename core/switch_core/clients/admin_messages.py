@@ -48,12 +48,6 @@ PLATFORM_MARKER = "com.switch.platform"
 # (`delivery/conversation.py`) never delivers such a message.
 SENDER_IS_APP_MARKER = "com.switch.sender_is_app"
 
-# Carried on the Switch app's notice when `!follow-ups` or `!assign-agent`
-# changes a room's settings: {"follow_ups": bool, "main_agent_id": str | None}.
-# Agents' clients read it to keep their cached view of the room current. It is
-# trusted only alongside ADMIN_MARKER, which only Switch writes.
-ROOM_SETTINGS_MARKER = "com.switch.room_settings"
-
 
 class OnBehalfOf(NamedTuple):
     """Whose authority a platform message carries.
