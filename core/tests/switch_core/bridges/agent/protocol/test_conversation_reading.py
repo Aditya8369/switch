@@ -155,6 +155,37 @@ async def test_a_row_not_yet_decided_holds_back_the_rows_after_it(
     assert _bodies(read.events) == ["settled"]
 
 
+async def test_a_backlog_longer_than_one_read_keeps_its_order(
+    db_buffer: EventBuffer, session_factory: SessionFactory
+) -> None:
+    """A read takes at most `limit` rows of a room. The agent's own event for a
+    message posted after the rows left over waits for them, rather than going
+    out ahead of conversation that came before it."""
+    buffer = db_buffer
+    long_ago = datetime.now(UTC) - timedelta(minutes=1)
+    for index in range(3):
+        await say(session_factory, ROOM, f"chatter {index}", sent_at=long_ago)
+    asked = await say(session_factory, ROOM, "@agent over to you")
+    await _keep(buffer, asked.seq, asked.transport_event_id)
+
+    position: dict[str, int] = {room_source(ROOM): 0}
+    sent: list[list[str | None]] = []
+    for _ in range(2):
+        events, looked = await buffer.read(
+            TENANT_ZERO_ID, AGENT, position, conversation_rooms={ROOM}, limit=2
+        )
+        sent.append(_bodies(events))
+        for item in events:
+            position[item.source] = max(position.get(item.source, -1), item.seq)
+        for source, seq in looked.items():
+            position[source] = max(position.get(source, -1), seq)
+
+    assert sent == [
+        ["chatter 0", "chatter 1"],
+        ["chatter 2", "@agent over to you"],
+    ]
+
+
 async def test_a_file_that_arrives_after_its_group_was_delivered_is_still_read(
     db_buffer: EventBuffer, session_factory: SessionFactory
 ) -> None:

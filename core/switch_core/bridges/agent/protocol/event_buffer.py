@@ -243,10 +243,14 @@ class Conversation:
     that are not conversation (the agent's own messages, other kinds of event,
     rows that are already own events) are skipped, but they still count as read, so
     the reader's position moves past them and they are not examined again.
+    `cut` maps each room whose read stopped at the row limit, with rows still
+    to read after it, to when the last row read was sent (seconds since the
+    epoch).
     """
 
     events: list[BufferedEvent] = field(default_factory=list)
     through: dict[str, int] = field(default_factory=dict)
+    cut: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -771,6 +775,7 @@ class EventBuffer:
         started = time.perf_counter()
         events: list[BufferedEvent] = []
         through: dict[str, int] = {}
+        cut: dict[str, float] = {}
         async with tenant_session(self._session_factory, tenant_id) as session:
             me = await session.execute(
                 select(Client.transport_user_id, Client.id)
@@ -832,8 +837,7 @@ class EventBuffer:
                 room = rooms.get(room_id)
                 if room is None or room_id not in joined:
                     continue
-                rows: list[Message] = []
-                for row in (
+                fetched = (
                     await session.scalars(
                         select(Message)
                         .where(
@@ -841,9 +845,11 @@ class EventBuffer:
                             Message.seq > max(after_seq, 0),
                         )
                         .order_by(Message.seq)
-                        .limit(limit)
+                        .limit(limit + 1)
                     )
-                ).all():
+                ).all()
+                rows: list[Message] = []
+                for row in fetched[:limit]:
                     if (
                         row.seq > decided_through.get(room_id, 0)
                         and cast(datetime, row.sent_at) >= settled_before
@@ -852,6 +858,8 @@ class EventBuffer:
                     rows.append(row)
                 if not rows:
                     continue
+                if len(fetched) > limit and len(rows) == limit:
+                    cut[room_id] = _epoch(cast(datetime, rows[-1].sent_at))
                 room_events, room_through = await self._conversation_in(
                     session,
                     room,
@@ -865,7 +873,7 @@ class EventBuffer:
                 if room_through > after_seq:
                     through[room_id] = room_through
         self._record_scan(_READ, len(events), started)
-        return Conversation(events=events, through=through)
+        return Conversation(events=events, through=through, cut=cut)
 
     async def _conversation_in(
         self,
@@ -1158,7 +1166,29 @@ class EventBuffer:
         )
         for room_id, seq in conversation.through.items():
             looked[room_source(room_id)] = seq
-        return _interleaved([own_events, *_by_source(conversation.events)]), looked
+        events = _interleaved([own_events, *_by_source(conversation.events)])
+        # A source cut short at `limit` has more to read after the last row it
+        # returned. An event from another source that happened later than that
+        # row waits for the next read, or it would overtake the cut source's
+        # later events. The events go out as a prefix of the merged order,
+        # with at least one event, so every read moves forward even when
+        # clocks disagree. A source with an event held back keeps its position
+        # at the last event sent, so the next read finds the event again.
+        cut = {room_source(room_id): at for room_id, at in conversation.cut.items()}
+        if len(own_events) >= limit:
+            cut[OWN_EVENTS] = own_events[-1].at
+        if cut:
+            kept = len(events)
+            for index, item in enumerate(events[1:], start=1):
+                if any(
+                    item.at > at for source, at in cut.items() if source != item.source
+                ):
+                    kept = index
+                    break
+            for source in {item.source for item in events[kept:]}:
+                looked.pop(source, None)
+            events = events[:kept]
+        return events, looked
 
     # ------------------------------------------------------------------
     # Tickets, for clients that hold one number
