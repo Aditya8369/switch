@@ -1162,6 +1162,9 @@ class CollaborationBridgeLifecycleService:
                     bridge_id, tenant_id, channel_id, team_id
                 )
             )
+            adapter.set_holder_relay(
+                lambda request: self._relay_to_holder(bridge_id, request)
+            )
             adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
             adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
 
@@ -1739,6 +1742,30 @@ class CollaborationBridgeLifecycleService:
     def holds(self, bridge_id: str) -> bool:
         """Whether this process holds the bridge and listens for it."""
         return self._owned.fence(bridge_id) is not None
+
+    def _relay_to_holder(self, bridge_id: str, request: dict[str, str]) -> None:
+        if self._signals is None:
+            logger.warning(
+                "Collaboration bridge %s has work for its holder and no signal "
+                "bus to send it on; dropping %r",
+                bridge_id,
+                request,
+            )
+            return
+        self._signals.for_holder(bridge_id, request)
+
+    async def receive_relayed(self, bridge_id: str, request: dict[str, str]) -> None:
+        """Work a quiet copy of the bridge in another process relayed to its
+        holder. Done here only if this process holds the bridge and its copy
+        is running; otherwise it is another process's, or nobody's until the
+        next holder catches up as it takes the bridge over."""
+        if not self.holds(bridge_id):
+            return
+        running = self._running(bridge_id)
+        if running is None or not running.active:
+            return
+        with no_tenant():
+            await running.adapter.receive_relayed(request)
 
     # ── Changes made in other processes ──────────────────────────────────────
 
