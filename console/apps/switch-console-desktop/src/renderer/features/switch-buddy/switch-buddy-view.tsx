@@ -39,7 +39,7 @@ const SwitchBuddyTitlebar = () => (
         <SegmentedControl value="chats" onChange={() => {}} options={TABS} ariaLabel="Agent view" />
       </div>
     }
-    rightClassName="min-w-0 flex-1 pl-4"
+    rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4"
     rightSlot={<span className="truncate text-sm font-medium">{BUDDY_CHAT_NAME}</span>}
   />
 );
