@@ -2776,7 +2776,8 @@ class SlackAdapter(PlatformAdapter):
         written and writes nothing (`collaboration_core._post_source`). Storing
         that takes longer than `SOCKET_ACK_WITHIN_SECONDS` is acknowledged at
         that point and finishes after, so Slack does not send again an event
-        still being stored.
+        still being stored. Storing that fails within it is not acknowledged,
+        so Slack sends the event again.
 
         A slash command or a button press is acknowledged first, as before:
         Slack never sends one again, and the person waits on the answer.
@@ -2792,9 +2793,15 @@ class SlackAdapter(PlatformAdapter):
         )
         try:
             await asyncio.wait({dispatch}, timeout=SOCKET_ACK_WITHIN_SECONDS)
-            await client.send_socket_mode_response(
-                SocketModeResponse(envelope_id=req.envelope_id)
+            failed = (
+                dispatch.done()
+                and not dispatch.cancelled()
+                and dispatch.exception() is not None
             )
+            if not failed:
+                await client.send_socket_mode_response(
+                    SocketModeResponse(envelope_id=req.envelope_id)
+                )
         finally:
             await dispatch
 
