@@ -93,7 +93,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
     );
   return (
     <Titlebar
-      className="border-b border-border"
+      className="border-b border-border pr-[7px]"
       leftClassName="min-w-0 [-webkit-app-region:drag]"
       leftSlot={
         <div className="flex min-w-0 items-center gap-3">
@@ -110,7 +110,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       }
       rightClassName="shrink-0 pl-3"
       rightSlot={
-        <div className="mr-[-33px] flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5">
           {server &&
             serverState(server) !== 'connected' &&
             serverState(server) !== 'running-local' &&
