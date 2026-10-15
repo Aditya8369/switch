@@ -8,6 +8,7 @@ processes. Balances are run by hand instead of on the interval.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -379,3 +380,71 @@ class TestThisProcessLease:
 
         assert not lease.surely_held()
         assert lease.held_until() is None
+
+    async def test_work_claimed_at_boot_survives_a_slow_boot(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        """As `main` boots: `ownership.start()` renews and claims, then the
+        rest of the boot (the quiet copies, the room reconcile under the boot
+        lock) runs before the renewal loop is first scheduled."""
+        p = _process(session_factory, everywhere)
+        for key in KEYS:
+            p.kind.want(key)
+        await p.ownership.start()
+        assert p.runs() == set(KEYS)
+
+        await asyncio.sleep(4.0)
+        tasks = [
+            asyncio.create_task(p.lease.run()),
+            asyncio.create_task(p.ownership.run()),
+        ]
+        try:
+            # Past the half lease counted from the renewal at boot.
+            await asyncio.sleep(4.5)
+            assert p.stopped == []
+            assert p.runs() == set(KEYS)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_one_slow_renewal_does_not_stop_the_work(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One renewal held up for 2.6 s, as a pool checkout under load or a
+        slow commit would, and nothing else wrong."""
+        p = _process(session_factory, everywhere)
+        for key in KEYS:
+            p.kind.want(key)
+        await p.ownership.start()
+
+        store = p.lease._processes
+        real_renew = store.renew
+        renewals = 0
+
+        async def renew(*args: Any, **kwargs: Any) -> None:
+            nonlocal renewals
+            renewals += 1
+            if renewals == 1:
+                await asyncio.sleep(2.6)
+            await real_renew(*args, **kwargs)
+
+        monkeypatch.setattr(store, "renew", renew)
+        tasks = [
+            asyncio.create_task(p.lease.run()),
+            asyncio.create_task(p.ownership.run()),
+        ]
+        try:
+            await asyncio.sleep(9.0)
+            assert renewals >= 2
+            assert p.stopped == []
+            assert p.runs() == set(KEYS)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

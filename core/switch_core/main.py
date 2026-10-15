@@ -624,6 +624,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
+    # Renewed from here on, not from when the process starts serving: the
+    # owned work started during boot stops once the lease is not sure
+    # (`ProcessLease.surely_held`), and a boot can take longer than that.
+    lease_task = asyncio.create_task(process_lease.run())
     # Which of the work that must run once this process runs (`ownership.py`),
     # held under that lease. With one process, all of it.
     ownership = Ownership(
@@ -1252,9 +1256,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
-            lease_task = asyncio.create_task(process_lease.run())
             shared_connections_task = asyncio.create_task(shared_connections.run())
-            ownership_task = asyncio.create_task(ownership.run())
             cursor_writer_task = asyncio.create_task(cursor_writer.run())
             management_task = (
                 asyncio.create_task(management.run())
@@ -1379,6 +1381,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Start the work this process owns, before it serves: with one process,
     # all of it. Then the quiet copies of the bridges another process holds.
     await ownership.start()
+    # Running from here, so the rest of the boot is covered: a lease that
+    # stops being sure stops the work it holds there and then.
+    ownership_task = asyncio.create_task(ownership.run())
     await collab_lifecycle.start_quiet_copies()
 
     # Backfill room membership: system clients (e.g. the admin client) added

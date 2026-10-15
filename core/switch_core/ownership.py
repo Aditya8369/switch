@@ -302,9 +302,8 @@ class Ownership:
         owns is running as it would have at boot with one process. Then the
         other processes are told this one is here.
 
-        The lease is renewed first: its renewal loop runs only once the
-        process serves, and boot may have taken longer since the lease was
-        claimed than the lease is sure for."""
+        The lease is renewed first, so the work starts with all the time the
+        lease is sure for, however long the boot took since it was claimed."""
         await self._lease.renew()
         await self.balance()
         self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
