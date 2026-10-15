@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
@@ -59,6 +60,7 @@ from switch_core.observability.catalogue import (
     BRIDGE_EVENTS_OUT,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
@@ -121,6 +123,17 @@ HUMAN_JOIN_TIMEOUT = 30.0
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
+
+# How old a claim on a room message going out (`_claim_outbound`) must be,
+# still with no post, before it is taken to be from a holder that died
+# between claiming and posting, and claimed again. Under the soonest the next
+# holder can read the message after such a death: the process lease lapsing
+# (`LEASE_TTL` after its last renewal, which came at most `RENEW_EVERY_SECONDS`
+# before the claim). Only one process holds the bridge at a time, so no live
+# post in flight is ever read by another holder this soon.
+_UNPOSTED_CLAIM_LAPSES_AFTER = timedelta(
+    seconds=LEASE_TTL.total_seconds() - 2 * RENEW_EVERY_SECONDS
+)
 
 # How long to wait for the person behind a human actor's client row that
 # another process has just written, before giving up on telling whose it is.
@@ -2783,8 +2796,10 @@ class CollaborationCore:
         A post that fails, or is cancelled because the bridge stopped before
         it finished, lets its claim go, so whoever holds the bridge next posts
         it; one the platform took just before the cancel then shows twice. A
-        process that dies between the claim and the post leaves the claim, and
-        the message is not posted."""
+        process that dies between the claim and the post leaves the claim,
+        which the next holder claims again once it is
+        `_UNPOSTED_CLAIM_LAPSES_AFTER` old and posts the message, twice if the
+        platform had taken it before the death."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -2793,6 +2808,7 @@ class CollaborationCore:
                 bridge_id=self._bridge_id,
                 external_channel_id=channel_id,
                 transport_event_id=transport_event_id,
+                unposted_after=_UNPOSTED_CLAIM_LAPSES_AFTER,
             )
             await session.commit()
         if not claimed:

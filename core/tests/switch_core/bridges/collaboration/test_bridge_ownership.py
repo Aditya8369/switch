@@ -15,11 +15,12 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -692,6 +693,41 @@ class TestHandingOver:
         await _say(session_factory, bridge, "said after")
 
         assert await _posted(platform, 1) == ["said after"]
+
+    async def test_a_post_the_last_holder_claimed_and_never_sent_is_posted(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """A holder that died between claiming a message and posting it
+        leaves a claim with no post. The next holder reaches it once that
+        holder's lease has lapsed, by when the claim is long past any post in
+        flight, and posts it. A claim as fresh as a post in flight is left."""
+        claims = {
+            "claimed before it died": func.now() - timedelta(seconds=30),
+            "claimed just now": func.now(),
+        }
+        for body, claimed_at in claims.items():
+            event_id = await _say(session_factory, bridge, body)
+            async with session_factory() as session:
+                session.add(
+                    BridgeMessageMap(
+                        bridge_id=bridge.bridge_id,
+                        external_channel_id=CHANNEL,
+                        transport_event_id=event_id,
+                        external_post_id=None,
+                        created_at=claimed_at,
+                    )
+                )
+                await session.commit()
+
+        await _boot_two(postgres_url, session_factory, processes)
+        await _say(session_factory, bridge, "said after")
+
+        assert await _posted(platform, 2) == ["claimed before it died", "said after"]
 
     async def test_a_post_delivered_again_to_the_next_holder_is_stored_once(
         self,
