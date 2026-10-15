@@ -575,7 +575,20 @@ def _bind(
     after: Callable[[InboundEvent], Awaitable[None]],
     row: InboundEvent,
 ) -> Callable[[], Awaitable[None]]:
+    """The work `row` left the agent, run as the agent once the row has
+    committed, and only while the agent is still a member of the room
+    (`AgentRecipient.still_member`)."""
+
     async def run() -> None:
+        if not await recipient.still_member():
+            logger.info(
+                "Agent %s was taken out of room %s after row %s was decided; "
+                "what the row left it to say is not said",
+                recipient.agent.name,
+                row.room_id,
+                row.event_id,
+            )
+            return
         await recipient.actor.connect()
         await after(row)
 
