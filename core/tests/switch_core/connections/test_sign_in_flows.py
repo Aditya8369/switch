@@ -12,10 +12,13 @@ import asyncio
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.sign_in_flows import (
+    MAX_FLOWS,
     FlowGoneError,
+    FlowsBusyError,
     FlowUsedError,
     SignInFlows,
     StoredFlow,
@@ -40,6 +43,18 @@ async def _tenants_and_user(rls_harness: RLSHarness) -> tuple[str, str, str]:
         return tenant_a, tenant_b, user.id
 
 
+async def _person(rls_harness: RLSHarness, name: str) -> str:
+    async with rls_harness.owner() as session:
+        user = User(
+            name=name,
+            email=f"{name.lower()}-{uuid.uuid4().hex[:8]}@example.test",
+            role="user",
+        )
+        session.add(user)
+        await session.commit()
+        return user.id
+
+
 async def _start(
     flows: SignInFlows, tenant_id: str, user_id: str, state: str
 ) -> StoredFlow:
@@ -56,6 +71,50 @@ async def _start(
         details={"name": "Example"},
         completion_secret="completion-secret",
     )
+
+
+class _HeldBeforeCommit:
+    """Sessions that stop just before they commit until let go, with their
+    transaction, and any lock taken in it, still open."""
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        self._factory = factory
+        self.reached = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def __call__(self) -> AsyncSession:
+        session = self._factory()
+        commit = session.commit
+
+        async def held() -> None:
+            self.reached.set()
+            await self.release.wait()
+            await commit()
+
+        session.commit = held  # type: ignore[method-assign]
+        return session
+
+
+async def _start_beside_a_held_one(
+    rls_harness: RLSHarness,
+    tenant_id: str,
+    held: tuple[str, str],
+    other: tuple[str, str],
+) -> list[StoredFlow | BaseException]:
+    """Start two flows in `tenant_id` from two processes, each a
+    `(user_id, state)`. The first is held open just before it commits, long
+    enough for the second to finish if nothing makes it wait for the first."""
+    gate = _HeldBeforeCommit(rls_harness.restricted)
+    first = asyncio.create_task(
+        _start(SignInFlows(gate, TEST_KEYRING), tenant_id, *held)  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(gate.reached.wait(), 5)
+    second = asyncio.create_task(
+        _start(SignInFlows(rls_harness.restricted, TEST_KEYRING), tenant_id, *other)
+    )
+    await asyncio.sleep(0.3)
+    gate.release.set()
+    return await asyncio.gather(first, second, return_exceptions=True)
 
 
 async def test_a_flow_started_by_one_process_is_found_by_another(
@@ -93,6 +152,63 @@ async def test_two_processes_racing_for_one_step_take_it_once(
     )
 
     assert sorted(result is None for result in taken) == [False, True]
+
+
+async def test_two_starts_by_one_person_side_by_side_leave_one_flow(
+    rls_harness: RLSHarness,
+) -> None:
+    """Neither start sees the other's flow while it is uncommitted, so unless
+    the second waits for the first, both delete nothing and both insert."""
+    tenant_a, _, user_id = await _tenants_and_user(rls_harness)
+
+    started = await _start_beside_a_held_one(
+        rls_harness, tenant_a, (user_id, "state-5"), (user_id, "state-6")
+    )
+
+    assert not [result for result in started if isinstance(result, BaseException)]
+    async with rls_harness.owner() as session:
+        states = await session.scalars(
+            select(SignInFlow.id).where(SignInFlow.tenant_id == tenant_a)
+        )
+        assert states.all() == ["state-6"]
+
+
+async def test_two_starts_side_by_side_at_the_cap_let_one_in(
+    rls_harness: RLSHarness,
+) -> None:
+    """Each counts the workspace's flows before the other's is committed, so
+    unless the second waits for the first, both take the one place left."""
+    tenant_a, _, user_id = await _tenants_and_user(rls_harness)
+    await _start(
+        SignInFlows(rls_harness.restricted, TEST_KEYRING), tenant_a, user_id, "state-7"
+    )
+    async with rls_harness.owner() as session:
+        template = await session.scalar(select(SignInFlow))
+        assert template is not None
+        columns = {
+            column.key: getattr(template, column.key)
+            for column in SignInFlow.__table__.columns
+        }
+        for i in range(MAX_FLOWS - 2):
+            session.add(SignInFlow(**{**columns, "id": f"filler-{i}"}))
+        await session.commit()
+    grace = await _person(rls_harness, "Grace")
+    alan = await _person(rls_harness, "Alan")
+
+    started = await _start_beside_a_held_one(
+        rls_harness, tenant_a, (grace, "state-8"), (alan, "state-9")
+    )
+
+    assert [type(result) for result in started].count(FlowsBusyError) == 1
+    async with rls_harness.owner() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SignInFlow)
+                .where(SignInFlow.tenant_id == tenant_a)
+            )
+            == MAX_FLOWS
+        )
 
 
 async def test_a_state_is_used_once_even_in_another_workspace(
