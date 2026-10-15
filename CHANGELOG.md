@@ -1749,6 +1749,11 @@ version of their own to them without also giving them a release of their own.
   comes with a notice saying why. Codex cards name the server and tool and can
   be approved for the rest of the session. A session started before the update
   keeps allowing them until it restarts.
+- **A session says which services it lost or gained.** When a running session
+  restarts because its agent's services changed, it shows a notice naming
+  them, for example "Datadog was removed from this agent's tools: it was
+  switched off for the workspace, or its grant was removed." The agent is told
+  the same as it resumes, so it does not look for tools it no longer has.
 
 #### Fixed
 - **Signing in to a service through Core works on a server whose gateway and

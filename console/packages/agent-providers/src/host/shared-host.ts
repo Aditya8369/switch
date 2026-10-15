@@ -990,6 +990,11 @@ export async function hostSessionProcess(input: {
   authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
   /** The agent's service grants, as this session starts. */
   services: SessionServices;
+  /**
+   * What the session is told about services that went or came since its
+   * previous host (`servicesChangeSince`); null for nothing.
+   */
+  servicesChange: string | null;
   /** This host's bundle, which the session's service helpers run from. */
   entrypoint: string;
   signal: AbortSignal;
@@ -1063,6 +1068,15 @@ export async function hostSessionProcess(input: {
       { ...vendors.specs, ...clis.specs }
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
+    // The people watching see it as a notice; the agent reads it with the
+    // context it resumes under, so it does not go looking for tools it no
+    // longer has.
+    if (input.servicesChange !== null) {
+      serviceNotices.raise(input.servicesChange);
+      prepared.input.systemContext = [prepared.input.systemContext, input.servicesChange]
+        .filter(Boolean)
+        .join('\n\n');
+    }
     const authenticate = input.authenticate;
     await runSharedHost(
       {
