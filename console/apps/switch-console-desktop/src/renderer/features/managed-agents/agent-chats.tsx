@@ -32,7 +32,7 @@ function Section({
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <section aria-label={title} className="flex flex-col gap-[2px] pb-3">
-      <div className="flex items-center justify-between px-1 pb-1">
+      <div className="flex items-center justify-between pb-1">
         <button
           type="button"
           aria-expanded={open}

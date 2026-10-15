@@ -110,7 +110,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       }
       rightClassName="shrink-0 pl-3"
       rightSlot={
-        <div className="mr-1 flex items-center gap-1.5">
+        <div className="mr-[-33px] flex items-center gap-1.5">
           {server &&
             serverState(server) !== 'connected' &&
             serverState(server) !== 'running-local' &&
