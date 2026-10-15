@@ -248,7 +248,7 @@ export function ServiceGrantsRow({
  * A service whose agents use the owner's own token: the grant is on or off,
  * at the connection's level, and says what that means.
  */
-function OnOffGrant({
+export function OnOffGrant({
   service,
   grant,
   agentName,
@@ -283,7 +283,7 @@ function OnOffGrant({
   );
 }
 
-function GrantCard({
+export function GrantCard({
   grant,
   github,
   busy,
@@ -327,7 +327,7 @@ function GrantCard({
   );
 }
 
-function GitHubGrantForm({
+export function GitHubGrantForm({
   github,
   current,
   busy,
