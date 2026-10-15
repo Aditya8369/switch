@@ -274,6 +274,10 @@ class Ownership:
         self._bus = bus
         self._store = store
         self._processes = processes
+        # A kind can be registered while a balance is under way (Discord's
+        # gateway registers its kind once the signal bus has started, and a
+        # resync balances at any time), so every loop over the kinds that
+        # awaits goes over a copy taken before it starts.
         self._kinds: dict[str, OwnedKind] = {}
         # One balance, drop or stop at a time: each reads what is held, then
         # awaits stops and claims, and two interleaved would claim or release
@@ -370,7 +374,7 @@ class Ownership:
                     )
                 return
             self._stopped = True
-            for kind in self._kinds.values():
+            for kind in list(self._kinds.values()):
                 await kind._stop_all()
             self._work_stopped = True
             try:
@@ -424,7 +428,7 @@ class Ownership:
                     self.process_id,
                 )
                 self._suspended = False
-            for kind in self._kinds.values():
+            for kind in list(self._kinds.values()):
                 await kind._balance(live)
 
     async def _prune_now_and_then(self) -> None:
@@ -451,7 +455,7 @@ class Ownership:
             self.process_id,
         )
         self._suspended = True
-        for kind in self._kinds.values():
+        for kind in list(self._kinds.values()):
             await kind._stop_all()
 
     async def claim(self, kind: str, keys: Sequence[str]) -> dict[str, int]:
