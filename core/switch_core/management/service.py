@@ -575,10 +575,21 @@ class ManagementService:
     ) -> ControllerConnection:
         """Hold here the connection the controller opened last, which another
         process holds or held, unless something has ended it. Recorded before
-        it is held, as an open is."""
+        it is held, as an open is.
+
+        Its stream resumes each agent from the cursors recorded with it, which
+        are the open's until a socket on it goes and its holder writes them.
+        A socket attached to it whose going was never written (its holder
+        died, or has not written it yet) may have sent past them, and the
+        beats confirming how far went with that holder: resuming there would
+        skip what it sent after, so the controller is told to open again,
+        with its own cursors."""
         if controller.open_generation != generation or (
             controller.connection_id == connection_id
-            and controller.disconnect_reason in _ENDING_REASONS
+            and (
+                controller.disconnected_at is None
+                or controller.disconnect_reason in _ENDING_REASONS
+            )
         ):
             raise UnknownControllerConnectionError(connection_id)
         resume_cursors = _resume_cursors(controller.open_cursors)

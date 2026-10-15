@@ -22,15 +22,18 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.presence import agents_present_in
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID, SwitchCoreProcess
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.process_lease import LEASE_TTL
+from tests.db_buffer import say
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
     add_room,
     attach,
+    beat,
     build_harness,
     connect,
     cookies_for,
@@ -56,6 +59,40 @@ async def _eventually(check: Callable[[], bool]) -> None:
 
 def _returning(value: object) -> Callable[[], object]:
     return lambda: value
+
+
+async def _ask(harness: Harness, agent_id: str, room_id: str, body: str) -> int:
+    """An addressed message to the agent, queued for it. Returns its seq."""
+    row = await say(
+        harness.session_factory, room_id, body, sender="@ada:test", sender_name="Ada"
+    )
+    return await harness.protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID,
+        agent_id,
+        room_id,
+        AgentEvent(
+            type="message",
+            room_id=room_id,
+            payload=MessagePayload(
+                addressed=True,
+                sender="@ada:test",
+                sender_name="Ada",
+                message_id=row.transport_event_id,
+                body=body,
+                timestamp=0,
+            ),
+        ),
+        room_seq=row.seq,
+        message_key=row.transport_event_id,
+    )
+
+
+async def _until(stream: Any, event: str) -> dict[str, Any]:
+    """The data of the next frame of this kind, skipping the others."""
+    while True:
+        ((name, data),) = await take(stream, 1)
+        if name == event:
+            return dict(data)
 
 
 @pytest.fixture
@@ -319,6 +356,58 @@ class TestTheConnectionOnAnyProcess:
         assert adopted is not None
         assert adopted.id == conn.id
         assert adopted.resume_cursors[agent_id] == 42
+
+    async def test_a_reattach_after_its_holder_died_opens_again_from_its_cursors(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        """The process holding the socket dies having written nothing since
+        the open, so the row's cursors are the open's: the agent was placed
+        after it and its first event confirmed only by a beat there. Taking
+        the connection up elsewhere would resume past what came next; the
+        controller is told to open again, and resumes from its own cursor."""
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(here.session_factory, agent_id)
+        conn = here.protocol.connections.controllers.current_connection(
+            controller.controller_id
+        )
+        assert conn is not None
+        opened = {"connection_id": conn.id, "generation": conn.generation}
+        stream = await open_stream(here, controller, opened)
+        await _until(stream, "agent.attached")
+        first = await _ask(here, agent_id, room_id, "one")
+        assert (await _until(stream, "agent.event"))["seq"] == first
+        confirmed = await beat(
+            here,
+            controller,
+            connection_id=conn.id,
+            generation=conn.generation,
+            cursors={agent_id: first},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        await here.management.ledger.flush_all()
+        # `here` dies now, writing nothing more; then the next event.
+        second = await _ask(here, agent_id, room_id, "two")
+
+        refused = await attach(
+            there, controller, opened["connection_id"], opened["generation"]
+        )
+        assert refused.status_code == 404, refused.text
+        async with there.client() as elsewhere:
+            reopened = await open_connection(
+                elsewhere, controller, cursors={agent_id: first}
+            )
+        resumed = await open_stream(there, controller, reopened)
+        attached = await _until(resumed, "agent.attached")
+        event = await _until(resumed, "agent.event")
+        await resumed.aclose()  # type: ignore[attr-defined]
+        await stream.aclose()  # type: ignore[attr-defined]
+
+        assert attached["from_seq"] == first
+        assert event["seq"] == second
 
     async def test_an_attach_naming_another_generation_is_still_refused(
         self, processes: tuple[Harness, Harness]
