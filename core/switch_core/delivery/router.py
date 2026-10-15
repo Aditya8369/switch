@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
@@ -78,12 +78,15 @@ from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import (
     Agent,
+    AgentConnectionRecord,
     Client,
     ClientRoom,
     CollaborationBridge,
     Message,
     PendingAttachmentGroup,
+    RoleLease,
     Room,
+    SwitchCoreProcess,
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
@@ -108,6 +111,7 @@ from switch_core.events import (
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
+from switch_core.process_lease import LEASE_TTL
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import (
@@ -311,9 +315,42 @@ class RoomReads:
         )
 
     async def role_names(self, session: AsyncSession) -> dict[str, str]:
+        """The role each agent live-holds in the room, by agent id.
+
+        A seat taken over a connection is held while that connection is
+        live. This process's memory knows its own connections, but its copy
+        of another process's can be missing or late, and a message decided
+        without a live holder is never decided again. So the connections
+        recorded as holding a seat here are read as well: one counts while
+        its row is open and the process named on it holds its lease.
+        """
         if self._roles is None:
+            live = self._services.connections.live_connection_ids()
+            live |= set(
+                (
+                    await session.scalars(
+                        select(AgentConnectionRecord.id).where(
+                            AgentConnectionRecord.id.in_(
+                                select(RoleLease.transport_session_id).where(
+                                    RoleLease.room_id == self.room_id
+                                )
+                            ),
+                            AgentConnectionRecord.closed_at.is_(None),
+                            select(SwitchCoreProcess.id)
+                            .where(
+                                SwitchCoreProcess.id
+                                == AgentConnectionRecord.process_id,
+                                SwitchCoreProcess.stopped_at.is_(None),
+                                SwitchCoreProcess.beat_at
+                                > func.now() - literal(LEASE_TTL),
+                            )
+                            .exists(),
+                        )
+                    )
+                ).all()
+            )
             self._roles = await self._services.room_role_store.room_role_names(
-                session, self.room_id, self._services.connections.live_connection_ids()
+                session, self.room_id, live
             )
         return self._roles
 
