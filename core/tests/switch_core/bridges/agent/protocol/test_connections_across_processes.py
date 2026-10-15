@@ -778,3 +778,91 @@ class TestOneProcess:
 
         assert reopened.stream_generation != old.stream_generation
         assert reopened.rooms == set()
+
+
+async def _closing_written(session_factory: SessionFactory, connection_id: str) -> None:
+    """Wait for the connection's closing to reach its row."""
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        async with session_factory() as session:
+            closed_at = await session.scalar(
+                select(AgentConnectionRecord.closed_at).where(
+                    AgentConnectionRecord.id == connection_id
+                )
+            )
+        if closed_at is not None:
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError("the closing was never written")
+        await asyncio.sleep(0.02)
+
+
+class TestSignalsStayUnderThePayloadLimit:
+    """Postgres refuses a `NOTIFY` payload of 8000 bytes or more, and a
+    signal carries ids the client chose."""
+
+    async def test_a_beat_too_large_to_forward_is_dropped_and_the_rest_go_on(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """A connection recorded with an id too long for one signal, by a
+        process that does not bound ids, has its forwarded beat refused by
+        the bus. That beat is dropped; the next is still forwarded, and the
+        process still writes its closings."""
+        a, b = processes
+        oversized = await _open(a, connection_id="c" * 8000)
+        conn = await _open(a)
+        own = await _open(b, connection_id="conn-b")
+        await _eventually(
+            lambda: (
+                b.registry.get(oversized.id) is not None
+                and b.registry.get(CONN) is not None
+            )
+        )
+
+        b.registry.beat(AGENT, oversized.id, oversized.stream_generation)
+        b.registry.beat(AGENT, CONN, conn.stream_generation)
+
+        await _eventually(lambda: conn.beats == 1)
+        assert oversized.beats == 0
+        b.registry.close(
+            own.id, Closure(code="closed", message="closed by the test", room_id=None)
+        )
+        await _closing_written(session_factory, own.id)
+
+    async def test_a_move_releasing_many_rooms_tells_their_holder_of_each(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """A session id is bounded in characters, and JSON writes some
+        characters in twelve bytes: the rooms one move releases are split over
+        as many signals as they take."""
+        a, b = processes
+        rooms = [ROOM, OTHER_ROOM] + [
+            await seed_room(session_factory, f"room-{n}") for n in range(3, 13)
+        ]
+        holder = await _open(a, scope="all")
+        await _place(
+            a,
+            holder.stream_generation,
+            {
+                "\U0001f600" * 63 + chr(ord("a") + n): room
+                for n, room in enumerate(rooms)
+            },
+        )
+        taker = await _open(b, connection_id="conn-2", scope="all")
+
+        await connection_placements(
+            AGENT,
+            ConnectionPlacementsRequest(
+                connection_id="conn-2",
+                placements={f"session-{n}": room for n, room in enumerate(rooms)},
+                generation=taker.stream_generation,
+            ),
+            agent=_Agent(),  # type: ignore[arg-type]
+            protocol=b.protocol,
+        )
+
+        await _eventually(lambda: set(holder.released_rooms) == set(rooms))

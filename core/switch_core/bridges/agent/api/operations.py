@@ -33,7 +33,10 @@ from switch_core.bridges.agent.operations.callctx import (
     CallerSession,
     call_context,
 )
-from switch_core.bridges.agent.protocol.agent_connections import UnknownConnectionError
+from switch_core.bridges.agent.protocol.agent_connections import (
+    MAX_ID_LENGTH,
+    UnknownConnectionError,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
@@ -182,6 +185,13 @@ async def resolve_caller(
                 "a session selector names the connection it calls over; "
                 "send X-Switch-Connection-Id with X-Switch-Session-Id"
             ),
+        )
+    if session_id is not None and len(session_id) > MAX_ID_LENGTH:
+        # The session is recorded with the room it connects to, and its id
+        # travels in the signals that tell other processes it lost the room.
+        raise HTTPException(
+            status_code=400,
+            detail=f"X-Switch-Session-Id must be at most {MAX_ID_LENGTH} characters",
         )
     if bound is None:
         return None, None

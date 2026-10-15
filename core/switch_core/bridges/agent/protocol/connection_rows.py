@@ -105,9 +105,10 @@ WATCH_SECONDS = RENEW_INTERVAL_SECONDS
 # How long a session command waits for its watcher's process to take it.
 RELAY_KEPT = timedelta(seconds=60)
 
-# How many released rooms one `changed` signal carries; more are split over
-# several signals so each stays under the `NOTIFY` payload limit.
-_RELEASED_PER_SIGNAL = 40
+# Room kept in every signal for what it carries beside its list of beats or
+# released rooms: its kind, the sending process's id, and the tenant and agent
+# a `changed` signal names, about 250 bytes at most.
+_SIGNAL_ENVELOPE_BYTES = 400
 
 _EMPTY = AgentSlotRows(connections={}, stored_claims={}, stored_placements={})
 
@@ -463,12 +464,10 @@ class SharedConnections:
         self, tenant_id: str, agent_id: str, released: list[Released]
     ) -> None:
         entries = [[r.connection_id, r.room_id, r.session_id] for r in released]
-        for start in range(0, max(len(entries), 1), _RELEASED_PER_SIGNAL):
+        # Sent with no rooms released too: the change is what is announced.
+        for chunk in _chunks(entries) or [[]]:
             self._bus.publish(
-                CHANGED_SIGNAL,
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                released=entries[start : start + _RELEASED_PER_SIGNAL],
+                CHANGED_SIGNAL, tenant_id=tenant_id, agent_id=agent_id, released=chunk
             )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -563,7 +562,20 @@ class SharedConnections:
             self._beats_waiting.clear()
             beats, self._beats = list(self._beats.values()), {}
             for chunk in _chunks(beats):
-                self._bus.publish(BEATS_SIGNAL, beats=chunk)
+                try:
+                    self._bus.publish(BEATS_SIGNAL, beats=chunk)
+                except ValueError as error:
+                    # Only a beat too large to send even alone is refused, and
+                    # only a connection id recorded by a process that does not
+                    # bound ids makes one. It is dropped rather than ending
+                    # this loop, and with it the writer and the lease watcher
+                    # that run beside it (`run`).
+                    logger.error(
+                        "A beat of agent %s could not be forwarded to its holder "
+                        "and was dropped: %s",
+                        chunk[0][0],
+                        error,
+                    )
             await asyncio.sleep(BEAT_FORWARD_SECONDS)
 
     async def _watch_forever(self) -> None:
@@ -594,17 +606,21 @@ class SharedConnections:
                 logger.exception("Checking the other processes' connections failed")
 
 
-def _chunks(beats: list[list[Any]]) -> list[list[list[Any]]]:
-    """Split forwarded beats into payloads under the `NOTIFY` limit."""
+def _chunks(entries: list[list[Any]]) -> list[list[list[Any]]]:
+    """Split a signal's entries, forwarded beats or released rooms, into lists
+    that each fit in one payload under the `NOTIFY` limit. Measured as JSON,
+    which writes a character outside ASCII in up to twelve bytes. An entry
+    too large to fit even alone gets a list of its own, which the bus then
+    refuses."""
     chunks: list[list[list[Any]]] = []
     current: list[list[Any]] = []
-    size = 200
-    for beat in beats:
-        cost = len(json.dumps(beat)) + 1
+    size = _SIGNAL_ENVELOPE_BYTES
+    for entry in entries:
+        cost = len(json.dumps(entry)) + 1
         if current and size + cost > MAX_PAYLOAD_BYTES:
             chunks.append(current)
-            current, size = [], 200
-        current.append(beat)
+            current, size = [], _SIGNAL_ENVELOPE_BYTES
+        current.append(entry)
         size += cost
     if current:
         chunks.append(current)

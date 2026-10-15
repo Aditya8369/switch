@@ -86,6 +86,7 @@ from switch_core.bridges.agent.dependencies import (
 from switch_core.bridges.agent.protocol import positions
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_INTERVAL_SECONDS,
+    MAX_ID_LENGTH,
     AgentConnection,
     ClientDeclaration,
     Closure,
@@ -937,6 +938,12 @@ async def _open_connection(
             "UUID and reuse it when reconnecting so the connection survives the "
             "drop",
         )
+    if len(connection_id) > MAX_ID_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"connection_id must be at most {MAX_ID_LENGTH} characters, and "
+            f"this one is {len(connection_id)}; generate a UUID",
+        )
     if scope not in ("single", "all"):
         raise HTTPException(
             status_code=400, detail=f"scope must be 'single' or 'all', got {scope!r}"
@@ -1556,13 +1563,20 @@ async def connection_placements(
     here after each change and on every (re)connect, so a restart of either
     side converges on what the watcher knows. A room another connection holds
     is taken over, as `connect_to_room` takes it, and that connection is sent
-    `room_released`. Every room must be one the agent belongs to; one that is
-    not refuses the whole request and changes nothing.
+    `room_released`. Every room must be one the agent belongs to, and every
+    session id at most `MAX_ID_LENGTH` characters; a request that breaks
+    either is refused whole and changes nothing.
     """
     if agent_id != agent.id:
         raise HTTPException(
             status_code=403,
             detail=f"authenticated as agent {agent.id}, not {agent_id}",
+        )
+    if any(len(session_id) > MAX_ID_LENGTH for session_id in req.placements):
+        raise HTTPException(
+            status_code=400,
+            detail=f"a session id must be at most {MAX_ID_LENGTH} characters; "
+            "nothing was placed",
         )
     conn = await _admitted_connection(protocol, agent, req)
 

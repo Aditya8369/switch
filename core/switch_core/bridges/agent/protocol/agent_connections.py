@@ -117,6 +117,12 @@ POSITIONS_PROTOCOL_REVISION = 9
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
 
+# The longest connection id or session id a client may choose; clients use
+# UUIDs, which are 36. Both travel in the signals switch-core processes send
+# each other (`connection_rows.py`), and Postgres refuses one of 8000 bytes or
+# more, so an id with no bound could make a signal that cannot be sent.
+MAX_ID_LENGTH = 64
+
 
 class ConnectionError_(Exception):
     """Base for connection faults that a client must be told about.
