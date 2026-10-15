@@ -16,16 +16,15 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.db.models import TENANT_ZERO_ID, SwitchCoreProcess
+from switch_core.db.models import TENANT_ZERO_ID, AgentController, SwitchCoreProcess
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
-from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.process_lease import LEASE_TTL
 from tests.db_buffer import say
 from tests.switch_core.management.harness import (
@@ -55,10 +54,6 @@ async def _eventually(check: Callable[[], bool]) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("the other process never caught up")
         await asyncio.sleep(0.02)
-
-
-def _returning(value: object) -> Callable[[], object]:
-    return lambda: value
 
 
 async def _ask(harness: Harness, agent_id: str, room_id: str, body: str) -> int:
@@ -108,15 +103,6 @@ async def processes(
     ]
     shared: list[SharedConnections] = []
     for harness in harnesses:
-        # Management's dependencies are one per process; here two processes
-        # share one interpreter, so each app is pointed at its own.
-        for app in (harness.app, harness.gateway_app):
-            app.dependency_overrides[get_management] = _returning(
-                harness.management.service
-            )
-            app.dependency_overrides[get_authenticator] = _returning(
-                harness.management.authenticator
-            )
         shared.append(
             SharedConnections(
                 registry=harness.protocol.connections,
@@ -585,3 +571,110 @@ class TestTakenOverOnlyByANewerConnection:
 
         assert answer.status_code == 409
         assert answer.json()["error"]["code"] == "taken_over"
+
+
+async def _controller_row(harness: Harness, controller_id: str) -> AgentController:
+    async with harness.session_factory() as session:
+        row = await session.scalar(
+            select(AgentController).where(AgentController.id == controller_id)
+        )
+    assert row is not None
+    return row
+
+
+class TestTheRowNamesTheConnectionOpenedLast:
+    """A socket attaching is written as connected only on the connection the
+    controller opened last, held by the process writing it: a socket on an
+    earlier one must not be written over the later one, whichever lands
+    first."""
+
+    async def test_a_late_connected_write_leaves_the_newer_connection_standing(
+        self,
+        processes: tuple[Harness, Harness],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The first connection's socket attached here, and its write is
+        still on its way when the controller opens a second connection through
+        the other process and that socket attaches there."""
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            await open_connection(client, controller)
+        store = here.management.service.controllers
+        record_connected = store.record_connected
+        writing = asyncio.Event()
+        written = asyncio.Event()
+
+        async def held_back(
+            session: AsyncSession, tenant_id: str, controller_id: str, **kwargs: Any
+        ) -> bool:
+            writing.set()
+            await written.wait()
+            return await record_connected(session, tenant_id, controller_id, **kwargs)
+
+        monkeypatch.setattr(store, "record_connected", held_back)
+        presence = here.protocol.connections.controllers
+        first = presence.current_connection(controller.controller_id)
+        assert first is not None
+        presence.attach_stream(first)
+        await asyncio.wait_for(writing.wait(), WAIT_SECONDS)
+
+        async with there.client() as elsewhere:
+            second = await open_connection(elsewhere, controller)
+        stream = await open_stream(there, controller, second)
+        await take(stream, 1)
+        await there.management.ledger.flush_all()
+        written.set()
+        await here.management.ledger.flush_all()
+        await stream.aclose()  # type: ignore[attr-defined]
+
+        row = await _controller_row(here, controller.controller_id)
+        assert row.connection_id == second["connection_id"]
+        assert row.connection_process_id == there.management.lease.process_id
+        assert row.disconnected_at is None
+
+    async def test_an_attach_overtaken_while_it_read_the_row_is_refused(
+        self,
+        processes: tuple[Harness, Harness],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The controller opens a second connection through the other process,
+        whose socket attaches there, while an attach of the first through this
+        process is between reading the row and attaching: it is refused as
+        taken over, and this process still knows the other holds the socket."""
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            first = await open_connection(client, controller)
+        service = here.management.service
+        connection_state = service.connection_state
+
+        async def overtaken(session: AsyncSession, principal: Any) -> dict[str, Any]:
+            async with there.client() as elsewhere:
+                await open_connection(elsewhere, controller)
+            other = there.protocol.connections.controllers
+            second = other.current_connection(controller.controller_id)
+            assert second is not None
+            other.attach_stream(second)
+            await there.management.ledger.flush_all()
+            await service.signals._read_connection(
+                TENANT_ZERO_ID, controller.controller_id
+            )
+            return await connection_state(session, principal)
+
+        monkeypatch.setattr(service, "connection_state", overtaken)
+
+        answer = await attach(
+            here, controller, first["connection_id"], first["generation"]
+        )
+
+        assert answer.status_code == 409, answer.text
+        assert answer.json()["error"]["code"] == "taken_over"
+        assert (
+            here.protocol.connections.controllers.holder_elsewhere(
+                controller.controller_id
+            )
+            == there.management.lease.process_id
+        )

@@ -244,6 +244,14 @@ class _LoudChat(_Chat):
     keeps_quiet_unless_listening: ClassVar[bool] = False
 
 
+class _PublisherThatFailsToStop:
+    """A bridge's session-activity publisher whose stop raises. Stands in for
+    anything that can go wrong as a bridge stops, before its adapter does."""
+
+    async def stop(self) -> None:
+        raise RuntimeError("the publisher's task had died")
+
+
 @dataclass
 class _Process:
     lease: ProcessLease
@@ -665,6 +673,36 @@ class TestHandingOver:
         assert await _posted(platform, 3) == ["one", "two", "three"]
         assert other.bridges.holds(bridge.bridge_id)
         assert len(platform.listening) == 1
+
+    async def test_a_bridge_that_fails_to_stop_still_closes_its_connection(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """The hand-over's stop raised before it reached the adapter. The
+        lease is let go of all the same, so the connection is closed first:
+        the next holder's must not run beside it."""
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        held = holder.bridges.get(bridge.bridge_id)
+        assert held is not None
+        await _eventually(lambda: platform.listening == [held.adapter])
+        held._activity_publisher = _PublisherThatFailsToStop()  # type: ignore[assignment]
+
+        # As `main` shuts a process down: its owned work, then its lease.
+        await holder.ownership.stop()
+        await holder.lease.stop()
+        await other.ownership.balance()
+
+        assert holder.bridges.get(bridge.bridge_id) is None
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None and taken.active
+        await _eventually(lambda: platform.listening == [taken.adapter])
 
     async def test_what_the_last_holder_posted_is_not_posted_again(
         self,

@@ -2975,7 +2975,24 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts[message_ts] = None
         if len(self._seen_ts) > self._seen_ts_max:
             self._seen_ts.popitem(last=False)
+        try:
+            await self._deliver_message_event(event, channel_id, message_ts)
+        except BaseException:
+            # Not seen after all. An event whose handling raises within the
+            # acknowledgement window is left unacknowledged
+            # (`_handle_socket_event`), and the copy Slack sends comes back to
+            # this adapter, since only the process holding the bridge has its
+            # socket. Skipped as seen, the copy would be acknowledged and the
+            # event lost. It writes only what this attempt did not
+            # (`collaboration_core._post_source`).
+            self._seen_ts.pop(message_ts, None)
+            raise
 
+    async def _deliver_message_event(
+        self, event: dict[str, object], channel_id: str, message_ts: str
+    ) -> None:
+        """Route a post `_handle_message_event` let through to the command or
+        message callback."""
         user_id = str(event.get("user", ""))
         text = str(event.get("text", ""))
         if not text.strip():

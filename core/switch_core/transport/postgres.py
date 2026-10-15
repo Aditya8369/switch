@@ -44,7 +44,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.db.models import (
@@ -248,6 +248,12 @@ class PostgresTransport:
         # the listener announces.
         self._cursors: dict[str, int] = {}
         self._watching: dict[str, str] = {}
+        # When the client joined each room it reads, as the membership row the
+        # room was read under says. `client_rooms.joined_at` is the time of
+        # the transaction that wrote the row, so a client taken out of a room
+        # and put back has a new one, which is how a re-read tells it from a
+        # client that never left (`_compare_membership`).
+        self._joined_at: dict[str, datetime] = {}
         # Rooms this client is joining itself right now, between writing its
         # membership row and watching the room from its own arrival. A
         # reconcile that reads the row in that window must leave the room to
@@ -497,6 +503,15 @@ class PostgresTransport:
         room joined since was joined after its row committed, so the read
         cannot have missed it; one joined during the read would otherwise look
         like a removal.
+
+        A client taken out of a room and put back before the re-read still has
+        a row for it, but a new one with its own `joined_at`. Such a room goes
+        through `_on_removed` and then `on_invite`, as the removal and the
+        addition would have on their own, instead of being read on from where
+        the old membership had got to, which would hand over what was said
+        while the client was out. The `joined_at` compared is the one recorded
+        before the rows were fetched, for the reason above: a room joined
+        again during the read would otherwise look put back.
         """
         async with self._reading_rooms:
             if self._receiving:
@@ -505,17 +520,37 @@ class PostgresTransport:
     async def _compare_membership(self) -> None:
         """`_reconcile_membership`'s read and comparison, under its lock."""
         read_before = dict(self._watching)
+        joined_before = dict(self._joined_at)
         async with tenant_session(self._session_factory, self.tenant_id) as session:
             memberships = await self._room_store.memberships_of(session, self.client_id)
         current = {membership.room_id: membership for membership in memberships}
         for room_id, transport_room_id in read_before.items():
-            if room_id in current or self._watching.get(room_id) != transport_room_id:
+            joined_at = joined_before.get(room_id)
+            # Dropped, or watched again, while the rows were being read.
+            if (
+                self._watching.get(room_id) != transport_room_id
+                or self._joined_at.get(room_id) != joined_at
+            ):
                 continue
-            logger.info(
-                "Client %s is no longer in %s; it stops reading the room",
-                self.user_id,
-                transport_room_id,
-            )
+            membership = current.get(room_id)
+            if membership is None:
+                logger.info(
+                    "Client %s is no longer in %s; it stops reading the room",
+                    self.user_id,
+                    transport_room_id,
+                )
+            elif joined_at is not None and membership.joined_at != joined_at:
+                logger.info(
+                    "Client %s was taken out of %s and put back; it reads the "
+                    "room again as a new member",
+                    self.user_id,
+                    transport_room_id,
+                )
+            else:
+                # Still the membership the room was read under, or a room
+                # whose `_watch` has not read the row yet and will take the
+                # one it finds.
+                continue
             await self._on_removed(transport_room_id)
         for membership in memberships:
             self._room_ids[membership.transport_room_id] = membership.room_id
@@ -600,6 +635,9 @@ class PostgresTransport:
         self._watching[room_id] = transport_room_id
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
+                # Read even when the caller wrote the row a moment ago: its
+                # `joined_at` is what a later re-read compares the membership
+                # by (`_compare_membership`).
                 member = await session.get(
                     ClientRoom,
                     {"client_id": self.client_id, "room_id": room_id},
@@ -629,20 +667,26 @@ class PostgresTransport:
         if seq is None:
             self._release_claim(room_id, transport_room_id)
             return
-        self._subscribe_room(room_id, transport_room_id, seq)
+        self._subscribe_room(
+            room_id, transport_room_id, seq, cast(datetime, member.joined_at)
+        )
         if seq < head:
             # Anything already written past the start was announced before
             # this subscription existed, so nothing else will wake the loop
             # for it.
             self._mark_pending(room_id)
 
-    def _subscribe_room(self, room_id: str, transport_room_id: str, seq: int) -> None:
-        """Deliver a claimed room from `seq` on."""
+    def _subscribe_room(
+        self, room_id: str, transport_room_id: str, seq: int, joined_at: datetime
+    ) -> None:
+        """Deliver a claimed room from `seq` on, for the membership whose row
+        says the client joined at `joined_at`."""
         self._cursors[room_id] = seq
         self._recorded[room_id] = seq
         self._room_cache.attach(self.tenant_id, room_id, self)
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
+        self._joined_at[room_id] = joined_at
 
     async def _watch_joined(self, transport_room_ids: list[str]) -> None:
         """`_watch` every room the client is in, from where the progress
@@ -694,7 +738,9 @@ class PostgresTransport:
                 continue
             if self._watching.get(room_id) != transport_room_id:
                 continue
-            self._subscribe_room(room_id, transport_room_id, places[room_id])
+            self._subscribe_room(
+                room_id, transport_room_id, places[room_id], members[room_id]
+            )
             if places[room_id] < heads[room_id]:
                 self._mark_pending(room_id)
 
@@ -720,6 +766,7 @@ class PostgresTransport:
         self._listener.unsubscribe(room_id, self._on_room_advanced)
         self._ephemeral.unsubscribe(transport_room_id, self._on_ephemeral)
         self._watching.pop(room_id, None)
+        self._joined_at.pop(room_id, None)
         self._cursors.pop(room_id, None)
         self._recorded.pop(room_id, None)
         # A wake-up already queued for this room would otherwise be drained

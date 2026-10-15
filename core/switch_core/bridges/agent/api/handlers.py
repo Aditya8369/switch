@@ -86,6 +86,7 @@ from switch_core.bridges.agent.dependencies import (
 from switch_core.bridges.agent.protocol import positions
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_INTERVAL_SECONDS,
+    MAX_ID_LENGTH,
     AgentConnection,
     ClientDeclaration,
     Closure,
@@ -937,6 +938,12 @@ async def _open_connection(
             "UUID and reuse it when reconnecting so the connection survives the "
             "drop",
         )
+    if len(connection_id) > MAX_ID_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"connection_id must be at most {MAX_ID_LENGTH} characters, and "
+            f"this one is {len(connection_id)}; generate a UUID",
+        )
     if scope not in ("single", "all"):
         raise HTTPException(
             status_code=400, detail=f"scope must be 'single' or 'all', got {scope!r}"
@@ -1471,34 +1478,35 @@ async def connection_subscribe(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    async with (
-        protocol.connections.slots(agent.id),
-        protocol.connections.recorded(agent.id),
-    ):
-        # Named again now the wait for the slots is over, and with nothing
-        # awaited between here and the write: a client displaced while it waited
-        # would otherwise move a room on the connection its successor holds.
-        conn = _current_connection(protocol, agent, req)
-        departing = (
-            frozenset(conn.rooms - {req.room_id})
-            if conn.scope == "single"
-            else frozenset()
-        )
-        try:
-            evicted = protocol.connections.claim_room(
-                conn, req.room_id, takeover=req.takeover
+    async with protocol.connections.slots(agent.id):
+        async with protocol.connections.recorded(agent.id):
+            # Named again now the wait for the slots is over, and with nothing
+            # awaited between here and the write: a client displaced while it
+            # waited would otherwise move a room on the connection its successor
+            # holds.
+            conn = _current_connection(protocol, agent, req)
+            departing = (
+                frozenset(conn.rooms - {req.room_id})
+                if conn.scope == "single"
+                else frozenset()
             )
-        except RoomOccupiedError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            try:
+                evicted = protocol.connections.claim_room(
+                    conn, req.room_id, takeover=req.takeover
+                )
+            except RoomOccupiedError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        for departed in departing:
-            protocol.connections.release_room(conn, departed)
+            for departed in departing:
+                protocol.connections.release_room(conn, departed)
 
         # A room slot changes hands here as much as it does on the stream URL
         # or in connect_to_room, and the room's unread count follows it: the
         # holder being told how far behind the room is has to be the one whose
-        # reading clears it. Recorded with the slots still held, so a later
-        # claim of the room cannot have its count overwritten by this one.
+        # reading clears it. Handed over after the claim is recorded, so a
+        # claim that fails hands nothing over, and before the slots are let go,
+        # so a later claim of the room cannot have its count overwritten by
+        # this one.
         await protocol.event_buffer.take_counting(
             agent.tenant_id, agent.id, conn.id, req.room_id
         )
@@ -1556,13 +1564,20 @@ async def connection_placements(
     here after each change and on every (re)connect, so a restart of either
     side converges on what the watcher knows. A room another connection holds
     is taken over, as `connect_to_room` takes it, and that connection is sent
-    `room_released`. Every room must be one the agent belongs to; one that is
-    not refuses the whole request and changes nothing.
+    `room_released`. Every room must be one the agent belongs to, and every
+    session id at most `MAX_ID_LENGTH` characters; a request that breaks
+    either is refused whole and changes nothing.
     """
     if agent_id != agent.id:
         raise HTTPException(
             status_code=403,
             detail=f"authenticated as agent {agent.id}, not {agent_id}",
+        )
+    if any(len(session_id) > MAX_ID_LENGTH for session_id in req.placements):
+        raise HTTPException(
+            status_code=400,
+            detail=f"a session id must be at most {MAX_ID_LENGTH} characters; "
+            "nothing was placed",
         )
     conn = await _admitted_connection(protocol, agent, req)
 
@@ -1574,19 +1589,18 @@ async def connection_placements(
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    async with (
-        protocol.connections.slots(agent.id),
-        protocol.connections.recorded(agent.id),
-    ):
-        conn = _current_connection(protocol, agent, req)
-        before = protocol.connections.connection_placements(conn)
-        try:
-            released = protocol.connections.replace_placements(conn, req.placements)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with protocol.connections.slots(agent.id):
+        async with protocol.connections.recorded(agent.id):
+            conn = _current_connection(protocol, agent, req)
+            before = protocol.connections.connection_placements(conn)
+            try:
+                released = protocol.connections.replace_placements(conn, req.placements)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        # Each moved session takes its room's unread count, with the slots
-        # still held, so a later claim of the room cannot have its count
+        # Each moved session takes its room's unread count: after the move is
+        # recorded, so a move that fails hands nothing over, and before the
+        # slots are let go, so a later claim of the room cannot have its count
         # overwritten by this one.
         for session_id, room_id in req.placements.items():
             if before.get(session_id) != room_id:

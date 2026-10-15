@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -55,9 +55,13 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE, event_frames
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    Agent,
     AgentConnectionRecord,
     AgentConnectionRoom,
+    AgentRoomRead,
+    AgentSessionPlacement,
     SwitchCoreProcess,
+    Tenant,
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -858,3 +862,313 @@ class TestOneProcess:
 
         assert reopened.stream_generation != old.stream_generation
         assert reopened.rooms == set()
+
+
+async def _closing_written(session_factory: SessionFactory, connection_id: str) -> None:
+    """Wait for the connection's closing to reach its row."""
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        async with session_factory() as session:
+            closed_at = await session.scalar(
+                select(AgentConnectionRecord.closed_at).where(
+                    AgentConnectionRecord.id == connection_id
+                )
+            )
+        if closed_at is not None:
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError("the closing was never written")
+        await asyncio.sleep(0.02)
+
+
+class TestSignalsStayUnderThePayloadLimit:
+    """Postgres refuses a `NOTIFY` payload of 8000 bytes or more, and a
+    signal carries ids the client chose."""
+
+    async def test_a_beat_too_large_to_forward_is_dropped_and_the_rest_go_on(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """A connection recorded with an id too long for one signal, by a
+        process that does not bound ids, has its forwarded beat refused by
+        the bus. That beat is dropped; the next is still forwarded, and the
+        process still writes its closings."""
+        a, b = processes
+        oversized = await _open(a, connection_id="c" * 8000)
+        conn = await _open(a)
+        own = await _open(b, connection_id="conn-b")
+        await _eventually(
+            lambda: (
+                b.registry.get(oversized.id) is not None
+                and b.registry.get(CONN) is not None
+            )
+        )
+
+        b.registry.beat(AGENT, oversized.id, oversized.stream_generation)
+        b.registry.beat(AGENT, CONN, conn.stream_generation)
+
+        await _eventually(lambda: conn.beats == 1)
+        assert oversized.beats == 0
+        b.registry.close(
+            own.id, Closure(code="closed", message="closed by the test", room_id=None)
+        )
+        await _closing_written(session_factory, own.id)
+
+    async def test_a_move_releasing_many_rooms_tells_their_holder_of_each(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """A session id is bounded in characters, and JSON writes some
+        characters in twelve bytes: the rooms one move releases are split over
+        as many signals as they take."""
+        a, b = processes
+        rooms = [ROOM, OTHER_ROOM] + [
+            await seed_room(session_factory, f"room-{n}") for n in range(3, 13)
+        ]
+        holder = await _open(a, scope="all")
+        await _place(
+            a,
+            holder.stream_generation,
+            {
+                "\U0001f600" * 63 + chr(ord("a") + n): room
+                for n, room in enumerate(rooms)
+            },
+        )
+        taker = await _open(b, connection_id="conn-2", scope="all")
+
+        await connection_placements(
+            AGENT,
+            ConnectionPlacementsRequest(
+                connection_id="conn-2",
+                placements={f"session-{n}": room for n, room in enumerate(rooms)},
+                generation=taker.stream_generation,
+            ),
+            agent=_Agent(),  # type: ignore[arg-type]
+            protocol=b.protocol,
+        )
+
+        await _eventually(lambda: set(holder.released_rooms) == set(rooms))
+
+
+async def _occupant(session_factory: SessionFactory, room_id: str) -> tuple[str, bool]:
+    """Who the room's unread count belongs to: a session, or a connection."""
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(
+                    AgentRoomRead.occupant_id, AgentRoomRead.occupant_is_session
+                ).where(
+                    AgentRoomRead.agent_id == AGENT, AgentRoomRead.room_id == room_id
+                )
+            )
+        ).one()
+    return row[0], row[1]
+
+
+async def _unrecordable(*args: Any, **kwargs: Any) -> None:
+    raise RuntimeError("the database went away")
+
+
+class TestUnreadCountsFollowOnlyRecordedMoves:
+    """A room's unread count belongs to whoever is in the room, and moves
+    with it only once the move is recorded: a move that fails, and so is set
+    back, leaves the count with the reader still there. The failure reaches
+    the caller, which FastAPI answers with a 500."""
+
+    async def test_a_placement_that_cannot_be_recorded_moves_no_count(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        a, _ = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        assert await _occupant(session_factory, ROOM) == ("session-1", True)
+        monkeypatch.setattr(AgentConnectionStore, "replace_slots", _unrecordable)
+
+        with pytest.raises(RuntimeError):
+            await _place(a, conn.stream_generation, {"session-2": ROOM})
+
+        assert a.registry.placements(AGENT) == {"session-1": ROOM}
+        async with session_factory() as session:
+            placed = (
+                await session.execute(
+                    select(
+                        AgentSessionPlacement.session_id, AgentSessionPlacement.room_id
+                    ).where(AgentSessionPlacement.agent_id == AGENT)
+                )
+            ).all()
+        assert [tuple(row) for row in placed] == [("session-1", ROOM)]
+        assert await _occupant(session_factory, ROOM) == ("session-1", True)
+
+    async def test_a_claim_that_cannot_be_recorded_moves_no_count(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        a, _ = processes
+        first = await _open(a)
+        await _subscribe(a, ROOM, first.stream_generation)
+        second = await _open(a, connection_id="conn-2")
+        assert await _occupant(session_factory, ROOM) == (CONN, False)
+        monkeypatch.setattr(AgentConnectionStore, "replace_slots", _unrecordable)
+
+        with pytest.raises(RuntimeError):
+            await connection_subscribe(
+                AGENT,
+                ConnectionSubscribeRequest(
+                    connection_id="conn-2",
+                    room_id=ROOM,
+                    generation=second.stream_generation,
+                    takeover=True,
+                ),
+                agent=_Agent(),  # type: ignore[arg-type]
+                protocol=a.protocol,
+            )
+
+        assert first.rooms == {ROOM}
+        assert second.rooms == set()
+        assert await _occupant(session_factory, ROOM) == (CONN, False)
+
+
+class TestStartingUp:
+    async def test_a_tenant_that_cannot_be_read_fails_the_start_not_a_reread(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        postgres_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A process that served before reading every tenant would answer for
+        the agents connected elsewhere in the one it missed as offline. Once
+        serving, a tenant that cannot be read again is logged and the others
+        are still read."""
+        a, _ = processes
+        await _open(a)
+        async with session_factory() as session:
+            session.add(Tenant(id="unreadable", slug="unreadable", name="Unreadable"))
+            await session.commit()
+        read_tenant = AgentConnectionStore.read_tenant
+
+        async def failing(
+            store: AgentConnectionStore,
+            session: AsyncSession,
+            tenant_id: str,
+            **kwargs: Any,
+        ) -> Any:
+            if tenant_id == "unreadable":
+                raise RuntimeError("the tenant's rows could not be read")
+            return await read_tenant(store, session, tenant_id, **kwargs)
+
+        monkeypatch.setattr(AgentConnectionStore, "read_tenant", failing)
+        process_id = new_process_id("test-pod")
+        registry = AgentConnectionRegistry()
+        starting = SharedConnections(
+            registry=registry,
+            session_factory=session_factory,
+            store=AgentConnectionStore(),
+            bus=SignalBus(
+                session_factory,
+                lambda: create_async_engine(postgres_url, poolclass=NullPool),
+                process_id=process_id,
+            ),
+            lease=ProcessLease(
+                process_id=process_id,
+                session_factory=session_factory,
+                processes=SwitchCoreProcessStore(),
+                key_ids=[key.id for key in TEST_KEYRING.keys],
+            ),
+        )
+
+        with pytest.raises(RuntimeError):
+            await starting.start()
+        await starting.reload_all()
+
+        assert registry.is_live(AGENT)
+        assert "unreadable" in caplog.text
+
+
+async def _delete_agent_row(session_factory: SessionFactory) -> None:
+    """Delete the agent's row, which takes its connections' rows with it."""
+    async with session_factory() as session:
+        await session.execute(delete(Agent).where(Agent.id == AGENT))
+        await session.commit()
+
+
+class TestADeletedAgent:
+    """Deleting an agent deletes its connections' rows. Its connections end
+    wherever their sockets are held, not only in the process deleting it."""
+
+    async def test_deleted_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """As `AgentCore.delete_agent` deletes it through the process that
+        does not hold its socket: the row goes, then the others are told."""
+        a, b = processes
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _delete_agent_row(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_deleted(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+
+    async def test_a_holder_never_told_closes_it_on_its_next_pass(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Deleted by a process that told no one, or whose signal never
+        arrived: the holder finds the rows gone when it next reads them all."""
+        a, _ = processes
+        conn = await _open(a)
+
+        await _delete_agent_row(session_factory)
+        await a.shared.reload_all()
+
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+
+    async def test_a_pass_that_read_before_an_open_was_recorded_leaves_it_open(
+        self,
+        processes: tuple[Process, Process],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The pass read the tenant's rows just before the connection's row
+        was written: finding no row for it then says nothing about its agent."""
+        a, b = processes
+        for process in (a, b):
+            await process.bus.stop()  # no pass reads the rows but this one
+        read_tenant = AgentConnectionStore.read_tenant
+        opened: list[AgentConnection] = []
+
+        async def opened_meanwhile(
+            store: AgentConnectionStore,
+            session: AsyncSession,
+            tenant_id: str,
+            **kwargs: Any,
+        ) -> Any:
+            found = await read_tenant(store, session, tenant_id, **kwargs)
+            opened.append(await _open(a))
+            return found
+
+        monkeypatch.setattr(AgentConnectionStore, "read_tenant", opened_meanwhile)
+
+        await a.shared.reload_all()
+
+        (conn,) = opened
+        assert conn.closure is None
+        assert a.registry.get(CONN) is conn

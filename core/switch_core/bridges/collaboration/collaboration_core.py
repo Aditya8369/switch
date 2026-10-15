@@ -551,18 +551,23 @@ class CollaborationCore:
         self._provision_identities_on_attach()
 
     async def stop(self) -> None:
-        if self._activity_publisher is not None:
-            await self._activity_publisher.stop()
-        if self._identity_task and not self._identity_task.done():
-            self._identity_task.cancel()
-        self._identity_task = None
-        if (
-            self._channel_type_refresh_task
-            and not self._channel_type_refresh_task.done()
-        ):
-            self._channel_type_refresh_task.cancel()
-        self._channel_type_refresh_task = None
-        await self._adapter.stop()
+        try:
+            if self._activity_publisher is not None:
+                await self._activity_publisher.stop()
+        finally:
+            # Closed whatever the publisher raised: the bridge's lease is let
+            # go of once this returns or raises, and the next holder's
+            # platform connection must not run beside this one.
+            if self._identity_task and not self._identity_task.done():
+                self._identity_task.cancel()
+            self._identity_task = None
+            if (
+                self._channel_type_refresh_task
+                and not self._channel_type_refresh_task.done()
+            ):
+                self._channel_type_refresh_task.cancel()
+            self._channel_type_refresh_task = None
+            await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
 
