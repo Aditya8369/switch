@@ -316,10 +316,12 @@ _MESSAGE_KEY_SQL = (
 # before it. That is the same number as counting the distinct keys of the
 # qualifying rows up to that position, but the room's rows are read once for
 # all the positions instead of once per position. `:through` is the highest
-# of `:throughs`.
+# of `:throughs`. `firsts` is MATERIALIZED because Postgres otherwise copies it
+# into the per-position count, and under a cached generic plan that reruns the
+# room scan once per position (224 ms instead of 5 ms for 200 positions).
 _UNREAD_SQL = text(
     f"""
-    WITH firsts AS (
+    WITH firsts AS MATERIALIZED (
       SELECT min(m.seq) AS first_seq
       FROM messages m
       WHERE m.room_id = :room_id
