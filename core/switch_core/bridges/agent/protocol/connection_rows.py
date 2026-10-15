@@ -60,6 +60,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Closure,
     ConnectionError_,
     Released,
+    UnknownConnectionError,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_connection_store import (
@@ -203,11 +204,20 @@ class SharedConnections:
         registry = self._registry
         async with tenant_session(self._session_factory, tenant_id) as session:
             await self._store.lock_agent(session, agent_id)
+            rows = await self._read_agent(session, agent_id)
+            # Every incarnation of the agent's connections is later than the
+            # ones recorded before it, so a process holding an older one
+            # knows a newer one presented is current and its copy is stale.
+            # Numbers drawn in an earlier batch than the latest recorded are
+            # passed over: the sequence's next ones are later than both.
+            latest = max(
+                (row.incarnation for row in rows.connections.values()), default=0
+            )
+            self._incarnations = [n for n in self._incarnations if n > latest]
             if not self._incarnations:
                 self._incarnations.extend(
                     await self._store.incarnations(session, INCARNATION_BATCH)
                 )
-            rows = await self._read_agent(session, agent_id)
             self._apply(agent_id, tenant_id, rows)
             # Compared with what is recorded rather than with the copy just
             # set from it: a claim of a connection this process has closed,
@@ -227,7 +237,7 @@ class SharedConnections:
                 ]
                 for conn in opened:
                     conn.tenant_id = tenant_id
-                    await self._store.record_open(
+                    written = await self._store.record_open(
                         session,
                         tenant_id=tenant_id,
                         connection_id=conn.id,
@@ -241,6 +251,10 @@ class SharedConnections:
                         speaks=conn.declaration.speaks,
                         accepts=conn.declaration.protocol_floor,
                     )
+                    if not written:
+                        # Another agent's connection has this id, opened
+                        # through a process this one has not heard from.
+                        raise UnknownConnectionError(conn.id)
                 if slots_after != slots_recorded:
                     claims, placements = slots_after
                     await self._store.replace_slots(

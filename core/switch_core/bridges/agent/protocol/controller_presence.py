@@ -612,20 +612,34 @@ class ControllerPresence:
     # The controller's connection
     # ------------------------------------------------------------------
 
+    def new_connection(self) -> tuple[str, int]:
+        """An id and a generation for a connection the controller is opening.
+
+        Drawn before the connection is held (`open`), so the open can be
+        recorded first: a read of the controller's row taken between holding
+        it and recording it would find the connection it replaces still named
+        there, and close the new one as taken over."""
+        generation = self._next_generation
+        self._next_generation += 1
+        return str(uuid.uuid4()), generation
+
     def open(
         self,
         *,
         controller_id: str,
         tenant_id: str,
         resume_cursors: dict[str, int | None],
+        identity: tuple[str, int] | None = None,
     ) -> ControllerConnection:
-        """Open a connection for the controller, taking over any it had."""
-        generation = self._next_generation
-        self._next_generation += 1
+        """Open a connection for the controller, taking over any it had.
+
+        `identity` is the id and generation drawn for it (`new_connection`);
+        a new one is drawn when none is given."""
+        connection_id, generation = identity or self.new_connection()
         conn = self._hold(
             controller_id=controller_id,
             tenant_id=tenant_id,
-            connection_id=str(uuid.uuid4()),
+            connection_id=connection_id,
             generation=generation,
             resume_cursors=resume_cursors,
         )
@@ -686,6 +700,11 @@ class ControllerPresence:
         previous = self._connections.get(controller_id)
         if previous is not None:
             self._take_over(previous)
+        # Held again here after another process held it: no longer one of
+        # the connections a late beat is told were taken over.
+        remembered = self._superseded.get(controller_id)
+        if remembered is not None and connection_id in remembered:
+            remembered.remove(connection_id)
         now = time.monotonic()
         conn = ControllerConnection(
             id=connection_id,
