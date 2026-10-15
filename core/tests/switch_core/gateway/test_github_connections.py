@@ -52,7 +52,7 @@ async def github_app(request, tmp_path, session_factory):
             }
         )
     )
-    github = GitHubConnections(str(config))
+    github = GitHubConnections.from_file(str(config))
     github.exchange = AsyncMock(
         return_value={
             "access_token": "SYNTHETIC-ACCESS",

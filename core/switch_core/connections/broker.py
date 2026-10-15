@@ -51,6 +51,7 @@ from switch_core.connections.adapters import (
 )
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.app_credentials import needs_operator_app, not_set_up
 from switch_core.connections.loader import (
     TOKEN_PLACEHOLDER,
     AccessLevel,
@@ -1062,6 +1063,20 @@ class ServiceBroker:
             and service not in self._disabled
         )
 
+    def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
+        """Use `adapter` for `service` from the next call on, or none.
+
+        One assignment on the event loop, so a reader sees the old adapter or
+        the new one, never a mix. A call already under way finishes on the
+        adapter it started with.
+        """
+        if service not in self._catalog:
+            raise ValueError(f"No service named {service!r} in the catalog.")
+        if adapter is None:
+            self._adapters.pop(service, None)
+        else:
+            self._adapters[service] = adapter
+
     def availability(self, service: str) -> str | None:
         """Why `service` cannot be granted on this server, or None if it can."""
         entry = self._catalog.get(service)
@@ -1072,9 +1087,8 @@ class ServiceBroker:
             return reason
         adapter = self._adapters.get(service)
         if adapter is None:
-            oauth = entry.definition.auth.oauth
-            if oauth is not None and oauth.setup_note is not None:
-                return f"Not set up on this server. {oauth.setup_note}"
+            if needs_operator_app(entry.definition):
+                return not_set_up(entry.definition.name)
             return f"{entry.definition.name} is not set up on this server."
         if not adapter.can_issue:
             return (

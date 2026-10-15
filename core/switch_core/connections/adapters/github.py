@@ -59,10 +59,10 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
     if config.github_app_config_path is not None:
         if config.github_app_private_key_path is None:
             raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH is not set.")
-        connections = GitHubConnections(config.github_app_config_path)
+        connections = GitHubConnections.from_file(config.github_app_config_path)
         return GitHubApp(
             connections,
-            GitHubInstallationCredentials(
+            GitHubInstallationCredentials.from_file(
                 connections.client_id, config.github_app_private_key_path
             ),
         )
@@ -74,7 +74,9 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
         "GitHub can be connected but not granted to agents. Set "
         "GITHUB_APP_CONFIG_PATH and GITHUB_APP_PRIVATE_KEY_PATH instead."
     )
-    return GitHubApp(GitHubConnections(config.hosted_github_config_path), None)
+    return GitHubApp(
+        GitHubConnections.from_file(config.hosted_github_config_path), None
+    )
 
 
 def _reach(resources: dict[str, Any]) -> tuple[int, list[int]]:

@@ -21,7 +21,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatError, ChatService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
-from switch_core.connections.adapters.github import load_github_app
+from switch_core.connections.app_credentials import ConnectorApps, install_github_app
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.stores.agent_store import AgentStore
@@ -110,6 +110,7 @@ def create_gateway_app(
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
     chat_service: ChatService,
+    connector_apps: ConnectorApps,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -154,10 +155,8 @@ def create_gateway_app(
         )
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
-    app.state.github_app = load_github_app(config)
-    app.state.github_connections = (
-        app.state.github_app.connections if app.state.github_app else None
-    )
+    app.state.connector_apps = connector_apps
+    install_github_app(app.state, connector_apps.github_app())
     app.include_router(
         github_connections_router,
         tags=["provider-connections"],

@@ -43,14 +43,12 @@ class RepositoryCredential:
 
 
 class GitHubInstallationCredentials:
-    def __init__(self, client_id: str, private_key_path: str):
+    def __init__(self, client_id: str, private_key: bytes):
         if not client_id:
             raise ValueError("A GitHub App client ID is required.")
         try:
-            key = load_pem_private_key(
-                Path(private_key_path).read_bytes(), password=None
-            )
-        except (ValueError, TypeError, OSError):
+            key = load_pem_private_key(private_key, password=None)
+        except (ValueError, TypeError):
             raise ValueError(
                 "The GitHub App signing key could not be loaded."
             ) from None
@@ -60,6 +58,18 @@ class GitHubInstallationCredentials:
             )
         self._key = key
         self._client_id = client_id
+
+    @classmethod
+    def from_file(
+        cls, client_id: str, private_key_path: str
+    ) -> GitHubInstallationCredentials:
+        try:
+            private_key = Path(private_key_path).read_bytes()
+        except OSError:
+            raise ValueError(
+                "The GitHub App signing key could not be loaded."
+            ) from None
+        return cls(client_id, private_key)
 
     @staticmethod
     async def revoke(token: str) -> None:

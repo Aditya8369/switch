@@ -42,6 +42,7 @@ def _app(**overrides: object) -> object:
         protocol=MagicMock(),
         install_service=None,
         invite_mailer=None,
+        connector_apps=MagicMock(**{"github_app.return_value": None}),
         config=config,
     )
 

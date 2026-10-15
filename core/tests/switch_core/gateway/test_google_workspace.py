@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import timedelta
-from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -19,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ConnectionSecret
+from switch_core.connections.adapters.oauth import OAuthClientCredentials
 from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG
@@ -76,25 +76,19 @@ class World:
 
 def _world(
     session_factory: async_sessionmaker[AsyncSession],
-    tmp_path: Path,
     *,
     client_settings: bool = True,
     disabled: dict[str, str] | None = None,
 ) -> World:
     google = FakeGoogle()
-    environ = {}
-    if client_settings:
-        path = tmp_path / "google-client.json"
-        path.write_text(
-            json.dumps(
-                {"client_id": STATIC_CLIENT_ID, "client_secret": STATIC_CLIENT_SECRET}
-            )
-        )
-        environ["GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH"] = str(path)
     adapters = build_adapters(
         CATALOG,
         github_app=None,
-        environ=environ,
+        oauth_clients=(
+            {SERVICE: OAuthClientCredentials(STATIC_CLIENT_ID, STATIC_CLIENT_SECRET)}
+            if client_settings
+            else {}
+        ),
         http=google.client(),
         registration=ClientRegistration(
             session_factory=session_factory,
@@ -174,9 +168,9 @@ async def _connection(
 
 class TestSignIn:
     async def test_signs_in_offline_through_core_and_keeps_the_refresh_token(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -202,9 +196,9 @@ class TestSignIn:
         assert secret["access_token"] in world.google.live_access
 
     async def test_a_sign_in_without_the_write_scopes_is_read_only(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         world.google.unticked = set(WRITE_ONLY)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
@@ -216,9 +210,9 @@ class TestSignIn:
 
 class TestAgents:
     async def test_a_granted_agent_gets_gws_and_the_owners_token(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -256,9 +250,9 @@ class TestAgents:
         assert issued.token in world.google.live_access
 
     async def test_a_refresh_keeps_googles_reusable_refresh_token(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -272,9 +266,9 @@ class TestAgents:
 
 class TestDisconnect:
     async def test_disconnecting_revokes_the_sign_in_at_google(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -297,8 +291,9 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Not set up on this server. Its operator registers an internal "
-                "Google app; see the docs.",
+                "Google Workspace is not set up on this server. Ask whoever runs "
+                "your Switch server to add it under Connector apps in the Switch "
+                "dashboard.",
             ),
             (
                 True,
@@ -309,11 +304,10 @@ class TestAvailability:
         ids=["no-client-settings", "switched-off"],
     )
     async def test_says_why_google_workspace_cannot_be_used_here(
-        self, session_factory, tmp_path, client_settings, disabled, reason
+        self, session_factory, client_settings, disabled, reason
     ) -> None:
         world = _world(
             session_factory,
-            tmp_path,
             client_settings=client_settings,
             disabled=disabled,
         )
