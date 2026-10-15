@@ -96,25 +96,27 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
     <Titlebar
       className="border-b border-border"
       leftClassName={cn(
-        'w-[300px] shrink-0 self-stretch',
+        'w-[300px] shrink-0 self-stretch [-webkit-app-region:drag]',
         tab === 'chats' && 'border-r border-border'
       )}
       leftSlot={
         <div className="flex min-w-0 items-center gap-3">
           {breadcrumb}
-          <SegmentedControl
-            value={tab}
-            onChange={(next) => agentTabStore.setTab(params.agentId, next)}
-            options={TABS}
-            ariaLabel="Agent view"
-          />
+          <div className="[-webkit-app-region:no-drag]">
+            <SegmentedControl
+              value={tab}
+              onChange={(next) => agentTabStore.setTab(params.agentId, next)}
+              options={TABS}
+              ariaLabel="Agent view"
+            />
+          </div>
         </div>
       }
-      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4"
+      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4 [-webkit-app-region:drag]"
       rightSlot={
         <>
           <span className="truncate text-sm font-medium">{chat?.name}</span>
-          <div className="mr-1 flex shrink-0 items-center gap-1.5">
+          <div className="mr-1 flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
             {server &&
               serverState(server) !== 'connected' &&
               serverState(server) !== 'running-local' &&
