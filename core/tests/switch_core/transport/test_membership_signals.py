@@ -562,7 +562,9 @@ class TestRecheck:
         read unwatched, and must not join it back."""
         room_id, transport_room_id, client_id, user_id, _ = room_and_client
         process = _process(postgres_url, session_factory, client_id, user_id)
-        task = asyncio.create_task(process.transport.receive_forever())
+        task = asyncio.create_task(
+            process.transport.receive_forever(FromHead(MessageStore()))
+        )
         try:
             await _eventually(lambda: room_id in process.transport._watching)
             kicked: list[bool] = []
