@@ -142,6 +142,7 @@ def _fake_bridge(
         _external_post_for_event=_external_post_for_event,
         _outbound_groups={},
         _outbound_group_timers={},
+        _flushing_outbound_groups=[],
         _channel_to_room={"chan-1": ("room-uuid", "!room:s")},
         _room_tenant=_room_tenant,
     )
@@ -412,3 +413,54 @@ async def test_an_incomplete_group_is_left_to_the_next_holder_once_stopped() -> 
 
     assert bridge._adapter.batches == []
     assert bridge.released == []
+
+
+async def test_a_file_arriving_while_its_group_times_out_is_still_posted() -> None:
+    """The timeout posts the files that arrived; one arriving while that post
+    is on its way is posted on its own, not added to a post already sent
+    without it."""
+    import switch_core.bridges.collaboration.collaboration_core as bc
+
+    bridge = _fake_bridge()
+    adapter = bridge._adapter
+    posting = asyncio.Event()
+    posted = asyncio.Event()
+    send_attachments = adapter.send_attachments
+
+    async def slow_send_attachments(*args: Any, **kwargs: Any) -> str:
+        if not posting.is_set():
+            posting.set()
+            await posted.wait()
+        result: str = await send_attachments(*args, **kwargs)
+        return result
+
+    adapter.send_attachments = slow_send_attachments
+    original = bc.OUTBOUND_GROUP_TIMEOUT_SECONDS
+    bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = 0.01
+    try:
+        for index, name in [(0, "first.md"), (1, "late.md")]:
+            await CollaborationCore.handle_outbound_media(
+                bridge,
+                _room(),
+                _media_event(
+                    msgtype="m.file",
+                    body=name,
+                    mimetype="text/markdown",
+                    event_id=f"$part-{index}",
+                    group={"id": "grp-4", "index": index, "total": 2},
+                ),
+                bridge.client,
+            )
+            if index == 0:
+                await asyncio.wait_for(posting.wait(), 1.0)
+        posted.set()
+        await asyncio.sleep(0.1)
+    finally:
+        bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = original
+
+    assert [[f.filename for f in batch["files"]] for batch in adapter.batches] == [
+        ["first.md"],
+        ["late.md"],
+    ]
+    assert bridge._outbound_groups == {}
+    assert bridge._flushing_outbound_groups == []

@@ -288,6 +288,10 @@ class CollaborationCore:
         # never completes cannot leak.
         self._outbound_groups: dict[str, _PendingOutboundGroup] = {}
         self._outbound_group_timers: dict[str, asyncio.TimerHandle] = {}
+        # Incomplete groups whose timeout is posting what arrived. Out of
+        # `_outbound_groups`, so a late file of one starts a group of its own,
+        # and still holding the room's progress back until posted.
+        self._flushing_outbound_groups: list[_PendingOutboundGroup] = []
         # Room-event -> external-post anchors written synchronously right after
         # room_send, before the durable _record_message_map commit, so a fast
         # command reply relayed during that DB await still resolves the command's
@@ -2571,7 +2575,10 @@ class CollaborationCore:
         stops before it."""
         held = [
             pending.from_seq
-            for pending in self._outbound_groups.values()
+            for pending in [
+                *self._outbound_groups.values(),
+                *self._flushing_outbound_groups,
+            ]
             if pending.room_id == room_id
         ]
         return min(held) if held else None
@@ -2623,12 +2630,20 @@ class CollaborationCore:
             # A bridge that stopped leaves the group to whoever holds it next:
             # its progress stops before the group's first file.
             return
+        # A file of the group arriving while this posts would otherwise be
+        # added to a post already on its way without it, and never sent.
+        del self._outbound_groups[group_id]
+        self._flushing_outbound_groups.append(pending)
         try:
             await self._flush_outbound_group(
                 group_id, pending, channel_id, sender_name, thread_root_ref
             )
         finally:
-            self._outbound_groups.pop(group_id, None)
+            self._flushing_outbound_groups = [
+                flushing
+                for flushing in self._flushing_outbound_groups
+                if flushing is not pending
+            ]
             if client.transport is not None:
                 client.transport.held_back_released(pending.room_id)
 
