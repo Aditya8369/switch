@@ -198,7 +198,7 @@ describe('picking a workspace after signing in', () => {
     const el = await renderAtPickWorkspace();
 
     expect(resolveWorkspaces).toHaveBeenCalledWith('srv-1');
-    expect(el.textContent).toContain('Pick a workspace');
+    expect(el.textContent).toContain('Choose your workspace');
     expect(el.textContent).toContain('Acme');
     expect(el.textContent).toContain('Skunkworks');
     expect(el.textContent).toContain('Create a new workspace');
@@ -344,17 +344,12 @@ describe('picking a workspace after signing in', () => {
 
     expect(onboardingStore.page).toBe('createWorkspace');
     expect(el.textContent).toContain('Create your workspace');
-    // Nothing behind it: the picker had no list to return to. The arrow stays
-    // in the tab order and says as much in its own label, so it is matched on
-    // the start of one.
-    const back = el.querySelector<HTMLButtonElement>('[aria-label^="Previous page"]')!;
-    expect(back.getAttribute('aria-disabled')).toBe('true');
+    // Nothing behind it: the picker had no list to return to.
     expect([...el.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Back');
   });
 
   it('goes back by a button and not only by a chevron', async () => {
-    // The chevron is unlabelled, so it may repeat the way back but never be the
-    // only one — the same invariant the who-runs page keeps.
+    // The full-window pages have no step pager: Back is the way back.
     resolveWorkspaces.mockResolvedValue([workspace('ws-1', 'Acme'), workspace('ws-2', 'Skunk')]);
 
     const el = await renderAtPickWorkspace();
@@ -379,8 +374,6 @@ describe('picking a workspace after signing in', () => {
       (b) => b.textContent?.trim() === 'Back'
     )!;
     expect(back.disabled).toBe(true);
-    const chevron = el.querySelector<HTMLButtonElement>('[aria-label^="Previous page"]')!;
-    expect(chevron.getAttribute('aria-disabled')).toBe('true');
 
     opening.resolve();
     await settle();

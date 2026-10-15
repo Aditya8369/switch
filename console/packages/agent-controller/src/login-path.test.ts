@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loginShellPath, withUserBinDirs } from './login-path';
 
@@ -68,7 +68,8 @@ describe('withUserBinDirs', () => {
     expect(withUserBinDirs('/usr/bin', home)).toBe('/usr/bin');
     await mkdir(join(home, '.local', 'bin'), { recursive: true });
     const bin = join(home, '.local', 'bin');
-    expect(withUserBinDirs('/usr/bin', home)).toBe(`/usr/bin:${bin}`);
-    expect(withUserBinDirs(`${bin}:/usr/bin`, home)).toBe(`${bin}:/usr/bin`);
+    expect(withUserBinDirs('/usr/bin', home)).toBe(['/usr/bin', bin].join(delimiter));
+    const already = [bin, '/usr/bin'].join(delimiter);
+    expect(withUserBinDirs(already, home)).toBe(already);
   });
 });
