@@ -126,6 +126,9 @@ REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
 SWITCHED_OFF = "Switched off on this server."
+# Why a connection needs reconnecting: the operator replaced the app it
+# signed in through.
+CLIENT_REPLACED = "client_replaced"
 
 
 class ServiceError(Exception):
@@ -913,6 +916,18 @@ class ServiceBroker:
                     "Connections.",
                     retryable=False,
                 )
+            if self.client_replaced(connection):
+                await self._store.mark_needs_reauthorization(
+                    session, owner_id, service, CLIENT_REPLACED
+                )
+                await session.commit()
+                raise self._revoked(
+                    service,
+                    ReauthorizationRequiredError(
+                        f"{name} was connected through an app this server no "
+                        "longer uses."
+                    ),
+                )
             secret = self._secret(connection)
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
@@ -1062,6 +1077,15 @@ class ServiceBroker:
             and service in self._adapters
             and service not in self._disabled
         )
+
+    def client_replaced(self, connection: ServiceConnection) -> bool:
+        """Whether `connection` signed in through a client its service no
+        longer uses, so it must reconnect. Unknown either side is no."""
+        if connection.oauth_client_id is None:
+            return False
+        adapter = self._adapters.get(connection.service)
+        current = None if adapter is None else adapter.current_client_id()
+        return current is not None and current != connection.oauth_client_id
 
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
         """Use `adapter` for `service` from the next call on, or none.
@@ -1386,8 +1410,12 @@ class ServiceBroker:
         account_id: str,
         external_identity: str,
         secret: ConnectionSecret,
+        oauth_client_id: str | None,
     ) -> str | None:
         """Link the person's account, or re-link it in place.
+
+        `oauth_client_id` is the vendor client the sign-in went through, None
+        for a key.
 
         Re-linking keeps the grants (a different account then fails them with
         `grant_account_changed`) and revokes what was issued on the old
@@ -1433,6 +1461,7 @@ class ServiceBroker:
             account_id=account_id,
             external_identity=external_identity,
             encrypted_secret=self._keyring.encrypt(json.dumps(secret.values)),
+            oauth_client_id=oauth_client_id,
         )
         await record_audit_event(
             session,

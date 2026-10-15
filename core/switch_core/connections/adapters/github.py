@@ -115,6 +115,9 @@ class GitHubAdapter:
         self._signer = signer
         self.can_issue = signer is not None
 
+    def current_client_id(self) -> str | None:
+        return self._connections.client_id
+
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         refresh_token = secret.values.get("refresh_token")
         refresh_expires_at = secret.values.get("refresh_expires_at")

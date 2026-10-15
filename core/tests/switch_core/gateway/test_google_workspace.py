@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ConnectionSecret
-from switch_core.connections.adapters.oauth import OAuthClientCredentials
+from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
 from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG
@@ -119,7 +119,20 @@ def _world(
 
 
 async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
-    """Switch Console's side and the person's browser, through Core's callback."""
+    state, secret, code = await _signed_in(world, client, user)
+    completed = await client.post(
+        f"{FLOWS}/{state}/complete",
+        json={"completion_secret": secret, "code": code},
+        cookies=cookies_for(user),
+    )
+    assert completed.status_code == 200, completed.text
+
+
+async def _signed_in(
+    world: World, client: httpx.AsyncClient, user: User
+) -> tuple[str, str, str]:
+    """Switch Console's side and the person's browser, through Core's callback,
+    up to Console holding the code: its state, completion secret and code."""
     state = secrets.token_urlsafe(32)
     secret = secrets.token_urlsafe(32)
     started = await client.post(
@@ -144,12 +157,7 @@ async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
         LOOPBACK_CALLBACK_PATH,
     )
     assert parse_qs(listener.query)["code"] == [code]
-    completed = await client.post(
-        f"{FLOWS}/{state}/complete",
-        json={"completion_secret": secret, "code": code},
-        cookies=cookies_for(user),
-    )
-    assert completed.status_code == 200, completed.text
+    return state, secret, code
 
 
 async def _connection(
@@ -164,6 +172,77 @@ async def _connection(
         )
     assert connection is not None
     return connection
+
+
+def _another_client(world: World, session_factory) -> OAuthAdapter:
+    adapter = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            SERVICE: OAuthClientCredentials("other-client-id", "example-secret-1111")
+        },
+        http=world.google.client(),
+        registration=ClientRegistration(
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            public_url=PUBLIC,
+            server_name="switch.example.com",
+        ),
+    )[SERVICE]
+    assert isinstance(adapter, OAuthAdapter)
+    return adapter
+
+
+class TestTheClientSignedInThrough:
+    async def test_the_connection_records_it(self, session_factory) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        assert connection.oauth_client_id == STATIC_CLIENT_ID
+
+    async def test_a_client_replaced_during_the_sign_in_is_refused(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            state, secret, code = await _signed_in(world, client, ada)
+            world.broker.replace_adapter(
+                SERVICE, _another_client(world, session_factory)
+            )
+            completed = await client.post(
+                f"{FLOWS}/{state}/complete",
+                json={"completion_secret": secret, "code": code},
+                cookies=cookies_for(ada),
+            )
+        assert completed.status_code == 400
+        assert completed.json()["detail"] == (
+            "This server's Google Workspace app changed during your sign-in. "
+            "Start it again."
+        )
+        assert [
+            request
+            for request in world.google.token_requests
+            if request.get("grant_type") == "authorization_code"
+        ] == []
+
+    async def test_a_replaced_client_shows_the_connection_as_needing_reconnecting(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            world.broker.replace_adapter(
+                SERVICE, _another_client(world, session_factory)
+            )
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        [google] = [c for c in listed.json()["connections"] if c["slug"] == SERVICE]
+        assert google["status"] == "needs_reauthorization"
 
 
 class TestSignIn:

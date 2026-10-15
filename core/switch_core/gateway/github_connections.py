@@ -145,7 +145,7 @@ async def start(
             port=body.port,
             redirect_uri=github.callback,
             owner_label=f"{user.name} ({user.email}) in {tenant.name}",
-            details={},
+            details={"client_id": github.client_id},
             completion_secret=body.completion_secret,
         )
     except FlowUsedError:
@@ -273,6 +273,17 @@ async def complete(
     refused = "GitHub authorization could not be verified. Connect again."
     if not flow.holds_secret(body.completion_secret) or flow.status != "delivered":
         raise HTTPException(400, refused)
+    recorded = flow.details.get("client_id")
+    if recorded is not None and recorded != github.client_id:
+        # The code was issued to the App the flow started with: with another
+        # in its place, GitHub would refuse it, and less clearly.
+        changed = (
+            "This server's GitHub App changed during your sign-in. Start it again."
+        )
+        await flows.advance(
+            flow, expect=("delivered",), to="failed", changes={"error": changed}
+        )
+        raise HTTPException(400, changed)
     checking = await flows.advance(
         flow, expect=("delivered",), to="checking", changes={}
     )
@@ -322,6 +333,7 @@ async def complete(
             account_id=account_id,
             external_identity=credentials["login"],
             secret=ConnectionSecret(credentials),
+            oauth_client_id=github.client_id,
         )
     except ServiceError as error:
         await _settled(flows, checking, "failed", error=error.message)

@@ -628,3 +628,30 @@ async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_
         assert (flow.status, flow.encrypted_result) == ("failed", None)
         assert flow.error == GITHUB_REFUSAL["detail"]
         assert await session.scalar(select(ServiceConnection)) is None
+
+
+async def test_the_connection_records_the_apps_client(github_app):
+    client, _, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    assert (await complete(client, flow_id)).status_code == 200
+    async with factory() as session:
+        row = await session.scalar(
+            select(ServiceConnection).where(ServiceConnection.service == "github")
+        )
+    assert row.oauth_client_id == "example-client"
+
+
+async def test_an_app_replaced_during_the_sign_in_is_refused(github_app):
+    """The sign-in carried over to an App with another client: its code was
+    issued to the old one, so it is refused before GitHub is asked."""
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    github.client_id = "another-client"
+    response = await complete(client, flow_id)
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "This server's GitHub App changed during your sign-in. Start it again."
+    )
+    github.exchange.assert_not_called()
