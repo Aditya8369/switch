@@ -4,7 +4,7 @@ import asyncio
 import logging
 import random
 import uuid
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
@@ -23,6 +23,9 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
+
+if TYPE_CHECKING:
+    from switch_core.clients.client_signals import ClientSignals
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +52,8 @@ CLIENT_RETRY_CAP_SECONDS = 60.0
 
 @runtime_checkable
 class _PreloadsAgent(Protocol):
-    """A consumer that can start from an agent row read for it in bulk."""
+    """An agent's actor, which can connect with an agent row read for it in
+    bulk rather than reading its own."""
 
     def preload_agent(self, agent: Agent) -> None: ...
 
@@ -90,6 +94,26 @@ class ClientLifecycleService:
         # wants without reaching into the objects. See `get_by_type`.
         self._client_tenants: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Clients stopped here on purpose (an agent being deleted stops its
+        # client before its row goes) or whose task crashed on a bug.
+        # `reconcile_tenant` leaves them stopped, as a crash always has, until
+        # something starts them on purpose; otherwise a re-check between a
+        # deletion's stop and its commit would start the client again.
+        # Keyed by client id, to the client's tenant.
+        self._left_stopped: dict[str, str] = {}
+        self._signals: ClientSignals | None = None
+
+    def use_signals(self, signals: ClientSignals) -> None:
+        """Where a client started or deleted here is announced, so every
+        other process starts or stops its own copy (`client_signals.py`)."""
+        self._signals = signals
+
+    def announce(self, tenant_id: str) -> None:
+        """A client of `tenant_id` was registered or deleted, and has
+        committed: every process reconciles its copies of the tenant's
+        clients with the table."""
+        if self._signals is not None:
+            self._signals.changed(tenant_id)
 
     @property
     def tenants_isolated(self) -> bool:
@@ -204,6 +228,8 @@ class ClientLifecycleService:
                 slug,
             )
             raise
+        # The admin client exists only as a row until something starts it.
+        self.announce(tenant.id)
         return tenant
 
     async def start_all(self) -> None:
@@ -241,13 +267,80 @@ class ClientLifecycleService:
 
         logger.info("Starting %d clients", len(records))
         for record in records:
-            self._register(record)
+            actor = self._register(record)
             # Before the task first runs: `_register` only schedules it, and
             # nothing here yields until the loop is done.
-            consumer = self._consumers.get(record.id)
             agent = agents.get(record.id)
-            if agent is not None and isinstance(consumer, _PreloadsAgent):
-                consumer.preload_agent(agent)
+            if agent is not None and isinstance(actor, _PreloadsAgent):
+                actor.preload_agent(agent)
+
+    async def reconcile_all(self) -> None:
+        """`reconcile_tenant` for every tenant."""
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            await self.reconcile_tenant(tenant_id)
+
+    async def reconcile_tenant(self, tenant_id: str) -> None:
+        """Run here exactly the tenant's clients that `start_all` would run.
+
+        Every process starts every non-collaboration client at boot, and a
+        client registered later used to start only in the process that served
+        the registration, while a deleted one kept running everywhere else
+        until a restart. This re-reads the tenant's rows: a client with no copy
+        here is started, and a copy whose row is gone is stopped.
+
+        An agent's client row commits before its agent row, so one without an
+        agent row yet is left alone: its actor would find no agent and crash.
+        The registration's own signal comes after both have committed.
+        Collaboration clients (bridges and the people they speak for) are the
+        bridges' to start and stop, and a client that crashed stays stopped.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            records = [
+                record
+                for record in await self._client_store.get_all(session)
+                if record.tenant_id == tenant_id
+                and record.type not in self.COLLAB_CLIENT_TYPES
+            ]
+        present = {record.id for record in records}
+        # A client whose row is gone will not be started again: nothing is
+        # left to hold back.
+        self._left_stopped = {
+            client_id: client_tenant
+            for client_id, client_tenant in self._left_stopped.items()
+            if client_tenant != tenant_id or client_id in present
+        }
+        for client_id, client_tenant in list(self._client_tenants.items()):
+            if (
+                client_tenant == tenant_id
+                and self._client_types.get(client_id) not in self.COLLAB_CLIENT_TYPES
+                and client_id not in present
+            ):
+                logger.info("Client %s was deleted elsewhere; stopping it", client_id)
+                await self.stop(client_id)
+        missing = [
+            record
+            for record in records
+            if record.id not in self._clients and record.id not in self._left_stopped
+        ]
+        if not missing:
+            return
+        agents = await self._agents_by_client_id(missing)
+        for record in missing:
+            agent = agents.get(record.id)
+            if record.type == "agent" and agent is None:
+                continue
+            # Checked again: `stop` above and the agent read both yield, and a
+            # registration in this process may have started it meanwhile.
+            if record.id in self._clients:
+                continue
+            logger.info(
+                "Client %s (%s) was added elsewhere; starting it",
+                record.display_name,
+                record.transport_user_id,
+            )
+            actor = self._register(record)
+            if agent is not None and isinstance(actor, _PreloadsAgent):
+                actor.preload_agent(agent)
 
     async def _agents_by_client_id(self, records: list[Client]) -> dict[str, Agent]:
         """The agent row behind each client, one query per tenant.
@@ -300,7 +393,13 @@ class ClientLifecycleService:
         )
         return actor
 
+    def _leave_stopped(self, client_id: str) -> None:
+        tenant_id = self._client_tenants.get(client_id)
+        if tenant_id is not None:
+            self._left_stopped[client_id] = tenant_id
+
     def _register(self, record: Client) -> Actor[ClientConfig]:
+        self._left_stopped.pop(record.id, None)
         actor, consumer = self._client_factory.create(record)
         self._clients[record.id] = actor
         if consumer is not None:
@@ -338,6 +437,7 @@ class ClientLifecycleService:
             await consumer.stop()
         else:
             await actor.close()
+        self._leave_stopped(client_id)
         task = self._cancel_task(client_id)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
@@ -392,7 +492,9 @@ class ClientLifecycleService:
         """Consumers believed to be running right now: the read loops.
 
         A crashed consumer removes itself and its actor, so this falling is the
-        only signal. Actors with no consumer have no loop to crash.
+        only signal. Actors with no consumer have no loop to crash, and that
+        includes every agent's: what is for an agent is decided as each row is
+        written, so nothing reads a room for it.
         """
         return len(self._consumers)
 
@@ -513,6 +615,7 @@ class ClientLifecycleService:
                     actor.display_name,
                     actor.transport_user_id,
                 )
+                self._leave_stopped(client_id)
                 self._clients.pop(client_id, None)
                 self._consumers.pop(client_id, None)
                 self._client_types.pop(client_id, None)

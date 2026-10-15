@@ -342,18 +342,23 @@ async def connect_to_room(
             # then fails would send them somewhere the session is not — and the
             # rooms to vacate are the caller's own, read under the bind's lock
             # rather than from what it believed on arrival.
-            if caller is not None:
-                previous, displaced_session_id = protocol.connections.place_session(
-                    agent_id, caller.id, room.id, key
-                )
-            else:
-                previous = rooms_on_caller_connection(protocol, agent_id, key)
+            #
+            # Recorded, so the move is made on what every process holds and the
+            # process holding the caller's connection is told: its stream may
+            # be parked waiting for exactly this room.
+            async with protocol.connections.recorded(agent_id):
+                if caller is not None:
+                    previous, displaced_session_id = protocol.connections.place_session(
+                        agent_id, caller.id, room.id, key
+                    )
+                else:
+                    previous = rooms_on_caller_connection(protocol, agent_id, key)
 
-            evicted_connection_id = claim_room_on_caller_connection(
-                protocol, agent_id, key, room.id
-            )
-            for departed in previous - {room.id}:
-                release_room_on_caller_connection(protocol, agent_id, key, departed)
+                evicted_connection_id = claim_room_on_caller_connection(
+                    protocol, agent_id, key, room.id
+                )
+                for departed in previous - {room.id}:
+                    release_room_on_caller_connection(protocol, agent_id, key, departed)
 
             # Connecting is how an agent's occupancy of a room changes hands, and
             # the occupant is the one whose reading clears that room's unread
@@ -361,7 +366,9 @@ async def connect_to_room(
             # one agent share it, and each of them is in a room of its own.
             reader = counting_reader()
             if reader is not None:
-                protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
+                await protocol.event_buffer.hand_counting_to(
+                    require_tenant_id(), agent_id, reader, room.id
+                )
 
             await bind_room_for_connectionless_caller(
                 protocol,
@@ -700,11 +707,13 @@ async def read_context(
     before_ms = parse_timestamp_ms(before) if before else None
 
     buffer = protocol.event_buffer
-    # Sampled before the read, because anything enqueued while the history
-    # response is in flight is not in that response. Clearing through the
-    # later head would report a zero for a message the agent never saw;
-    # clearing through this one can only leave something counted twice.
-    through = buffer.head(agent_id)
+    tenant_id = require_tenant_id()
+    # The room's newest `messages.seq`, taken before the history read because
+    # a message written while the read is in flight is not in its response.
+    # Recording the catch-up through a later number would mark such a message
+    # as read when the agent never saw it. Recording it through this number
+    # can at worst count a message twice.
+    through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
     context = await protocol.read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
@@ -715,7 +724,9 @@ async def read_context(
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
         # leaves every count alone, including this one.
-        buffer.caught_up(agent_id, reader, room_id, through, session_key())
+        await buffer.caught_up(
+            tenant_id, agent_id, reader, room_id, through, session_key()
+        )
 
     return context
 

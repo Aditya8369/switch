@@ -308,6 +308,8 @@ class Consumer[ActorT: Actor[Any]]:
         if isinstance(typed_event, CommandEvent):
             typed_event.message_id = event.event_id
             typed_event.thread_id = event.thread_root_id or event.event_id
+        typed_event.room_seq = event.seq
+        typed_event.source_event_id = event.event_id
 
         try:
             await getattr(self, method_name)(room, typed_event)
@@ -352,7 +354,7 @@ class Consumer[ActorT: Actor[Any]]:
             self.transport_user_id,
             room.room_id,
         )
-        await self.actor.join_room(room.room_id)
+        await self.actor.join_room(room.room_id, event.timestamp)
 
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """This consumer's actor has been taken out of a room while it was

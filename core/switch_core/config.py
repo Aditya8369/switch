@@ -361,6 +361,18 @@ class SwitchConfig(BaseSettings):
     # (pilot, development, demo, public), not the machine.
     service_name: str = "switch-core"
     environment: str | None = None
+    # The Kubernetes pod this process runs in, from the downward API. It names
+    # the process everywhere one process has to be told from another: its
+    # lease row, the controller connections it holds, the signals it sends,
+    # its log lines and its metrics (`process_identity.py`). Unset outside
+    # Kubernetes, where the host name stands in.
+    pod_name: str | None = None
+    # How many switch-core processes the deployment runs against this
+    # database. Read for the connection budget checked at boot
+    # (`db/connection_budget.py`) and for whether a dead LISTEN connection
+    # takes this process out of service: with one replica there is no other
+    # to send traffic to, so it does not.
+    core_replicas: int = Field(default=1, ge=1)
 
     # The placeholder a log line carries when no tenant is bound at all —
     # deliberately not a tenant id, and it must not be set to one. An
@@ -669,6 +681,11 @@ class SwitchConfig(BaseSettings):
     # controller access token's reads (its controller row, and the agent row
     # it acts as), which a revocation or binding change also drops at once.
     agent_auth_cache_ttl_seconds: float = 5.0
+    # How long a row in `agent_events` (one of an agent's own events) is kept
+    # before the retention loop deletes it. An agent that reconnects within
+    # this window resumes without a gap; one away for longer is told it missed
+    # events.
+    agent_event_retention_seconds: float = Field(default=24 * 60 * 60, gt=0)
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096

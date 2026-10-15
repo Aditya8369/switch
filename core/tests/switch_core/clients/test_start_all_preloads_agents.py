@@ -1,5 +1,5 @@
-"""`start_all` reads every agent row once per tenant and hands each consumer
-its own, so no agent client queries for itself at boot."""
+"""`start_all` reads every agent row once per tenant and hands each agent's
+actor its own, so no agent client queries for itself at boot."""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ from switch_core.db.stores.tenant_store import TenantStore
 from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 
-class _Consumer:
+class _Actor:
+    """An agent's actor: it reads no room, so the lifecycle connects it and
+    builds no consumer for it."""
+
     def __init__(self) -> None:
         self.display_name = "agent"
         self.transport_user_id = "@agent:test"
@@ -26,24 +29,24 @@ class _Consumer:
     def preload_agent(self, agent: Agent) -> None:
         self.preloaded = agent
 
-    async def start(self) -> None:
+    async def connect(self) -> None:
         return None
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         return None
 
 
 class _Factory:
     def __init__(self) -> None:
-        self.consumers: dict[str, _Consumer] = {}
+        self.actors: dict[str, _Actor] = {}
 
-    def create(self, record: Any) -> tuple[_Consumer, _Consumer]:
-        consumer = _Consumer()
-        self.consumers[record.id] = consumer
-        return consumer, consumer
+    def create(self, record: Any) -> tuple[_Actor, None]:
+        actor = _Actor()
+        self.actors[record.id] = actor
+        return actor, None
 
 
-async def test_each_agent_consumer_gets_its_own_row_before_it_starts(
+async def test_each_agent_actor_gets_its_own_row_before_it_connects(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
@@ -63,7 +66,7 @@ async def test_each_agent_consumer_gets_its_own_row_before_it_starts(
     await service.start_all()
 
     for agent in agents:
-        preloaded = factory.consumers[agent.client_id].preloaded
+        preloaded = factory.actors[agent.client_id].preloaded
         assert preloaded is not None and preloaded.id == agent.id
 
 
@@ -95,5 +98,5 @@ async def test_a_failed_bulk_read_still_starts_every_client(
     await service.start_all()
 
     for agent in agents:
-        assert agent.client_id in factory.consumers
-        assert factory.consumers[agent.client_id].preloaded is None
+        assert agent.client_id in factory.actors
+        assert factory.actors[agent.client_id].preloaded is None

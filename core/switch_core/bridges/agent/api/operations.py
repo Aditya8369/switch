@@ -175,28 +175,34 @@ async def resolve_caller(
     agent, or one that has died, is refused.
     """
     bound = connection_id
+    if session_id is not None and connection_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a session selector names the connection it calls over; "
+                "send X-Switch-Connection-Id with X-Switch-Session-Id"
+            ),
+        )
+    if bound is None:
+        return None, None
+
+    # The connection may be held by another process, and its row written a
+    # moment before this request: what this process has not seen yet is read
+    # again from the rows before the caller is refused or left without a room.
+    if not _resolves(protocol, agent_id, bound, session_id):
+        await protocol.connections.refresh(agent_id)
+
     caller: CallerSession | None = None
     if session_id is not None:
         # Host and epoch are the host's own business now: Switch keeps no
         # record of a session to check them against, only which room it
         # connected to.
-        if connection_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "a session selector names the connection it calls over; "
-                    "send X-Switch-Connection-Id with X-Switch-Session-Id"
-                ),
-            )
         caller = CallerSession(
             id=session_id,
             host_id=host_id or "",
             epoch=epoch or "",
             room_id=protocol.connections.session_room(agent_id, session_id),
         )
-
-    if bound is None:
-        return None, caller
 
     # Derived, never taken on trust: a connection belonging to another agent,
     # or to one that has already died, is refused rather than silently treated
@@ -206,6 +212,19 @@ async def resolve_caller(
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return bound, caller
+
+
+def _resolves(
+    protocol: AgentCore, agent_id: str, connection_id: str, session_id: str | None
+) -> bool:
+    """Whether this process already knows the connection, and the session's
+    room when a session is named."""
+    conn = protocol.connections.get(connection_id)
+    if conn is None or conn.agent_id != agent_id:
+        return False
+    if session_id is None:
+        return True
+    return protocol.connections.session_room(agent_id, session_id) is not None
 
 
 async def resolve_controller_caller(

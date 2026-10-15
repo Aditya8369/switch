@@ -70,11 +70,18 @@ class TextFormatter(logging.Formatter):
 class JsonFormatter(logging.Formatter):
     """One JSON object per line."""
 
-    def __init__(self, service: str, environment: str | None, version: str | None):
+    def __init__(
+        self,
+        service: str,
+        environment: str | None,
+        version: str | None,
+        process_id: str,
+    ):
         super().__init__()
         self._service = service
         self._environment = environment
         self._version = version
+        self._process_id = process_id
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -85,6 +92,9 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "logger": {"name": record.name, "thread_name": record.threadName},
             "service": self._service,
+            # Which switch-core process wrote the line, under the name its
+            # lease, its signals and its metrics carry (`process_identity.py`).
+            "process_id": self._process_id,
         }
         if self._environment:
             payload["env"] = self._environment
@@ -128,7 +138,9 @@ class AccessQueryRedaction(logging.Filter):
         return True
 
 
-def build_handler(config: SwitchConfig, version: str | None) -> logging.Handler:
+def build_handler(
+    config: SwitchConfig, version: str | None, process_id: str
+) -> logging.Handler:
     """The single stderr handler: format per config, context on every record."""
     handler = logging.StreamHandler(sys.stderr)
     if config.log_format == "json":
@@ -137,6 +149,7 @@ def build_handler(config: SwitchConfig, version: str | None) -> logging.Handler:
                 service=config.service_name,
                 environment=config.environment,
                 version=version,
+                process_id=process_id,
             )
         )
     else:
@@ -146,14 +159,16 @@ def build_handler(config: SwitchConfig, version: str | None) -> logging.Handler:
     return handler
 
 
-def configure_logging(config: SwitchConfig, version: str | None) -> None:
+def configure_logging(
+    config: SwitchConfig, version: str | None, process_id: str
+) -> None:
     """Install the root handler and levels. Call once, before anything logs."""
     global _configured
 
     root = logging.getLogger()
     for existing in list(root.handlers):
         root.removeHandler(existing)
-    root.addHandler(build_handler(config, version))
+    root.addHandler(build_handler(config, version, process_id))
     root.setLevel(config.log_level.upper())
 
     logging.getLogger("switch_core").setLevel(config.switch_log_level.upper())

@@ -722,6 +722,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
+        self.client_lifecycle.announce(client_record.tenant_id)
         return agent.id
 
     async def _reregister_agent(
@@ -1016,6 +1017,7 @@ class AgentCore:
             await self.agent_store.delete(session, resolved_id)
             await self.client_lifecycle.delete_record(session, client_id)
             await session.commit()
+        self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
@@ -2345,15 +2347,16 @@ class AgentCore:
         without the same check this call would hand over events from a room
         the agent has since been removed from.
 
-        `AgentConsumer.on_removed` already empties the buffer of a removed
-        room's events, so this is the second of two answers. It is the
-        authoritative one: that signal is in-process, and this reads the table
-        the removal wrote.
+        The removal deletes the agent's events in the room it left
+        (`MessageRouter.remove`), so this is the second of two answers, and
+        the one that holds whatever wrote the events, an older release's
+        consumer included: it reads the membership the removal wrote.
         """
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
         return await self.event_buffer.poll(
+            require_tenant_id(),
             agent_id,
             timeout=timeout,
             rooms=await self._rooms_agent_is_in(agent_id),
@@ -2377,6 +2380,7 @@ class AgentCore:
         agent.
         """
         return await self.event_buffer.poll_notifications(
+            require_tenant_id(),
             agent_id,
             timeout=timeout,
             rooms=await self._rooms_agent_is_in(agent_id),
@@ -2406,7 +2410,9 @@ class AgentCore:
         the long-poll cadence so the TTL can stay short.
         """
         await self.require_room_member(agent_id, room_id)
-        return await self.event_buffer.poll_room(agent_id, room_id, timeout=timeout)
+        return await self.event_buffer.poll_room(
+            require_tenant_id(), agent_id, room_id, timeout=timeout
+        )
 
     async def report_events(
         self,

@@ -77,6 +77,11 @@ the old key available for decrypting and verifying.
 4. Remove the old key and deploy. Buttons on Mattermost cards posted before
    step 2 stop working; nothing else is affected.
 
+Step 1 is enforced. Each switch-core process records the ids of its keys on
+its lease, and a process whose first key a running process lacks refuses to
+start, naming that process. A single replica replaced in one step has no
+running process left to check, so it is not held back.
+
 Rotate on a schedule, and at once if a key may have leaked. For a suspected
 leak, skip step 1 and the wait: deploy `<new>,<old>`, check the boot log
 reports the re-encryption, then deploy `<new>` alone straight away. Stored

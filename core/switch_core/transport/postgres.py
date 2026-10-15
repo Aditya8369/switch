@@ -3,12 +3,16 @@
 A transport carries an event from the client that sent it to the clients that
 should see it, and remembers it in between. Here the `messages` table does all
 of that. **The write is the send.** A send is an INSERT, numbered per room
-under an advisory lock (`MessageStore.create`); the `messages_notify` trigger
-announces it on commit (`db/notify_ddl.py`); one `MessageListener` wakes the
-transports watching that room (`messages/notify.py`); and each transport reads
-the rows after its own cursor, `DELIVERY_PAGE` at a time. There is no second
-store to agree with. Switch used to run on a Matrix homeserver; the
-`matrix_*` column names are what is left of it, kept as stable ids.
+under an advisory lock (`MessageStore.create`), made by the router
+(`delivery/router.py`), which decides in the same transaction which agents in
+the room the row is for and stores their own events with it. The
+`messages_notify` trigger announces the row on commit (`db/notify_ddl.py`);
+one `MessageListener` wakes the transports watching that room
+(`messages/notify.py`); and each transport reads the rows after its own
+cursor, `DELIVERY_PAGE` at a time. Agents have no transport watching for them:
+what is for them was decided as it was written. There is no second store to
+agree with. Switch used to run on a Matrix homeserver; the `matrix_*` column
+names are what is left of it, kept as stable ids.
 
 Three consequences worth stating up front:
 
@@ -89,6 +93,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.db.stores.usage_store import UsageStore
+    from switch_core.delivery.router import MessageRouter
     from switch_core.messages.notify import MessageListener
     from switch_core.transport.room_cache import RoomDeliveryCache
     from switch_core.transport.stored import DeliveryAttachments, DeliveryRow
@@ -187,6 +192,7 @@ class PostgresTransport:
         ephemeral: EphemeralBus,
         room_cache: RoomDeliveryCache,
         message_observer: ParticipantMessageObserver,
+        router: MessageRouter,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -222,12 +228,26 @@ class PostgresTransport:
         # A shared read only counts for this client if it started after this.
         self._woken: dict[str, int] = {}
         self._message_observer = message_observer
+        # Writes every row, deciding as it does which agents the row is for.
+        self._router = router
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
         # to a handler. Both are keyed by the Switch room id, which is what
         # the listener announces.
         self._cursors: dict[str, int] = {}
         self._watching: dict[str, str] = {}
+        # Rooms this client is joining itself right now, between writing its
+        # membership row and watching the room from its own arrival. A
+        # reconcile that reads the row in that window must leave the room to
+        # the join, or it would watch from the head and the client would miss
+        # its own arrival.
+        self._joining: set[str] = set()
+        # Held while this client reads its rooms and compares them with the
+        # ones it watches: on its first read at start, and on every re-read
+        # after (`_reconcile_membership`). A re-read during the first read
+        # would find every room the client is already in unwatched, and hand
+        # each to `on_invite` as if someone had just added the client to it.
+        self._reading_rooms = asyncio.Lock()
         self._receiving = False
         self._receiving_event = asyncio.Event()
         self._closed = asyncio.Event()
@@ -264,29 +284,41 @@ class PostgresTransport:
         # Before the rooms are read, not after they are subscribed: reading
         # them and watching each is several round trips, and a removal rung
         # during those has no membership row for the caller to fall back to.
-        self._invites.register(self.client_id, self._on_invited, self._on_removed)
+        self._invites.register(
+            self.client_id,
+            self._on_invited,
+            self._on_removed,
+            self._reconcile_membership,
+        )
         self._receiving = True
         self._receiving_event.set()
         try:
-            rooms = await self.joined_rooms()
-            if not rooms:
-                logger.error(
-                    "Client %s is receiving but is a member of no room: it will "
-                    "hear nothing until something adds it to one. Membership "
-                    "is the client_rooms table, so a client whose rows were "
-                    "never written is silent rather than broken",
-                    self.user_id,
-                )
             delivery = asyncio.create_task(self._deliver_forever())
             try:
-                await self._watch_joined(rooms)
+                async with self._reading_rooms:
+                    rooms = await self.joined_rooms()
+                    if not rooms:
+                        logger.error(
+                            "Client %s is receiving but is a member of no room: "
+                            "it will hear nothing until something adds it to "
+                            "one. Membership is the client_rooms table, so a "
+                            "client whose rows were never written is silent "
+                            "rather than broken",
+                            self.user_id,
+                        )
+                    await self._watch_joined(rooms)
                 await self._closed.wait()
             finally:
                 delivery.cancel()
         finally:
             self._receiving = False
             self._receiving_event.clear()
-            self._invites.unregister(self.client_id, self._on_invited, self._on_removed)
+            self._invites.unregister(
+                self.client_id,
+                self._on_invited,
+                self._on_removed,
+                self._reconcile_membership,
+            )
             self._unwatch_all()
 
     async def wait_receiving(self, timeout: float) -> bool:
@@ -360,6 +392,10 @@ class PostgresTransport:
         is the client's decision and it already has one — the same one it made
         when the invitation arrived over sync.
         """
+        await self._invite_self(transport_room_id, _now_ms())
+
+    async def _invite_self(self, transport_room_id: str, joined_at_ms: int) -> None:
+        """Hand `on_invite` the room, stamped with when the client joined it."""
         handler = self._handlers.on_invite
         if handler is None:
             return
@@ -369,12 +405,68 @@ class PostgresTransport:
                 room_id=transport_room_id,
                 event_id=new_event_id(),
                 sender=self.user_id,
-                timestamp=_now_ms(),
+                timestamp=joined_at_ms,
                 state_key=self.user_id,
                 membership="invite",
                 display_name=self.display_name,
             ),
         )
+
+    async def _reconcile_membership(self) -> None:
+        """Start or stop reading the rooms whose membership changed underneath.
+
+        A membership written by another switch-core process reaches this copy
+        of the client only as a `membership.changed` signal, and a signal can
+        be missed, so this also runs periodically. It re-reads the client's
+        rows and compares them with what it reads now. A room it is no longer
+        in goes through `_on_removed`, the path a removal rung in this process
+        takes. A room it is in but does not read goes through `on_invite`, as
+        an invitation would, and is watched from its head: the copy in the
+        process that wrote the row has already heard the arrival and greeted,
+        and doing it again here would greet twice. The join time handed on is
+        the row's, the database's clock, so every process filters the room's
+        rows from the same moment.
+
+        Only rooms already read before the rows were fetched can be dropped. A
+        room joined since was joined after its row committed, so the read
+        cannot have missed it; one joined during the read would otherwise look
+        like a removal.
+        """
+        async with self._reading_rooms:
+            if self._receiving:
+                await self._compare_membership()
+
+    async def _compare_membership(self) -> None:
+        """`_reconcile_membership`'s read and comparison, under its lock."""
+        read_before = dict(self._watching)
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
+            memberships = await self._room_store.memberships_of(session, self.client_id)
+        current = {membership.room_id: membership for membership in memberships}
+        for room_id, transport_room_id in read_before.items():
+            if room_id in current or self._watching.get(room_id) != transport_room_id:
+                continue
+            logger.info(
+                "Client %s is no longer in %s; it stops reading the room",
+                self.user_id,
+                transport_room_id,
+            )
+            await self._on_removed(transport_room_id)
+        for membership in memberships:
+            self._room_ids[membership.transport_room_id] = membership.room_id
+            if (
+                membership.room_id in self._watching
+                or membership.room_id in self._joining
+            ):
+                continue
+            logger.info(
+                "Client %s was added to %s elsewhere; it starts reading the room",
+                self.user_id,
+                membership.transport_room_id,
+            )
+            await self._invite_self(
+                membership.transport_room_id,
+                int(membership.joined_at.timestamp() * 1000),
+            )
 
     async def _on_removed(self, transport_room_id: str) -> None:
         """This client was taken out of a room while it was running.
@@ -805,7 +897,9 @@ class PostgresTransport:
 
         The commit is the acceptance: the trigger on `messages` announces the
         row as part of it, so no subscriber can be woken for a row that a later
-        rollback removes.
+        rollback removes. The agents the row is for have their own events in
+        the same commit, and anything the row leaves an agent to say is posted
+        only after it.
         """
         result = SendResult(
             event_id=new_event_id(), event_type=event_type, content=content
@@ -849,8 +943,13 @@ class PostgresTransport:
                     thread_root_event_id=thread_root_of(content),
                     content=content,
                 )
-                await self._message_store.create(
-                    session, message, attachments_in(content)
+                routed = await self._router.store(
+                    session,
+                    tenant_id=tenant_id,
+                    room_id=room_id,
+                    transport_room_id=transport_room_id,
+                    message=message,
+                    attachments=attachments_in(content),
                 )
                 if metered and kind in _METERED_KINDS:
                     await self._usage_store.record(
@@ -870,6 +969,7 @@ class PostgresTransport:
                 SEND_FAILURES, {"kind": kind, "actor": self._actor_role}
             )
             raise
+        routed.committed()
         metrics().increment(MESSAGES_SENT, {"kind": kind, "actor": self._actor_role})
         if metered and kind in _METERED_KINDS:
             self._observe(tenant_id, room_id, kind, content)
@@ -1010,15 +1110,29 @@ class PostgresTransport:
         once and the subscription is taken whenever it is missing.
         """
         switch_room_id, tenant_id = await self._resolve_room_and_tenant(room_id)
+        self._joining.add(switch_room_id)
+        try:
+            return await self._join_room(room_id, switch_room_id, tenant_id)
+        finally:
+            self._joining.discard(switch_room_id)
+
+    async def _join_room(
+        self, room_id: str, switch_room_id: str, tenant_id: str
+    ) -> bool:
         async with tenant_session(self._session_factory, tenant_id) as session:
             existing = await session.get(
                 ClientRoom, {"client_id": self.client_id, "room_id": switch_room_id}
             )
-            if existing is not None:
+            joined = existing is None and await self._room_store.add_client(
+                session, self.client_id, switch_room_id
+            )
+            if not joined:
+                # A member already, or made one a moment ago by another
+                # writer, which wrote the arrival too: one arrival per
+                # membership, so the room is greeted once.
                 if self._receiving:
                     await self._watch(room_id)
                 return True
-            await self._room_store.add_client(session, self.client_id, switch_room_id)
             arrival = Message(
                 room_id=switch_room_id,
                 transport_event_id=new_event_id(),
@@ -1035,9 +1149,17 @@ class PostgresTransport:
                 # something a later change can take back.
                 content={"membership": "join", "displayname": self.display_name},
             )
-            await self._message_store.create(session, arrival, [])
+            routed = await self._router.store(
+                session,
+                tenant_id=tenant_id,
+                room_id=switch_room_id,
+                transport_room_id=room_id,
+                message=arrival,
+                attachments=[],
+            )
             await session.commit()
-            arrival_seq = arrival.seq
+        routed.committed()
+        arrival_seq = routed.seq
         if self._receiving:
             # From just before the arrival, so this client reads its own join
             # the way every other member does.

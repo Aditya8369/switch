@@ -43,6 +43,7 @@ from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
+    UnknownControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import (
     IDLE,
@@ -351,12 +352,16 @@ async def open_connection(
     body: ControllerConnectionRequest,
     principal: PathController,
     protocol: Protocol,
+    management: Management,
+    session: Session,
 ) -> dict[str, Any]:
     """Open the controller's connection, taking over any it had.
 
     The agents bound to it are attached on the stream, each from its cursor
     here; the response names them. Opening again is a takeover: the earlier
-    connection's socket ends with `taken_over`, and its beats are refused.
+    connection's socket ends with `taken_over`, and its beats are refused,
+    whichever process held it. The connection is recorded before the answer,
+    so its socket can attach through any process.
     """
     presence = protocol.connections.controllers
     try:
@@ -367,6 +372,7 @@ async def open_connection(
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
+    await management.record_opened(session, principal, conn)
     logger.info(
         "Controller %s opened connection %s (client=%s version=%s)",
         principal.controller_id,
@@ -401,8 +407,21 @@ async def attach_stream(
     presence = protocol.connections.controllers
     nudges = management.notifier.subscribe(principal.controller_id)
     try:
-        conn = presence.require(principal.controller_id, connection_id, generation)
         async with tenant_session(session_factory, principal.tenant_id) as session:
+            try:
+                conn = presence.require(
+                    principal.controller_id, connection_id, generation
+                )
+            except UnknownControllerConnectionError:
+                # Opened through another process, or held there before the
+                # socket dropped: held here instead, if it is still the one
+                # the controller opened last.
+                adopted = await management.adopt_connection(
+                    session, principal, connection_id, generation
+                )
+                if adopted is None:
+                    raise
+                conn = adopted
             state = await management.connection_state(session, principal)
     except ControllerConnectionError as exc:
         nudges.close()
@@ -430,7 +449,7 @@ async def attach_stream(
     )
 
 
-def record_beat(
+async def record_beat(
     *,
     principal: ControllerPrincipal,
     protocol: AgentCore,
@@ -454,11 +473,16 @@ def record_beat(
         binding = presence.binding(agent_id)
         if agent_id not in agents or binding is None:
             continue
-        # Clamped to the head, as an agent's own beat is: a higher number
-        # belongs to a previous life of this process.
-        confirmed = min(cursor, protocol.event_buffer.head(agent_id))
-        protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
-        presence.resume_from(conn, agent_id, confirmed)
+        sent = conn.sent_cursors.get(agent_id)
+        if sent is None:
+            continue
+        # The controller reports how far it has read each agent's own events.
+        # It cannot have read further than this connection has sent it. A
+        # larger number comes from another history, a database restored from a
+        # backup or another server, and keeping it would make the next stream
+        # on this connection resume past events the agent never received. The
+        # bound is kept in memory, so a beat costs no database query.
+        presence.resume_from(conn, agent_id, min(cursor, sent))
     return sorted(agents)
 
 
@@ -627,7 +651,7 @@ async def _receive_pongs(
         if not isinstance(message, dict) or message.get("type") != "pong":
             continue
         try:
-            record_beat(
+            await record_beat(
                 principal=principal,
                 protocol=protocol,
                 connection_id=connection_id,

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,7 +44,6 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import IDLE
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.config import ControllerRelease
 from switch_core.connections.broker import ServiceBroker
 from switch_core.db.models import (
@@ -60,6 +59,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
@@ -68,6 +68,9 @@ from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
+from switch_core.process_lease import ProcessLease
+from switch_core.signals import SignalBus
+from tests.db_buffer import db_buffer_on
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
 
@@ -125,6 +128,9 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         return None
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
     def get_by_agent_id(self, agent_id: str) -> None:
         """No client is ever started here."""
         return None
@@ -149,7 +155,7 @@ def protocol_service(
         keyring=TEST_KEYRING, third_party_avatars_enabled=True
     )
     svc.telemetry = None
-    svc.event_buffer = EventBuffer(sequence_base=0)
+    svc.event_buffer = db_buffer_on(session_factory)
     svc.connections = AgentConnectionRegistry()
     svc.approval_outcomes = None  # type: ignore[assignment]
     svc.room_store = RoomStore()
@@ -165,6 +171,9 @@ class Harness:
     # Mounted at `/gateway` on `app`, for a test to add routes to.
     gateway_app: FastAPI
     management: Management
+    # This process's signal bus, started only by a test that runs several
+    # processes against one database.
+    bus: SignalBus
     protocol: AgentCore
     cache: ApiKeyCache
     controller_auth_cache: ControllerAuthCache
@@ -192,6 +201,10 @@ class Harness:
         )
 
 
+def _no_listening_engine() -> Any:
+    raise AssertionError("the harness's signal bus is never started")
+
+
 def build_harness(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -199,6 +212,7 @@ def build_harness(
     server_url: str | None = SERVER_URL,
     third_party_avatars: bool = True,
     controller_release: ControllerRelease | None = None,
+    signal_engine: Callable[[], Any] = _no_listening_engine,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -208,6 +222,8 @@ def build_harness(
         ttl_seconds=controller_auth_ttl_seconds, max_entries=64
     )
     protocol = protocol_service(session_factory, cache)
+    process_id = str(uuid.uuid4())
+    signal_bus = SignalBus(session_factory, signal_engine, process_id=process_id)
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
@@ -218,7 +234,15 @@ def build_harness(
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
         clock=clock,
-        process_id=str(uuid.uuid4()),
+        # Never started unless a test runs several processes: with one, every
+        # nudge is delivered locally and what it would publish goes nowhere.
+        signal_bus=signal_bus,
+        lease=ProcessLease(
+            process_id=process_id,
+            session_factory=session_factory,
+            processes=SwitchCoreProcessStore(),
+            key_ids=[key.id for key in TEST_KEYRING.keys],
+        ),
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:
@@ -269,6 +293,7 @@ def build_harness(
         app=agent_app,
         gateway_app=gateway_app,
         management=management,
+        bus=signal_bus,
         protocol=protocol,
         cache=cache,
         controller_auth_cache=controller_auth_cache,
@@ -588,7 +613,7 @@ async def connect(
     conn = presence.current_connection(controller.controller_id)
     assert conn is not None
     presence.attach_stream(conn)
-    await harness.management.start()
+    await harness.management.lease.renew()
     await harness.management.ledger.flush_all()
     return opened
 
@@ -604,7 +629,7 @@ async def ensure_connected(
     if conn is None or not conn.stream_attached:
         await connect(client, controller)
         return
-    await harness.management.start()
+    await harness.management.lease.renew()
     await harness.management.ledger.flush_all()
 
 
@@ -644,7 +669,7 @@ async def attach(
     return Answer(200, {})
 
 
-def beat(
+async def beat(
     harness: Harness,
     controller: EnrolledController,
     *,
@@ -655,7 +680,7 @@ def beat(
     """A pong, answered as the socket would: the agents on success, the
     refusal its `evicted` frame would name otherwise."""
     try:
-        agents = controller_routes.record_beat(
+        agents = await controller_routes.record_beat(
             principal=_principal(controller),
             protocol=harness.protocol,
             connection_id=connection_id,

@@ -40,9 +40,11 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExists
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
-    Binding,
+    DISCONNECT_REVOKED,
+    ControllerConnection,
     ControllerPresence,
 )
+from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
@@ -70,15 +72,14 @@ from switch_core.gateway.cloud_controllers import (
 )
 from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
+from switch_core.management.bindings import binding_of
 from switch_core.management.errors import ManagementError, not_found
-from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
     is_revoked,
     require_placement,
 )
-from switch_core.management.process_lease import ProcessLeases, read_leases
 from switch_core.management.schemas import (
     ControllerDescription,
     CreateManagedAgentRequest,
@@ -94,6 +95,8 @@ from switch_core.management.schemas import (
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
+from switch_core.management.signals import ControllerSignals
+from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.providers.registry import provider_ids
 
 logger = logging.getLogger(__name__)
@@ -138,7 +141,7 @@ class ManagementService:
         self,
         *,
         settings: ManagementSettings,
-        notifier: ControllerNotifier,
+        signals: ControllerSignals,
         controllers: AgentControllerStore,
         definitions: AgentDefinitionStore,
         operations: AgentControllerOperationStore,
@@ -149,7 +152,8 @@ class ManagementService:
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
-        self.notifier = notifier
+        self.signals = signals
+        self.notifier = signals.notifier
         self.presence = presence
         self.controllers = controllers
         self.definitions = definitions
@@ -350,7 +354,7 @@ class ManagementService:
             self._announce_revoked(replaced)
             for row in moved:
                 await self._bind(session, tenant_id, row)
-            self._nudge(revisions)
+            self._nudge(tenant_id, revisions)
             logger.info(
                 "Cloud machine %s enrolled again; revoked its previous controller %s "
                 "and moved its %d agent(s) to %s",
@@ -484,6 +488,76 @@ class ManagementService:
                 controller, self.settings.controller_release
             ),
         }
+
+    async def record_opened(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        conn: ControllerConnection,
+    ) -> None:
+        """Record the connection the controller just opened and tell every
+        other process: its socket may attach through any of them, and a
+        connection another process holds for this controller has been taken
+        over."""
+        await self.controllers.record_opened(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=conn.id,
+            generation=conn.generation,
+            process_id=self.signals.process_id,
+            resume_cursors=conn.resume_cursors,
+        )
+        await session.commit()
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+
+    async def adopt_connection(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection | None:
+        """Hold here the connection the controller opened through another
+        process, when it is the one it last opened and nothing has ended it.
+        None when it is not, and the controller must open another."""
+        controller = await self.controllers.get(
+            session, principal.tenant_id, principal.controller_id
+        )
+        if controller is None or is_revoked(controller):
+            return None
+        if (
+            controller.open_connection_id != connection_id
+            or controller.open_generation != generation
+            # Recorded as held here, yet not held here: it ended here (its
+            # heartbeat lapsed, say), and ending is final, as it always was.
+            or controller.open_process_id == self.signals.process_id
+        ):
+            return None
+        if (
+            controller.connection_id == connection_id
+            and controller.disconnect_reason in _ENDING_REASONS
+        ):
+            return None
+        resume_cursors = _resume_cursors(controller.open_cursors)
+        if not await self.controllers.record_taken_up(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=connection_id,
+            process_id=self.signals.process_id,
+        ):
+            return None
+        await session.commit()
+        conn = self.presence.adopt(
+            controller_id=principal.controller_id,
+            tenant_id=principal.tenant_id,
+            connection_id=connection_id,
+            generation=generation,
+            resume_cursors=resume_cursors,
+        )
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+        return conn
 
     async def connection_state(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -732,6 +806,7 @@ class ManagementService:
         await session.commit()
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
+            self.signals.renamed(tenant_id, controller_id)
         logger.info(
             "Updated agent controller %s (%s)",
             controller_id,
@@ -812,8 +887,7 @@ class ManagementService:
         return moved
 
     def _announce_revoked(self, controller_id: str) -> None:
-        self.notifier.credential_revoked(controller_id)
-        self.presence.revoke_controller(controller_id)
+        self.signals.revoked(controller_id)
 
     # ── Provider logins sealed to a controller ────────────────────────────────
 
@@ -879,7 +953,7 @@ class ManagementService:
             provider,
             row.revision,
         )
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id,
             operation_id=operation.id,
             kind="provider.login",
@@ -917,7 +991,7 @@ class ManagementService:
         logger.info(
             "Withdrew agent controller %s's sealed %s login", controller_id, provider
         )
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id,
             operation_id=operation.id,
             kind="provider.recheck",
@@ -1082,9 +1156,9 @@ class ManagementService:
             )
         return revisions
 
-    def _nudge(self, revisions: dict[str, int]) -> None:
+    def _nudge(self, tenant_id: str, revisions: dict[str, int]) -> None:
         for controller_id, revision in revisions.items():
-            self.notifier.assignment_changed(controller_id, revision)
+            self.signals.assignment_changed(tenant_id, controller_id, revision)
 
     async def _bind(
         self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
@@ -1186,7 +1260,7 @@ class ManagementService:
         )
         await session.commit()
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info(
             "Created managed agent %s on controller %s",
             result.agent_id,
@@ -1338,7 +1412,7 @@ class ManagementService:
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
         return await self._view(
             session, tenant_id, row, agent, {}, await self.leases(session)
@@ -1362,7 +1436,7 @@ class ManagementService:
         )
         await session.commit()
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
 
     async def forget_deleted_agent(
         self, session: AsyncSession, tenant_id: str, agent_id: str
@@ -1387,7 +1461,7 @@ class ManagementService:
         )
         await session.commit()
         self.presence.unbind(agent_id, DETACH_DELETED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info("Stopped managing agent %s, which is being deleted", agent_id)
 
     # ── Operations, owner side ────────────────────────────────────────────────
@@ -1458,7 +1532,7 @@ class ManagementService:
         )
         view = operation_view(operation)
         await session.commit()
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id, operation_id=operation.id, kind=kind, agent_id=agent_id
         )
         return view
@@ -1486,18 +1560,21 @@ class ManagementService:
         return [operation_view(operation) for operation in operations]
 
 
-def binding_of(
-    tenant_id: str, row: AgentDefinitionRow, controller: AgentController
-) -> Binding:
-    """The binding Core keeps for a definition placed on `controller`."""
-    assert row.controller_id == controller.id
-    return Binding(
-        agent_id=row.agent_id,
-        controller_id=controller.id,
-        tenant_id=tenant_id,
-        controller_name=controller.name,
-        running=row.desired_state == "running",
-    )
+# Why a connection ended for good: a socket going for any of these leaves
+# nothing to reattach to, and the controller opens another.
+_ENDING_REASONS = frozenset(
+    {HEARTBEAT_LAPSED.code, TAKEN_OVER.code, DISCONNECT_REVOKED}
+)
+
+
+def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
+    """The cursors recorded with a connection, as the presence holds them."""
+    if not recorded:
+        return {}
+    return {
+        agent_id: cursor if isinstance(cursor, int) else None
+        for agent_id, cursor in recorded.items()
+    }
 
 
 def placement_from(
