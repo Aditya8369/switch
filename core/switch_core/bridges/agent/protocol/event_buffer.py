@@ -942,6 +942,21 @@ class EventBuffer:
             if not complete and cast(datetime, lead.sent_at) >= group_deadline:
                 first = min(row.seq for _, _, row in parts)
                 held_from = first if held_from is None else min(held_from, first)
+        # A group goes out at its last file, so one with a file before the
+        # hold and its last file at or after it would not go out in this read,
+        # while the read's place moved past its earlier files. The next read
+        # would then find only the later files and send the group without
+        # them. Such a group is held from its first file too, which can reach
+        # back to another group that starts earlier.
+        spans = [
+            (min(row.seq for _, _, row in parts), max(row.seq for _, _, row in parts))
+            for parts in groups.values()
+        ]
+        while held_from is not None:
+            spanning = [first for first, last in spans if first < held_from <= last]
+            if not spanning:
+                break
+            held_from = min(spanning)
 
         member_names = await self._member_names(
             session,
