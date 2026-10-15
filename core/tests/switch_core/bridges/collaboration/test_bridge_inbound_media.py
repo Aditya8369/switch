@@ -165,6 +165,27 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
     assert bridge.human_actor.messages == []
 
 
+async def test_a_post_delivered_again_writes_into_the_same_group() -> None:
+    # A delivery that stopped after the first file is sent again by the
+    # platform; the files it still writes must complete the first group, not
+    # start one of their own.
+    bridge = _fake_bridge()
+    post = _msg(
+        content="two files",
+        attachments=[
+            _attachment("cat.png", "image/png"),
+            _attachment("notes.md", "text/markdown"),
+        ],
+    )
+
+    await CollaborationCore._handle_inbound_message(bridge, post)
+    await CollaborationCore._handle_inbound_message(bridge, post)
+
+    media = bridge.human_actor.media
+    assert len(media) == 4
+    assert len({m["group"]["id"] for m in media}) == 1
+
+
 async def test_single_attachment_carries_no_group_marker() -> None:
     # A group of one needs no marker — the receiver treats an unmarked event as
     # a complete message and never buffers it.

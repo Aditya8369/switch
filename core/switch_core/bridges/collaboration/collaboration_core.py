@@ -1125,7 +1125,11 @@ class CollaborationCore:
         # A platform post hands us all its files at once, so the group is known
         # up front — no waiting on the receiving side to learn how many to
         # expect. The room carries them as `total` events sharing this id.
-        group_id = str(uuid.uuid4()) if total > 1 else None
+        # Derived from the post, as the files' rows are: a second delivery of
+        # a post whose first stopped partway writes the files still missing
+        # into the same group, which then completes.
+        source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
+        group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
             media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
@@ -1135,11 +1139,7 @@ class CollaborationCore:
             )
             # Numbered from the post and the file's place in it, as the text
             # above is, so a second delivery of the post writes no file twice.
-            with writes_derived_from(
-                human_actor.client_id,
-                _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
-                + f"\x1f{index}",
-            ):
+            with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
                 event_id = await human_actor.send_media(
                     transport_room_id,
                     media_uri,
