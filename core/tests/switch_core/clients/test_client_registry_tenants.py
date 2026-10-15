@@ -40,7 +40,7 @@ class _StubClient:
     """A client that stays running until stopped, and touches nothing else.
 
     It has to actually stay running: `_start_task` puts every client in a task
-    that removes it from all three registries if `start` returns or raises, so
+    that removes it from all three registries if `connect` returns or raises, so
     a stub that finished immediately would empty the very dicts under test.
     """
 
@@ -50,10 +50,10 @@ class _StubClient:
         self.display_name = record.display_name
         self._stopped = asyncio.Event()
 
-    async def start(self, progress: object) -> None:
+    async def connect(self) -> None:
         await self._stopped.wait()
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self._stopped.set()
 
 
@@ -67,7 +67,7 @@ class _StubFactory:
     def create_consumer(self, client_type: str, actor: Any) -> Any:
         return actor
 
-    def read_by_one_process(self, client_type: str) -> bool:
+    def has_consumer(self, client_type: str) -> bool:
         return False
 
 

@@ -1,8 +1,7 @@
 """Ids for rows a client writes on behalf of something that may arrive twice.
 
 A consumer may handle a row twice: an owner that stopped between acting on a
-row and recording its progress leaves the row to the next owner, and a
-consumer that every process runs is handed the row in each. A messaging
+row and recording its progress leaves the row to the next owner. A messaging
 platform may deliver one post twice, as Slack sends an event again when its
 acknowledgement did not arrive. Every row the client writes meanwhile is given
 an id derived from what it is acting on and how many it has written so far,

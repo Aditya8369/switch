@@ -49,7 +49,7 @@ class _Factory:
     def create_consumer(self, client_type: str, actor: _Actor) -> None:
         return None
 
-    def read_by_one_process(self, client_type: str) -> bool:
+    def has_consumer(self, client_type: str) -> bool:
         return False
 
 

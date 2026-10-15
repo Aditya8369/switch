@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from switch_core.events import (
     AgentRuntimeStateEvent,
@@ -55,12 +55,6 @@ SYNC_BACKOFF_CAP = 60.0
 
 
 class Consumer[ActorT: Actor[Any]]:
-    # Whether what this consumer does must happen once, so only the process
-    # that owns its client runs it (`ownership.py`), reading from the
-    # client's stored cursors. Otherwise every process runs its own copy,
-    # each reading its rooms from their newest rows.
-    read_by_one_process: ClassVar[bool] = True
-
     def __init__(self, *, actor: ActorT) -> None:
         self.actor = actor
         # Rooms this consumer has already announced its actor's arrival in.

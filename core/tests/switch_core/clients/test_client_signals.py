@@ -40,10 +40,10 @@ class _Consumer:
     def preload_agent(self, agent: Agent) -> None:
         return None
 
-    async def start(self, progress: object) -> None:
+    async def connect(self) -> None:
         return None
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self.stopped = True
 
 
@@ -56,7 +56,7 @@ class _Factory:
     def create_consumer(self, client_type: str, actor: _Consumer) -> _Consumer:
         return actor
 
-    def read_by_one_process(self, client_type: str) -> bool:
+    def has_consumer(self, client_type: str) -> bool:
         return False
 
 

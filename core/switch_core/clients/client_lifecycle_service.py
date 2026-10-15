@@ -6,9 +6,7 @@ in a room created there, an agent posting through the API. A consumer is
 different when what it does must happen once: the admin's `CommandConsumer`
 answers commands and posts warnings, so it runs in the one process that owns
 its client (`ownership.py`), reading from the client's stored cursors and
-stopped when the ownership moves. A consumer that may run everywhere
-(`Consumer.read_by_one_process`) runs in every process, reading each room from
-its newest row.
+stopped when the ownership moves. Every consumer runs that way.
 """
 
 from __future__ import annotations
@@ -33,13 +31,12 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
-from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
-from switch_core.transport.cursors import ConsumerCursors, CursorWriter, FromHead
+from switch_core.transport.cursors import ConsumerCursors, CursorWriter
 
 if TYPE_CHECKING:
     from switch_core.clients.client_signals import ClientSignals
@@ -463,18 +460,12 @@ class ClientLifecycleService:
         self._clients[record.id] = actor
         self._client_types[record.id] = record.type
         self._client_tenants[record.id] = record.tenant_id
-        if self._client_factory.read_by_one_process(record.type):
-            # The actor here, the consumer where this process owns the client.
-            self._consumers.pop(record.id, None)
-            self._start_task(record.id, actor, None)
+        # The actor here, and the consumer, if the type has one, where this
+        # process owns the client.
+        self._consumers.pop(record.id, None)
+        self._start_task(record.id, actor)
+        if self._client_factory.has_consumer(record.type):
             self._owned.want(record.id)
-            return actor
-        consumer = self._client_factory.create_consumer(record.type, actor)
-        if consumer is not None:
-            self._consumers[record.id] = consumer
-        else:
-            self._consumers.pop(record.id, None)
-        self._start_task(record.id, actor, consumer)
         return actor
 
     async def create_and_start(
@@ -704,12 +695,7 @@ class ClientLifecycleService:
                 if self._owned_tasks.get(client_id) is asyncio.current_task():
                     del self._owned_tasks[client_id]
 
-    def _start_task(
-        self,
-        client_id: str,
-        actor: Actor[ClientConfig],
-        consumer: Consumer[Any] | None,
-    ) -> None:
+    def _start_task(self, client_id: str, actor: Actor[ClientConfig]) -> None:
         # A client row is one running task. Anything that starts a second for
         # the same row — a boot sweep reaching a client that registration
         # already started, a bridge restarting its own — replaces the first,
@@ -719,7 +705,7 @@ class ClientLifecycleService:
         # finally reaches it, it runs the teardown for both: the live client
         # for that user goes deaf to invitations it never saw arrive.
         self._cancel_task(client_id)
-        task = asyncio.create_task(self._run_client(client_id, actor, consumer))
+        task = asyncio.create_task(self._run_client(client_id, actor))
         self._tasks[client_id] = task
 
     def _cancel_task(self, client_id: str) -> asyncio.Task[None] | None:
@@ -728,12 +714,7 @@ class ClientLifecycleService:
             task.cancel()
         return task
 
-    async def _run_client(
-        self,
-        client_id: str,
-        actor: Actor[ClientConfig],
-        consumer: Consumer[Any] | None,
-    ) -> None:
+    async def _run_client(self, client_id: str, actor: Actor[ClientConfig]) -> None:
         """A client's long-lived task, deliberately ambient-free.
 
         `no_tenant` because a task keeps the context of whoever created it,
@@ -762,12 +743,7 @@ class ClientLifecycleService:
                 attempt = 0
                 while True:
                     try:
-                        if consumer is not None:
-                            # Every process runs every client's consumer, so
-                            # each reads its rooms from their newest rows.
-                            await consumer.start(FromHead(MessageStore()))
-                        else:
-                            await actor.connect()
+                        await actor.connect()
                         return
                     except _TRANSIENT_START_ERRORS:
                         attempt += 1

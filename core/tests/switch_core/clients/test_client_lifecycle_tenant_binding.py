@@ -39,11 +39,11 @@ class _RecordingClient:
         self.transport_user_id = "@recorded:test"
         self._seen = seen
 
-    async def start(self, progress: object) -> None:
+    async def connect(self) -> None:
         self._seen.append(current_tenant_id())
         self.room_seen = current_log_context().room_id
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         return None
 
 
@@ -75,7 +75,7 @@ async def test_a_client_task_runs_with_no_tenant_bound(
 
     with tenant_scope(room_tenant):
         recording = _RecordingClient(seen)
-        service._start_task("client-1", recording, recording)  # type: ignore[arg-type]
+        service._start_task("client-1", recording)  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
     assert seen == [None], (
@@ -93,7 +93,7 @@ async def test_a_client_task_does_not_keep_the_room_it_was_created_in(
     service = _service(session_factory, MagicMock())
 
     with log_context(room_id="room-where-it-was-minted"):
-        service._start_task("client-1", client, client)  # type: ignore[arg-type]
+        service._start_task("client-1", client)  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
     assert client.room_seen is None
@@ -125,10 +125,10 @@ async def test_start_all_binds_nothing_around_starting_each_client(
 
     seen: list[str | None] = []
     client_factory = MagicMock()
-    # Each client reads for itself, in every process.
+    # Each client's actor connects in every process.
     client_factory.create_actor.side_effect = lambda record: _RecordingClient(seen)
     client_factory.create_consumer.side_effect = lambda client_type, actor: actor
-    client_factory.read_by_one_process.return_value = False
+    client_factory.has_consumer.return_value = False
 
     service = _service(session_factory, client_factory)
     await service.start_all()

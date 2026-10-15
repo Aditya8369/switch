@@ -33,10 +33,9 @@ queries these rows directly.
 
 **Where reading starts is the consumer's.** `receive_forever` is handed a
 `DeliveryProgress` (`transport/cursors.py`) that says where to start each room
-and hears how far the client has got: a consumer one process owns reads from
-its stored cursors and resumes where the last owner stopped, and one that
-every process runs reads from each room's newest row. Writing needs nothing of
-the kind: any process may write as any client.
+and hears how far the client has got: a consumer, which one process owns,
+reads from its stored cursors and resumes where the last owner stopped.
+Writing needs nothing of the kind: any process may write as any client.
 """
 
 from __future__ import annotations
