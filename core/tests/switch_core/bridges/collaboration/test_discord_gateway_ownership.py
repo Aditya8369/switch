@@ -121,12 +121,16 @@ async def _with_gateway(
     postgres_url: str,
     session_factory: async_sessionmaker[AsyncSession],
     discord: _Discord,
+    *,
+    attach_fails: bool = False,
 ) -> _WithGateway:
     process = await _bridge_process(postgres_url, session_factory)
     process.bridges.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
     bridges = process.bridges
 
     async def attach(connection: DiscordConnection) -> None:
+        if attach_fails:
+            raise RuntimeError("attaching the bridges failed")
         for adapter in bridges.iter_adapters():
             if isinstance(adapter, DiscordAdapter):
                 adapter.attach_shared_connection(connection)
@@ -271,6 +275,43 @@ class TestHandingOver:
         assert other.holds_every(shared_bridges)
         assert other.connection.discord.sockets == [other.connection]
         assert other.connection.discord.most_sockets == 1
+
+    async def test_a_socket_whose_bring_up_failed_is_closed_as_it_is_handed_over(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        shared_bridges: list[str],
+    ) -> None:
+        """Attaching the bridges failed once the socket was up, and handing
+        the socket over raises that failure. The ownership releases the
+        socket's lease all the same, and the next holder opens a socket of its
+        own, so this one has to be closed by then."""
+        discord = _Discord()
+        started: list[_WithGateway] = []
+        try:
+            failing = await _with_gateway(
+                postgres_url, session_factory, discord, attach_fails=True
+            )
+            started.append(failing)
+            # Alone, so it takes the socket.
+            await failing.boot()
+            await _eventually(failing.has_socket)
+            other = await _with_gateway(postgres_url, session_factory, discord)
+            started.append(other)
+            await other.boot()
+
+            # Not the gateway's own `stop`, which `main` calls only after the
+            # drain: only the hand-over can have closed the socket by now.
+            await failing.process.stop()
+            await other.process.ownership.balance()
+
+            await _eventually(other.has_socket)
+            assert other.holds_every(shared_bridges)
+            assert discord.sockets == [other.connection]
+            assert discord.most_sockets == 1
+        finally:
+            for process in started:
+                await process.stop()
 
     async def test_a_process_that_died_is_taken_over_once_its_lease_lapses(
         self,

@@ -236,16 +236,24 @@ class DiscordGatewayClient:
             )
 
     async def _close(self) -> None:
-        """Stop whatever is being brought up, and close the connection."""
+        """Stop whatever is being brought up, and close the connection.
+
+        Closed even when the bring-up failed after connecting, in
+        `on_connected`, and its error is raised from here: the ownership logs
+        a hand-over that raises and releases the socket's lease all the same,
+        and the next holder opens a socket of its own.
+        """
         task, self._task = self._task, None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._live = False
-        await self._connection.close()
+        try:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            self._live = False
+            await self._connection.close()
 
     async def stop(self) -> None:
         await self._close()
