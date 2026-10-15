@@ -83,12 +83,16 @@ start, naming that process. A single replica replaced in one step has no
 running process left to check, so it is not held back.
 
 Rotate on a schedule, and at once if a key may have leaked. For a suspected
-leak, skip step 1 and the wait: deploy `<new>,<old>`, check the boot log
-reports the re-encryption, then deploy `<new>` alone straight away. Stored
-credentials need the old key once to be re-encrypted; until the second deploy,
-sessions signed with the old key still verify, so keep that window short.
-Removing the old key ends every session and stops every Mattermost button
-posted before, which is the point.
+leak, skip the wait: deploy `<old>,<new>`, deploy `<new>,<old>` once that has
+reached every replica, check the boot log reports the re-encryption, then
+deploy `<new>` alone straight away. Skip step 1 as well only where no
+switch-core process is still running when the first new one starts, as with a
+single replica replaced in one step. While an old process is still running,
+the new one refuses to start, and the roll stalls until you deploy step 1.
+Stored credentials need the old key once to be re-encrypted; until the last
+deploy, sessions signed with the old key still verify, so keep that window
+short. Removing the old key ends every session and stops every Mattermost
+button posted before, which is the point.
 
 ## Ids
 
