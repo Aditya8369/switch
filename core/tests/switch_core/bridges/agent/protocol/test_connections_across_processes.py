@@ -43,6 +43,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
     Closure,
     SupersededReattachError,
+    UnknownConnectionError,
 )
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -642,6 +643,42 @@ class TestTakeover:
         with pytest.raises(HTTPException) as refused:
             await _subscribe(a, ROOM, first.stream_generation)
         assert refused.value.detail["code"] == "taken_over"
+
+    async def test_another_agent_cannot_take_a_connection_id_on_the_other_process(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """The other process has no copy of the connection yet, so only the
+        row can refuse the second agent; it keeps the first agent's."""
+        a, b = processes
+        await b.bus.stop()  # `b` never hears of the first agent's connection
+        held = await _open(a)
+        intruder = "agent-2"
+        await seed_agent(session_factory, intruder)
+
+        with tenant_scope(TENANT_ZERO_ID), pytest.raises(UnknownConnectionError):
+            async with b.registry.slots(intruder), b.registry.recorded(intruder):
+                b.registry.open(
+                    agent_id=intruder,
+                    connection_id=CONN,
+                    scope="single",
+                    delivery_filter="addressed",
+                    spawn_capable=False,
+                    position={OWN_EVENTS: 0},
+                    declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+                    expected_generation=None,
+                )
+
+        async with session_factory() as session:
+            row = await session.get(AgentConnectionRecord, CONN)
+        assert row is not None
+        assert (row.agent_id, row.process_id, row.incarnation) == (
+            AGENT,
+            a.lease.process_id,
+            held.stream_generation,
+        )
+        assert b.registry.get(CONN) is None
 
 
 class TestOneProcess:

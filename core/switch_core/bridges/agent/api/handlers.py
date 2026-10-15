@@ -958,21 +958,25 @@ async def _open_connection(
 
     # Opened as a recorded move, so a reattach is fenced on the incarnation
     # every process sees, and the connection is recorded for them before the
-    # client is told it is open.
-    async with protocol.connections.slots(agent.id):
-        async with protocol.connections.recorded(agent.id):
-            conn = _register_connection(
-                protocol=protocol,
-                agent=agent,
-                connection_id=connection_id,
-                scope=scope,
-                event_filter=event_filter,
-                spawn_capable=spawn_capable,
-                position=position,
-                declaration=declaration,
-                expected_generation=expected_generation,
-                transport=transport,
-            )
+    # client is told it is open. Recording it is refused, as opening it is,
+    # when the id is another agent's connection's.
+    try:
+        async with protocol.connections.slots(agent.id):
+            async with protocol.connections.recorded(agent.id):
+                conn = _register_connection(
+                    protocol=protocol,
+                    agent=agent,
+                    connection_id=connection_id,
+                    scope=scope,
+                    event_filter=event_filter,
+                    spawn_capable=spawn_capable,
+                    position=position,
+                    declaration=declaration,
+                    expected_generation=expected_generation,
+                    transport=transport,
+                )
+    except UnknownConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if lost is not None:
         conn.resume_lost = True
         conn.resume_requested = lost

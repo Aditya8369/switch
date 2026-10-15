@@ -60,6 +60,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Closure,
     ConnectionError_,
     Released,
+    UnknownConnectionError,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_connection_store import (
@@ -236,7 +237,7 @@ class SharedConnections:
                 ]
                 for conn in opened:
                     conn.tenant_id = tenant_id
-                    await self._store.record_open(
+                    written = await self._store.record_open(
                         session,
                         tenant_id=tenant_id,
                         connection_id=conn.id,
@@ -250,6 +251,10 @@ class SharedConnections:
                         speaks=conn.declaration.speaks,
                         accepts=conn.declaration.protocol_floor,
                     )
+                    if not written:
+                        # Another agent's connection has this id, opened
+                        # through a process this one has not heard from.
+                        raise UnknownConnectionError(conn.id)
                 if slots_after != slots_recorded:
                     claims, placements = slots_after
                     await self._store.replace_slots(
