@@ -201,7 +201,7 @@ describe('picking a workspace after signing in', () => {
     expect(el.textContent).toContain('Choose your workspace');
     expect(el.textContent).toContain('Acme');
     expect(el.textContent).toContain('Skunkworks');
-    expect(el.textContent).toContain('Create a new workspace');
+    expect(el.textContent).toContain('Create your own workspace');
   });
 
   it('leaves out the invite and join rows on a server too old to list them', async () => {
