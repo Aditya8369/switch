@@ -687,6 +687,17 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def held_with(cls, connection_config: dict[str, object]) -> tuple[str, str] | None:
+        """Other owned work this bridge must be held beside, as (kind, key) in
+        `ownership.py`, or None for a bridge placed on its own.
+
+        For a bridge whose platform events reach it in-process from something
+        else that runs once per deployment, such as Discord's one shared
+        Gateway connection: held anywhere else, it would never hear them.
+        """
+        return None
+
+    @classmethod
     def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
         """The URLs in this config that Switch itself connects to.
 

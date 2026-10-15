@@ -166,6 +166,21 @@ class TestOneOwner:
             owner = a if owner_of(KIND, key, live) == a.process_id else b
             assert key in owner.runs()
 
+    async def test_keys_placed_with_another_kinds_key_run_beside_it(
+        self, two: tuple[_Process, _Process]
+    ) -> None:
+        a, b = two
+        beside = ("socket", "the-one")
+        for process in two:
+            for key in KEYS:
+                process.kind.want(key, placed_with=beside)
+        await a.ownership.balance()
+        await b.ownership.balance()
+
+        live = sorted([a.process_id, b.process_id])
+        owner = a if owner_of(*beside, live) == a.process_id else b
+        assert owner.runs() == set(KEYS)
+
     async def test_one_process_owns_everything(
         self,
         session_factory: async_sessionmaker[AsyncSession],

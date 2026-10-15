@@ -720,7 +720,7 @@ class CollaborationBridgeLifecycleService:
 
         logger.info("Wanting %d collaboration bridges", len(bridges))
         for bridge in bridges:
-            self._owned.want(bridge.id)
+            self._want(bridge)
 
     async def start_quiet_copies(self) -> None:
         """Start, quietly, every wanted bridge this process does not hold.
@@ -983,7 +983,7 @@ class CollaborationBridgeLifecycleService:
         try:
             # Which process holds it is settled first, so it starts once, in
             # the form it will run here.
-            self._owned.want(bridge.id)
+            self._want(bridge)
             await self._owned.settle()
             failed = self._failed_take_overs.pop(bridge.id, None)
             if failed is not None:
@@ -1725,6 +1725,17 @@ class CollaborationBridgeLifecycleService:
 
         self._quiet_starts[bridge_id] = asyncio.create_task(run())
 
+    def _want(self, bridge: CollaborationBridge) -> None:
+        """This process could hold `bridge`, beside whatever its platform
+        says it must be held with (`PlatformAdapter.held_with`)."""
+        adapter_cls = self._adapter_registry.get(bridge.type)
+        held_with = (
+            adapter_cls.held_with(bridge.connection_config or {})
+            if adapter_cls is not None
+            else None
+        )
+        self._owned.want(bridge.id, placed_with=held_with)
+
     def holds(self, bridge_id: str) -> bool:
         """Whether this process holds the bridge and listens for it."""
         return self._owned.fence(bridge_id) is not None
@@ -1793,7 +1804,7 @@ class CollaborationBridgeLifecycleService:
         if not self._owned.wants(bridge_id):
             # New here: which process holds it is settled first, so it starts
             # once, in the form it runs in.
-            self._owned.want(bridge_id)
+            self._want(bridge)
             await self._owned.settle()
         if bridge_id in self._quiet_starts:
             # Starting in the background, from the row as it reads then.
