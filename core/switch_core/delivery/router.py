@@ -98,7 +98,6 @@ from switch_core.delivery.recipient import (
     file_index,
 )
 from switch_core.events import (
-    CommandEvent,
     SwitchEvent,
     TaskAccept,
     TaskCancel,
@@ -458,8 +457,6 @@ class _Plan:
     deliveries: list[tuple[AgentRecipient, Delivery]] = field(default_factory=list)
     # The agent whose arrival this row is, when it is one.
     arrival: AgentRecipient | None = None
-    # The agents a room command is run for once it has committed.
-    commands: list[AgentRecipient] = field(default_factory=list)
     group: _GroupStep | None = None
 
 
@@ -532,10 +529,6 @@ class Routed:
         if plan.arrival is not None:
             arrival = plan.arrival
             work.append((arrival, _bind(arrival, lambda _row: arrival.greet(), row)))
-        if plan.commands:
-            assert isinstance(row, InboundCustomEvent)
-            for recipient in plan.commands:
-                work.append((recipient, _bind_command(recipient, row)))
         if work:
             router.after_commit(reads.tenant_id, reads.room_id, work)
 
@@ -548,17 +541,6 @@ def _bind(
     async def run() -> None:
         await recipient.actor.connect()
         await after(row)
-
-    return run
-
-
-def _bind_command(
-    recipient: AgentRecipient, row: InboundCustomEvent
-) -> Callable[[], Awaitable[None]]:
-    async def run() -> None:
-        await recipient.actor.connect()
-        # A command of its own for each agent: its handler may change it.
-        await recipient.handle_command(command_event(row))
 
     return run
 
@@ -1109,16 +1091,28 @@ class MessageRouter:
     ) -> _Plan:
         if event.event_type == _COMMAND_EVENT:
             try:
-                CommandEvent(**event.content)
+                command = command_event(event)
             except Exception:
                 logger.exception(
                     "Failed to parse %s event in %s", event.event_type, event.room_id
                 )
                 return _Plan()
-            # A command is decided by its handler, once it has committed:
-            # whom it targets, whether the sender may command the agent, and
-            # what it does are all answered there.
-            return _Plan(commands=recipients)
+            # A command that is queued for the agent is decided here, so it
+            # is numbered for the agent before anything written after it;
+            # the rest are decided by their handlers once they have committed.
+            return _Plan(
+                deliveries=[
+                    (
+                        recipient,
+                        await _decided(
+                            recipient,
+                            event,
+                            lambda: recipient.decide_command(command),
+                        ),
+                    )
+                    for recipient in recipients
+                ]
+            )
         kind = _TASK_EVENTS.get(event.event_type)
         if kind is None:
             return _Plan()
