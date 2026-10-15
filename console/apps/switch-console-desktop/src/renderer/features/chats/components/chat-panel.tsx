@@ -69,9 +69,12 @@ const Notice = ({ icon, title, body }: { icon: React.ReactNode; title: string; b
 export const ChatPanel = observer(function ChatPanel({
   serverId,
   roomId,
+  showHeader,
 }: {
   serverId: string;
   roomId: string;
+  /** The agent page shows the chat's title over its messages; the chat view has it in its title bar. */
+  showHeader: boolean;
 }) {
   const timeline = chatsStore.timelines.get(serverId, roomId);
   const chat = chatsStore.chat(roomId);
@@ -133,6 +136,15 @@ export const ChatPanel = observer(function ChatPanel({
 
   return (
     <div data-chat-panel className="flex h-full min-h-0 flex-col bg-background text-foreground">
+      {showHeader && chat && (
+        <div className="relative z-10 flex h-11 shrink-0 items-center bg-background px-4">
+          <span className="truncate text-sm font-medium">{chat.name}</span>
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-full h-6 bg-linear-to-b from-background to-transparent"
+          />
+        </div>
+      )}
       {timeline.loadError && (
         <div
           role="alert"

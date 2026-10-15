@@ -29,7 +29,6 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { cn } from '@renderer/utils/utils';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentChats, openAgentChat } from './agent-chats';
 import { type AgentTab, agentTabStore } from './agent-tab-store';
@@ -95,14 +94,11 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   return (
     <Titlebar
       className="border-b border-border"
-      leftClassName={cn(
-        'w-[300px] shrink-0 self-stretch [-webkit-app-region:drag]',
-        tab === 'chats' && 'border-r border-border'
-      )}
+      leftClassName="min-w-0 [-webkit-app-region:drag]"
       leftSlot={
         <div className="flex min-w-0 items-center gap-3">
           {breadcrumb}
-          <div className="[-webkit-app-region:no-drag]">
+          <div className="shrink-0 [-webkit-app-region:no-drag]">
             <SegmentedControl
               value={tab}
               onChange={(next) => agentTabStore.setTab(params.agentId, next)}
@@ -112,25 +108,22 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
           </div>
         </div>
       }
-      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4 [-webkit-app-region:drag]"
+      rightClassName="shrink-0 pl-3"
       rightSlot={
-        <>
-          <span className="truncate text-sm font-medium">{chat?.name}</span>
-          <div className="mr-1 flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
-            {server &&
-              serverState(server) !== 'connected' &&
-              serverState(server) !== 'running-local' &&
-              pill}
-            {agent &&
-              (chat ? (
-                <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
-                  <ManagedAgentActionItems agent={agent} />
-                </ChatHeaderControls>
-              ) : (
-                <ManagedAgentActionsMenu agent={agent} />
-              ))}
-          </div>
-        </>
+        <div className="mr-1 flex items-center gap-1.5">
+          {server &&
+            serverState(server) !== 'connected' &&
+            serverState(server) !== 'running-local' &&
+            pill}
+          {agent &&
+            (chat ? (
+              <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
+                <ManagedAgentActionItems agent={agent} />
+              </ChatHeaderControls>
+            ) : (
+              <ManagedAgentActionsMenu agent={agent} />
+            ))}
+        </div>
       }
     />
   );

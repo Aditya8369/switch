@@ -131,15 +131,9 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           {agentRooms && rooms.length === 0 && <Note>Not in any room yet.</Note>}
         </Section>
       </div>
-      <div className="relative min-w-0 flex-1">
+      <div className="min-w-0 flex-1">
         {roomId ? (
-          <>
-            <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"
-            />
-          </>
+          <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} showHeader />
         ) : (
           <EmptyState
             label="No chat open"
