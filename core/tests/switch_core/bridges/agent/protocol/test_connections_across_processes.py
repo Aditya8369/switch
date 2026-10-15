@@ -544,6 +544,63 @@ class TestTakeover:
         assert first.stream_generation != second.stream_generation
         assert min(first.stream_generation, second.stream_generation) >= 2**33
 
+    async def test_a_reattach_elsewhere_draws_a_later_incarnation(
+        self, processes: tuple[Process, Process]
+    ) -> None:
+        """Each process draws incarnations in batches, so one drawn from an
+        earlier batch is not later than the one recorded. A reattach must
+        still move the connection's incarnation forward: a process that sees
+        a later one presented knows its own copy is the stale one."""
+        a, b = processes
+        await _open(b, connection_id="conn-b")  # b draws its batch first
+        held = (await _open(a)).stream_generation
+
+        winner = await _open(b, expected_generation=held)
+
+        assert winner.stream_generation > held
+
+    async def test_the_previous_holder_admits_the_current_incarnation(
+        self, processes: tuple[Process, Process]
+    ) -> None:
+        """The client reattached through the other process and its next
+        requests reach the process it left, before that one has read the
+        reattach: they are served, not refused as taken over."""
+        a, b = processes
+        first = await _open(a)
+        a.registry.detach_stream(first, first.stream_generation)
+        await a.bus.stop()  # `a` hears nothing from `b`
+        second = await _open(b, expected_generation=first.stream_generation)
+
+        answer = await connection_placements(
+            AGENT,
+            ConnectionPlacementsRequest(
+                connection_id=CONN,
+                placements={"session-1": ROOM},
+                generation=second.stream_generation,
+            ),
+            agent=_Agent(),  # type: ignore[arg-type]
+            protocol=a.protocol,
+        )
+        with tenant_scope(TENANT_ZERO_ID):
+            beat = await connection_beat(
+                AGENT,
+                ConnectionBeatRequest(
+                    connection_id=CONN, generation=second.stream_generation
+                ),
+                agent=_Agent(),  # type: ignore[arg-type]
+                protocol=a.protocol,
+            )
+
+        assert answer["placements"] == {"session-1": ROOM}
+        assert beat["ok"] is True
+        assert first.closure is not None
+        assert first.closure.code == "taken_over"
+        assert second.closure is None
+        # The client it took the connection from is still refused.
+        with pytest.raises(HTTPException) as refused:
+            await _subscribe(a, ROOM, first.stream_generation)
+        assert refused.value.detail["code"] == "taken_over"
+
 
 class TestOneProcess:
     async def test_an_open_and_a_close_are_recorded_once_each(

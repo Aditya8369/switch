@@ -1154,10 +1154,13 @@ async def connection_beat(
             SupersededConnectionError,
             UnfencedBeatError,
         ):
-            if _held_here(protocol, req.connection_id):
+            if _held_here(protocol, req.connection_id) and not _presents_later(
+                protocol, req.connection_id, req.generation
+            ):
                 raise
-            # The beat reached a process that does not hold the stream, and
-            # its copy of the connection may be a moment old: a refusal is
+            # The beat reached a process that does not hold the stream, or
+            # that held it before a later incarnation was opened elsewhere,
+            # and its copy of the connection may be a moment old: a refusal is
             # final for the client, so it is given only on the recorded row.
             await protocol.connections.refresh(agent.id)
             conn = _record_beat(protocol, agent.id, req.connection_id, req.generation)
@@ -1370,6 +1373,23 @@ def _held_here(protocol: AgentCore, connection_id: str) -> bool:
     return conn is not None and conn.held_by is None
 
 
+def _presents_later(
+    protocol: AgentCore, connection_id: str, generation: int | None
+) -> bool:
+    """Whether the caller names a later incarnation than this process has.
+
+    Every incarnation of a connection is later than the ones before it, so a
+    later one presented was opened through another process after this one
+    last read the rows: this process's copy is the stale one, not the
+    caller's."""
+    conn = protocol.connections.get(connection_id)
+    return (
+        conn is not None
+        and generation is not None
+        and generation > conn.stream_generation
+    )
+
+
 async def _admitted_connection(
     protocol: AgentCore,
     agent: Agent,
@@ -1378,13 +1398,16 @@ async def _admitted_connection(
     """The first check, before anything is read on the caller's behalf.
 
     A connection held by another process is checked against this process's
-    copy, which may be a moment old, so a refusal is checked again on the
-    recorded row before it is given. The check that decides is
-    `_current_connection`, made again inside the recorded move."""
+    copy, which may be a moment old, and so is one held here when the caller
+    names a later incarnation, so a refusal is checked again on the recorded
+    row before it is given. The check that decides is `_current_connection`,
+    made again inside the recorded move."""
     try:
         return _current_connection(protocol, agent, req)
     except HTTPException:
-        if _held_here(protocol, req.connection_id):
+        if _held_here(protocol, req.connection_id) and not _presents_later(
+            protocol, req.connection_id, req.generation
+        ):
             raise
     await protocol.connections.refresh(agent.id)
     return _current_connection(protocol, agent, req)

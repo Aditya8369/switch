@@ -203,11 +203,20 @@ class SharedConnections:
         registry = self._registry
         async with tenant_session(self._session_factory, tenant_id) as session:
             await self._store.lock_agent(session, agent_id)
+            rows = await self._read_agent(session, agent_id)
+            # Every incarnation of the agent's connections is later than the
+            # ones recorded before it, so a process holding an older one
+            # knows a newer one presented is current and its copy is stale.
+            # Numbers drawn in an earlier batch than the latest recorded are
+            # passed over: the sequence's next ones are later than both.
+            latest = max(
+                (row.incarnation for row in rows.connections.values()), default=0
+            )
+            self._incarnations = [n for n in self._incarnations if n > latest]
             if not self._incarnations:
                 self._incarnations.extend(
                     await self._store.incarnations(session, INCARNATION_BATCH)
                 )
-            rows = await self._read_agent(session, agent_id)
             self._apply(agent_id, tenant_id, rows)
             # Compared with what is recorded rather than with the copy just
             # set from it: a claim of a connection this process has closed,
