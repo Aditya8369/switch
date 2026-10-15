@@ -453,6 +453,13 @@ none of it is needed to take part in a conversation.
   are commands for people: when someone asks you to rename or delete an agent
   in chat, point them at the command, or use `update_agent_detail` yourself
   for a rename once they confirm.
+- **`request_agent_deletion`** — ask for another of your owner's agents to be
+  deleted. It deletes nothing: Switch posts the request in your connected
+  room, and only the agent's owner or a workspace admin can carry it out by
+  sending `!delete-agent <name> confirm` within two minutes. Needs "can
+  manage agents"; refused for yourself, an agent that can manage agents, and
+  a connector's agent. Confirm with the person asking first, then tell them
+  what to send.
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
@@ -978,6 +985,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
+- `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.
 - `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.

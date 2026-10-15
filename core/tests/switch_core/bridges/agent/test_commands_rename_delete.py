@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import (
@@ -29,19 +30,23 @@ from switch_core.bridges.agent.protocol.agent_core import (
     AgentRenameRefused,
     AgentRenameResult,
 )
+from switch_core.clients.agent_admin import AgentDeletionRequests
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AuditEvent,
     Client,
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    Room,
     TenantMember,
     User,
 )
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_service,
@@ -49,6 +54,7 @@ from tests.switch_core.bridges.agent.protocol.registration_harness import (
 )
 
 _ROOM = SimpleNamespace(room_id="!room:test")
+_SWITCH_ROOM_ID = "switch-room-1"
 
 
 @dataclass
@@ -92,6 +98,8 @@ class _World:
     admin_chat: str
     unlinked_chat: str
     agent_chat: str
+    announced: list[tuple[str, str]]
+    session_factory: async_sessionmaker[AsyncSession]
 
 
 async def _bridge(session: AsyncSession) -> str:
@@ -179,10 +187,23 @@ async def world(session_factory: async_sessionmaker[AsyncSession]) -> _World:
     async def reply_command(_room_id: str, body: str, **_kw: Any) -> None:
         replies.append(body)
 
+    announced: list[tuple[str, str]] = []
+
+    async def send_admin(room_id: str, body: str, **_kw: Any) -> None:
+        announced.append((room_id, body))
+
+    async def resolve_room_meta(_transport_room_id: str) -> Any:
+        return SimpleNamespace(room_id=_SWITCH_ROOM_ID)
+
     host = object.__new__(CommandConsumer)
     host.actor = SimpleNamespace(  # type: ignore[assignment]
-        session_factory=session_factory, client_store=ClientStore()
+        session_factory=session_factory,
+        client_store=ClientStore(),
+        send_admin=send_admin,
     )
+    host._room_store = RoomStore()
+    host._resolve_room_meta = resolve_room_meta  # type: ignore[method-assign]
+    host._deletion_requests = AgentDeletionRequests()
     host._agent_store = AgentStore()
     host._external_user_store = ExternalUserStore()
     host._user_store = UserStore()
@@ -199,6 +220,8 @@ async def world(session_factory: async_sessionmaker[AsyncSession]) -> _World:
         admin_chat=admin_chat,
         unlinked_chat=unlinked_chat,
         agent_chat=agent_chat,
+        announced=announced,
+        session_factory=session_factory,
     )
 
 
@@ -394,6 +417,94 @@ class TestDeleteCommand:
         await _delete(world, "@notes-taker confirm", world.owner_chat)
 
         assert "slack: Slack is down" in world.replies[1]
+
+
+class TestAnAgentsRequest:
+    """An agent with "can manage agents" may ask for a deletion; only a person
+    can carry it out, by confirming in the same room."""
+
+    async def test_a_person_confirms_what_an_agent_asked(self, world: _World) -> None:
+        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+
+        await _delete(world, "notes-taker confirm", world.owner_chat)
+
+        assert world.core.deleted == [world.agent_id]
+        assert "as helper asked" in world.replies[0]
+
+    async def test_someone_else_cannot_confirm_it(self, world: _World) -> None:
+        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+
+        await _delete(world, "notes-taker confirm", world.stranger_chat)
+        await _delete(world, "notes-taker confirm", world.unlinked_chat)
+        await _delete(world, "notes-taker confirm", world.agent_chat)
+
+        assert world.core.deleted == []
+
+    async def test_an_admin_may_confirm_it(self, world: _World) -> None:
+        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+
+        await _delete(world, "notes-taker confirm", world.admin_chat)
+
+        assert world.core.deleted == [world.agent_id]
+
+    async def test_a_request_from_another_room_does_not_count(
+        self, world: _World
+    ) -> None:
+        world.host._deletion_requests.add("another-room", world.agent_id, "helper")
+
+        await _delete(world, "notes-taker confirm", world.owner_chat)
+
+        assert world.core.deleted == []
+
+    async def test_a_request_is_used_once(self, world: _World) -> None:
+        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+
+        await _delete(world, "notes-taker confirm", world.owner_chat)
+        await _delete(world, "notes-taker confirm", world.owner_chat)
+
+        assert world.core.deleted == [world.agent_id]
+
+
+class TestAfterADelete:
+    async def test_it_is_recorded_in_the_audit_log_with_who_confirmed(
+        self, world: _World
+    ) -> None:
+        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+
+        await _delete(world, "notes-taker confirm", world.owner_chat)
+
+        async with world.session_factory() as session:
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEvent).where(AuditEvent.action == "agent.deleted")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(events) == 1
+        assert events[0].target_id == world.agent_id
+        assert events[0].actor_user_id is not None
+        assert events[0].details["requested_by_agent_name"] == "helper"
+
+    async def test_its_other_rooms_are_told(self, world: _World) -> None:
+        async with world.session_factory() as session:
+            other = Room(transport_room_id="!other:test", name="ops", description="ops")
+            here = Room(
+                transport_room_id=_ROOM.room_id, name="here", description="here"
+            )
+            session.add_all([other, here])
+            await session.flush()
+            await RoomStore().add_agents(session, other.id, [world.agent_id])
+            await RoomStore().add_agents(session, here.id, [world.agent_id])
+            await session.commit()
+
+        await _delete(world, "notes-taker", world.owner_chat)
+        await _delete(world, "notes-taker confirm", world.owner_chat)
+
+        assert [room for room, _ in world.announced] == ["!other:test"]
+        assert "was deleted" in world.announced[0][1]
 
 
 class TestRegistration:

@@ -41,11 +41,16 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
-from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
+    AgentExistsError,
+    AgentRenameRefused,
+)
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
+from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT
@@ -2325,6 +2330,45 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
     protocol = get_protocol()
     detail = await protocol.get_agent_detail(caller_id, agent_id)
     return detail.model_dump()
+
+
+@operation
+async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
+    """Ask for another agent of your owner's to be deleted. Nothing is deleted
+    by this call: a person has to confirm.
+
+    Requires the "can manage agents" capability. The request is posted in the
+    room you are connected to, and only the agent's owner or a workspace admin
+    can carry it out, by replying `!delete-agent <name> confirm` within two
+    minutes; otherwise it lapses. Confirm with the person asking before you
+    call this, and tell them what to send.
+
+    Refused for an agent of another owner, yourself, an agent that can manage
+    agents, and one a server connector found.
+
+    Args:
+        agent_id: The agent to delete (`id` from `list_agents`).
+
+    Returns:
+        {"agent_name", "status": "awaiting_confirmation", "confirm_with",
+        "expires_in_seconds"}.
+    """
+    caller_id = get_agent_id()
+    await permitted_to_manage()
+    room_id = await require_connected_room()
+    protocol = get_protocol()
+    try:
+        name = await protocol.request_agent_deletion(
+            caller_agent_id=caller_id, target_agent_id=agent_id, room_id=room_id
+        )
+    except AgentRenameRefused as exc:
+        raise ValueError(str(exc)) from exc
+    return {
+        "agent_name": name,
+        "status": "awaiting_confirmation",
+        "confirm_with": f"!delete-agent {name} confirm",
+        "expires_in_seconds": int(DELETE_CONFIRM_SECONDS),
+    }
 
 
 @operation

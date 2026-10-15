@@ -43,6 +43,8 @@ class AuditAction(StrEnum):
     SERVICE_DISCONNECTED = "service.disconnected"
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
+    AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    AGENT_DELETED = "agent.deleted"
 
 
 async def record_audit_event(

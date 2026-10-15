@@ -28,8 +28,10 @@ from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     CommandPayload,
 )
+from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, Room
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import CollaborationBridge, Room, require_tenant_id
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
@@ -874,11 +876,19 @@ def _strip_quotes(text: str) -> str:
     return text
 
 
-async def _manage_refusal(
+@dataclass(frozen=True)
+class _Authority:
+    """Whether this command's sender may rename or delete an agent: the Switch
+    user they act as when they may, or why not when they may not."""
+
+    user_id: str | None
+    refusal: str | None
+
+
+async def _manage_authority(
     host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
-) -> str | None:
-    """Why this command's sender may not rename or delete `agent`, or None
-    when they may.
+) -> _Authority:
+    """Whether this command's sender may rename or delete `agent`.
 
     The same rule as the gateway: the agent's owner, or an admin of the
     workspace. The sender is a person on a chat platform, known to Switch
@@ -893,15 +903,17 @@ async def _manage_refusal(
         else None
     )
     if external is None:
-        return (
-            "Only a person can rename or delete an agent, from their own chat account."
+        return _Authority(
+            None,
+            "Only a person can rename or delete an agent, from their own chat account.",
         )
     claimants = await host._external_user_store.claimant_ids(session, external.id)
     if not claimants:
-        return (
+        return _Authority(
+            None,
             "This chat account isn't linked to a Switch user, so I can't tell "
             "whether you own this agent. Link it to your Switch user in Switch "
-            "Console (Messaging apps), then try again."
+            "Console (Messaging apps), then try again.",
         )
     for user_id in claimants:
         user = await host._user_store.get(session, user_id)
@@ -912,10 +924,12 @@ async def _manage_refusal(
                 Principal(user.id, await host._user_store.administers(session, user)),
                 agent.owner_id,
             )
-            return None
+            return _Authority(user.id, None)
         except PermissionError:
             continue
-    return "Only the agent's owner or a workspace admin can rename or delete it."
+    return _Authority(
+        None, "Only the agent's owner or a workspace admin can rename or delete it."
+    )
 
 
 async def _cmd_rename_agent(
@@ -944,7 +958,7 @@ async def _cmd_rename_agent(
                 f"No agent named `{old}`. Run `!list-switch-agents` to see registered agents.",
             )
             return
-        refusal = await _manage_refusal(host, session, event, agent)
+        refusal = (await _manage_authority(host, session, event, agent)).refusal
         agent_id, old_name, old_label = agent.id, agent.name, agent.display_name
         # Not held across the rename, which opens its own sessions and calls
         # every bridge.
@@ -1022,17 +1036,29 @@ async def _cmd_delete_agent(
                 f"No agent named `{name}`. Run `!list-switch-agents` to see registered agents.",
             )
             return
-        refusal = await _manage_refusal(host, session, event, agent)
+        authority = await _manage_authority(host, session, event, agent)
         agent_id, agent_name = agent.id, agent.name
         label = agent_label_with_identifier(agent.display_name, agent.name)
+        other_rooms = [
+            r.transport_room_id
+            for r in await host._room_store.get_rooms_for_agent(session, agent.id)
+            if r.transport_room_id != room.room_id
+        ]
         await session.commit()
-    if refusal is not None:
-        await _reply(host, room, event, f"⚠️ {refusal}")
+    if authority.refusal is not None:
+        await _reply(host, room, event, f"⚠️ {authority.refusal}")
         return
 
-    if not confirming or not host.take_delete_request(
+    meta = await host._resolve_room_meta(room.room_id)
+    agent_request = (
+        host._deletion_requests.take(meta.room_id, agent_id)
+        if confirming and meta is not None
+        else None
+    )
+    person_request = confirming and host.take_delete_request(
         room.room_id, event.user_id, agent_id
-    ):
+    )
+    if not (agent_request or person_request):
         host.request_delete(room.room_id, event.user_id, agent_id)
         await _reply(
             host,
@@ -1049,7 +1075,42 @@ async def _cmd_delete_agent(
     except ValueError as exc:
         await _reply(host, room, event, f"⚠️ Not deleted: {exc}")
         return
-    lines = [f"Deleted **{label}**."]
+    async with host.session_factory() as session:
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=authority.user_id,
+            action=AuditAction.AGENT_DELETED,
+            target_type="agent",
+            target_id=agent_id,
+            details={
+                "agent_name": agent_name,
+                "via": "chat command",
+                "requested_by_agent_name": (
+                    agent_request.requested_by if agent_request else None
+                ),
+            },
+        )
+        await session.commit()
+    asked = (
+        f", as {agent_request.requested_by} asked" if agent_request is not None else ""
+    )
+    for other in other_rooms:
+        try:
+            await host.actor.send_admin(
+                other,
+                f"🗑️ **{label}** was deleted{asked}. It no longer answers here.",
+                message_type=AdminMessageType.AGENT_LIFECYCLE,
+                thread_root_id=None,
+            )
+        except Exception:
+            logger.warning(
+                "Could not announce the deletion of agent %s in %s",
+                agent_id,
+                other,
+                exc_info=True,
+            )
+    lines = [f"Deleted **{label}**{asked}."]
     if deletion.bridge_failures:
         lines.append(
             "Clean-up still to finish on "

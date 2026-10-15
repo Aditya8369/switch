@@ -110,6 +110,7 @@ class AdminMessageType(StrEnum):
     TRUST_REDACTED = "trust_redacted"
     TRUST_ALERTED = "trust_alerted"
     TRUST_ERRORED = "trust_errored"
+    AGENT_LIFECYCLE = "agent_lifecycle"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

@@ -18,7 +18,10 @@ from switch_core.addressing import (
     owner_only_policy,
     parse_policy,
 )
-from switch_core.agent_display_name import normalise_display_name
+from switch_core.agent_display_name import (
+    agent_label_with_identifier,
+    normalise_display_name,
+)
 from switch_core.agent_icon import (
     drop_third_party_avatar,
     generated_icon_url,
@@ -78,6 +81,8 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
+from switch_core.clients.agent_admin import AgentDeletionRequests
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
@@ -332,6 +337,10 @@ class AgentCore:
     # The credential broker, set by the process wiring when service
     # connections are on; None means they are off, and nothing can be granted.
     service_broker: ServiceBroker | None = None
+    # Deletions agents have asked for, waiting for a person to confirm with
+    # `!delete-agent … confirm`. Set by the process wiring, shared with the
+    # admin client that runs that command.
+    deletion_requests: AgentDeletionRequests | None = None
 
     def __init__(
         self,
@@ -1207,6 +1216,100 @@ class AgentCore:
                 except AgentIdentityConflict as exc:
                     raise AgentRenameRefused(str(exc)) from exc
         return tenant_id, new_display_name, old_name, old_display_name
+
+    async def request_agent_deletion(
+        self, *, caller_agent_id: str, target_agent_id: str, room_id: str
+    ) -> str:
+        """Ask, on an agent's behalf, for another agent to be deleted.
+
+        Nothing is deleted here. The request is posted in the room, and only a
+        person (the owner or a workspace admin) can carry it out, by confirming
+        with `!delete-agent <name> confirm` within two minutes. The caller's
+        "can manage agents" capability is the operation's to check; these are
+        the limits on which agent may be asked for. Returns the target's name.
+
+        Raises:
+            PermissionError: the target belongs to another owner.
+            AgentRenameRefused: the target is the caller itself, an agent that
+                can manage agents, or one a server connector found.
+            ValueError: no such agent or room.
+            RuntimeError: deletion requests are not wired in this process.
+        """
+        if self.deletion_requests is None:
+            raise RuntimeError(
+                "Agent deletion requests are not available: the process wiring "
+                "did not set them up"
+            )
+        await self.require_same_owner(caller_agent_id, target_agent_id)
+        tenant_id = require_tenant_id()
+        async with self.session_factory() as session:
+            caller = await self.agent_store.get(session, caller_agent_id)
+            target = await self.agent_store.get(session, target_agent_id)
+            room = await self.room_store.get(session, room_id)
+            if caller is None or target is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            if target.id == caller.id:
+                raise AgentRenameRefused("An agent cannot ask for its own deletion.")
+            if target.can_manage_agents:
+                raise AgentRenameRefused(
+                    f"Agent '{target.name}' can manage agents itself, so another "
+                    "agent cannot ask for it to be deleted. Its owner can delete "
+                    "it from the gateway or with `!delete-agent`."
+                )
+            if (target.metadata_ or {}).get("server_connector_id"):
+                raise AgentRenameRefused(
+                    f"Agent '{target.name}' was found by a server connector, which "
+                    "would bring it back. Remove it at its source."
+                )
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=None,
+                action=AuditAction.AGENT_DELETION_REQUESTED,
+                target_type="agent",
+                target_id=target.id,
+                details={
+                    "agent_name": target.name,
+                    "requested_by_agent_id": caller.id,
+                    "requested_by_agent_name": caller.name,
+                    "room_id": room.id,
+                },
+            )
+            await session.commit()
+            target_name, caller_name = target.name, caller.name
+            caller_label = agent_label_with_identifier(caller.display_name, caller.name)
+            target_label = agent_label_with_identifier(target.display_name, target.name)
+            transport_room_id = room.transport_room_id
+
+        self.deletion_requests.add(room_id, target_agent_id, caller_name)
+        admin = next(
+            (
+                c
+                for c in self.client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(c, SystemActor)
+            ),
+            None,
+        )
+        if admin is None:
+            raise RuntimeError("No admin client is running to post the request")
+        await admin.send_admin(
+            transport_room_id,
+            f"🗑️ **{caller_label}** asks to delete **{target_label}**. Nothing has "
+            "been deleted. The agent's owner or a workspace admin can confirm with "
+            f"`!delete-agent {target_name} confirm` within 2 minutes; otherwise "
+            "the request lapses.",
+            message_type=AdminMessageType.AGENT_LIFECYCLE,
+            thread_root_id=None,
+        )
+        logger.info(
+            "Agent %s asked to delete agent %s in room %s",
+            caller_agent_id,
+            target_agent_id,
+            room_id,
+        )
+        return target_name
 
     async def _check_renamable(
         self, session: AsyncSession, agent: Agent, new_name: str
