@@ -18,9 +18,15 @@ import type {
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import {
+  type ConnectionAgent,
   type ConnectionCatalogEntry,
+  type WorkspaceService,
+  type WorkspaceServiceChange,
+  connectionAgentsSchema,
   connectionCatalogSchema,
   serviceConnectionsSchema,
+  workspaceServiceChangeSchema,
+  workspaceServicesSchema,
 } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
@@ -3031,6 +3037,8 @@ export async function getConnectionCatalog(
     loopback_ports: entry.loopback_ports,
     key: entry.key,
     external_identity: entry.external_identity,
+    consent: entry.consent,
+    workspace_enabled: entry.workspace_enabled,
   }));
 }
 
@@ -3051,8 +3059,66 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         loopback_ports: null,
         key: null,
         external_identity: null,
+        consent: null,
+        workspace_enabled: null,
       }))
   );
+}
+
+/**
+ * The signed-in person's own agents in the workspace, and whether each is
+ * granted `service`; null when the server has no such list (a 404: it
+ * predates it). Any other failure is thrown for the caller to show.
+ */
+export async function fetchConnectionAgents(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectionAgent[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(
+      server,
+      `/service-connections/${encodeURIComponent(service)}/agents`,
+      { authenticated: true }
+    );
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return connectionAgentsSchema.parse(await response.json());
+}
+
+/**
+ * Every service the workspace can switch on or off, for a workspace admin; null
+ * when the server has no workspace switch (a 404: it predates it, or its
+ * `service_connections` flag is off). Any other failure, a refusal included,
+ * is thrown for the caller to show.
+ */
+export async function fetchWorkspaceServices(
+  server: SwitchServer
+): Promise<WorkspaceService[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/workspace/services', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return workspaceServicesSchema.parse(await response.json()).services;
+}
+
+/** Switch `service` on or off for the whole workspace; workspace admins only. */
+export async function setWorkspaceService(
+  server: SwitchServer,
+  service: string,
+  enabled: boolean
+): Promise<WorkspaceServiceChange> {
+  const response = await gatewayFetch(
+    server,
+    `/workspace/services/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'PUT', body: { enabled } }
+  );
+  return workspaceServiceChangeSchema.parse(await response.json());
 }
 
 /**

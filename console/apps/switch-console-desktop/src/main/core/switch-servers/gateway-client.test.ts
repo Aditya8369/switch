@@ -50,7 +50,10 @@ const {
   cloudMachineLifecycle,
   listCloudMachines,
   getConnectionCatalog,
+  fetchConnectionAgents,
   fetchServiceGrants,
+  fetchWorkspaceServices,
+  setWorkspaceService,
   removeServiceGrant,
   setServiceGrant,
   getGitHubConnection,
@@ -1177,6 +1180,9 @@ describe('GitHub connection transport', () => {
         loopback_ports: null,
         key: null,
         external_identity: 'ada-gh',
+        consent: 'write',
+        // A server without the workspace switch: no workspace layer.
+        workspace_enabled: null,
       },
       expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
       expect.objectContaining({
@@ -1212,6 +1218,8 @@ describe('GitHub connection transport', () => {
         loopback_ports: null,
         key: null,
         external_identity: null,
+        consent: null,
+        workspace_enabled: null,
       },
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1222,6 +1230,125 @@ describe('GitHub connection transport', () => {
         new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
       );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
+  });
+  it('reads whether the workspace has each service switched on', async () => {
+    const entry = {
+      slug: 'example',
+      name: 'Example',
+      category: 'Observability',
+      description: 'Metrics.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: true,
+      unavailable_reason: null,
+      status: 'not_connected',
+      consent: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            { ...entry, workspace_enabled: false },
+            { ...entry, slug: 'other', workspace_enabled: true, status: 'active', consent: 'read' },
+          ],
+        })
+      )
+    );
+    expect(
+      (await getConnectionCatalog(SERVER)).map(({ slug, workspace_enabled, consent }) => ({
+        slug,
+        workspace_enabled,
+        consent,
+      }))
+    ).toEqual([
+      { slug: 'example', workspace_enabled: false, consent: null },
+      { slug: 'other', workspace_enabled: true, consent: 'read' },
+    ]);
+  });
+  it("reads the person's own agents for a service", async () => {
+    const agents = [
+      { agent_id: 'a1', name: 'Helper', granted: true, addressing_open: false },
+      { agent_id: 'a2', name: 'Open one', granted: false, addressing_open: true },
+    ];
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(agents)));
+    expect(await fetchConnectionAgents(SERVER, 'google workspace')).toEqual(agents);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/service-connections/google%20workspace/agents'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ agent_id: 'a1', name: 'Helper', granted: 'yes' }]))
+    );
+    await expect(fetchConnectionAgents(SERVER, 'example')).rejects.toThrow();
+
+    // A server from before the list: the page says it cannot list them.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchConnectionAgents(SERVER, 'example')).toBeNull();
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchConnectionAgents(SERVER, 'example')).rejects.toMatchObject({ status: 500 });
+  });
+  it("reads the workspace's switches, and none from a server without them", async () => {
+    const services = [
+      {
+        slug: 'example',
+        name: 'Example',
+        enabled: false,
+        updated_by_name: 'Ada',
+        updated_at: '2026-01-02T03:04:05+00:00',
+        connected_members: 3,
+        granted_agents: 5,
+      },
+      {
+        slug: 'other',
+        name: 'Other',
+        enabled: true,
+        updated_by_name: null,
+        updated_at: null,
+        connected_members: 0,
+        granted_agents: 0,
+      },
+    ];
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ services })));
+    expect(await fetchWorkspaceServices(SERVER)).toEqual(services);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/workspace/services'
+    );
+
+    // No workspace switch on this server: the page shows no workspace layer.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchWorkspaceServices(SERVER)).toBeNull();
+  });
+  it('raises a refusal or a failure of the switches, never an empty list', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ detail: 'Workspace admins only.', code: 'forbidden', retryable: false }),
+        { status: 403 }
+      )
+    );
+    await expect(fetchWorkspaceServices(SERVER)).rejects.toMatchObject({
+      status: 403,
+      detail: 'Workspace admins only.',
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchWorkspaceServices(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+  it('switches a service for the workspace and keeps the warning', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ slug: 'github', enabled: false, warning: 'Access stays a while.' })
+      )
+    );
+    expect(await setWorkspaceService(SERVER, 'github', false)).toEqual({
+      slug: 'github',
+      enabled: false,
+      warning: 'Access stays a while.',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/workspace/services/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ enabled: false });
   });
   it("reads someone else's agent's grants as none, and any other failure as one", async () => {
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"Agent not found."}', { status: 404 }));

@@ -45,6 +45,8 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       loopback_ports: ports,
       key: null,
       external_identity: null,
+      consent: null,
+      workspace_enabled: null,
     },
   ];
 }

@@ -18,6 +18,9 @@ const getSessionCookie = vi.hoisted(() => vi.fn());
 const requireWorkspace = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn(async () => [{ id: 'ws' }]));
 const switchTenant = vi.hoisted(() => vi.fn());
+const fetchConnectionAgents = vi.hoisted(() => vi.fn());
+const fetchWorkspaceServices = vi.hoisted(() => vi.fn());
+const setWorkspaceService = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
@@ -77,6 +80,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchBridges,
   fetchBridgeTeams,
   fetchBridgeTypes: vi.fn(),
+  fetchConnectionAgents,
+  fetchWorkspaceServices,
   fetchMyIdentities: vi.fn(),
   fetchRoomAgentIds: vi.fn(),
   fetchRoomDetail: vi.fn(),
@@ -89,6 +94,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   releaseBridgeIdentity: vi.fn(),
   removeBridgeTeam,
   removeRoomAgent: vi.fn(),
+  setWorkspaceService,
   switchTenant,
   updateAddressingPolicy: vi.fn(),
   updateAgentIcon: vi.fn(),
@@ -367,6 +373,40 @@ describe('selecting the workspace’s tenant before the call', () => {
 
     expect(switchTenant).not.toHaveBeenCalled();
     expect(getSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it('reads and switches the services of the workspace named, not the active one', async () => {
+    const { decodeJwtTenantId } = await import('@main/core/switch-servers/gateway-client');
+    vi.mocked(decodeJwtTenantId).mockReturnValue('tenant-a');
+    requireWorkspace.mockResolvedValue(workspace('tenant-b'));
+    getSessionCookie.mockResolvedValue('cookie-for-tenant-a');
+    // Each call is only answered once the session selects the named workspace.
+    const selected = () => {
+      expect(switchTenant).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'tenant-b');
+      return Promise.resolve(null);
+    };
+    fetchConnectionAgents.mockImplementation(selected);
+    fetchWorkspaceServices.mockImplementation(selected);
+    setWorkspaceService.mockImplementation(selected);
+
+    await workspacesController.getConnectionAgents({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.getWorkspaceServices('ws');
+    await workspacesController.setWorkspaceService({
+      workspaceId: 'ws',
+      service: 'example',
+      enabled: false,
+    });
+
+    expect(fetchConnectionAgents).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'example'
+    );
+    expect(fetchWorkspaceServices).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }));
+    expect(setWorkspaceService).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'example',
+      false
+    );
   });
 
   it('refuses a workspace with no tenant where its server has several', async () => {

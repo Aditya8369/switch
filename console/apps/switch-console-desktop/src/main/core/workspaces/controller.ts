@@ -54,10 +54,13 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  fetchConnectionAgents,
   fetchServiceGrants,
+  fetchWorkspaceServices,
   getConnectionCatalog,
   getGitHubConnection,
   setServiceGrant,
+  setWorkspaceService,
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
@@ -805,6 +808,25 @@ export const workspacesController = createRPCController({
   /** Every catalog service with the signed-in person's connection to it, in this workspace. */
   getServiceConnections: (workspaceId: string) =>
     withWorkspaceSession(workspaceId, getConnectionCatalog),
+
+  /** The signed-in person's own agents in this workspace, and which are granted `service`. */
+  getConnectionAgents: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchConnectionAgents(server, params.service)
+    ),
+
+  /**
+   * The workspace's switch for each service, for a workspace admin; null when
+   * its server has no workspace switch.
+   */
+  getWorkspaceServices: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, fetchWorkspaceServices),
+
+  /** Switch a service on or off for everyone in this workspace; workspace admins only. */
+  setWorkspaceService: (params: { workspaceId: string; service: string; enabled: boolean }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setWorkspaceService(server, params.service, params.enabled)
+    ),
 
   /**
    * Create or replace the agent's grant on a service; owner only. Resolves to
