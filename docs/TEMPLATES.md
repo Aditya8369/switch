@@ -264,6 +264,7 @@ offers to link it.
 agent:
   name:           identifier
   display_name:   text
+  icon_url:       https URL
   description:    text
   instructions:   text
   provider:       claude | codex | opencode | "{param}"
@@ -374,6 +375,10 @@ controller; `isolated` runs it as a process of its own.
 
 **`auto_approve`**. Whether the agent runs tools without asking for
 approval. Default `false`.
+
+**`icon_url`**. The agent's picture: an absolute `https://` URL, checked as
+an icon set on the agent's page is. Without one it gets the picture drawn
+from its name.
 
 **`can_manage_agents`**. Turns on the agent's "can manage agents"
 capability: it may list the deployer's machines and create managed agents

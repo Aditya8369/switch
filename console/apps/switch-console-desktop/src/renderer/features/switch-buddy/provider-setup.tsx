@@ -63,12 +63,15 @@ export const ProviderSetup = observer(function ProviderSetup({
   const [busy, setBusy] = useState<'install' | 'check' | 'create' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [login, setLogin] = useState<Login | null>(null);
+  /** What the last Check again found, when it found nothing new: said, not left blank. */
+  const [checked, setChecked] = useState<string | null>(null);
 
   const checkAgain = useCallback(async () => {
     setBusy('check');
     setError(null);
+    setChecked(null);
     try {
-      await recheck();
+      setChecked(await recheck());
     } catch (cause) {
       setError(failureText(cause, 'Could not check this computer again.'));
     } finally {
@@ -170,7 +173,11 @@ export const ProviderSetup = observer(function ProviderSetup({
             busy={busy}
             onStart={() => void start(selected)}
             onSignIn={() => void signIn(selected)}
-            onCancelSignIn={() => void rpc.providers.cancelLogin()}
+            onCancelSignIn={() => {
+              void rpc.providers.cancelLogin();
+              setLogin(null);
+            }}
+            checked={checked}
             onInstall={() => void install(selected)}
             onCheckAgain={() => void checkAgain()}
           />
@@ -261,9 +268,12 @@ function SelectedPanel({
   onCancelSignIn,
   onInstall,
   onCheckAgain,
+  checked,
 }: {
   provider: BuddyProvider;
   login: Login | null;
+  /** What the last Check again found, or null. */
+  checked: string | null;
   busy: 'install' | 'check' | 'create' | null;
   onStart: () => void;
   onSignIn: () => void;
@@ -361,6 +371,7 @@ function SelectedPanel({
               Check again
             </Button>
           </div>
+          {checked && !running && <p className="text-xs text-foreground-muted">{checked}</p>}
           <p className="text-xs text-foreground-muted">
             Or run <code className="rounded bg-background-tertiary px-1">{loginCommand}</code> in a
             terminal, then press Check again.

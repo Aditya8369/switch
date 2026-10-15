@@ -520,6 +520,7 @@ class TemplateAgentBody(BaseModel):
             name=self.name,
             description=self.description,
             display_name=self.display_name,
+            icon_url=None,
             instructions=self.instructions,
             provider=self.provider,
             machine=self.machine,

@@ -87,6 +87,7 @@ class NewAgentPlan:
     name: str
     description: str
     display_name: str | None
+    icon_url: str | None
     instructions: str
     provider: str
     machine: str
@@ -441,7 +442,7 @@ class TemplateAgents:
             name=plan.name,
             description=plan.description,
             display_name=plan.display_name,
-            icon_url=None,
+            icon_url=plan.icon_url,
             machine=machine,
             provider=plan.provider,
             model=plan.model,

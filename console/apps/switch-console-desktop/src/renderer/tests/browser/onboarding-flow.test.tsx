@@ -38,6 +38,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     connectToSwitchCloud,
     setActive,
     serverById: (id: string | null) => servers.find((s) => s.id === id) ?? null,
+    isConnected: () => false,
     errorText: null,
     ensureAuthConfig: () => Promise.resolve(),
     authConfigFor: () => ({

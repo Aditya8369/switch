@@ -22,6 +22,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import ValidationError
 
+from switch_core.agent_icon import InvalidIconUrl, validate_icon_url
 from switch_core.rooms_yaml import (
     CONSOLE_PARAM_TYPES,
     ENTITY_PARAM_TYPES,
@@ -780,6 +781,15 @@ class _Planner:
             self.problem(
                 slot, "invalid_auto_approve", "auto_approve is not true or false."
             )
+        icon_url: str | None = None
+        written_icon = entry.get("icon_url")
+        if written_icon:
+            try:
+                icon_url = validate_icon_url(
+                    str(self.text(slot, written_icon, values, "icon_url"))
+                )
+            except InvalidIconUrl as invalid:
+                self.problem(slot, "invalid_icon_url", str(invalid))
         can_manage_agents = interpolate(entry.get("can_manage_agents", False), values)
         if not isinstance(can_manage_agents, bool):
             self.problem(
@@ -812,6 +822,7 @@ class _Planner:
             display_name=(
                 str(interpolate(display_name, values)) if display_name else None
             ),
+            icon_url=icon_url,
             instructions=instructions,
             provider=provider,
             machine=machine,

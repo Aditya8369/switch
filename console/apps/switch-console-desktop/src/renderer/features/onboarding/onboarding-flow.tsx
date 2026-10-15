@@ -120,8 +120,7 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     switchServersStore.connectToSwitchCloud().then(
       (added) => {
         setCloudAttempt({ connecting: false, error: null });
-        onboardingStore.connected(added, 'cloud');
-        reportPage('signIn');
+        connectedTo(added, 'cloud');
       },
       (cause) => {
         const failure = describeFailure(cause, 'Could not connect to Switch Cloud.');
@@ -153,6 +152,20 @@ function pageServerId(): string | null {
   if (onboardingStore.registeredOn?.page === page) return onboardingStore.registeredOn.serverId;
   if (CHOICE_FOR_PAGE[page] !== 'external') return null;
   return onboardingStore.server?.id ?? null;
+}
+
+/**
+ * A server was added or found: sign in to it, unless this Console is signed in
+ * already — replaying these pages against a server it knows — when the
+ * workspace is next.
+ */
+function connectedTo(server: SwitchServer, via: 'external' | 'cloud'): void {
+  onboardingStore.connected(server, via);
+  if (switchServersStore.isConnected(server.id)) {
+    onboardingStore.goTo('pickWorkspace');
+    return;
+  }
+  reportPage('signIn');
 }
 
 function choiceForPage(page: OnboardingPage): AddServerChoiceName {
@@ -278,10 +291,7 @@ function currentPage(
       onBack={() => goTo('howToRun')}
       onClose={() => goTo('howToRun')}
       onSuccess={() => finish(server?.id ?? null)}
-      onConnected={(added) => {
-        onboardingStore.connected(added, 'external');
-        reportPage('signIn');
-      }}
+      onConnected={(added) => connectedTo(added, 'external')}
     />
   );
 }

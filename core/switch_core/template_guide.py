@@ -57,6 +57,7 @@ A condition reads one param: "{param}" (true when it has a value) or
   name: identifier               # optional; else derived from display_name.
                                  # Lowercase letters, digits, . - _
   display_name: text             # optional; how people see it
+  icon_url: https URL            # optional; its picture, else one drawn from its name
   description: text              # optional; what it is for
   model: text | "{param}"        # optional; the provider's default if absent
   advanced_config: {key: value}  # optional; see get_advanced_config(provider)

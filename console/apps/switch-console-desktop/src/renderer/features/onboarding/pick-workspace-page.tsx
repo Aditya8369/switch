@@ -292,7 +292,7 @@ function JoinableRow({
         {joining ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
-          <span className="shrink-0 text-sm font-medium text-foreground">Join</span>
+          <span className={ROW_ACTION}>Join</span>
         )}
       </button>
     </li>
@@ -334,7 +334,7 @@ function InvitationRow({
         {accepting ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
-          <span className="shrink-0 text-sm font-medium text-foreground">Accept</span>
+          <span className={ROW_ACTION}>Accept</span>
         )}
       </button>
     </li>
@@ -374,12 +374,16 @@ function WorkspaceRow({
         {opening ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
-          <span className="shrink-0 text-sm text-foreground-muted">Open</span>
+          <span className={ROW_ACTION}>Open</span>
         )}
       </button>
     </li>
   );
 }
+
+/** A row's action, drawn as the button the whole row is. */
+const ROW_ACTION =
+  'shrink-0 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground';
 
 const GRAPHEMES = new Intl.Segmenter();
 

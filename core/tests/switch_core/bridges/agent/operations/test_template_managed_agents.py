@@ -510,6 +510,9 @@ async def test_switch_buddy_is_created_under_its_name_and_can_manage_agents(mana
         ).scalar_one()
     assert agent.can_manage_agents is True
     assert managed["management"].created[0].display_name == "switch-buddy"
+    assert (
+        managed["management"].created[0].icon_url.endswith("/assets/switch-buddy.png")
+    )
 
 
 def _plan(template: str, **kw: Any) -> Any:
@@ -531,6 +534,14 @@ def _codes(template: str, **kw: Any) -> set[str]:
 def test_an_agent_must_say_how_it_runs():
     bare = "agent:\n  name: a\n  instructions: Hi.\n"
     assert _codes(bare) == {"machine_unsaid", "provider_unsaid", "directory_unsaid"}
+
+
+def test_an_icon_must_be_an_https_url():
+    template = (
+        "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
+        "  machine: laptop\n  directory: /srv/a\n  icon_url: http://example.com/a.png\n"
+    )
+    assert _codes(template) == {"invalid_icon_url"}
 
 
 def test_can_manage_agents_must_be_true_or_false():

@@ -21,7 +21,6 @@ export function WelcomePage({
   return (
     <OnboardingSurface
       exit={onLeave ? { label: 'Back to the app', onExit: onLeave } : exit}
-      pager={null}
       footer={<Button onClick={onContinue}>Get started</Button>}
     >
       <div className="flex flex-col items-center gap-10">

@@ -71,7 +71,6 @@ export function HowToRunPage({
   return (
     <OnboardingSurface
       exit={exit}
-      pager={null}
       footer={
         <>
           <Button variant="outline" onClick={onBack} disabled={connecting}>

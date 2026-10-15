@@ -36,6 +36,7 @@ resources:
     type: agent
     name: "{agent_name}"
     display_name: switch-buddy
+    icon_url: https://raw.githubusercontent.com/sandbox-quantum/switch/main/assets/switch-buddy.png
     description: >-
       Your assistant in Switch. Creates agents and rooms for you, answers
       anything about Switch, and helps with any task.

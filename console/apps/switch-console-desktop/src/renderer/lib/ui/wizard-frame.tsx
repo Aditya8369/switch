@@ -96,7 +96,7 @@ export function WizardFrame({
   }
 
   return (
-    <OnboardingSurface exit={exit} pager={pager} footer={footer}>
+    <OnboardingSurface exit={exit} footer={footer}>
       <div className="flex flex-col items-center gap-2 text-center">
         <h1 className="text-2xl font-semibold">{title}</h1>
         {subtitle && <p className="text-sm text-foreground-muted">{subtitle}</p>}
@@ -118,16 +118,16 @@ const BACKDROP =
 /**
  * The window-filling surface every first-run page is drawn on: the backdrop,
  * the way out at the top, the page centred, and its buttons centred at the
- * foot, where the eye ends up after reading the page.
+ * foot, where the eye ends up after reading the page. The pages are not
+ * numbered steps there, so the dialog's step pager is left out: Back is a
+ * button on each page that has one.
  */
 export function OnboardingSurface({
   exit,
-  pager,
   footer,
   children,
 }: {
   exit: WizardExit | null;
-  pager: WizardPager | null;
   footer: ReactNode | null;
   children: ReactNode;
 }) {
@@ -151,11 +151,6 @@ export function OnboardingSurface({
       {footer && (
         <div className="flex justify-center gap-2 px-8 pt-2 pb-6 [-webkit-app-region:no-drag]">
           {footer}
-        </div>
-      )}
-      {pager && (
-        <div className="[-webkit-app-region:no-drag]">
-          <StepPager {...pager} />
         </div>
       )}
     </div>

@@ -74,10 +74,18 @@ export function useThisComputer(serverId: string, workspaceId: string) {
         : 2_000,
   });
 
-  /** Has this computer check every provider again now, and reads the result. */
-  const recheck = useCallback(async () => {
+  /**
+   * Has this computer check every provider again now and reads the result;
+   * resolves to a line saying when the check found nothing ready that was not
+   * before, or null when something changed.
+   */
+  const recheck = useCallback(async (): Promise<string | null> => {
+    const before = readyOn(machines.data);
     await rpc.embeddedController.recheckProviders(serverId);
-    await machines.refetch();
+    const after = readyOn((await machines.refetch()).data);
+    return after > before
+      ? null
+      : 'Checked just now: nothing new is signed in yet. Finish signing in, then check again.';
   }, [serverId, machines]);
 
   const machine = machines.data?.find((m) => m.local?.kind === 'this-computer') ?? null;
@@ -92,4 +100,10 @@ export function useThisComputer(serverId: string, workspaceId: string) {
         ? { kind: 'ready', machine }
         : { kind: 'starting' };
   return { state, recheck };
+}
+
+/** How many providers this computer last reported ready. */
+function readyOn(machines: OwnedMachine[] | null | undefined): number {
+  const machine = machines?.find((m) => m.local?.kind === 'this-computer');
+  return machine?.providers.filter((provider) => provider.ready).length ?? 0;
 }
