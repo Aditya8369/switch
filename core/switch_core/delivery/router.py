@@ -33,7 +33,10 @@ How the transaction runs, and why in this order:
    and writers to one room wait on each other while it is held, so only
    inserts happen inside it.
 2. The row is inserted and numbered (`MessageStore.create`, called from here
-   and nowhere else; a test holds the code to that).
+   and nowhere else; a test holds the code to that). An agent whose arrival
+   committed between the reads and the lock comes before the row in the
+   room, so the members are checked once more and, if one joined, the row is
+   decided again from the members as they are.
 3. The own events are inserted, one savepoint per agent, in the order of the
    agents' ids. Each claims the agent's next number from its row in
    `agent_event_heads`, which stays locked to commit, so an agent's events are
@@ -210,9 +213,10 @@ class RoomReads:
     ) -> RoomReads | None:
         """The room and its agent members, or None when the room is gone.
 
-        A member counts from the moment its membership was written: one that
-        joined after this transaction began is not handed the row, as the
-        consumer it replaced did not hand a client a row from before its join.
+        A member is one whose membership has committed by the time this
+        reads it. Its arrival was written under the room's lock and committed
+        with the membership, so it comes before the row being decided in the
+        room's order, whatever the clocks of the two transactions say.
         """
         found = (
             await session.execute(
@@ -251,10 +255,7 @@ class RoomReads:
                         room_agents.c.agent_id == Agent.id,
                     ),
                 )
-                .where(
-                    ClientRoom.room_id == room_id,
-                    ClientRoom.joined_at <= func.now(),
-                )
+                .where(ClientRoom.room_id == room_id)
             )
         ).all()
         members = [
@@ -761,6 +762,27 @@ class MessageRouter:
                 session, reads, unwritten, sender_client_id=message.sender_client_id
             )
         await self._messages.create(session, message, attachments)
+        if reads is not None and await self._joined_since(session, reads):
+            # An agent's arrival committed between the reads and the room's
+            # lock, so it comes before this row in the room and the row is
+            # for it as much as for the members read. Rare enough to decide
+            # the row again, inside the lock, from the members as they are.
+            reads = await RoomReads.load(
+                session,
+                services=self.services,
+                client_store=self._client_store,
+                budget_store=self._budget_store,
+                tenant_id=tenant_id,
+                room_id=room_id,
+            )
+            plan = _Plan()
+            if reads is not None:
+                plan = await self._decide(
+                    session,
+                    reads,
+                    unwritten,
+                    sender_client_id=message.sender_client_id,
+                )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
         stored: list[str] = []
@@ -777,6 +799,23 @@ class MessageRouter:
             stored=stored,
             deadline_in=deadline_in,
         )
+
+    @staticmethod
+    async def _joined_since(session: AsyncSession, reads: RoomReads) -> bool:
+        """Whether an agent became a member of the room after `reads` read
+        its members. Read with the room's lock held, when every arrival
+        numbered before the row being written has committed."""
+        known = {member.client_id for member in reads.members}
+        now = set(
+            (
+                await session.scalars(
+                    select(ClientRoom.client_id)
+                    .join(Agent, Agent.client_id == ClientRoom.client_id)
+                    .where(ClientRoom.room_id == reads.room_id)
+                )
+            ).all()
+        )
+        return bool(now - known)
 
     async def membership_changed(self, change: tuple[str, str, str]) -> None:
         """Bring what this process holds in memory for an agent up to date
