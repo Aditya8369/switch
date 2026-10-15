@@ -13,10 +13,11 @@ covers, so a row whose effects were made but whose cursor was not written is
 handled again by the next owner, and whatever runs under ownership makes its
 effects safe to repeat.
 
-**`FromHead`, for a consumer every process runs.** Each room is read from its
+**`FromHead`, for a reader nothing is stored for.** Each room is read from its
 newest row, as it was before cursors were stored, and progress lives only in
-the transport's memory: a consumer that every process runs has no single place
-to resume from.
+the transport's memory. Every consumer is owned now and reads through
+`ConsumerCursors`; this is for a transport read outside any ownership, as the
+transport's own tests read.
 
 **One writer per process.** Every consumer reads every new row in its rooms,
 so a stored cursor moves for every owned consumer with every message. Written
@@ -94,7 +95,7 @@ class DeliveryProgress(Protocol):
 
 
 class FromHead:
-    """For a consumer every process runs: each room from its newest row.
+    """For a reader nothing is stored for: each room from its newest row.
 
     Nothing is stored. A process that starts reads only what is written from
     then on, and every process reads the same rows for itself.

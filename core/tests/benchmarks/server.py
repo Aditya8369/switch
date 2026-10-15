@@ -571,8 +571,8 @@ async def _serve(
     client_factory.register("bridge", Actor)
 
     # This process's lease and what it owns, as `main` wires them. Only agent
-    # clients run here, and every process runs their consumers, so nothing
-    # is ever claimed; the signal bus is never started.
+    # clients run here, which have no consumer, so nothing is ever claimed;
+    # the signal bus is never started.
     lease = process_lease_on(session_factory)
     client_lifecycle = ClientLifecycleService(
         provisioning=provisioning,

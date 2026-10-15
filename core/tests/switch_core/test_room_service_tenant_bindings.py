@@ -184,7 +184,7 @@ class _AgentRegistry:
 class _StubClient:
     """A client that stays running until stopped, and touches nothing else.
 
-    `_start_task` removes a client from the registry the moment `start`
+    `_start_task` removes a client from the registry the moment `connect`
     returns, so a stub that finished immediately would empty the registry
     these tests are about.
     """
@@ -195,10 +195,10 @@ class _StubClient:
         self.display_name = record.display_name
         self._stopped = asyncio.Event()
 
-    async def start(self, progress: object) -> None:
+    async def connect(self) -> None:
         await self._stopped.wait()
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self._stopped.set()
 
 
@@ -212,7 +212,7 @@ class _StubFactory:
     def create_consumer(self, client_type: str, actor: Any) -> Any:
         return actor
 
-    def read_by_one_process(self, client_type: str) -> bool:
+    def has_consumer(self, client_type: str) -> bool:
         return False
 
 

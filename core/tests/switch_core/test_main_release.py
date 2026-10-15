@@ -28,6 +28,9 @@ class _Ownership:
             await self._stop()
         self._calls.append("owned work handed over")
 
+    def gone(self) -> None:
+        self._calls.append("others told")
+
 
 class _Connections:
     def __init__(self, calls: list[str]) -> None:
@@ -61,6 +64,7 @@ async def test_owned_work_is_handed_over_before_the_lease_is_released() -> None:
         "owned work handed over",
         "connections recorded",
         "lease released",
+        "others told",
     ]
 
 

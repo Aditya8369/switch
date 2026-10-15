@@ -8,6 +8,7 @@ processes. Balances are run by hand instead of on the interval.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import OwnershipLease, SwitchCoreProcess
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.main import _release_process
 from switch_core.ownership import Fence, OwnedKind, Ownership, owner_of
 from switch_core.process_lease import LEASE_TTL, ProcessLease
 from switch_core.signals import SignalBus
@@ -234,6 +236,48 @@ class TestHandingOver:
         assert everywhere.overlaps == []
         assert await _holders(session_factory) == dict.fromkeys(KEYS, b.process_id)
 
+    async def test_a_process_that_stops_is_taken_over_on_its_last_signal(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two: tuple[_Process, _Process],
+        everywhere: _Everywhere,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Shut down as `main` does (`_release_process`). The other process
+        balances when it hears a signal, so the last one a sends must come
+        once a's lease reads as stopped, or b claims nothing until its next
+        interval."""
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        a_had = a.runs()
+        assert a_had
+
+        sent_with_lease_stopped: list[bool] = []
+        publish = a.ownership._bus.publish
+
+        def recording(kind: str, **fields: Any) -> None:
+            sent_with_lease_stopped.append(a.lease._stopped)
+            publish(kind, **fields)
+
+        monkeypatch.setattr(a.ownership._bus, "publish", recording)
+
+        class _NoConnections:
+            async def flush(self) -> None:
+                pass
+
+        await _release_process(
+            a.ownership,
+            _NoConnections(),  # type: ignore[arg-type]
+            None,
+            a.lease,
+        )
+
+        assert sent_with_lease_stopped[-1:] == [True]
+        await b.ownership.balance()  # on hearing it
+        assert b.runs() == set(KEYS)
+        assert everywhere.overlaps == []
+
     async def test_a_process_that_died_is_taken_over_once_its_lease_lapses(
         self,
         session_factory: async_sessionmaker[AsyncSession],
@@ -379,3 +423,71 @@ class TestThisProcessLease:
 
         assert not lease.surely_held()
         assert lease.held_until() is None
+
+    async def test_work_claimed_at_boot_survives_a_slow_boot(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        """As `main` boots: `ownership.start()` renews and claims, then the
+        rest of the boot (the quiet copies, the room reconcile under the boot
+        lock) runs before the renewal loop is first scheduled."""
+        p = _process(session_factory, everywhere)
+        for key in KEYS:
+            p.kind.want(key)
+        await p.ownership.start()
+        assert p.runs() == set(KEYS)
+
+        await asyncio.sleep(4.0)
+        tasks = [
+            asyncio.create_task(p.lease.run()),
+            asyncio.create_task(p.ownership.run()),
+        ]
+        try:
+            # Past the half lease counted from the renewal at boot.
+            await asyncio.sleep(4.5)
+            assert p.stopped == []
+            assert p.runs() == set(KEYS)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_one_slow_renewal_does_not_stop_the_work(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One renewal held up for 2.6 s, as a pool checkout under load or a
+        slow commit would, and nothing else wrong."""
+        p = _process(session_factory, everywhere)
+        for key in KEYS:
+            p.kind.want(key)
+        await p.ownership.start()
+
+        store = p.lease._processes
+        real_renew = store.renew
+        renewals = 0
+
+        async def renew(*args: Any, **kwargs: Any) -> None:
+            nonlocal renewals
+            renewals += 1
+            if renewals == 1:
+                await asyncio.sleep(2.6)
+            await real_renew(*args, **kwargs)
+
+        monkeypatch.setattr(store, "renew", renew)
+        tasks = [
+            asyncio.create_task(p.lease.run()),
+            asyncio.create_task(p.ownership.run()),
+        ]
+        try:
+            await asyncio.sleep(9.0)
+            assert renewals >= 2
+            assert p.stopped == []
+            assert p.runs() == set(KEYS)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

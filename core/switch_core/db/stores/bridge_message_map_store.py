@@ -1,4 +1,6 @@
-from sqlalchemy import delete, select, update
+from datetime import timedelta
+
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,25 +15,30 @@ class BridgeMessageMapStore:
         bridge_id: str,
         external_channel_id: str,
         transport_event_id: str,
+        unposted_after: timedelta,
     ) -> bool:
         """Claim a room message for posting to the platform: a row with no
-        external post yet. False when the message has a row already, posted
-        or claimed by whoever posted it before."""
+        external post yet. False when the message has a row already, posted,
+        or claimed within `unposted_after` and not posted yet. A claim older
+        than that with no post is claimed again, from now."""
+        statement = insert(BridgeMessageMap).values(
+            bridge_id=bridge_id,
+            external_channel_id=external_channel_id,
+            transport_event_id=transport_event_id,
+            external_post_id=None,
+        )
         result = await session.execute(
-            insert(BridgeMessageMap)
-            .values(
-                bridge_id=bridge_id,
-                external_channel_id=external_channel_id,
-                transport_event_id=transport_event_id,
-                external_post_id=None,
-            )
-            .on_conflict_do_nothing(
+            statement.on_conflict_do_update(
                 index_elements=[
                     BridgeMessageMap.bridge_id,
                     BridgeMessageMap.transport_event_id,
-                ]
-            )
-            .returning(BridgeMessageMap.id)
+                ],
+                set_={"created_at": func.now()},
+                where=(
+                    BridgeMessageMap.external_post_id.is_(None)
+                    & (BridgeMessageMap.created_at < func.now() - unposted_after)
+                ),
+            ).returning(BridgeMessageMap.id)
         )
         return result.scalar_one_or_none() is not None
 

@@ -103,13 +103,25 @@ STOP_GRACE_SECONDS = 5.0
 BRIDGE_CONNECTIONS = "bridge"
 
 
+# What a running bridge writes into its own config as it learns it from
+# traffic (`_persist_service_url`, `_persist_channel_team`). Not an edit: the
+# copy that learned it already uses it, and any other reads it on its next
+# start or learns it from traffic itself.
+_LEARNED_CONFIG_KEYS = frozenset({"service_url", "channel_teams"})
+
+
 def _started_from(bridge: CollaborationBridge) -> str:
     """What a running bridge was built from, as one value: an edit made by
     another process changes it, and a re-check that finds it changed restarts
     the bridge here."""
+    config = {
+        key: value
+        for key, value in (bridge.connection_config or {}).items()
+        if key not in _LEARNED_CONFIG_KEYS
+    }
     return hashlib.sha256(
         json.dumps(
-            [bridge.type, bridge.display_name, bridge.connection_config or {}],
+            [bridge.type, bridge.display_name, config],
             sort_keys=True,
             default=str,
         ).encode()

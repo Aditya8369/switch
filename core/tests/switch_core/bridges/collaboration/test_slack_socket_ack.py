@@ -3,8 +3,9 @@
 Slack sends an event again when it is not acknowledged within three seconds,
 so acknowledging only once the event is stored means a process that stops in
 between is sent the event again instead of losing it. Storing that runs long
-is acknowledged in time anyway, and a slash command or button press, which
-Slack never sends again, is acknowledged first as before.
+is acknowledged in time anyway, storing that fails is not acknowledged, so
+Slack sends the event again, and a slash command or button press, which Slack
+never sends again, is acknowledged first as before.
 """
 
 from __future__ import annotations
@@ -80,6 +81,21 @@ async def test_an_event_slow_to_store_is_acknowledged_in_time_and_still_stored(
     stored.set()
     await handling
     assert order == ["acknowledged", "stored"]
+
+
+async def test_an_event_that_fails_to_store_is_not_acknowledged() -> None:
+    order: list[str] = []
+    slack = _slack(order)
+
+    async def failing(*, envelope_type: str, payload: dict[str, Any]) -> None:
+        raise RuntimeError("the database refused the post")
+
+    slack.dispatch_event = failing  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        await slack._handle_socket_event(_socket(order), _envelope("events_api"))
+
+    assert order == []
 
 
 @pytest.mark.parametrize("kind", ["slash_commands", "interactive"])

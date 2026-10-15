@@ -15,11 +15,12 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -366,7 +367,8 @@ async def _process(
         tenant_store=TenantStore(),
         client_factory=factory,
         session_factory=session_factory,
-        config=MagicMock(),
+        # The server name the bridges read back clients' ids with.
+        config=_config(),
         tenants_isolated=True,
         ownership=ownership,
         cursor_writer=writer,
@@ -692,6 +694,41 @@ class TestHandingOver:
 
         assert await _posted(platform, 1) == ["said after"]
 
+    async def test_a_post_the_last_holder_claimed_and_never_sent_is_posted(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """A holder that died between claiming a message and posting it
+        leaves a claim with no post. The next holder reaches it once that
+        holder's lease has lapsed, by when the claim is long past any post in
+        flight, and posts it. A claim as fresh as a post in flight is left."""
+        claims = {
+            "claimed before it died": func.now() - timedelta(seconds=30),
+            "claimed just now": func.now(),
+        }
+        for body, claimed_at in claims.items():
+            event_id = await _say(session_factory, bridge, body)
+            async with session_factory() as session:
+                session.add(
+                    BridgeMessageMap(
+                        bridge_id=bridge.bridge_id,
+                        external_channel_id=CHANNEL,
+                        transport_event_id=event_id,
+                        external_post_id=None,
+                        created_at=claimed_at,
+                    )
+                )
+                await session.commit()
+
+        await _boot_two(postgres_url, session_factory, processes)
+        await _say(session_factory, bridge, "said after")
+
+        assert await _posted(platform, 2) == ["claimed before it died", "said after"]
+
     async def test_a_post_delivered_again_to_the_next_holder_is_stored_once(
         self,
         postgres_url: str,
@@ -758,6 +795,35 @@ class TestChangesMadeElsewhere:
         held = holder.bridges.get(bridge.bridge_id)
         assert held is not None and held.active
         assert platform.listening == [held.adapter]
+
+    async def test_what_a_bridge_learned_and_stored_restarts_no_copy(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """Teams stores the service URL and each channel's team as it learns
+        them from traffic, in the bridge's config. That is not an edit: the
+        re-check restarts no copy of the bridge for it."""
+        holder, quiet = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+        running = [p.bridges.get(bridge.bridge_id) for p in (holder, quiet)]
+
+        await holder.bridges._persist_service_url(
+            bridge.bridge_id, TENANT_ZERO_ID, "https://smba.example/emea/"
+        )
+        await holder.bridges._persist_channel_team(
+            bridge.bridge_id, TENANT_ZERO_ID, "C9", "team-9"
+        )
+        for process in (holder, quiet):
+            await process.bridges.reconcile_all()
+
+        assert [p.bridges.get(bridge.bridge_id) for p in (holder, quiet)] == running
 
     async def test_a_bridge_removed_through_the_quiet_process_stops_listening(
         self,
@@ -855,6 +921,42 @@ class TestPeopleOnThePlatform:
             session_factory, bridge.room_id, person.transport_user_id
         ) == ["first words", "second words"]
         assert platform.posted() == ["answer"]
+
+    async def test_two_people_whose_names_read_alike_stay_two_people(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """`ann.marie` and `ann-marie` sanitize to the same client localpart.
+        The second to speak is a person of their own, not the first."""
+        await _boot_two(postgres_url, session_factory, processes)
+
+        await platform.say(user_id="Ann.Marie", text="from the first", ref="m1")
+        await platform.say(user_id="Ann-Marie", text="from the second", ref="m2")
+
+        async with session_factory() as session:
+            people = dict(
+                (
+                    await session.execute(
+                        select(ExternalUser.external_user_id, Client.transport_user_id)
+                        .join(Client, Client.id == ExternalUser.client_id)
+                        .where(ExternalUser.bridge_id == bridge.bridge_id)
+                    )
+                )
+                .tuples()
+                .all()
+            )
+        assert set(people) == {"Ann.Marie", "Ann-Marie"}
+        assert people["Ann.Marie"] != people["Ann-Marie"]
+        assert await _room_bodies(
+            session_factory, bridge.room_id, people["Ann.Marie"]
+        ) == ["from the first"]
+        assert await _room_bodies(
+            session_factory, bridge.room_id, people["Ann-Marie"]
+        ) == ["from the second"]
 
 
 class TestAPlatformThatCannotKeepQuiet:

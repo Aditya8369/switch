@@ -40,10 +40,10 @@ class _Consumer:
     def preload_agent(self, agent: Agent) -> None:
         return None
 
-    async def start(self, progress: object) -> None:
+    async def connect(self) -> None:
         return None
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self.stopped = True
 
 
@@ -56,7 +56,7 @@ class _Factory:
     def create_consumer(self, client_type: str, actor: _Consumer) -> _Consumer:
         return actor
 
-    def read_by_one_process(self, client_type: str) -> bool:
+    def has_consumer(self, client_type: str) -> bool:
         return False
 
 
@@ -211,3 +211,36 @@ class TestReconcile:
         await lifecycle.reconcile_tenant(TENANT_ZERO_ID)
 
         assert lifecycle.get(agent.client_id) is None
+
+    async def test_a_client_registered_during_a_recheck_keeps_running(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A registration in this process can commit and start its client
+        while a re-check awaits its read. The re-check's rows predate that
+        client, which must not make it look deleted."""
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        store = lifecycle._client_store
+        real_get_all = store.get_all
+        registered: list[str] = []
+
+        async def read_then_register(session: Any) -> Any:
+            records = await real_get_all(session)
+            if not registered:
+                # As `AgentCore._create_agent` does: commit, then start.
+                agent = await _register(session_factory)
+                async with session_factory() as other:
+                    record = await other.get(Client, agent.client_id)
+                assert record is not None
+                lifecycle.start_client(record)
+                registered.append(record.id)
+            return records
+
+        store.get_all = read_then_register  # type: ignore[method-assign]
+        try:
+            await lifecycle.reconcile_tenant(TENANT_ZERO_ID)
+        finally:
+            store.get_all = real_get_all  # type: ignore[method-assign]
+
+        assert lifecycle.get(registered[0]) is not None
+        await lifecycle.stop_all()

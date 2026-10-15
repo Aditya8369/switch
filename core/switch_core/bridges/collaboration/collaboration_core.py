@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import re
 import time
@@ -9,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +60,7 @@ from switch_core.observability.catalogue import (
     BRIDGE_EVENTS_OUT,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
@@ -120,6 +123,22 @@ HUMAN_JOIN_TIMEOUT = 30.0
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
+
+# How old a claim on a room message going out (`_claim_outbound`) must be,
+# still with no post, before it is taken to be from a holder that died
+# between claiming and posting, and claimed again. Under the soonest the next
+# holder can read the message after such a death: the process lease lapsing
+# (`LEASE_TTL` after its last renewal, which came at most `RENEW_EVERY_SECONDS`
+# before the claim). Only one process holds the bridge at a time, so no live
+# post in flight is ever read by another holder this soon.
+_UNPOSTED_CLAIM_LAPSES_AFTER = timedelta(
+    seconds=LEASE_TTL.total_seconds() - 2 * RENEW_EVERY_SECONDS
+)
+
+# How long to wait for the person behind a human actor's client row that
+# another process has just written, before giving up on telling whose it is.
+# That process writes the `ExternalUser` right after the client.
+_HUMAN_ACTOR_MINTING_SECONDS = 2.0
 
 
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
@@ -282,6 +301,10 @@ class CollaborationCore:
         # never completes cannot leak.
         self._outbound_groups: dict[str, _PendingOutboundGroup] = {}
         self._outbound_group_timers: dict[str, asyncio.TimerHandle] = {}
+        # Incomplete groups whose timeout is posting what arrived. Out of
+        # `_outbound_groups`, so a late file of one starts a group of its own,
+        # and still holding the room's progress back until posted.
+        self._flushing_outbound_groups: list[_PendingOutboundGroup] = []
         # Room-event -> external-post anchors written synchronously right after
         # room_send, before the durable _record_message_map commit, so a fast
         # command reply relayed during that DB await still resolves the command's
@@ -1119,7 +1142,11 @@ class CollaborationCore:
         # A platform post hands us all its files at once, so the group is known
         # up front — no waiting on the receiving side to learn how many to
         # expect. The room carries them as `total` events sharing this id.
-        group_id = str(uuid.uuid4()) if total > 1 else None
+        # Derived from the post, as the files' rows are: a second delivery of
+        # a post whose first stopped partway writes the files still missing
+        # into the same group, which then completes.
+        source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
+        group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
             media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
@@ -1129,11 +1156,7 @@ class CollaborationCore:
             )
             # Numbered from the post and the file's place in it, as the text
             # above is, so a second delivery of the post writes no file twice.
-            with writes_derived_from(
-                human_actor.client_id,
-                _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
-                + f"\x1f{index}",
-            ):
+            with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
                 event_id = await human_actor.send_media(
                     transport_room_id,
                     media_uri,
@@ -2048,21 +2071,37 @@ class CollaborationCore:
         # type (e.g. two Slack workspaces) must map to distinct clients,
         # since transport_user_id is globally unique but usernames are not.
         localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
+        # Two people whose names sanitize alike (`ann.marie` and `ann-marie`)
+        # would share that localpart: the one who comes second gets it with
+        # their platform id's digest appended, the same in every process.
+        digest = hashlib.blake2b(external_user_id.encode(), digest_size=4).hexdigest()
+        candidates = (localpart, f"{localpart}-{digest}")
 
-        try:
-            client = await self._client_lifecycle.create_and_start(
-                client_type="user",
-                display_name=external_username,
-                localpart=localpart,
-            )
-        except IntegrityError:
-            # Minted by another process between the read above and here: the
-            # localpart is this person's on this bridge, so the row that won
-            # is theirs.
-            return await self._adopt_human_actor_client(
-                external_user_id,
-                external_username,
-                f"@{localpart}:{self._id_server_name}",
+        for localpart in candidates:
+            try:
+                client = await self._client_lifecycle.create_and_start(
+                    client_type="user",
+                    display_name=external_username,
+                    localpart=localpart,
+                )
+            except IntegrityError:
+                # Taken: by this person, minted by another process between the
+                # read above and here, or by someone else whose name
+                # sanitizes the same.
+                adopted = await self._adopt_human_actor_client(
+                    external_user_id,
+                    external_username,
+                    f"@{localpart}:{self._id_server_name}",
+                )
+                if adopted is not None:
+                    return adopted
+                continue
+            break
+        else:
+            raise RuntimeError(
+                f"No client localpart is free for external user "
+                f"{external_user_id} ({external_username!r}) on bridge "
+                f"{self._bridge_id}"
             )
 
         ext_user = ExternalUser(
@@ -2106,17 +2145,42 @@ class CollaborationCore:
 
     async def _adopt_human_actor_client(
         self, external_user_id: str, external_username: str, transport_user_id: str
-    ) -> str:
-        """The human actor whose client row another process wrote first."""
-        async with self._session_factory() as session:
-            record = await self._client_store.get_by_transport_user_id(
-                session, transport_user_id
-            )
-        if record is None:
-            raise RuntimeError(
-                f"Creating the human actor {transport_user_id} conflicted with "
-                "another, which cannot be read back"
-            )
+    ) -> str | None:
+        """The human actor whose client row was written first, when it is this
+        person's; None when it stands for someone else."""
+        deadline = time.monotonic() + _HUMAN_ACTOR_MINTING_SECONDS
+        while True:
+            async with self._session_factory() as session:
+                record = await self._client_store.get_by_transport_user_id(
+                    session, transport_user_id
+                )
+                person = (
+                    None
+                    if record is None
+                    else await self._external_user_store.get_by_client_id(
+                        session, record.id
+                    )
+                )
+            if record is None:
+                raise RuntimeError(
+                    f"Creating the human actor {transport_user_id} conflicted "
+                    "with another, which cannot be read back"
+                )
+            if person is not None:
+                break
+            # Its process writes whose it is right after the client row.
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"The human actor {transport_user_id} has no external user "
+                    f"after {_HUMAN_ACTOR_MINTING_SECONDS:.0f}s, so whose it is "
+                    "cannot be told"
+                )
+            await asyncio.sleep(0.1)
+        if (
+            person.bridge_id != self._bridge_id
+            or person.external_user_id != external_user_id
+        ):
+            return None
         self._run_human_actor(external_user_id, external_username, record)
         return record.id
 
@@ -2273,8 +2337,8 @@ class CollaborationCore:
                 admin_marker=admin_marker if is_system else None,
                 is_system=is_system,
             )
-        except Exception:
-            await self._release_outbound(event.event_id)
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(event.event_id))
             raise
         await self._settle_outbound(event.event_id, message_ref)
 
@@ -2513,8 +2577,8 @@ class CollaborationCore:
                     caption=caption,
                     thread_root_id=thread_root_ref,
                 )
-        except Exception:
-            await self._release_outbound(event.event_id)
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(event.event_id))
             raise
         await self._settle_outbound(event.event_id, message_ref)
 
@@ -2524,7 +2588,10 @@ class CollaborationCore:
         stops before it."""
         held = [
             pending.from_seq
-            for pending in self._outbound_groups.values()
+            for pending in [
+                *self._outbound_groups.values(),
+                *self._flushing_outbound_groups,
+            ]
             if pending.room_id == room_id
         ]
         return min(held) if held else None
@@ -2576,12 +2643,20 @@ class CollaborationCore:
             # A bridge that stopped leaves the group to whoever holds it next:
             # its progress stops before the group's first file.
             return
+        # A file of the group arriving while this posts would otherwise be
+        # added to a post already on its way without it, and never sent.
+        del self._outbound_groups[group_id]
+        self._flushing_outbound_groups.append(pending)
         try:
             await self._flush_outbound_group(
                 group_id, pending, channel_id, sender_name, thread_root_ref
             )
         finally:
-            self._outbound_groups.pop(group_id, None)
+            self._flushing_outbound_groups = [
+                flushing
+                for flushing in self._flushing_outbound_groups
+                if flushing is not pending
+            ]
             if client.transport is not None:
                 client.transport.held_back_released(pending.room_id)
 
@@ -2632,8 +2707,8 @@ class CollaborationCore:
                 caption=pending.caption,
                 thread_root_id=thread_root_ref,
             )
-        except Exception:
-            await self._release_outbound(claim_event_id)
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(claim_event_id))
             raise
         await self._settle_outbound(claim_event_id, message_ref)
 
@@ -2716,9 +2791,15 @@ class CollaborationCore:
         """Claim a room message for posting to the platform, before posting
         it. False when it is claimed already: posted, or being posted, by
         whoever held the bridge before. Claiming first is what keeps a
-        hand-over between processes from posting a message twice; a process
-        that stops between the claim and the post leaves it unposted rather
-        than doubled."""
+        hand-over between processes from posting a message twice.
+
+        A post that fails, or is cancelled because the bridge stopped before
+        it finished, lets its claim go, so whoever holds the bridge next posts
+        it; one the platform took just before the cancel then shows twice. A
+        process that dies between the claim and the post leaves the claim,
+        which the next holder claims again once it is
+        `_UNPOSTED_CLAIM_LAPSES_AFTER` old and posts the message, twice if the
+        platform had taken it before the death."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -2727,6 +2808,7 @@ class CollaborationCore:
                 bridge_id=self._bridge_id,
                 external_channel_id=channel_id,
                 transport_event_id=transport_event_id,
+                unposted_after=_UNPOSTED_CLAIM_LAPSES_AFTER,
             )
             await session.commit()
         if not claimed:
@@ -2758,7 +2840,8 @@ class CollaborationCore:
             await session.commit()
 
     async def _release_outbound(self, transport_event_id: str) -> None:
-        """Let a claim go after the platform refused the post."""
+        """Let a claim go after the platform refused the post, or the post
+        was cancelled before it finished."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:

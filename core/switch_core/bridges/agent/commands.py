@@ -61,6 +61,11 @@ CommandTargeting = Callable[["AgentRecipient", str, str], Awaitable[bool]]
 CommandAdminCheck = Callable[
     ["CommandConsumer", RoomRef, CommandEvent, "RoomMeta"], Awaitable[None]
 ]
+# (client, room, event) -> what a command that queues itself for the agent
+# does for this agent, decided as the command's row is written.
+CommandDecider = Callable[
+    ["AgentRecipient", RoomRef, CommandEvent], Awaitable["ControlDecision"]
+]
 
 
 async def _addressed_by_name_or_role(
@@ -232,6 +237,11 @@ class Command:
     # it. If False, the command is handled by the agents themselves (e.g.
     # `!run-cmd`, `!reset`, `!agents-greet`), which answer in their own voice.
     admin_owned: bool = False
+    # Set for a command that is queued for the agent (the session controls).
+    # The router decides it in the transaction that writes the command and
+    # stores what is queued with it, so the agent gets the command before
+    # anything written after it; `handler` runs it outside the router.
+    decide: CommandDecider | None = None
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -398,17 +408,41 @@ async def _cmd_help(
     await _reply(client, room, event, "\n".join(lines))
 
 
-async def _dispatch_control_command(
+@dataclass(frozen=True)
+class ControlTexts:
+    """What a session-control command says in the room for each outcome."""
+
+    ack: str
+    unsupported: str
+    # No live session in the room at all.
+    no_live_session: str
+    # A live session that cannot be controlled from here, e.g. one not
+    # started from Switch Console.
+    no_session: str
+
+
+@dataclass(frozen=True)
+class ControlDecision:
+    """What a session-control command does for one agent.
+
+    `queued` is the command to queue for the agent's controller, None when
+    nothing is queued. The router stores it as an own event in the
+    transaction that writes the command, so a message written after the
+    command reaches the agent after it. `answer` is what is said in the room,
+    or relayed to a session, once the command has committed.
+    """
+
+    queued: CommandPayload | None
+    answer: Callable[[], Awaitable[None]] | None
+
+
+async def _decide_control_command(
     client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     command: str,
-    *,
-    ack: str,
-    unsupported_msg: str,
-    no_live_session_msg: str,
-    no_session_msg: str,
-) -> None:
+    texts: ControlTexts,
+) -> ControlDecision:
     """Shared logic for the session-control commands (reset/compact/interrupt).
 
     Resolves the agent's declared capability level for `command` from its
@@ -417,15 +451,21 @@ async def _dispatch_control_command(
     control capabilities). When actionable, acknowledges in the room and queues
     a `command` event for the agent's controller (e.g. Switch Console) to execute.
 
-    Two distinct "can't act" cases are reported separately: no live session in
-    the room at all (`no_live_session_msg`) vs. a live session that can't be
-    controlled from here — e.g. not started from Switch Console (`no_session_msg`).
+    Everything here is a read; what it decides to say or relay is left to
+    `ControlDecision.answer`.
     """
+
+    def say(body: str) -> ControlDecision:
+        async def answer() -> None:
+            await _reply(client, room, event, body)
+
+        return ControlDecision(queued=None, answer=answer)
+
     async with client.session_factory() as session:
         agent = await client._fresh_agent(session)
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
-        return
+        return ControlDecision(queued=None, answer=None)
     # A session that connected to this room takes the command itself, over
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.
@@ -436,13 +476,9 @@ async def _dispatch_control_command(
     placed = client._connections.session_in_room(agent.id, meta.room_id)
     if placed is not None or controller_backed:
         if not event.message_id:
-            await _reply(
-                client,
-                room,
-                event,
-                f"Could not send {command}: the room command has no stable message ID.",
+            return say(
+                f"Could not send {command}: the room command has no stable message ID."
             )
-            return
         frame = room_control_frame(
             agent_id=agent.id,
             session_id=placed,
@@ -454,27 +490,24 @@ async def _dispatch_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
         )
-        if client._connections.relay_session_command(agent.id, frame):
-            await _reply(client, room, event, ack)
-            return
-    if placed is not None or controller_backed:
-        await _reply(
-            client,
-            room,
-            event,
-            f"Could not send {command}: the agent's controller is not connected to Switch.",
-        )
-        return
+
+        async def relay() -> None:
+            if client._connections.relay_session_command(agent.id, frame):
+                await _reply(client, room, event, texts.ack)
+                return
+            await _reply(
+                client,
+                room,
+                event,
+                f"Could not send {command}: the agent's controller is not connected to Switch.",
+            )
+
+        return ControlDecision(queued=None, answer=relay)
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
 
     if level == "unsupported":
-        await _reply(client, room, event, unsupported_msg)
-        return
-
-    meta = await client._resolve_room_meta(room.room_id)
-    if meta is None:
-        return
+        return say(texts.unsupported)
 
     deeplink: str | None = None
     role: str | None = None
@@ -504,11 +537,9 @@ async def _dispatch_control_command(
         live = statuses.get(agent.id) == AgentStatus.LIVE
         caps = (runtime.control_capabilities or {}) if runtime else {}
         if not live:
-            await _reply(client, room, event, no_live_session_msg)
-            return
+            return say(texts.no_live_session)
         if not caps.get(command):
-            await _reply(client, room, event, no_session_msg)
-            return
+            return say(texts.no_session)
         deeplink = runtime.deeplink_url if runtime else None
 
     args = event.args
@@ -517,8 +548,41 @@ async def _dispatch_control_command(
 
     # Mirror the runtime "working" surface: link back to the session in
     # Switch Console when we know its deeplink.
-    body = f"{ack} ([Open in Switch Console]({deeplink}))" if deeplink else ack
-    await _reply(client, room, event, body)
+    body = (
+        f"{texts.ack} ([Open in Switch Console]({deeplink}))" if deeplink else texts.ack
+    )
+    decision = say(body)
+    return ControlDecision(
+        queued=CommandPayload(
+            command=command,
+            args=args,
+            user_id=event.user_id,
+            user_name=event.user_name,
+            thread_id=event.thread_id,
+        ),
+        answer=decision.answer,
+    )
+
+
+async def _dispatch_control_command(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    command: str,
+    texts: ControlTexts,
+) -> None:
+    """Decide a session-control command and carry it out at once: answer in
+    the room, then queue the command for the agent in a transaction of its
+    own. For a command run outside the router; the router stores what is
+    queued with the command's row instead (`AgentRecipient.decide_command`)."""
+    decision = await _decide_control_command(client, room, event, command, texts)
+    if decision.answer is not None:
+        await decision.answer()
+    if decision.queued is None:
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        return
     await client._event_buffer.enqueue(
         client.tenant_id,
         client.agent.id,
@@ -528,78 +592,83 @@ async def _dispatch_control_command(
             room_id=meta.room_id,
             bridge_id=meta.bridge_id,
             channel_type=meta.channel_type,
-            payload=CommandPayload(
-                command=command,
-                args=args,
-                user_id=event.user_id,
-                user_name=event.user_name,
-                thread_id=event.thread_id,
-            ),
+            payload=decision.queued,
         ),
         room_seq=event.room_seq,
         message_key=event.message_id,
     )
 
 
+_RESET = ControlTexts(
+    ack="Resetting my session — clearing context, then reconnecting to this room.",
+    unsupported="My session can't be reset — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to reset."
+    ),
+    no_session=(
+        "My session can't be reset from here — it wasn't started from "
+        "Switch Console, so my operator needs to reset it manually (e.g. by "
+        "restarting my session)."
+    ),
+)
+_COMPACT = ControlTexts(
+    ack="Compacting my session's context.",
+    unsupported="I can't compact my session — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to compact."
+    ),
+    no_session=(
+        "I can't compact from here — my session wasn't started from "
+        "Switch Console, so my operator needs to compact it manually."
+    ),
+)
+_INTERRUPT = ControlTexts(
+    ack="Interrupted my current turn.",
+    unsupported="I can't be interrupted — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to interrupt."
+    ),
+    no_session=(
+        "I can't be interrupted from here — my session wasn't started from "
+        "Switch Console, so my operator needs to interrupt it manually."
+    ),
+)
+
+
 async def _cmd_reset(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    await _dispatch_control_command(
-        client,
-        room,
-        event,
-        "reset",
-        ack="Resetting my session — clearing context, then reconnecting to this room.",
-        unsupported_msg="My session can't be reset — this isn't supported for me.",
-        no_live_session_msg=(
-            "I have no active session in this room, so there's nothing to reset."
-        ),
-        no_session_msg=(
-            "My session can't be reset from here — it wasn't started from "
-            "Switch Console, so my operator needs to reset it manually (e.g. by "
-            "restarting my session)."
-        ),
-    )
+    await _dispatch_control_command(client, room, event, "reset", _RESET)
+
+
+async def _decide_reset(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "reset", _RESET)
 
 
 async def _cmd_compact(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    await _dispatch_control_command(
-        client,
-        room,
-        event,
-        "compact",
-        ack="Compacting my session's context.",
-        unsupported_msg="I can't compact my session — this isn't supported for me.",
-        no_live_session_msg=(
-            "I have no active session in this room, so there's nothing to compact."
-        ),
-        no_session_msg=(
-            "I can't compact from here — my session wasn't started from "
-            "Switch Console, so my operator needs to compact it manually."
-        ),
-    )
+    await _dispatch_control_command(client, room, event, "compact", _COMPACT)
+
+
+async def _decide_compact(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "compact", _COMPACT)
 
 
 async def _cmd_interrupt(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    await _dispatch_control_command(
-        client,
-        room,
-        event,
-        "interrupt",
-        ack="Interrupted my current turn.",
-        unsupported_msg="I can't be interrupted — this isn't supported for me.",
-        no_live_session_msg=(
-            "I have no active session in this room, so there's nothing to interrupt."
-        ),
-        no_session_msg=(
-            "I can't be interrupted from here — my session wasn't started from "
-            "Switch Console, so my operator needs to interrupt it manually."
-        ),
-    )
+    await _dispatch_control_command(client, room, event, "interrupt", _INTERRUPT)
+
+
+async def _decide_interrupt(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "interrupt", _INTERRUPT)
 
 
 async def _cmd_list_room_agents(
@@ -1219,6 +1288,7 @@ COMMANDS: list[Command] = [
         "Usage: `!reset @agent-name` or `!reset @role` (the role's holder). "
         "A target is required — use `!reset-all-agents` to reset everyone.",
         _cmd_reset,
+        decide=_decide_reset,
         args_spec=(
             CommandArg("target", "Agent name, alias, or role to reset", required=True),
         ),
@@ -1234,6 +1304,7 @@ COMMANDS: list[Command] = [
         "Reset EVERY agent's session in this room (clears context, then "
         "reconnects each). Usage: `!reset-all-agents`.",
         _cmd_reset,
+        decide=_decide_reset,
         addressed=_addressed_everyone,
     ),
     Command(
@@ -1242,6 +1313,7 @@ COMMANDS: list[Command] = [
         "Usage: `!compact @agent-name` or `!compact @role` (the role's holder). "
         "A target is required — use `!compact-all-agents` for everyone.",
         _cmd_compact,
+        decide=_decide_compact,
         args_spec=(
             CommandArg(
                 "target", "Agent name, alias, or role to compact", required=True
@@ -1257,6 +1329,7 @@ COMMANDS: list[Command] = [
         "Compact EVERY agent's session context in this room. "
         "Usage: `!compact-all-agents`.",
         _cmd_compact,
+        decide=_decide_compact,
         addressed=_addressed_everyone,
     ),
     Command(
@@ -1265,6 +1338,7 @@ COMMANDS: list[Command] = [
         "Usage: `!interrupt @agent-name` or `!interrupt @role` (the role's holder). "
         "A target is required — use `!interrupt-all-agents` for everyone.",
         _cmd_interrupt,
+        decide=_decide_interrupt,
         args_spec=(
             CommandArg(
                 "target", "Agent name, alias, or role to interrupt", required=True
@@ -1278,6 +1352,7 @@ COMMANDS: list[Command] = [
         "Interrupt EVERY agent's current turn in this room. "
         "Usage: `!interrupt-all-agents`.",
         _cmd_interrupt,
+        decide=_decide_interrupt,
         addressed=_addressed_everyone,
     ),
     Command(

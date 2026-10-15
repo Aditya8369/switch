@@ -271,10 +271,19 @@ async def _attachment_group_sweep_loop(
         while True:
             await asyncio.sleep(GROUP_SWEEP_SECONDS)
             try:
-                for tenant_id in await all_tenant_ids(session_factory):
-                    await router.flush_due_groups(tenant_id)
+                tenants = await all_tenant_ids(session_factory)
             except Exception:
                 logger.exception("Attachment group sweep failed")
+                continue
+            # One tenant at a time, each on its own: a tenant whose sweep
+            # fails leaves the tenants after it to be swept all the same.
+            for tenant_id in tenants:
+                try:
+                    await router.flush_due_groups(tenant_id)
+                except Exception:
+                    logger.exception(
+                        "Attachment group sweep failed for tenant %s", tenant_id
+                    )
 
 
 async def _recheck_agent_rooms(
@@ -369,7 +378,8 @@ async def _release_process(
 ) -> None:
     """Hand the work this process owns to the others, record the agent
     connections and controller sockets that went, then mark this process's
-    lease stopped. In that order: the lease must not read as stopped while
+    lease stopped and tell the others, which take the work over on hearing
+    it. In that order: the lease must not read as stopped while
     owned work still runs here, or another process would start it beside
     this one. Once the owned work has stopped, the lease is marked stopped
     even when the recording fails, so the connections this process held read
@@ -395,6 +405,7 @@ async def _release_process(
                     await management.flush()
             finally:
                 await lease.stop()
+                ownership.gone()
     except TimeoutError:
         logger.warning(
             "Gave up releasing switch-core process %s after %.1fs; its "
@@ -624,6 +635,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
+    # Renewed from here on, not from when the process starts serving: the
+    # owned work started during boot stops once the lease is not sure
+    # (`ProcessLease.surely_held`), and a boot can take longer than that.
+    lease_task = asyncio.create_task(process_lease.run())
     # Which of the work that must run once this process runs (`ownership.py`),
     # held under that lease. With one process, all of it.
     ownership = Ownership(
@@ -1252,9 +1267,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
-            lease_task = asyncio.create_task(process_lease.run())
             shared_connections_task = asyncio.create_task(shared_connections.run())
-            ownership_task = asyncio.create_task(ownership.run())
             cursor_writer_task = asyncio.create_task(cursor_writer.run())
             management_task = (
                 asyncio.create_task(management.run())
@@ -1379,6 +1392,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Start the work this process owns, before it serves: with one process,
     # all of it. Then the quiet copies of the bridges another process holds.
     await ownership.start()
+    # Running from here, so the rest of the boot is covered: a lease that
+    # stops being sure stops the work it holds there and then.
+    ownership_task = asyncio.create_task(ownership.run())
     await collab_lifecycle.start_quiet_copies()
 
     # Backfill room membership: system clients (e.g. the admin client) added

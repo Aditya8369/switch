@@ -88,14 +88,13 @@ class ClientFactory:
         """
         self._registry[client_type] = (actor_cls, consumer_cls, consumer_kwargs)
 
-    def read_by_one_process(self, client_type: str) -> bool:
-        """Whether a client of this type has a consumer that must run in one
+    def has_consumer(self, client_type: str) -> bool:
+        """Whether a client of this type has a consumer, which runs in one
         process only, the one that owns the client (`ownership.py`)."""
         entry = self._registry.get(client_type)
         if entry is None:
             raise ValueError(f"Unknown client type: {client_type!r}")
-        consumer_cls = entry[1]
-        return consumer_cls is not None and consumer_cls.read_by_one_process
+        return entry[1] is not None
 
     def create_actor(self, record: Client) -> Actor[ClientConfig]:
         """The actor a `clients` row becomes."""

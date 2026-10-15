@@ -33,10 +33,10 @@ Writes that must not outlive the hold name the token in the same statement
 refused, and is stopped when it is.
 
 Changes reach the other processes over the signal bus: `ownership.changed`
-after a process releases keys or starts, so they rebalance at once. Every
-process also rebalances every `BALANCE_INTERVAL_SECONDS`, which is how a
-process that died is noticed: one read of the process leases, and no write
-unless something moved.
+after a process releases keys, starts, or has marked its process lease stopped
+as it shuts down, so they rebalance at once. Every process also rebalances
+every `BALANCE_INTERVAL_SECONDS`, which is how a process that died is noticed:
+one read of the process leases, and no write unless something moved.
 
 With one process this is that process owning everything, claimed once at boot.
 """
@@ -302,9 +302,8 @@ class Ownership:
         owns is running as it would have at boot with one process. Then the
         other processes are told this one is here.
 
-        The lease is renewed first: its renewal loop runs only once the
-        process serves, and boot may have taken longer since the lease was
-        claimed than the lease is sure for."""
+        The lease is renewed first, so the work starts with all the time the
+        lease is sure for, however long the boot took since it was claimed."""
         await self._lease.renew()
         await self.balance()
         self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
@@ -330,10 +329,13 @@ class Ownership:
                 logger.exception("Balancing owned work failed; retrying shortly")
 
     async def stop(self) -> None:
-        """Stop everything this process runs, then let go of its leases so the
-        other processes take them over at once. Called as the process shuts
-        down, before its process lease is marked stopped; a second call waits
-        for the first and does nothing."""
+        """Stop everything this process runs, then let go of its leases. Called
+        as the process shuts down, before its process lease is marked stopped;
+        a second call waits for the first and does nothing.
+
+        Nothing is signalled yet: while the process lease holds, the other
+        processes still hash this one's work to it and claim none of it. The
+        caller signals with `gone` once the lease is marked stopped."""
         async with self._lock:
             if self._stopped:
                 return
@@ -351,6 +353,11 @@ class Ownership:
                     exc_info=True,
                 )
                 return
+
+    def gone(self) -> None:
+        """Tell the other processes this one's process lease is marked
+        stopped, so they rebalance at once and claim the work `stop` let go
+        of, rather than at their next interval."""
         self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
 
     # ── Balancing ────────────────────────────────────────────────────────────
