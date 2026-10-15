@@ -30,6 +30,7 @@ from switch_core.connections.oauth_clients import (
 from switch_core.connections.sign_in_flows import MAX_FLOWS, SignInFlows
 from switch_core.db.models import ServiceConnection, SignInFlow, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
@@ -71,6 +72,7 @@ def _world(
     redirect: str = "[loopback, core]",
     public_url: str | None = None,
     disabled: dict[str, str] | None = None,
+    workspace_gate: bool = False,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
@@ -109,6 +111,8 @@ def _world(
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=workspace_gate,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -580,3 +584,103 @@ class TestRefusals:
             refused = await Console(client, ada).start("github")
         assert refused.status_code == 404
         assert "its own sign-in" in refused.json()["detail"]
+
+
+WORKSPACE_REFUSAL = {
+    "detail": (
+        "Example is not enabled in this workspace. Ask a workspace admin; they "
+        "switch it on under Connectors in Switch Console."
+    ),
+    "code": "forbidden",
+    "retryable": False,
+}
+
+
+async def _switch(
+    session_factory: async_sessionmaker[AsyncSession], enabled: bool, admin: User
+) -> None:
+    async with session_factory() as session:
+        await WorkspaceServiceStore().set_enabled(session, "example", enabled, admin.id)
+        await session.commit()
+
+
+class TestWorkspaceSwitch:
+    async def test_a_service_the_workspace_switched_off_is_refused_before_the_vendor(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", workspace_gate=True)
+        ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, False, ada)
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start()
+        assert refused.status_code == 403
+        assert refused.json() == WORKSPACE_REFUSAL
+        assert world.vendor.paths == []
+        assert world.vendor.registrations == []
+        assert await _flow_ids(session_factory) == set()
+
+    async def test_switched_back_on_it_proceeds(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", workspace_gate=True)
+        ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, False, ada)
+        await _switch(session_factory, True, ada)
+        async with world.harness.client() as client:
+            started = await Console(client, ada).start()
+        assert started.status_code == 200, started.text
+
+    async def test_with_the_gate_off_the_switch_is_ignored(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", workspace_gate=False)
+        ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, False, ada)
+        async with world.harness.client() as client:
+            started = await Console(client, ada).start()
+        assert started.status_code == 200, started.text
+
+    async def test_switched_off_mid_sign_in_the_issued_sign_in_is_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        # Revoking at the endpoint the vendor advertises, as Atlassian does.
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+            workspace_gate=True,
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            await _loopback_ready(world, console)
+            await _switch(session_factory, False, ada)
+            refused = await console.confirm()
+        assert refused.status_code == 403
+        assert refused.json() == WORKSPACE_REFUSAL
+        assert await _connection(session_factory, ada.id) is None
+        # The one refresh token the vendor issued for this sign-in is revoked.
+        assert [form["token_type_hint"] for form in world.vendor.revoked] == [
+            "refresh_token"
+        ]
+        assert world.vendor.live_refresh == {}
+        assert await _flow_ids(session_factory) == set()
+
+    async def test_a_sign_in_that_cannot_be_revoked_says_what_to_do(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", workspace_gate=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            await _loopback_ready(world, console)
+            await _switch(session_factory, False, ada)
+            refused = await console.confirm()
+        assert refused.status_code == 403
+        assert refused.json() == {
+            **WORKSPACE_REFUSAL,
+            "detail": WORKSPACE_REFUSAL["detail"]
+            + " Switch could not revoke the sign-in Example just issued. Remove "
+            "Switch from your Example account's connected apps.",
+        }
+        assert await _connection(session_factory, ada.id) is None

@@ -24,6 +24,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.github_connections import router
@@ -36,7 +37,10 @@ TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 
 @pytest.fixture
-async def github_app(tmp_path, session_factory):
+async def github_app(request, tmp_path, session_factory):
+    """The GitHub routes on their own. Parametrize indirectly with True for the
+    workspace switch to apply, as the `service_connections` flag makes it."""
+    workspace_gate = getattr(request, "param", False)
     config = tmp_path / "github.json"
     config.write_text(
         json.dumps(
@@ -89,14 +93,14 @@ async def github_app(tmp_path, session_factory):
         await session.commit()
     identity = {"user": user}
 
-    app = _process(github, identity, session_factory)
+    app = _process(github, identity, session_factory, workspace_gate)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
         yield client, github, identity, session_factory
 
 
-def _process(github, identity, session_factory) -> FastAPI:
+def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI:
     """One switch-core process's gateway: its own app, broker and flow store,
     on the shared database."""
 
@@ -115,6 +119,8 @@ def _process(github, identity, session_factory) -> FastAPI:
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=workspace_gate,
     )
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
@@ -310,8 +316,8 @@ async def test_a_sign_in_started_on_one_process_completes_on_another(
     """Every request of the sign-in lands on the other process from the one
     before: start, the browser's three steps, completion, status and confirm."""
     _, github, identity, factory = github_app
-    first = _process(github, identity, factory)
-    second = _process(github, identity, factory)
+    first = _process(github, identity, factory, False)
+    second = _process(github, identity, factory, False)
     async with httpx.AsyncClient(
         transport=_EachRequestToTheNextProcess(first, second),
         base_url="https://switch.example.com",
@@ -330,8 +336,8 @@ async def test_a_sign_in_started_on_one_process_completes_on_another(
 
 async def test_two_processes_racing_to_complete_exchange_the_code_once(github_app):
     _, github, identity, factory = github_app
-    first = _process(github, identity, factory)
-    second = _process(github, identity, factory)
+    first = _process(github, identity, factory, False)
+    second = _process(github, identity, factory, False)
     async with httpx.AsyncClient(
         transport=_EachRequestToTheNextProcess(first, second),
         base_url="https://switch.example.com",
@@ -568,3 +574,65 @@ async def test_relink_queues_existing_installation_tokens(github_app, monkeypatc
     async with factory() as session:
         row = await session.get(ServiceTokenIssuance, (require_tenant_id(), issued.id))
         assert row.revoke_requested and row.encrypted_token is not None
+
+
+GITHUB_REFUSAL = {
+    "detail": (
+        "GitHub is not enabled in this workspace. Ask a workspace admin; they "
+        "switch it on under Connectors in Switch Console."
+    ),
+    "code": "forbidden",
+    "retryable": False,
+}
+
+
+async def _switch_github(factory, user_id: str, enabled: bool) -> None:
+    async with factory() as session:
+        await WorkspaceServiceStore().set_enabled(session, "github", enabled, user_id)
+        await session.commit()
+
+
+async def _start(client):
+    return await client.post(
+        BASE + "/flows",
+        json={
+            "port": 12345,
+            "state": secrets.token_urlsafe(32),
+            "completion_secret": SECRET,
+        },
+    )
+
+
+@pytest.mark.parametrize("github_app", [True], indirect=True)
+async def test_start_is_refused_where_the_workspace_switched_github_off(github_app):
+    client, github, identity, factory = github_app
+    await _switch_github(factory, identity["user"].id, False)
+    response = await _start(client)
+    assert response.status_code == 403
+    assert response.json() == GITHUB_REFUSAL
+    async with factory() as session:
+        assert await session.scalar(select(SignInFlow)) is None
+
+
+async def test_with_the_flag_off_the_workspace_switch_is_ignored(github_app):
+    client, _, identity, factory = github_app
+    await _switch_github(factory, identity["user"].id, False)
+    assert (await _start(client)).status_code == 200
+
+
+@pytest.mark.parametrize("github_app", [True], indirect=True)
+async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_app):
+    client, github, identity, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    assert (await complete(client, flow_id)).status_code == 204
+    await _switch_github(factory, identity["user"].id, False)
+
+    response = await confirm(client, flow_id)
+
+    assert response.status_code == 403
+    assert response.json() == GITHUB_REFUSAL
+    github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
+    async with factory() as session:
+        assert await session.scalar(select(SignInFlow)) is None
+        assert await session.scalar(select(ServiceConnection)) is None

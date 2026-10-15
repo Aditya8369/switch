@@ -27,6 +27,7 @@ from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import ServiceConnection, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
@@ -110,6 +111,8 @@ def _world(
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker

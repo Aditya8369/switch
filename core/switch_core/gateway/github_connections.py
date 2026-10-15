@@ -119,14 +119,19 @@ class CompleteFlow(FlowSecret):
     code: str = Field(min_length=1, max_length=512)
 
 
-@router.post("/flows")
+@router.post("/flows", response_model=None)
 async def start(
     body: StartFlow,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
-) -> dict:
+) -> dict | JSONResponse:
+    try:
+        await broker.require_workspace_enabled(session, "github")
+    except ServiceError as error:
+        return service_refusal(error)
     tenant = await session.get(Tenant, require_tenant_id())
     if tenant is None:
         raise HTTPException(404, "Workspace not found.")
@@ -411,6 +416,8 @@ async def confirm(
             secret=ConnectionSecret(credentials),
         )
     except ServiceError as error:
+        if not error.retryable:
+            await flows.discard(flow)
         return service_refusal(error)
     await flows.discard(flow)
     logger.info(

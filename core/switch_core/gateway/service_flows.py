@@ -121,6 +121,7 @@ async def start(
 ) -> dict | JSONResponse:
     """Begin signing in: where to send the browser, and which way it returns."""
     try:
+        await broker.require_workspace_enabled(session, service)
         definition, adapter = broker.sign_in(service)
     except ServiceError as error:
         return service_refusal(error)
@@ -370,6 +371,8 @@ async def confirm(
             secret=signed_in.secret,
         )
     except ServiceError as error:
+        if not error.retryable:
+            await flows.discard(flow)
         return service_refusal(error)
     await flows.discard(flow)
     logger.info(

@@ -223,6 +223,12 @@ as its owner there, that off stops its sessions within a minute, and, for a
 token that lives longer, that a token already handed out stays valid until it
 expires or the owner disconnects.
 
+`GET /gateway/service-connections/{service}/agents` lists the caller's own
+agents in the workspace, each with whether it holds a grant on the service and
+whether others can address it, for the "used by" list and the checklist
+Console offers after connecting. Another member's agents never appear; an
+unknown or placeholder slug is 404.
+
 ## Switching connections on
 
 The whole feature is behind the `service_connections` feature flag
@@ -239,6 +245,35 @@ the boot-time GitHub move and the token upkeep run either way.
 "Switched off on this server." A switched-off service is listed with its
 reason and cannot be connected, granted or issued a token (403 `forbidden`);
 disconnecting still works. A slug outside the catalog stops the server.
+
+## Switching a service on for a workspace
+
+A workspace admin switches each catalog service on or off for the workspace
+(`GET` and `PUT /gateway/workspace/services[/{service}]`, admins and owners,
+and the operator in a workspace they belong to). A service with no setting is
+on, so an upgraded server behaves as before; a row is written only when an
+admin touches the switch, and each change is audited
+(`workspace_service.enabled` / `.disabled`). The switch applies only with the
+`service_connections` flag on; with it off, GitHub works as it always has.
+The list carries `connected_members` and `granted_agents`, what Console shows
+before an admin confirms switching off.
+
+Off, nobody in the workspace can start a sign-in, paste a key, connect, grant
+or be issued a token for the service: 403 `forbidden`, "Datadog is not enabled
+in this workspace. Ask a workspace admin; they switch it on under Connectors in
+Switch Console." The server's own `DISABLED_SERVICES` reason is checked first.
+A sign-in that completes after the switch is refused and revoked at the
+vendor. Grants are kept, but the grants list a session reads leaves the
+service out, so a running session loses the service within half a minute, as
+it does a removed grant: its host restarts it without the service. A token
+already handed out may be used until that restart, except GitHub's, which the
+switch queues and revokes before it answers (`warning` when some could not be
+yet; the five-minute tick keeps trying). On again, the grants come back with
+no re-grant.
+
+The service list (`GET /gateway/service-connections`) carries
+`workspace_enabled` per service, `true` for every service when the flag is
+off.
 
 ## Keys
 
@@ -438,6 +473,10 @@ it as unavailable, with its reason, and the next token request fails.
 
 ## Not yet
 
+- Shared workspace connections, and a per-workspace OAuth client: every
+  connection is a person's own, and every workspace signs in through the
+  deployment's one client per vendor. A workspace's switch only turns a
+  service on or off.
 - `grants.changed` on the agent and controller streams: a grant change reaches
   a running session within half a minute, by the host reading the grants
   again, not at once.

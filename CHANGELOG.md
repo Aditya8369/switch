@@ -91,6 +91,22 @@ version of their own to them without also giving them a release of their own.
   and the dev environment's, follow it. A controller
   run as a service installs a release beside the one it runs and keeps the one
   before. Roll back by pointing the values at the previous release.
+- **Workspace admins can switch each service off for their workspace.** With
+  the `service_connections` flag on, `GET /gateway/workspace/services` lists
+  every connectable service with whether the workspace has it on, who last
+  changed it and when, and how many members are connected and agents granted;
+  `PUT /gateway/workspace/services/{service}` with `{"enabled": false}` switches
+  it off (workspace admins and owners, audited). Off, nobody in the workspace
+  can start a sign-in, paste a key, connect, grant or be issued a token for it,
+  and the refusal says who can turn it back on and where. A running session
+  loses the service within half a minute: its grants list leaves it out, and
+  its host restarts it without the service. A token already handed out may be
+  used until then, except GitHub's, which is revoked before the switch
+  answers. Grants are kept, so switching it on again needs no re-grant. A
+  service with no setting is on, so an upgraded server behaves as before. The
+  service list now says `workspace_enabled` for each service, and
+  `GET /gateway/service-connections/{service}/agents` lists the caller's own
+  agents with whether each holds a grant and whether others can address it.
 
 #### Changed
 - **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The

@@ -98,6 +98,7 @@ async def list_service_connections(
         connection.service: connection
         for connection in await STORE.list_connections(session, user.id)
     }
+    switched_off = await broker.workspace_disabled(session)
     entries = []
     for entry in CATALOG.values():
         definition = entry.definition
@@ -114,6 +115,8 @@ async def list_service_connections(
                 "connectable": broker.connectable(definition.slug),
                 "configured": unavailable is None,
                 "unavailable_reason": unavailable,
+                # Whether a workspace admin left it on for this workspace.
+                "workspace_enabled": definition.slug not in switched_off,
                 # A grant hands the agent the owner's own token: it is on or
                 # off, at the connection's level, and lasts the token's life.
                 "pass_through": (
@@ -141,6 +144,44 @@ async def list_service_connections(
             }
         )
     return {"connections": entries}
+
+
+@router.get("/service-connections/{service}/agents")
+async def list_service_agents(
+    service: str,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict[str, Any]]:
+    """The person's own agents in this workspace, whether each has a grant
+    on `service`, and whether others can address it."""
+    entry = CATALOG.get(service)
+    if entry is None or not entry.definition.enabled:
+        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    agents = list(
+        await session.scalars(
+            select(Agent)
+            .where(Agent.tenant_id == require_tenant_id(), Agent.owner_id == user.id)
+            .order_by(Agent.name)
+        )
+    )
+    granted = set(
+        await session.scalars(
+            select(ServiceGrant.agent_id).where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == user.id,
+                ServiceGrant.service == service,
+            )
+        )
+    )
+    return [
+        {
+            "agent_id": agent.id,
+            "name": agent.display_name or agent.name,
+            "granted": agent.id in granted,
+            "addressing_open": await _others_can_address(session, agent, user),
+        }
+        for agent in agents
+    ]
 
 
 def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
@@ -181,6 +222,8 @@ async def connect_with_key(
     sent back. Re-pasting replaces it in place, keeping the grants.
     """
     try:
+        await broker.require_workspace_enabled(session, service)
+        await session.commit()
         checked = await broker.check_key(service, body.fields)
     except ServiceError as error:
         return service_refusal(error)

@@ -4058,6 +4058,32 @@ class ServiceOAuthClient(Base):
     )
 
 
+class WorkspaceServiceSetting(TenantScoped, Base):
+    """A workspace admin switched a catalog service on or off for the workspace.
+
+    No row means on: a row is written only when an admin touches the switch,
+    so `updated_by` always names a person. `service` is a catalog slug, checked
+    in code as `ServiceConnection.service` is. Off, nobody in the workspace can
+    connect, grant or be issued a token for it, and its grants drop out of
+    what agents' sessions are given; the grants themselves are kept.
+    """
+
+    __tablename__ = "workspace_service_settings"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "service"),)
+
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class ServiceGrant(TenantScoped, Base):
     """An agent may use its owner's connection to a service.
 
