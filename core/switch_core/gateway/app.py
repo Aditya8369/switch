@@ -45,6 +45,7 @@ from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
+from switch_core.gateway.connector_apps import router as connector_apps_router
 from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
@@ -162,6 +163,7 @@ def create_gateway_app(
         tags=["provider-connections"],
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
+    app.include_router(connector_apps_router, tags=["connector-apps"])
     app.include_router(providers_router, tags=["agent providers"])
     # Sign-ins under way, GitHub's and the catalog's, in Postgres so that any
     # switch-core process can take any step of one.

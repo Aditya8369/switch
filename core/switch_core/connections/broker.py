@@ -1078,6 +1078,16 @@ class ServiceBroker:
             and service not in self._disabled
         )
 
+    def server_setup_needed(self, service: str) -> bool:
+        """Whether `service` waits on the operator setting up its app here."""
+        entry = self._catalog.get(service)
+        return (
+            entry is not None
+            and entry.definition.enabled
+            and needs_operator_app(entry.definition)
+            and service not in self._adapters
+        )
+
     def client_replaced(self, connection: ServiceConnection) -> bool:
         """Whether `connection` signed in through a client its service no
         longer uses, so it must reconnect. Unknown either side is no."""

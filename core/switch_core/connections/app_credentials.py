@@ -251,6 +251,14 @@ class ConnectorApps:
     def public_url(self) -> str | None:
         return self._config.gateway_public_url
 
+    @property
+    def http(self) -> httpx.AsyncClient:
+        """How this server reaches vendors, held to its outbound policy."""
+        return self._http
+
+    def definition(self, service: str) -> ConnectionDefinition:
+        return self._catalog[service].definition
+
     async def load(self) -> None:
         """Resolve every app, at startup. Configuration that is set but
         cannot be used raises, as it always has."""
