@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import main as main_module
 from switch_core.db.models import OwnershipLease, SwitchCoreProcess
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -277,6 +278,51 @@ class TestHandingOver:
         await b.ownership.balance()  # on hearing it
         assert b.runs() == set(KEYS)
         assert everywhere.overlaps == []
+
+    async def test_work_that_would_not_stop_leaves_the_lease_to_lapse(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two: tuple[_Process, _Process],
+        everywhere: _Everywhere,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`main` releases twice as it shuts down, from the signal handler
+        and from the lifespan's teardown, in either order. The first gave up
+        on a stop that hung, so the work may still run here: the second must
+        not mark the lease stopped either, and the work passes on once the
+        lease lapses."""
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        a_had = a.runs()
+        assert a_had
+
+        async def hang(key: str) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(a.kind, "_stop", hang)
+        monkeypatch.setattr(main_module, "_HAND_OVER_SECONDS", 0.05)
+
+        class _NoConnections:
+            async def flush(self) -> None:
+                pass
+
+        for _ in range(2):
+            await _release_process(
+                a.ownership,
+                _NoConnections(),  # type: ignore[arg-type]
+                None,
+                a.lease,
+            )
+
+        assert not a.lease._stopped
+        await b.ownership.balance()
+        assert b.runs() == set(KEYS) - a_had
+        assert everywhere.overlaps == []
+
+        await _lapse(session_factory, a)
+        await b.ownership.balance()
+        assert b.runs() == set(KEYS)
 
     async def test_a_process_that_died_is_taken_over_once_its_lease_lapses(
         self,

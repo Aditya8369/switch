@@ -386,7 +386,11 @@ async def _release_process(
     this one. Once the owned work has stopped, the lease is marked stopped
     even when the recording fails, so the connections this process held read
     offline either way. Never raises: if it all fails, the lease lapses on
-    its own."""
+    its own.
+
+    Run from the signal handler and again from the lifespan's teardown, in
+    either order: once one call has given up on the owned work, the other
+    leaves the lease to lapse as well (`Ownership.stop` raises)."""
     try:
         async with asyncio.timeout(_HAND_OVER_SECONDS):
             await ownership.stop()

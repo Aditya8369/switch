@@ -264,6 +264,9 @@ class Ownership:
         self._nudged = asyncio.Event()
         self._suspended = False
         self._stopped = False
+        # Whether `stop` saw every piece of work here stop, rather than being
+        # cancelled first.
+        self._work_stopped = False
         self._pruned_at: float | None = None
         bus.handle(OWNERSHIP_CHANGED_SIGNAL, self._on_changed)
         bus.on_resync(self._resync)
@@ -331,17 +334,27 @@ class Ownership:
     async def stop(self) -> None:
         """Stop everything this process runs, then let go of its leases. Called
         as the process shuts down, before its process lease is marked stopped;
-        a second call waits for the first and does nothing.
+        a second call waits for the first and does nothing. It raises instead
+        when the first was cancelled before all the work had stopped, as
+        `main` does with a stop that takes too long: that work may still run
+        here, so the process lease must be left to lapse, not marked stopped.
 
         Nothing is signalled yet: while the process lease holds, the other
         processes still hash this one's work to it and claim none of it. The
         caller signals with `gone` once the lease is marked stopped."""
         async with self._lock:
             if self._stopped:
+                if not self._work_stopped:
+                    raise RuntimeError(
+                        "This process's owned work was not all stopped; its "
+                        "leases pass to the other processes once its process "
+                        "lease lapses"
+                    )
                 return
             self._stopped = True
             for kind in self._kinds.values():
                 await kind._stop_all()
+            self._work_stopped = True
             try:
                 async with self._session_factory() as session:
                     await self._store.release_all(session, self.process_id)
