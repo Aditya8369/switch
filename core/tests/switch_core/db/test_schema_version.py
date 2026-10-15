@@ -225,7 +225,7 @@ async def test_applying_the_chain_records_the_expand_only_revisions(
         )
     assert left == {"e2b0df5be5ff"}
     async with scratch_engine.begin() as connection:
-        await connection.run_sync(_run, alembic_cfg, "d7a3f9c2e4b8")
+        await connection.run_sync(_run, alembic_cfg, "c4d8e2f6a913")
     async with scratch_engine.connect() as connection:
         table = await connection.scalar(
             text("SELECT to_regclass('schema_expand_only_revisions')")
