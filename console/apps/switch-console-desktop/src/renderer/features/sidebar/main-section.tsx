@@ -64,6 +64,7 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
       {tab === 'agents' ? (
         <>
           {BUILD_FEATURE_FLAGS.onboarding &&
+            flags.switch_buddy &&
             switchServersStore.activeServerId !== null &&
             agents.data &&
             !agents.data.some(isBuddy) && (
@@ -96,7 +97,7 @@ function PendingBuddyRow({ serverId }: { serverId: string }) {
       onClick={() => appState.navigation.navigate('switchBuddy', { serverId })}
       className="h-[30px] py-0 text-[13px]"
     >
-      <BuddyAvatar size={17} />
+      <BuddyAvatar size={17} shape="round" />
       <span className="min-w-0 flex-1 truncate">{BUDDY_DISPLAY_NAME}</span>
     </SidebarMenuRow>
   );

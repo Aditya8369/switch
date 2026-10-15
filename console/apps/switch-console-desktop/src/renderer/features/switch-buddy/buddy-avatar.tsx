@@ -1,31 +1,32 @@
+import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import { cn } from '@renderer/utils/utils';
 
-/** switch-buddy's face: a tilted blue square with two eyes, on a soft tile. */
-export function BuddyAvatar({ size, className }: { size: number; className?: string }) {
+/**
+ * switch-buddy's face, the same picture the agent itself carries: round, like
+ * every agent's avatar in lists and chats, or as a rounded tile where it is
+ * introduced.
+ */
+export function BuddyAvatar({
+  size,
+  shape,
+  className,
+}: {
+  size: number;
+  shape: 'round' | 'tile';
+  className?: string;
+}) {
   return (
-    <span
+    <img
+      src={buddyAvatar}
+      alt=""
+      width={size}
+      height={size}
       className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary',
+        'shrink-0 object-cover',
+        shape === 'round' ? 'rounded-full' : 'rounded-[22%]',
         className
       )}
       style={{ width: size, height: size }}
-      aria-hidden
-    >
-      <svg viewBox="0 0 40 40" width={size * 0.72} height={size * 0.72}>
-        <rect
-          x="5"
-          y="5"
-          width="30"
-          height="30"
-          rx="7"
-          fill="#8fb1f7"
-          transform="rotate(6 20 20)"
-        />
-        <circle cx="15" cy="19" r="2.4" fill="#16181d" />
-        <circle cx="25" cy="20.5" r="2.4" fill="#16181d" />
-        <circle cx="15.7" cy="18.3" r="0.7" fill="#fff" />
-        <circle cx="25.7" cy="19.8" r="0.7" fill="#fff" />
-      </svg>
-    </span>
+    />
   );
 }

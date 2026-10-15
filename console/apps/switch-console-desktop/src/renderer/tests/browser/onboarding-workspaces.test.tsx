@@ -79,8 +79,8 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 // The page after the workspace, and not what these tests are about — stubbed
 // so reaching it is a fact the test can assert without dragging in this
 // computer's setup behind it.
-vi.mock('@renderer/features/switch-buddy/meet-buddy-page', () => ({
-  MeetBuddyPage: () => <div>Meet switch-buddy</div>,
+vi.mock('@renderer/features/switch-buddy/buddy-step', () => ({
+  BuddyStep: () => <div>Meet switch-buddy</div>,
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({

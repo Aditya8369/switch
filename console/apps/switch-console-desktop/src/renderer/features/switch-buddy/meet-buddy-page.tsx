@@ -93,7 +93,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
 
   const header = (
     <div className="flex flex-col items-center gap-2 text-center">
-      <BuddyAvatar size={settingUp ? 48 : 80} />
+      <BuddyAvatar size={settingUp ? 48 : 80} shape="tile" />
       <h1 className="mt-2 text-2xl font-semibold">Meet switch-buddy</h1>
       {!settingUp && (
         <p className="text-sm text-foreground-muted">Your first AI assistant in Switch</p>

@@ -18,7 +18,7 @@ export function BuddyWelcome({
 }) {
   return (
     <div className="flex gap-3 py-4" data-testid="buddy-welcome">
-      <BuddyAvatar size={28} className="mt-0.5" />
+      <BuddyAvatar size={28} shape="round" className="mt-0.5" />
       <div className="min-w-0 space-y-3 text-sm text-foreground">
         <p className="flex items-baseline gap-1.5">
           <span className="font-semibold">{BUDDY_DISPLAY_NAME}</span>

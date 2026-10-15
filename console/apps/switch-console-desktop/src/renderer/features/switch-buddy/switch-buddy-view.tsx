@@ -1,35 +1,64 @@
+import { MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { SidebarMenuRow } from '@renderer/features/sidebar/sidebar-primitives';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
+import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BuddyAvatar } from './buddy-avatar';
 import { BUDDY_DISPLAY_NAME, firstNameOf, isBuddy } from './buddy-identity';
 import { BuddyWelcome } from './buddy-welcome';
-import { openBuddyChat } from './open-buddy';
+import { BUDDY_CHAT_NAME, openBuddyChat } from './open-buddy';
 
 type SwitchBuddyParams = { serverId: string };
 
+const TABS = [{ value: 'chats', label: 'Chats' }] as const;
+
+/** The agent page's title bar, for an agent that has only its Chats tab so far. */
 const SwitchBuddyTitlebar = () => (
   <Titlebar
-    leftClassName="min-w-0"
+    className="border-b border-border"
+    leftClassName="w-[300px] shrink-0 self-stretch border-r border-border"
     leftSlot={
-      <div className="flex items-center gap-2 pr-2 text-sm">
-        <BuddyAvatar size={18} />
-        <span>{BUDDY_DISPLAY_NAME}</span>
+      <div className="flex min-w-0 items-center gap-3">
+        <TitlebarBreadcrumb
+          crumbs={[
+            {
+              key: 'agent',
+              icon: <BuddyAvatar size={16} shape="round" />,
+              label: BUDDY_DISPLAY_NAME,
+            },
+          ]}
+        />
+        <SegmentedControl value="chats" onChange={() => {}} options={TABS} ariaLabel="Agent view" />
       </div>
     }
+    rightClassName="min-w-0 flex-1 pl-4"
+    rightSlot={<span className="truncate text-sm font-medium">{BUDDY_CHAT_NAME}</span>}
   />
 );
 
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section aria-label={title} className="flex flex-col gap-[2px] pb-3">
+      <p className="px-1 pb-1 text-xs font-medium text-foreground-muted">{title}</p>
+      {children}
+    </section>
+  );
+}
+
 /**
- * switch-buddy before it exists: its welcome, and in place of the message box
- * a way to connect the AI provider it needs, since Switch creates no agent
- * until one is ready. Once the person has a buddy this opens its chat instead.
+ * switch-buddy before it exists, drawn as its agent page will be: its one
+ * chat, Welcome, open beside the list, with its first message, and in place of
+ * the message box a way to connect the AI provider it needs — Switch creates
+ * no agent until one is ready. Once the person has a buddy this opens its real
+ * page, on the same Welcome chat, which then works as any chat does.
  */
 const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   const { params } = useParams('switchBuddy');
@@ -53,26 +82,41 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto w-full max-w-[860px] px-5 py-6">
-          <BuddyWelcome firstName={firstNameOf(user?.name)} agentName={null} />
-        </div>
+    <div className="flex h-full min-h-0">
+      <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
+        <Section title="Direct chats">
+          <SidebarMenuRow isActive onClick={() => {}}>
+            <span className="flex size-6 shrink-0 items-center justify-center">
+              <MessageSquare className="size-4 text-foreground-muted" />
+            </span>
+            <span className="min-w-0 flex-1 truncate">{BUDDY_CHAT_NAME}</span>
+          </SidebarMenuRow>
+        </Section>
+        <Section title="Rooms">
+          <p className="px-2 py-1 text-xs text-foreground-muted">Not in any room yet.</p>
+        </Section>
       </div>
-      <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
-        <button
-          type="button"
-          onClick={connect}
-          disabled={workspaceId === null}
-          className="w-full rounded-full border border-border bg-background px-5 py-3 text-left text-sm text-foreground shadow-sm hover:bg-[var(--sel-soft)] disabled:opacity-60"
-        >
-          Connect an AI provider to chat with switch-buddy
-        </button>
-        {workspaceId === null && (
-          <p className="mt-2 text-xs text-foreground-muted">
-            Open a workspace on this server first.
-          </p>
-        )}
+      <div className="flex min-w-0 flex-1 flex-col bg-background text-foreground">
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto w-full max-w-[860px] px-5 py-6">
+            <BuddyWelcome firstName={firstNameOf(user?.name)} agentName={null} />
+          </div>
+        </div>
+        <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
+          <button
+            type="button"
+            onClick={connect}
+            disabled={workspaceId === null}
+            className="w-full rounded-full border border-border bg-background px-5 py-3 text-left text-sm text-foreground shadow-sm hover:bg-[var(--sel-soft)] disabled:opacity-60"
+          >
+            Connect an AI provider to chat with switch-buddy
+          </button>
+          {workspaceId === null && (
+            <p className="mt-2 text-xs text-foreground-muted">
+              Open a workspace on this server first.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

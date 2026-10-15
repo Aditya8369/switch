@@ -1,6 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { MeetBuddyPage } from '@renderer/features/switch-buddy/meet-buddy-page';
+import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
 import { openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
 import {
   ExternalServerStep,
@@ -267,11 +267,12 @@ function currentPage(
           />
         );
       return (
-        <MeetBuddyPage
+        <BuddyStep
           serverId={server.id}
           workspaceId={workspaceId}
           onCreated={(agent) => finishWithBuddy(server.id, agent)}
           onSkip={() => finishWithBuddy(server.id, null)}
+          onNotOffered={() => finish(server.id)}
         />
       );
     }

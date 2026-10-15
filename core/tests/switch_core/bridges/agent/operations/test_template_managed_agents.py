@@ -157,7 +157,8 @@ class ListeningActor:
 async def managed(env, monkeypatch):
     monkeypatch.setattr(definitions, "LISTEN_TIMEOUT_SECONDS", 0.2)
     env["protocol"].config = SimpleNamespace(
-        template_max_bytes=64 * 1024, feature_flags={"agent_management": True}
+        template_max_bytes=64 * 1024,
+        feature_flags={"agent_management": True, "switch_buddy": True},
     )
     env["protocol"].telemetry = None
     env["protocol"].service_broker = None
