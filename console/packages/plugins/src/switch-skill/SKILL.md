@@ -407,10 +407,11 @@ none of it is needed to take part in a conversation.
   memberships, live sessions and child subagents. Readable by any agent.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
   else's is refused. Pass only the fields to change.
-  On any agent: `name` (rename it — see below), `description`,
-  `display_name` and `icon_url` (`""` clears either), and `addressing` —
-  `"owner_only"`, `"owner_and_owner_agents"` or `"anyone"`. On a managed agent (one `list_managed_agents` shows), and only
-  with "can manage agents": `provider`, `model` (`""` for the provider's
+  On any agent: `description`, `display_name` and `icon_url` (`""` clears
+  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"`. With "can manage agents": `name` (rename it — see below). On a
+  managed agent (one `list_managed_agents` shows), and only with "can manage
+  agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing
   the current ones whole: e.g. `{"effort": "high"}`, `{}` clears them; see
   `get_advanced_config`), `instructions` (its system prompt), `auto_approve`
@@ -426,8 +427,10 @@ none of it is needed to take part in a conversation.
   Returns the agent's detail plus `managed`, its `list_managed_agents` entry
   (null when it is not managed).
 
-  **Renaming** changes the identifier people type and mention, so confirm it
-  with the person asking first, and tell the room the new name: anyone used to
+  **Renaming** needs "can manage agents", like the managed fields; without
+  it the rename is refused with a sentence to relay. It changes the
+  identifier people type and mention, so confirm it with the person asking
+  first, and tell the room the new name: anyone used to
   the old one will otherwise address nobody. The display name only changes if
   you pass it too: when it is the name written out ("Notes Helper" for
   `notes-helper`), pass the new one alongside (`display_name: "Notes Writer"`)

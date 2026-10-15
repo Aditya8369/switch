@@ -2352,7 +2352,9 @@ async def update_agent_detail(
 
     Any agent:
         name: Rename it: the identifier people type and mention (lowercase
-            letters, digits, '.', '-', '_'). Pass `display_name` with it when
+            letters, digits, '.', '-', '_'). Requires the "can manage agents"
+            capability, like the managed fields below; without it the call is
+            refused with a sentence to relay. Pass `display_name` with it when
             the label is the name written out ("Notes Writer" for
             notes-writer); otherwise the label stays. Rooms, roles, aliases and
             credentials follow; its handle on each chat platform is renamed
@@ -2425,6 +2427,11 @@ async def update_agent_detail(
     )
     rename_label: str | None = None
     if name is not None:
+        # A rename changes what everyone types to reach the agent, so an agent
+        # may only do it with the same capability that lets it change an
+        # agent's model or machine. People rename from the gateway or with
+        # the chat commands, under the owner-or-admin rule.
+        await permitted_to_manage()
         current = await protocol.get_agent_detail(caller_id, agent_id)
         rename_label = current.display_name if display_name is None else display_name
         # Checked before any managed change is made, and made after them: a

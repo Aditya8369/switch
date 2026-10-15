@@ -96,12 +96,59 @@ async def _forget_directory(harness: Harness, agent_id: str) -> None:
 
 
 class TestTheToolRenames:
-    async def test_a_name_and_display_name_change_together(
+    async def test_an_agent_without_can_manage_agents_cannot_rename(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        """A rename changes what everyone types to reach the agent, so it takes
+        the capability a model or machine change takes."""
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=False
+        )
+        target_id, _ = await _agent_with_key(
+            harness, owner, "notes-taker", can_manage_agents=False
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": target_id, "name": "meeting-scribe"},
+        )
+
+        assert response.status_code == 403, response.text
+        assert "can manage agents" in response.json()["detail"]
+        assert (await _agent(harness, target_id)).name == "notes-taker"
+
+    async def test_without_the_capability_other_fields_still_change(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         helper_id, key = await _agent_with_key(
             harness, owner, "helper", can_manage_agents=False
+        )
+        target_id, _ = await _agent_with_key(
+            harness, owner, "notes-taker", can_manage_agents=False
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": target_id, "description": "Takes the notes"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert (await _agent(harness, target_id)).description == "Takes the notes"
+
+    async def test_a_name_and_display_name_change_together(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
         )
         target_id, _ = await _agent_with_key(
             harness, owner, "notes-taker", can_manage_agents=False
@@ -137,7 +184,7 @@ class TestTheToolRenames:
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         helper_id, key = await _agent_with_key(
-            harness, owner, "helper", can_manage_agents=False
+            harness, owner, "helper", can_manage_agents=True
         )
         target_id, _ = await _agent_with_key(
             harness, owner, "notes-taker", can_manage_agents=False
@@ -162,7 +209,7 @@ class TestTheToolRenames:
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         helper_id, key = await _agent_with_key(
-            harness, owner, "helper", can_manage_agents=False
+            harness, owner, "helper", can_manage_agents=True
         )
         target_id, _ = await _agent_with_key(
             harness, owner, "notes-taker", can_manage_agents=False
@@ -222,7 +269,7 @@ class TestTheToolRenames:
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         helper_id, key = await _agent_with_key(
-            harness, owner, "helper", can_manage_agents=False
+            harness, owner, "helper", can_manage_agents=True
         )
         target_id, _ = await _agent_with_key(
             harness, owner, "notes-taker", can_manage_agents=False
