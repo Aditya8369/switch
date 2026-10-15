@@ -603,12 +603,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # `_seed_agent_registration_bootstrap_key`'s docstring), so only a
     # session-level lock, held for the whole span, actually serialises it.
     async with boot_lock(config):
+        await _seed_admin_and_bootstrap_key(
+            session_factory, user_store, api_key_store, agent_store, config, process_id
+        )
         async with engine.begin() as connection:
             event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
-        await _seed_admin_user(session_factory, user_store, config)
-        await _seed_agent_registration_bootstrap_key(
-            session_factory, user_store, api_key_store, agent_store, config
-        )
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(
@@ -665,10 +664,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
     # Under the boot lock, so two processes starting together do not rewrite
-    # the same secrets at once, and after checking that every process still
-    # running can read the key they are rewritten under.
+    # the same secrets at once, and after `_seed_admin_and_bootstrap_key` has
+    # checked that every process still running can read the key they are
+    # rewritten under.
     async with boot_lock(config):
-        await require_front_key_readable(session_factory, config.keyring, process_id)
         await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
         # After rotation, which has opened every stored GitHub secret or
         # stopped the boot: the move reads them, once per tenant.
@@ -1282,6 +1281,29 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         )
 
     await server.serve()
+
+
+async def _seed_admin_and_bootstrap_key(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    api_key_store: ApiKeyStore,
+    agent_store: AgentStore,
+    config: SwitchConfig,
+    process_id: str,
+) -> None:
+    """Seed the admin user and the agent-registration bootstrap key, after
+    checking that every live process can read this one's front key.
+
+    The check comes first because the bootstrap key is the first thing a boot
+    encrypts: it is written under the front key when it is created or
+    AGENT_REGISTRATION_TOKEN changes, and a process refused only after that
+    would already have stored a value the others cannot decrypt.
+    """
+    await require_front_key_readable(session_factory, config.keyring, process_id)
+    await _seed_admin_user(session_factory, user_store, config)
+    await _seed_agent_registration_bootstrap_key(
+        session_factory, user_store, api_key_store, agent_store, config
+    )
 
 
 async def _seed_admin_user(
