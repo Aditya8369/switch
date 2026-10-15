@@ -176,6 +176,7 @@ export const ProviderSetup = observer(function ProviderSetup({
             onCancelSignIn={() => {
               void rpc.providers.cancelLogin();
               setLogin(null);
+              setChecked(null);
             }}
             checked={checked}
             onInstall={() => void install(selected)}
