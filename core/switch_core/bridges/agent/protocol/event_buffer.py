@@ -72,7 +72,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-from switch_core.attachments import parse_attachment_group
+from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
     message_event,
@@ -1067,21 +1067,34 @@ class EventBuffer:
                 room = rooms.get(room_id)
                 if room is None or room_id not in joined:
                     continue
-                rows = list(
-                    (
-                        await session.scalars(
-                            select(Message)
-                            .where(
-                                Message.room_id == room_id,
-                                Message.seq > max(after_seq, 0),
-                            )
-                            .order_by(Message.seq)
-                            .limit(limit)
-                        )
-                    ).all()
+                # Whether a file's post is still pending is read in the same
+                # statement as the rows: the file that completes a post
+                # writes its row and deletes the pending one in one commit,
+                # so one snapshot shows a post either whole or pending, never
+                # a lone first file that is neither.
+                pending = (
+                    select(PendingAttachmentGroup.group_id)
+                    .where(
+                        PendingAttachmentGroup.room_id == Message.room_id,
+                        PendingAttachmentGroup.group_id
+                        == Message.content[ATTACHMENT_GROUP_KEY]["id"].astext,
+                    )
+                    .exists()
                 )
-                if not rows:
+                found = (
+                    await session.execute(
+                        select(Message, pending)
+                        .where(
+                            Message.room_id == room_id,
+                            Message.seq > max(after_seq, 0),
+                        )
+                        .order_by(Message.seq)
+                        .limit(limit)
+                    )
+                ).all()
+                if not found:
                     continue
+                rows = [row for row, _ in found]
                 room_events, room_through = await self._conversation_in(
                     session,
                     room,
@@ -1089,6 +1102,7 @@ class EventBuffer:
                     my_sender=my_sender,
                     joined_at=joined[room_id],
                     agent_id=agent_id,
+                    pending_rows={row.id for row, held in found if held},
                 )
                 events.extend(room_events)
                 if room_through > after_seq:
@@ -1105,9 +1119,12 @@ class EventBuffer:
         my_sender: str,
         joined_at: Any,
         agent_id: str,
+        pending_rows: set[str],
     ) -> tuple[list[BufferedEvent], int]:
         """Turn one room's rows into conversation events, and return them with
-        the `messages.seq` of the last row examined."""
+        the `messages.seq` of the last row examined. `pending_rows` are the
+        ids of the rows whose multi-file post was still pending when the rows
+        were read."""
         # For each message key, the highest room row an own event for that message
         # was delivered through. A row at or below it is already an own event and is
         # skipped. A file of a multi-file message that arrives after the own event
@@ -1156,18 +1173,11 @@ class EventBuffer:
         # A group the router has not decided yet, because its files are still
         # arriving, stops the read at its first file, so the whole group is
         # delivered by a later read instead of in pieces.
-        undecided: set[str] = set()
-        if groups:
-            undecided = set(
-                (
-                    await session.scalars(
-                        select(PendingAttachmentGroup.group_id).where(
-                            PendingAttachmentGroup.room_id == room.id,
-                            PendingAttachmentGroup.group_id.in_(groups),
-                        )
-                    )
-                ).all()
-            )
+        undecided = {
+            group_id
+            for group_id, parts in groups.items()
+            if any(row.id in pending_rows for _, _, row in parts)
+        }
         held_from: int | None = None
         for group_id in undecided:
             first = min(row.seq for _, _, row in groups[group_id])
