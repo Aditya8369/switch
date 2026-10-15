@@ -78,7 +78,8 @@ export function WorkspaceLayout({
             the two, in place of a divider. Flush to the sidebar on the left,
             8px away on the other three sides. The hairline is a spread shadow
             rather than a border so it lands on a half pixel and does not take
-            a whole one out of the panel.
+            a whole one out of the panel; the 1px left gutter keeps the clip from
+            eating it on the flush side.
 
             With the sidebar collapsed there is no sidebar to be flush against,
             so the card insets on the left too — and on macOS it starts below
@@ -88,7 +89,7 @@ export function WorkspaceLayout({
         <div
           className={cn(
             'relative h-full w-full overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
-            isLeftOpen ? 'pt-2' : 'pl-2',
+            isLeftOpen ? 'pt-2 pl-px' : 'pl-2',
             !isLeftOpen && (isMac ? 'pt-9' : 'pt-2')
           )}
         >
