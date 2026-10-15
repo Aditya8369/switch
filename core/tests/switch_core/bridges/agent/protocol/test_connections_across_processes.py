@@ -58,6 +58,8 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentConnectionRecord,
     AgentConnectionRoom,
+    AgentRoomRead,
+    AgentSessionPlacement,
     SwitchCoreProcess,
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
@@ -866,3 +868,86 @@ class TestSignalsStayUnderThePayloadLimit:
         )
 
         await _eventually(lambda: set(holder.released_rooms) == set(rooms))
+
+
+async def _occupant(session_factory: SessionFactory, room_id: str) -> tuple[str, bool]:
+    """Who the room's unread count belongs to: a session, or a connection."""
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(
+                    AgentRoomRead.occupant_id, AgentRoomRead.occupant_is_session
+                ).where(
+                    AgentRoomRead.agent_id == AGENT, AgentRoomRead.room_id == room_id
+                )
+            )
+        ).one()
+    return row[0], row[1]
+
+
+async def _unrecordable(*args: Any, **kwargs: Any) -> None:
+    raise RuntimeError("the database went away")
+
+
+class TestUnreadCountsFollowOnlyRecordedMoves:
+    """A room's unread count belongs to whoever is in the room, and moves
+    with it only once the move is recorded: a move that fails, and so is set
+    back, leaves the count with the reader still there. The failure reaches
+    the caller, which FastAPI answers with a 500."""
+
+    async def test_a_placement_that_cannot_be_recorded_moves_no_count(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        a, _ = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        assert await _occupant(session_factory, ROOM) == ("session-1", True)
+        monkeypatch.setattr(AgentConnectionStore, "replace_slots", _unrecordable)
+
+        with pytest.raises(RuntimeError):
+            await _place(a, conn.stream_generation, {"session-2": ROOM})
+
+        assert a.registry.placements(AGENT) == {"session-1": ROOM}
+        async with session_factory() as session:
+            placed = (
+                await session.execute(
+                    select(
+                        AgentSessionPlacement.session_id, AgentSessionPlacement.room_id
+                    ).where(AgentSessionPlacement.agent_id == AGENT)
+                )
+            ).all()
+        assert [tuple(row) for row in placed] == [("session-1", ROOM)]
+        assert await _occupant(session_factory, ROOM) == ("session-1", True)
+
+    async def test_a_claim_that_cannot_be_recorded_moves_no_count(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        a, _ = processes
+        first = await _open(a)
+        await _subscribe(a, ROOM, first.stream_generation)
+        second = await _open(a, connection_id="conn-2")
+        assert await _occupant(session_factory, ROOM) == (CONN, False)
+        monkeypatch.setattr(AgentConnectionStore, "replace_slots", _unrecordable)
+
+        with pytest.raises(RuntimeError):
+            await connection_subscribe(
+                AGENT,
+                ConnectionSubscribeRequest(
+                    connection_id="conn-2",
+                    room_id=ROOM,
+                    generation=second.stream_generation,
+                    takeover=True,
+                ),
+                agent=_Agent(),  # type: ignore[arg-type]
+                protocol=a.protocol,
+            )
+
+        assert first.rooms == {ROOM}
+        assert second.rooms == set()
+        assert await _occupant(session_factory, ROOM) == (CONN, False)
