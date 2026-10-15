@@ -257,7 +257,8 @@ ROUTING_FAILURES = _spec(
     "sum",
     "{failure}",
     "Work the router could not do for one agent while the message it was "
-    "routing still went out: storing the agent's own event for it "
+    "routing still went out: deciding whether the message is for the agent "
+    "(`stage` decide), storing the agent's own event for it "
     "(`stage` store), a reply or report owed once it committed "
     "(`stage` after_commit), or deciding a multi-file post given up on "
     "(`stage` sweep). Each is caught so one agent cannot cost a room its "

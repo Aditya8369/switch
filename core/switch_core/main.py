@@ -265,10 +265,19 @@ async def _attachment_group_sweep_loop(
         while True:
             await asyncio.sleep(GROUP_SWEEP_SECONDS)
             try:
-                for tenant_id in await all_tenant_ids(session_factory):
-                    await router.flush_due_groups(tenant_id)
+                tenants = await all_tenant_ids(session_factory)
             except Exception:
                 logger.exception("Attachment group sweep failed")
+                continue
+            # One tenant at a time, each on its own: a tenant whose sweep
+            # fails leaves the tenants after it to be swept all the same.
+            for tenant_id in tenants:
+                try:
+                    await router.flush_due_groups(tenant_id)
+                except Exception:
+                    logger.exception(
+                        "Attachment group sweep failed for tenant %s", tenant_id
+                    )
 
 
 async def _recheck_agent_rooms(
