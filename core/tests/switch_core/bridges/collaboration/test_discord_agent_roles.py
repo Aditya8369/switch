@@ -61,6 +61,11 @@ class _FakeRole:
         self.members = members or []
         self._guild = guild
 
+    async def edit(self, *, name: str, reason: str | None = None) -> None:
+        assert self._guild is not None
+        self._guild.edited.append((self.id, name))
+        self.name = name
+
     async def delete(self, *, reason: str | None = None) -> None:
         assert self._guild is not None
         if self._guild.delete_error is not None:
@@ -77,6 +82,7 @@ class _FakeGuild:
             role._guild = self
         self.created: list[dict[str, Any]] = []
         self.deleted: list[int] = []
+        self.edited: list[tuple[int, str]] = []
         self.create_error: Exception | None = None
         self.delete_error: Exception | None = None
         self._next_id = 1000
@@ -232,6 +238,58 @@ def test_removing_an_agent_that_never_had_a_role_is_quiet() -> None:
     _run(adapter.remove_agent_identity(_agent("flint-tracker")))
 
     assert guild.deleted == []
+
+
+# ── Renaming an agent ────────────────────────────────────────────────────────
+
+
+def test_a_rename_renames_the_same_role() -> None:
+    """Editing the role in place keeps its id, so a pill already posted for
+    the agent still resolves, and no second role is minted."""
+    guild = _FakeGuild()
+    adapter = _adapter(guild)
+    _run(adapter.create_agent_identity(_agent("notes-taker")))
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == [(1001, "meeting-scribe")]
+    assert len(guild.created) == 1
+    assert adapter._agent_role_ids == {"meeting-scribe": 1001}
+    assert adapter.translate_outbound("ask @meeting-scribe") == "ask <@&1001>"
+    assert adapter.translate_outbound("ask @notes-taker") == "ask @notes-taker"
+    assert adapter.translate_inbound("hey <@&1001>") == "hey @meeting-scribe"
+
+
+def test_a_rename_finds_a_role_made_by_hand_by_its_old_name() -> None:
+    guild = _FakeGuild([_FakeRole(7, "notes-taker")])
+    adapter = _adapter(guild)
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == [(7, "meeting-scribe")]
+    assert guild.created == []
+    assert adapter._agent_role_ids == {"meeting-scribe": 7}
+
+
+def test_a_rename_with_no_role_to_rename_makes_one() -> None:
+    guild = _FakeGuild()
+    adapter = _adapter(guild)
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == []
+    assert [made["name"] for made in guild.created] == ["meeting-scribe"]
+    assert adapter._agent_role_ids == {"meeting-scribe": 1001}
+
+
+def test_a_rename_does_nothing_when_the_setting_is_off() -> None:
+    guild = _FakeGuild([_FakeRole(7, "notes-taker")])
+    adapter = _adapter(guild, agent_roles=False)
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == []
+    assert guild.created == []
 
 
 # ── A server that cannot host them ───────────────────────────────────────────

@@ -2111,16 +2111,21 @@ class MattermostAdapter(PlatformAdapter):
                 f"/bots/{bot_id}",
                 {"username": agent.name, "display_name": label},
             )
-            if bot is not None:
-                self._agent_bots[agent.name] = {**bot, "username": agent.name}
-                self._agent_bots.pop(old_name, None)
-            driver = self._bot_drivers.pop(old_name, None)
-            if driver is not None:
-                self._bot_drivers[agent.name] = driver
             self._bot_id_to_username[bot_id] = agent.name
             logger.info(
                 "Renamed Mattermost bot %s from %s to %s", bot_id, old_name, agent.name
             )
+            if bot is None:
+                # Found by its old username but never provisioned in this run:
+                # adopt it under the new one, which gives it its token and
+                # socket like any other agent's bot.
+                await self._create_agent_identity(agent.name, agent.description)
+                return
+            self._agent_bots[agent.name] = {**bot, "username": agent.name}
+            self._agent_bots.pop(old_name, None)
+            driver = self._bot_drivers.pop(old_name, None)
+            if driver is not None:
+                self._bot_drivers[agent.name] = driver
 
     async def update_agent_identity(self, agent: AgentIdentity) -> None:
         """Show the agent's new display name on its bot."""

@@ -441,6 +441,16 @@ none of it is needed to take part in a conversation.
   `templates_mentioning_old_name` lists saved templates still using the old
   name — relay both.
 
+  People can do the same from a bridged chat with
+  `!rename-agent @agent new-name [Display Name]` and `!delete-agent @agent`
+  (also `/rename-agent` and `/delete-agent` on Slack, Discord and Telegram,
+  where Telegram writes them with `_`). Only the agent's owner or a workspace
+  admin may, recognised through the chat account they linked to Switch;
+  delete asks for `!delete-agent @agent confirm` within two minutes. These
+  are commands for people: when someone asks you to rename or delete an agent
+  in chat, point them at the command, or use `update_agent_detail` yourself
+  for a rename once they confirm.
+
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
 one that routes: `target_names`, mentions and room aliases all take it.

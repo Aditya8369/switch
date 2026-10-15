@@ -1277,8 +1277,10 @@ class ManagementService:
             previous = await self.controllers.get(
                 session, tenant_id, existing.controller_id
             )
-            # The old machine's workspace for the agent means nothing on the new one.
-            if directory == default_directory(previous, agent.name):
+            # The old machine's workspace for the agent means nothing on the
+            # new one. Matched on the workspaces folder rather than the exact
+            # path, because a rename pins the folder under the agent's old name.
+            if _inside_workspaces(previous, directory):
                 directory = None
         if directory is None:
             directory = default_directory(controller, agent.name)
@@ -1559,6 +1561,20 @@ def default_directory(controller: AgentController | None, name: str) -> str | No
     if platform.get("os") == "windows":
         return ntpath.join(root, name)
     return posixpath.join(root, name)
+
+
+def _inside_workspaces(controller: AgentController | None, directory: str) -> bool:
+    """Whether `directory` is one of the workspaces `controller` makes for its
+    agents: a folder directly inside its workspaces folder."""
+    if controller is None:
+        return False
+    root = workspaces_dir_of(controller)
+    if root is None:
+        return False
+    platform = controller.platform or {}
+    if platform.get("os") == "windows":
+        return bool(ntpath.dirname(ntpath.normpath(directory)) == ntpath.normpath(root))
+    return posixpath.dirname(posixpath.normpath(directory)) == posixpath.normpath(root)
 
 
 def with_directory(

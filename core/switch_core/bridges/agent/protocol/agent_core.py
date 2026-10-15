@@ -1090,51 +1090,26 @@ class AgentCore:
                 one a server connector discovered).
             RuntimeError: no tenant is bound.
         """
-        if not _VALID_NAME_RE.match(new_name):
-            raise ValueError(
-                f"Invalid agent name: {new_name!r}. "
-                "Use only lowercase letters, digits, dots, hyphens, and underscores."
-            )
-        reject_reserved_mention_name(new_name, kind="Agent name")
-        new_display_name = normalise_display_name(display_name)
-        tenant_id = current_tenant_id()
-        if tenant_id is None:
-            raise RuntimeError("rename_agent requires a bound tenant")
-
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"Agent not found: {agent_id}")
-            old_name = agent.name
-            old_display_name = agent.display_name
-            if old_name == new_name:
-                if old_display_name == new_display_name:
-                    return AgentRenameResult(
-                        agent_id, old_name, new_name, new_display_name, [], []
-                    )
+        (
+            tenant_id,
+            new_display_name,
+            old_name,
+            old_display_name,
+        ) = await self._prepare_rename(agent_id, new_name, display_name)
+        if old_name == new_name:
+            if old_display_name == new_display_name:
+                return AgentRenameResult(
+                    agent_id, old_name, new_name, new_display_name, [], []
+                )
+            async with self.session_factory() as session:
                 await self.agent_store.update(
                     session, agent_id, display_name=new_display_name
                 )
                 await session.commit()
-        if old_name == new_name:
             failures = await self.update_bridge_identities(agent_id)
             return AgentRenameResult(
                 agent_id, old_name, new_name, new_display_name, failures, []
             )
-
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"Agent not found: {agent_id}")
-            await self._check_renamable(session, agent, new_name)
-
-        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
-            try:
-                await collaboration_core.adapter.check_agent_identity_name(
-                    agent_id, new_name
-                )
-            except AgentIdentityConflict as exc:
-                raise AgentRenameRefused(str(exc)) from exc
 
         async with self.session_factory() as session:
             await self.agent_store.lock_name(session, new_name)
@@ -1188,6 +1163,50 @@ class AgentCore:
             bridge_failures=bridge_failures,
             templates_mentioning_old_name=templates,
         )
+
+    async def check_rename(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> None:
+        """Raise whatever `rename_agent` would refuse with, without changing
+        anything, so a caller doing more than a rename can check it first."""
+        await self._prepare_rename(agent_id, new_name, display_name)
+
+    async def _prepare_rename(
+        self, agent_id: str, new_name: str, display_name: str | None
+    ) -> tuple[str, str | None, str, str | None]:
+        """Every check a rename makes before it writes. Returns the tenant, the
+        display name as it will be stored, and the agent's current name and
+        display name."""
+        if not _VALID_NAME_RE.match(new_name):
+            raise ValueError(
+                f"Invalid agent name: {new_name!r}. "
+                "Use only lowercase letters, digits, dots, hyphens, and underscores."
+            )
+        reject_reserved_mention_name(new_name, kind="Agent name")
+        new_display_name = normalise_display_name(display_name)
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("rename_agent requires a bound tenant")
+
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {agent_id}")
+            old_name, old_display_name = agent.name, agent.display_name
+            if old_name != new_name:
+                await self._check_renamable(session, agent, new_name)
+
+        if old_name != new_name:
+            for collaboration_core in self.collab_lifecycle.bridges_for_tenant(
+                tenant_id
+            ):
+                try:
+                    await collaboration_core.adapter.check_agent_identity_name(
+                        agent_id, new_name
+                    )
+                except AgentIdentityConflict as exc:
+                    raise AgentRenameRefused(str(exc)) from exc
+        return tenant_id, new_display_name, old_name, old_display_name
 
     async def _check_renamable(
         self, session: AsyncSession, agent: Agent, new_name: str

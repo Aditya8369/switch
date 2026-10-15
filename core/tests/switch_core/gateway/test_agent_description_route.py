@@ -91,3 +91,57 @@ class TestUpdateAgentDescription:
                     await is_admin(session, other),
                 )
             assert refused.value.status_code == 403
+
+
+class _RecordingProtocol:
+    """Records which agents the route told the bridges about."""
+
+    def __init__(self) -> None:
+        self.updated: list[str] = []
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        self.updated.append(agent_id)
+        return []
+
+
+class TestBridgesHearOfTheChange:
+    async def test_a_saved_change_is_passed_to_the_bridges(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        protocol = _RecordingProtocol()
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="switchdev", owner_id=owner.id)
+
+            await update_agent_description(
+                agent.id,
+                UpdateAgentDescriptionRequest(description="Writes up meetings"),
+                session,
+                _AGENT_STORE,
+                protocol,  # type: ignore[arg-type]
+                owner,
+                await is_admin(session, owner),
+            )
+
+        assert protocol.updated == [agent.id]
+
+    async def test_a_refused_change_is_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        protocol = _RecordingProtocol()
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="switchdev", owner_id=owner.id)
+
+            with pytest.raises(HTTPException):
+                await update_agent_description(
+                    agent.id,
+                    UpdateAgentDescriptionRequest(description="   "),
+                    session,
+                    _AGENT_STORE,
+                    protocol,  # type: ignore[arg-type]
+                    owner,
+                    await is_admin(session, owner),
+                )
+
+        assert protocol.updated == []

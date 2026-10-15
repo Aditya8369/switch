@@ -41,7 +41,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
@@ -2423,20 +2423,19 @@ async def update_agent_detail(
         machine=machine,
         desired_state=desired_state,
     )
-    renamed: dict[str, Any] | None = None
+    rename_label: str | None = None
     if name is not None:
         current = await protocol.get_agent_detail(caller_id, agent_id)
-        result = await protocol.rename_agent(
-            agent_id=agent_id,
-            new_name=name,
-            display_name=current.display_name if display_name is None else display_name,
-        )
-        if result.old_name != result.new_name:
-            renamed = {
-                "old_name": result.old_name,
-                "bridge_failures": result.bridge_failures,
-                "templates_mentioning_old_name": result.templates_mentioning_old_name,
-            }
+        rename_label = current.display_name if display_name is None else display_name
+        # Checked before any managed change is made, and made after them: a
+        # refused rename then changes nothing, and a refused managed change
+        # leaves the name as it was.
+        try:
+            await protocol.check_rename(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
     port = management_port()
     managed: dict[str, Any] | None = None
     if not changes.is_empty():
@@ -2456,6 +2455,20 @@ async def update_agent_detail(
             managed = await port.managed_agent(
                 permission.tenant_id, permission.owner.id, agent_id
             )
+    renamed: dict[str, Any] | None = None
+    if name is not None:
+        try:
+            result = await protocol.rename_agent(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
+        if result.old_name != result.new_name:
+            renamed = {
+                "old_name": result.old_name,
+                "bridge_failures": result.bridge_failures,
+                "templates_mentioning_old_name": result.templates_mentioning_old_name,
+            }
     detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
     response = {**detail.model_dump(), "managed": managed}
     if renamed is not None:
