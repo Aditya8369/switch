@@ -612,6 +612,8 @@ class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
     __table_args__ = (
         Index("ix_client_rooms_tenant_id", "tenant_id"),
+        # The router reads a room's members on every row it writes there.
+        Index("ix_client_rooms_room_id", "room_id"),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],

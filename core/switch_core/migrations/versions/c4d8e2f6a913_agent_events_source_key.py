@@ -14,7 +14,10 @@ it also serves the lookups `ix_agent_events_agent_message_key` served, and
 replaces it.
 
 Copies stored before this migration are removed first, keeping the lowest
-number of each, so the index can always be built.
+number of each, so the index can always be built. The table is locked against
+writes first, so a copy an older release stores while the migration runs
+waits for it and then finds the index, rather than landing after the delete
+and failing the index build.
 
 Revision ID: c4d8e2f6a913
 Revises: a7e3c1d9f204
@@ -37,6 +40,7 @@ REPLACED = "ix_agent_events_agent_message_key"
 
 
 def upgrade() -> None:
+    op.execute("LOCK TABLE agent_events IN SHARE ROW EXCLUSIVE MODE")
     op.execute(
         """
         DELETE FROM agent_events AS later

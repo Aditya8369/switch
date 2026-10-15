@@ -187,10 +187,12 @@ async def resolve_caller(
         return None, None
 
     # The connection may be held by another process, and its row written a
-    # moment before this request: what this process has not seen yet is read
-    # again from the rows before the caller is refused or left without a room.
-    if not _resolves(protocol, agent_id, bound, session_id):
-        await protocol.connections.refresh(agent_id)
+    # moment before this request; and the rooms it claimed, or the calling
+    # session's room, may have moved through another process whose answer the
+    # caller already has. So the rows are read again before the caller is
+    # resolved, rather than this process's copy trusted: a copy only a moment
+    # old would refuse the caller, or post into the room it left.
+    await protocol.connections.refresh(agent_id)
 
     caller: CallerSession | None = None
     if session_id is not None:
@@ -212,19 +214,6 @@ async def resolve_caller(
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return bound, caller
-
-
-def _resolves(
-    protocol: AgentCore, agent_id: str, connection_id: str, session_id: str | None
-) -> bool:
-    """Whether this process already knows the connection, and the session's
-    room when a session is named."""
-    conn = protocol.connections.get(connection_id)
-    if conn is None or conn.agent_id != agent_id:
-        return False
-    if session_id is None:
-        return True
-    return protocol.connections.session_room(agent_id, session_id) is not None
 
 
 async def resolve_controller_caller(

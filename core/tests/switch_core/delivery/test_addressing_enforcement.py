@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -702,6 +703,9 @@ def _command_client(*, allowed: bool, targets_me: bool):  # type: ignore[no-unty
         reply_command=_reply_command,
     )
     client.replies = replies  # type: ignore[attr-defined]
+    client._command_refusal = functools.partial(  # type: ignore[attr-defined]
+        AgentRecipient._command_refusal, client
+    )
     return client
 
 

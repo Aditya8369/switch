@@ -958,21 +958,25 @@ async def _open_connection(
 
     # Opened as a recorded move, so a reattach is fenced on the incarnation
     # every process sees, and the connection is recorded for them before the
-    # client is told it is open.
-    async with protocol.connections.slots(agent.id):
-        async with protocol.connections.recorded(agent.id):
-            conn = _register_connection(
-                protocol=protocol,
-                agent=agent,
-                connection_id=connection_id,
-                scope=scope,
-                event_filter=event_filter,
-                spawn_capable=spawn_capable,
-                position=position,
-                declaration=declaration,
-                expected_generation=expected_generation,
-                transport=transport,
-            )
+    # client is told it is open. Recording it is refused, as opening it is,
+    # when the id is another agent's connection's.
+    try:
+        async with protocol.connections.slots(agent.id):
+            async with protocol.connections.recorded(agent.id):
+                conn = _register_connection(
+                    protocol=protocol,
+                    agent=agent,
+                    connection_id=connection_id,
+                    scope=scope,
+                    event_filter=event_filter,
+                    spawn_capable=spawn_capable,
+                    position=position,
+                    declaration=declaration,
+                    expected_generation=expected_generation,
+                    transport=transport,
+                )
+    except UnknownConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if lost is not None:
         conn.resume_lost = True
         conn.resume_requested = lost
@@ -1013,11 +1017,13 @@ async def _open_connection(
             async with protocol.connections.slots(agent.id):
                 async with protocol.connections.recorded(agent.id):
                     protocol.connections.claim_room(conn, room_id, takeover=True)
-            # The room's unread count follows the slot: whoever is told how far
-            # behind the room is has to be the one whose reading clears it.
-            await protocol.event_buffer.take_counting(
-                agent.tenant_id, agent.id, conn.id, room_id
-            )
+                # The room's unread count follows the slot: whoever is told how
+                # far behind the room is has to be the one whose reading clears
+                # it. Recorded with the slots still held, so a later claim of
+                # the room cannot have its count overwritten by this one.
+                await protocol.event_buffer.take_counting(
+                    agent.tenant_id, agent.id, conn.id, room_id
+                )
         except (ValueError, PermissionError) as exc:
             protocol.connections.close(
                 conn.id,
@@ -1154,10 +1160,13 @@ async def connection_beat(
             SupersededConnectionError,
             UnfencedBeatError,
         ):
-            if _held_here(protocol, req.connection_id):
+            if _held_here(protocol, req.connection_id) and not _presents_later(
+                protocol, req.connection_id, req.generation
+            ):
                 raise
-            # The beat reached a process that does not hold the stream, and
-            # its copy of the connection may be a moment old: a refusal is
+            # The beat reached a process that does not hold the stream, or
+            # that held it before a later incarnation was opened elsewhere,
+            # and its copy of the connection may be a moment old: a refusal is
             # final for the client, so it is given only on the recorded row.
             await protocol.connections.refresh(agent.id)
             conn = _record_beat(protocol, agent.id, req.connection_id, req.generation)
@@ -1370,6 +1379,23 @@ def _held_here(protocol: AgentCore, connection_id: str) -> bool:
     return conn is not None and conn.held_by is None
 
 
+def _presents_later(
+    protocol: AgentCore, connection_id: str, generation: int | None
+) -> bool:
+    """Whether the caller names a later incarnation than this process has.
+
+    Every incarnation of a connection is later than the ones before it, so a
+    later one presented was opened through another process after this one
+    last read the rows: this process's copy is the stale one, not the
+    caller's."""
+    conn = protocol.connections.get(connection_id)
+    return (
+        conn is not None
+        and generation is not None
+        and generation > conn.stream_generation
+    )
+
+
 async def _admitted_connection(
     protocol: AgentCore,
     agent: Agent,
@@ -1378,13 +1404,16 @@ async def _admitted_connection(
     """The first check, before anything is read on the caller's behalf.
 
     A connection held by another process is checked against this process's
-    copy, which may be a moment old, so a refusal is checked again on the
-    recorded row before it is given. The check that decides is
-    `_current_connection`, made again inside the recorded move."""
+    copy, which may be a moment old, and so is one held here when the caller
+    names a later incarnation, so a refusal is checked again on the recorded
+    row before it is given. The check that decides is `_current_connection`,
+    made again inside the recorded move."""
     try:
         return _current_connection(protocol, agent, req)
     except HTTPException:
-        if _held_here(protocol, req.connection_id):
+        if _held_here(protocol, req.connection_id) and not _presents_later(
+            protocol, req.connection_id, req.generation
+        ):
             raise
     await protocol.connections.refresh(agent.id)
     return _current_connection(protocol, agent, req)
@@ -1465,12 +1494,14 @@ async def connection_subscribe(
         for departed in departing:
             protocol.connections.release_room(conn, departed)
 
-    # A room slot changes hands here as much as it does on the stream URL or in
-    # connect_to_room, and the room's unread count follows it: the holder being
-    # told how far behind the room is has to be the one whose reading clears it.
-    await protocol.event_buffer.take_counting(
-        agent.tenant_id, agent.id, conn.id, req.room_id
-    )
+        # A room slot changes hands here as much as it does on the stream URL
+        # or in connect_to_room, and the room's unread count follows it: the
+        # holder being told how far behind the room is has to be the one whose
+        # reading clears it. Recorded with the slots still held, so a later
+        # claim of the room cannot have its count overwritten by this one.
+        await protocol.event_buffer.take_counting(
+            agent.tenant_id, agent.id, conn.id, req.room_id
+        )
 
     if evicted is not None:
         logger.warning(
@@ -1554,14 +1585,17 @@ async def connection_placements(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    for session_id, room_id in req.placements.items():
-        if before.get(session_id) != room_id:
-            await protocol.event_buffer.hand_counting_to(
-                agent.tenant_id,
-                agent.id,
-                Reader(id=session_id, is_session=True),
-                room_id,
-            )
+        # Each moved session takes its room's unread count, with the slots
+        # still held, so a later claim of the room cannot have its count
+        # overwritten by this one.
+        for session_id, room_id in req.placements.items():
+            if before.get(session_id) != room_id:
+                await protocol.event_buffer.hand_counting_to(
+                    agent.tenant_id,
+                    agent.id,
+                    Reader(id=session_id, is_session=True),
+                    room_id,
+                )
     for lost in released:
         logger.warning(
             "[CONN] agent=%s connection=%s took room %s from connection %s "
