@@ -37,7 +37,9 @@ function eventsOf<T extends ProviderRuntimeEventType>(
   );
 }
 
-async function start(runtimeMode: 'full-access' | 'approval-required' = 'full-access') {
+async function start(
+  runtimeMode: 'full-access' | 'approval-required' | 'auto-accept-edits' = 'full-access'
+) {
   const adapter = createCodexAdapter();
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((event) => events.push(event));
@@ -164,13 +166,30 @@ describe('CodexAdapter', () => {
     expect(adapter.hasSession('resume')).toBe(false);
   });
 
-  it('asks for approvals in approval-required mode', async () => {
+  it('marks the working directory untrusted in approval-required mode, not a retired policy', async () => {
     const { server } = await start('approval-required');
     const threadStart = server.received.find((message) => message.method === 'thread/start');
     expect(threadStart?.params).not.toHaveProperty('sandbox');
-    expect(threadStart?.params).toMatchObject({
-      approvalPolicy: 'untrusted',
-    });
+    expect(threadStart?.params).not.toHaveProperty('approvalPolicy');
+    const args = (server as unknown as { spawnArgs: string[] }).spawnArgs;
+    const override = args.indexOf('-c');
+    expect(args.slice(override, override + 2)).toEqual([
+      '-c',
+      'projects={"/work"={trust_level="untrusted"}}',
+    ]);
+  });
+
+  it('sends on-request for auto-accept-edits and never for full access, with no project override', async () => {
+    for (const [mode, approvalPolicy] of [
+      ['auto-accept-edits', 'on-request'],
+      ['full-access', 'never'],
+    ] as const) {
+      const { server } = await start(mode);
+      const threadStart = server.received.find((message) => message.method === 'thread/start');
+      expect(threadStart?.params).toMatchObject({ approvalPolicy });
+      const args = (server as unknown as { spawnArgs: string[] }).spawnArgs;
+      expect(args.some((arg) => arg.startsWith('projects='))).toBe(false);
+    }
   });
 
   it('carries systemContext as developer instructions', async () => {

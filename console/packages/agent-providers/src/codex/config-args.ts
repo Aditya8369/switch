@@ -3,7 +3,7 @@ import type { McpServerSpec } from '../adapter';
 /** TOML bare keys; anything else would have to be quoted inside a `-c` dotted path. */
 const BARE_KEY = /^[A-Za-z0-9_-]+$/;
 
-function tomlString(value: string): string {
+export function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 

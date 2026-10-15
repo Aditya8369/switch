@@ -43,7 +43,11 @@ export const CODEX_SERVER_REQUESTS = {
   mcpElicitation: 'mcpServer/elicitation/request',
 } as const;
 
-export type CodexAskForApproval = 'untrusted' | 'on-request' | 'never';
+/**
+ * `untrusted` is retired: codex-cli 0.162 refuses it in configuration, and the
+ * documented replacement is a project `trust_level` (see `threadModeConfig`).
+ */
+export type CodexAskForApproval = 'on-request' | 'never';
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApprovalsReviewer = 'user' | 'auto_review' | 'guardian_subagent';
 export type CodexTurnStatus = 'completed' | 'interrupted' | 'failed' | 'inProgress';

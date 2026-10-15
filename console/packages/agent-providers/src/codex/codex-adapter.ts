@@ -33,7 +33,7 @@ import {
   type ProviderLogger,
 } from '../transport/stdio-json-rpc';
 import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
-import { featureArgs, mcpServerConfigArgs } from './config-args';
+import { featureArgs, mcpServerConfigArgs, tomlString } from './config-args';
 import { mapCodexItem } from './item-mapping';
 import {
   CODEX_CLIENT_METHODS,
@@ -125,17 +125,41 @@ interface CodexSessionState {
 }
 
 interface ThreadModeConfig {
-  approvalPolicy: CodexAskForApproval;
+  /** Sent with the thread; null leaves the policy to the configuration the process was started with. */
+  approvalPolicy: CodexAskForApproval | null;
+  /** `-c` overrides for the `codex app-server` process. */
+  configArgs: string[];
 }
 
-function threadModeConfig(mode: RuntimeMode): ThreadModeConfig {
+/**
+ * How each runtime mode reaches Codex.
+ *
+ * Approval-required once sent `approvalPolicy: "untrusted"`, which asked
+ * before every command outside Codex's small safe list. Codex retired that
+ * value (0.162 refuses it in configuration, and its migration guide says to
+ * remove it); the replacement it documents is marking the working directory
+ * `trust_level = "untrusted"`, under which commands need approval unless an
+ * execution-policy rule allows them. `on-request` is not that: it runs
+ * anything the sandbox permits without asking. The mark goes on this
+ * process's command line as an inline table, which replaces the user's own
+ * `projects` entries for the process, so the `trusted` entry Console writes
+ * for the directory does not override it. Verified against 0.162.1: a plain
+ * `date` and an MCP tool call both ask, and a symlinked directory matches as
+ * long as `cwd` is spelt the same way in both places. One consequence named
+ * in Codex's guide: an untrusted project does not load its own `.codex/`
+ * configuration.
+ */
+function threadModeConfig(mode: RuntimeMode, cwd: string): ThreadModeConfig {
   switch (mode) {
     case 'approval-required':
-      return { approvalPolicy: 'untrusted' };
+      return {
+        approvalPolicy: null,
+        configArgs: ['-c', `projects={${tomlString(cwd)}={trust_level="untrusted"}}`],
+      };
     case 'auto-accept-edits':
-      return { approvalPolicy: 'on-request' };
+      return { approvalPolicy: 'on-request', configArgs: [] };
     case 'full-access':
-      return { approvalPolicy: 'never' };
+      return { approvalPolicy: 'never', configArgs: [] };
   }
 }
 
@@ -280,8 +304,9 @@ export class CodexAdapter implements ProviderAdapter {
     if (this.sessions.has(input.sessionId)) {
       throw new ProviderSessionError(PROVIDER, input.sessionId, 'session already started');
     }
+    const mode = threadModeConfig(input.runtimeMode, input.cwd);
     const mcp = mcpServerConfigArgs(input.mcpServers);
-    const args = ['app-server', ...featureArgs(this.features), ...mcp.args];
+    const args = ['app-server', ...featureArgs(this.features), ...mode.configArgs, ...mcp.args];
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
       args,
@@ -325,11 +350,10 @@ export class CodexAdapter implements ProviderAdapter {
       if (!account.account && account.requiresOpenaiAuth)
         throw new Error('Sign in on the execution machine with codex login.');
 
-      const mode = threadModeConfig(input.runtimeMode);
       const sandbox = await configuredSandbox(input.env.CODEX_HOME);
       const config = {
         cwd: input.cwd,
-        approvalPolicy: mode.approvalPolicy,
+        ...(mode.approvalPolicy ? { approvalPolicy: mode.approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
         approvalsReviewer: 'user' as const,
         ...(input.model?.id ? { model: input.model.id } : {}),
