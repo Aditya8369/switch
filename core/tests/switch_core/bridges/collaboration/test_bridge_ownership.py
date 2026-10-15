@@ -366,7 +366,8 @@ async def _process(
         tenant_store=TenantStore(),
         client_factory=factory,
         session_factory=session_factory,
-        config=MagicMock(),
+        # The server name the bridges read back clients' ids with.
+        config=_config(),
         tenants_isolated=True,
         ownership=ownership,
         cursor_writer=writer,
@@ -855,6 +856,42 @@ class TestPeopleOnThePlatform:
             session_factory, bridge.room_id, person.transport_user_id
         ) == ["first words", "second words"]
         assert platform.posted() == ["answer"]
+
+    async def test_two_people_whose_names_read_alike_stay_two_people(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """`ann.marie` and `ann-marie` sanitize to the same client localpart.
+        The second to speak is a person of their own, not the first."""
+        await _boot_two(postgres_url, session_factory, processes)
+
+        await platform.say(user_id="Ann.Marie", text="from the first", ref="m1")
+        await platform.say(user_id="Ann-Marie", text="from the second", ref="m2")
+
+        async with session_factory() as session:
+            people = dict(
+                (
+                    await session.execute(
+                        select(ExternalUser.external_user_id, Client.transport_user_id)
+                        .join(Client, Client.id == ExternalUser.client_id)
+                        .where(ExternalUser.bridge_id == bridge.bridge_id)
+                    )
+                )
+                .tuples()
+                .all()
+            )
+        assert set(people) == {"Ann.Marie", "Ann-Marie"}
+        assert people["Ann.Marie"] != people["Ann-Marie"]
+        assert await _room_bodies(
+            session_factory, bridge.room_id, people["Ann.Marie"]
+        ) == ["from the first"]
+        assert await _room_bodies(
+            session_factory, bridge.room_id, people["Ann-Marie"]
+        ) == ["from the second"]
 
 
 class TestAPlatformThatCannotKeepQuiet:

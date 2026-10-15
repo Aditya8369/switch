@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import re
 import time
@@ -120,6 +121,11 @@ HUMAN_JOIN_TIMEOUT = 30.0
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
+
+# How long to wait for the person behind a human actor's client row that
+# another process has just written, before giving up on telling whose it is.
+# That process writes the `ExternalUser` right after the client.
+_HUMAN_ACTOR_MINTING_SECONDS = 2.0
 
 
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
@@ -2048,21 +2054,37 @@ class CollaborationCore:
         # type (e.g. two Slack workspaces) must map to distinct clients,
         # since transport_user_id is globally unique but usernames are not.
         localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
+        # Two people whose names sanitize alike (`ann.marie` and `ann-marie`)
+        # would share that localpart: the one who comes second gets it with
+        # their platform id's digest appended, the same in every process.
+        digest = hashlib.blake2b(external_user_id.encode(), digest_size=4).hexdigest()
+        candidates = (localpart, f"{localpart}-{digest}")
 
-        try:
-            client = await self._client_lifecycle.create_and_start(
-                client_type="user",
-                display_name=external_username,
-                localpart=localpart,
-            )
-        except IntegrityError:
-            # Minted by another process between the read above and here: the
-            # localpart is this person's on this bridge, so the row that won
-            # is theirs.
-            return await self._adopt_human_actor_client(
-                external_user_id,
-                external_username,
-                f"@{localpart}:{self._id_server_name}",
+        for localpart in candidates:
+            try:
+                client = await self._client_lifecycle.create_and_start(
+                    client_type="user",
+                    display_name=external_username,
+                    localpart=localpart,
+                )
+            except IntegrityError:
+                # Taken: by this person, minted by another process between the
+                # read above and here, or by someone else whose name
+                # sanitizes the same.
+                adopted = await self._adopt_human_actor_client(
+                    external_user_id,
+                    external_username,
+                    f"@{localpart}:{self._id_server_name}",
+                )
+                if adopted is not None:
+                    return adopted
+                continue
+            break
+        else:
+            raise RuntimeError(
+                f"No client localpart is free for external user "
+                f"{external_user_id} ({external_username!r}) on bridge "
+                f"{self._bridge_id}"
             )
 
         ext_user = ExternalUser(
@@ -2106,17 +2128,42 @@ class CollaborationCore:
 
     async def _adopt_human_actor_client(
         self, external_user_id: str, external_username: str, transport_user_id: str
-    ) -> str:
-        """The human actor whose client row another process wrote first."""
-        async with self._session_factory() as session:
-            record = await self._client_store.get_by_transport_user_id(
-                session, transport_user_id
-            )
-        if record is None:
-            raise RuntimeError(
-                f"Creating the human actor {transport_user_id} conflicted with "
-                "another, which cannot be read back"
-            )
+    ) -> str | None:
+        """The human actor whose client row was written first, when it is this
+        person's; None when it stands for someone else."""
+        deadline = time.monotonic() + _HUMAN_ACTOR_MINTING_SECONDS
+        while True:
+            async with self._session_factory() as session:
+                record = await self._client_store.get_by_transport_user_id(
+                    session, transport_user_id
+                )
+                person = (
+                    None
+                    if record is None
+                    else await self._external_user_store.get_by_client_id(
+                        session, record.id
+                    )
+                )
+            if record is None:
+                raise RuntimeError(
+                    f"Creating the human actor {transport_user_id} conflicted "
+                    "with another, which cannot be read back"
+                )
+            if person is not None:
+                break
+            # Its process writes whose it is right after the client row.
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"The human actor {transport_user_id} has no external user "
+                    f"after {_HUMAN_ACTOR_MINTING_SECONDS:.0f}s, so whose it is "
+                    "cannot be told"
+                )
+            await asyncio.sleep(0.1)
+        if (
+            person.bridge_id != self._bridge_id
+            or person.external_user_id != external_user_id
+        ):
+            return None
         self._run_human_actor(external_user_id, external_username, record)
         return record.id
 
