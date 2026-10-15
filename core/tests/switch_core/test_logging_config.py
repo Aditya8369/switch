@@ -181,8 +181,11 @@ def test_text_format_shows_the_context(monkeypatch: pytest.MonkeyPatch) -> None:
     logger.info("plain")
 
     with_context, without = capture.lines
-    assert "[tenant_id=default request_id=req-1] hello" in with_context
-    assert "[tenant_id=default] plain" in without
+    assert (
+        "[process_id=core-0-abcd1234 tenant_id=default request_id=req-1] hello"
+        in with_context
+    )
+    assert "[process_id=core-0-abcd1234 tenant_id=default] plain" in without
 
 
 def test_a_third_party_logger_gets_the_same_fields(monkeypatch: pytest.MonkeyPatch):

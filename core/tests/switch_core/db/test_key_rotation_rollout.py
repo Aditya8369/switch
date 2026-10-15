@@ -14,14 +14,20 @@ import pytest
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.registration_bootstrap import BOOTSTRAP_KEY_TYPE
+from switch_core.config import SwitchConfig
 from switch_core.db.key_rotation import (
     KeyRotationError,
     reencrypt_stale_text,
     require_front_key_readable,
 )
-from switch_core.db.models import TrustSettings
+from switch_core.db.models import ApiKey, TrustSettings
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
+from switch_core.main import _seed_admin_and_bootstrap_key
 from switch_core.process_lease import ProcessLease
 
 OLD = "old:" + "o" * 40
@@ -47,6 +53,30 @@ def _keyring(value: str) -> Keyring:
     return Keyring.parse(value, legacy_secret=None)
 
 
+async def _boot_seeding(
+    session_factory: async_sessionmaker[AsyncSession],
+    process_id: str,
+    secret_keys: str,
+    registration_token: str,
+) -> None:
+    """The seeding a process does at boot, with these keys and token."""
+    config = SwitchConfig(
+        db_host="unused",
+        db_port="5432",
+        db_user="unused",
+        db_password="unused",
+        db_name="unused",
+        id_server_name="test",
+        agent_registration_token=registration_token,
+        secret_keys=secret_keys,
+        gateway_admin_email="admin@switch.local",
+        gateway_admin_password="unused",
+    )
+    await _seed_admin_and_bootstrap_key(
+        session_factory, UserStore(), ApiKeyStore(), AgentStore(), config, process_id
+    )
+
+
 async def test_a_new_front_key_another_process_lacks_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -56,6 +86,27 @@ async def test_a_new_front_key_another_process_lacks_is_refused(
 
     with pytest.raises(KeyRotationError, match="two phases"):
         await require_front_key_readable(session_factory, starting, "new-pod")
+
+
+async def test_a_refused_process_has_encrypted_nothing_under_its_front_key(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The boot seeding rewrites the agent-registration bootstrap key under
+    the front key when AGENT_REGISTRATION_TOKEN changes. A process refused
+    only after that would already have stored a value the old one cannot
+    decrypt."""
+    await _running(session_factory, "old-pod", ["old"])
+    await _boot_seeding(session_factory, "old-pod", OLD, "first-token")
+
+    with pytest.raises(KeyRotationError, match="two phases"):
+        await _boot_seeding(session_factory, "new-pod", f"{NEW},{OLD}", "second-token")
+
+    async with session_factory() as session:
+        stored = await session.scalar(
+            select(ApiKey.encrypted_key).where(ApiKey.type == BOOTSTRAP_KEY_TYPE)
+        )
+    assert stored is not None
+    assert _keyring(OLD).decrypt(stored) == "first-token"
 
 
 async def test_a_key_every_process_already_holds_may_go_to_the_front(

@@ -66,6 +66,7 @@ from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.providers import router as providers_router
 from switch_core.keys import Keyring
 from switch_core.management import controller_routes
+from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
 from switch_core.process_lease import ProcessLease
@@ -259,6 +260,13 @@ def build_harness(
     management.install(
         agent_bridge_app=agent_app, gateway_app=gateway_app, protocol=protocol
     )
+    # `install` sets management's request dependencies in module state, one
+    # per process, and two harnesses in one test are two processes: each app
+    # is pointed at its own, or the first's routes record what they do as the
+    # second process.
+    for app in (agent_app, gateway_app):
+        app.dependency_overrides[get_management] = lambda: management.service
+        app.dependency_overrides[get_authenticator] = lambda: management.authenticator
 
     agent_app.include_router(activity_router)
     agent_app.include_router(api_router, prefix="/agents")

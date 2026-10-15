@@ -117,6 +117,12 @@ POSITIONS_PROTOCOL_REVISION = 9
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
 
+# The longest connection id or session id a client may choose; clients use
+# UUIDs, which are 36. Both travel in the signals switch-core processes send
+# each other (`connection_rows.py`), and Postgres refuses one of 8000 bytes or
+# more, so an id with no bound could make a signal that cannot be sent.
+MAX_ID_LENGTH = 64
+
 
 class ConnectionError_(Exception):
     """Base for connection faults that a client must be told about.
@@ -512,6 +518,11 @@ def connection_transport(conn: AgentConnection) -> str:
     return conn.stream_transport if conn.stream_attached else "detached"
 
 
+#: How a deleted agent's connections end, in whichever process holds them. A
+#: client that reopens is refused: its key names no agent any more.
+AGENT_DELETED = Closure(code="closed", message="the agent was deleted", room_id=None)
+
+
 class ConnectionRows(Protocol):
     """Where a registry records its connections, so that every switch-core
     process sees them (`connection_rows.SharedConnections`).
@@ -532,6 +543,11 @@ class ConnectionRows(Protocol):
 
     async def refresh(self, agent_id: str) -> None:
         """Read the agent's connections again from the rows."""
+        ...
+
+    async def agent_deleted(self, agent_id: str) -> None:
+        """The agent was deleted, and its rows with it: end what this process
+        holds of it, and have every other process read its rows again."""
         ...
 
     def closed(self, conn: AgentConnection) -> None:
@@ -1306,6 +1322,20 @@ class AgentConnectionRegistry:
         if self._rows is not None:
             await self._rows.refresh(agent_id)
 
+    async def agent_deleted(self, agent_id: str) -> None:
+        """End a deleted agent's connections, here and in every other process.
+
+        Deleting the agent deleted its connections' rows. Each process makes
+        the agent's connections what the rows now say, which closes those it
+        holds (`apply_rows`): this one at once, and the others when told. A
+        registry that records nothing closes the connections it holds.
+        """
+        if self._rows is not None:
+            await self._rows.agent_deleted(agent_id)
+            return
+        for cid in list(self._by_agent.get(agent_id, ())):
+            self.close(cid, AGENT_DELETED)
+
     # ------------------------------------------------------------------
     # Keeping the copies of other processes' connections
     # ------------------------------------------------------------------
@@ -1319,10 +1349,19 @@ class AgentConnectionRegistry:
         ]
 
     def agents_recorded_in(self, tenant_id: str) -> set[str]:
+        """The agents this process keeps anything of from the tenant's rows,
+        so a pass over those rows judges each, the ones they no longer name
+        included: those `apply_rows` last set from them, and those with a
+        connection recorded in the tenant (`tenant_id`), whose row this
+        process may have written since."""
         return {
             agent_id
             for agent_id, tenant in self._agent_tenants.items()
             if tenant == tenant_id
+        } | {
+            conn.agent_id
+            for conn in self._by_id.values()
+            if conn.tenant_id == tenant_id
         }
 
     def held_by_processes(self) -> set[str]:
@@ -1384,17 +1423,29 @@ class AgentConnectionRegistry:
 
         A connection held here that another process (or a later incarnation)
         has taken over is closed `taken_over`, so its stream tells its client.
-        Copies of other processes' connections are replaced by what is live
-        now. Claims and placements are set from the rows, and a connection held
-        here whose rooms changed is woken, so its stream reports the change
-        and a session waiting for its first room starts reading. Returns the
-        connections closed.
+        One whose row was written and is gone is closed too: deleting the
+        agent deletes its rows. Copies of other processes' connections are
+        replaced by what is live now. Claims and placements are set from the
+        rows, and a connection held here whose rooms changed is woken, so its
+        stream reports the change and a session waiting for its first room
+        starts reading. Returns the connections closed as taken over.
+
+        The rows are never older than what this process holds of the agent
+        (`connection_rows.py` reads them under its slots, or leaves an agent
+        moved since its read alone), so a connection opened after the read is
+        not here to be judged on them.
         """
         self._agent_tenants[agent_id] = tenant_id
         closed: list[AgentConnection] = []
         for conn in self.held_here(agent_id):
             row = rows.connections.get(conn.id)
-            if row is None or row.closed:
+            if row is None:
+                # Recorded once (`tenant_id` is set when its row is written),
+                # and the row is gone since.
+                if conn.tenant_id is not None:
+                    self.close(conn.id, AGENT_DELETED)
+                continue
+            if row.closed:
                 continue
             if (
                 row.process_id != process_id

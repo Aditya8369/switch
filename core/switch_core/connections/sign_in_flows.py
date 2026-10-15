@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -129,6 +129,14 @@ class SignInFlows:
         """
         verifier = secrets.token_urlsafe(48)
         async with tenant_session(self._session_factory, tenant_id) as session:
+            # One start at a time per workspace, held to the commit. The delete,
+            # count and insert below see only committed rows, so two starts side
+            # by side would otherwise both keep a flow for one person, or both
+            # take the workspace's last place under `MAX_FLOWS`.
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"sign-in-flows:{tenant_id}"},
+            )
             await session.execute(
                 delete(SignInFlow).where(
                     SignInFlow.tenant_id == tenant_id,
