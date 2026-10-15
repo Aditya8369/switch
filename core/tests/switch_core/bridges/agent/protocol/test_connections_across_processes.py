@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -56,6 +56,7 @@ from switch_core.bridges.agent.protocol.stream import KEEPALIVE, event_frames
 from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    Agent,
     AgentConnectionRecord,
     AgentConnectionRoom,
     AgentRoomRead,
@@ -1010,3 +1011,84 @@ class TestStartingUp:
 
         assert registry.is_live(AGENT)
         assert "unreadable" in caplog.text
+
+
+async def _delete_agent_row(session_factory: SessionFactory) -> None:
+    """Delete the agent's row, which takes its connections' rows with it."""
+    async with session_factory() as session:
+        await session.execute(delete(Agent).where(Agent.id == AGENT))
+        await session.commit()
+
+
+class TestADeletedAgent:
+    """Deleting an agent deletes its connections' rows. Its connections end
+    wherever their sockets are held, not only in the process deleting it."""
+
+    async def test_deleted_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """As `AgentCore.delete_agent` deletes it through the process that
+        does not hold its socket: the row goes, then the others are told."""
+        a, b = processes
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _delete_agent_row(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_deleted(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+
+    async def test_a_holder_never_told_closes_it_on_its_next_pass(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Deleted by a process that told no one, or whose signal never
+        arrived: the holder finds the rows gone when it next reads them all."""
+        a, _ = processes
+        conn = await _open(a)
+
+        await _delete_agent_row(session_factory)
+        await a.shared.reload_all()
+
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+
+    async def test_a_pass_that_read_before_an_open_was_recorded_leaves_it_open(
+        self,
+        processes: tuple[Process, Process],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The pass read the tenant's rows just before the connection's row
+        was written: finding no row for it then says nothing about its agent."""
+        a, b = processes
+        for process in (a, b):
+            await process.bus.stop()  # no pass reads the rows but this one
+        read_tenant = AgentConnectionStore.read_tenant
+        opened: list[AgentConnection] = []
+
+        async def opened_meanwhile(
+            store: AgentConnectionStore,
+            session: AsyncSession,
+            tenant_id: str,
+            **kwargs: Any,
+        ) -> Any:
+            found = await read_tenant(store, session, tenant_id, **kwargs)
+            opened.append(await _open(a))
+            return found
+
+        monkeypatch.setattr(AgentConnectionStore, "read_tenant", opened_meanwhile)
+
+        await a.shared.reload_all()
+
+        (conn,) = opened
+        assert conn.closure is None
+        assert a.registry.get(CONN) is conn

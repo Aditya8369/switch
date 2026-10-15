@@ -25,7 +25,9 @@ After each write the other processes are told to look, over the `SignalBus`
 (`agent_connections.changed`), and read the agent's rows again. The process
 holding a connection that lost a room is told which, so it can send
 `room_released`. A connection whose row now names another process or a later
-incarnation was taken over, and its holder closes it `taken_over`.
+incarnation was taken over, and its holder closes it `taken_over`. One whose
+row is gone was its agent's, deleted since, and its holder closes it too: told
+by the process that deleted the agent, or on its next read of every tenant.
 
 Liveness is the holding process's lease: a row counts while it is not closed
 and its process's lease is held. A lost signal costs a delay, never a wrong
@@ -296,6 +298,20 @@ class SharedConnections:
                 "is bound"
             )
         await self._refresh(tenant_id, agent_id)
+
+    async def agent_deleted(self, agent_id: str) -> None:
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                f"Agent {agent_id}'s connections are recorded in its tenant, and "
+                "none is bound"
+            )
+        # Its rows went with it, so there is nothing to read: what this
+        # process holds of the agent is made what no rows say, which closes
+        # the connections held here and drops the copies of the others'.
+        async with self._registry.slots(agent_id):
+            self._apply(agent_id, tenant_id, _EMPTY)
+        self._publish_changed(tenant_id, agent_id, [])
 
     def closed(self, conn: AgentConnection) -> None:
         if conn.tenant_id is None or conn.closure is None:

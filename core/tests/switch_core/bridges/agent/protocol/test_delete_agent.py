@@ -14,7 +14,9 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_connections import ClientDeclaration
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import Room
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
@@ -80,3 +82,32 @@ class TestDeleteAgentInARoom:
             assert await RoomStore().get_client_ids(session, room_id) == []
             # Only the memberships go; the room outlives its member.
             assert await RoomStore().get(session, room_id) is not None
+
+
+class TestDeleteAgentWithAConnection:
+    async def test_its_connection_is_closed(
+        self, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
+    ) -> None:
+        """Rather than left serving a deleted agent's stream, and reporting
+        the agent live, until its client goes."""
+        svc = make_service(session_factory)
+        svc.client_lifecycle = _DeletingClientLifecycle(session_factory)  # type: ignore[assignment]
+        svc.event_buffer = db_buffer
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "connected", owner)
+        conn = svc.connections.open(
+            agent_id=agent_id,
+            connection_id="its-connection",
+            scope="all",
+            delivery_filter="addressed",
+            spawn_capable=False,
+            position={OWN_EVENTS: 0},
+            declaration=ClientDeclaration(),
+            expected_generation=None,
+        )
+
+        await svc.delete_agent(agent_id=agent_id)
+
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not svc.connections.is_live(agent_id)

@@ -1019,6 +1019,10 @@ class AgentCore:
             await session.commit()
         self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
+        # Its connections end with it, here and in whichever process holds
+        # one: their rows went with its row. After its key is dropped, so a
+        # client told cannot open another.
+        await self.connections.agent_deleted(resolved_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
 
