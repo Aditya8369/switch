@@ -737,7 +737,17 @@ class ControllerPresence:
         and the client cannot beat before it has one. A connection that had
         no socket attached is recorded as connected; displacing an attached
         one changes nothing the ledger holds.
+
+        Refused when the connection is no longer the controller's current one
+        here, as `require` refuses it: the attach was decided on a read of the
+        controller's row, and in the wait the controller may have opened
+        another connection, or this one closed. Attaching then would hold a
+        connection that is over, and forget the process holding the newer one.
         """
+        if not self.is_current(conn):
+            if conn.closure is not None and conn.closure.code == TAKEN_OVER.code:
+                raise ControllerTakenOverError(conn.id)
+            raise UnknownControllerConnectionError(conn.id)
         if not conn.stream_attached:
             self._record_connected(conn)
         self._note_connection_change(conn.controller_id)
