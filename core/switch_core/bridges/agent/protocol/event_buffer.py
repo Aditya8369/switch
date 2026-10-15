@@ -138,16 +138,10 @@ CONVERSATION_GROUP_GRACE_SECONDS = 5.0
 _READ = {"operation": "read"}
 _UNREAD = {"operation": "unread"}
 
-# The stored poll position moved forward by the new one, source by source,
-# never back: `positions.merged`, written in SQL so that it happens inside the
-# upsert and two overlapping saves cannot undo each other.
-_MERGED_POLL_POSITION = text(
-    "(SELECT jsonb_object_agg(source, GREATEST("
-    "COALESCE((agent_poll_positions.position ->> source)::bigint, -1), "
-    "COALESCE((excluded.position ->> source)::bigint, -1))) "
-    "FROM (SELECT jsonb_object_keys(agent_poll_positions.position) AS source "
-    "UNION SELECT jsonb_object_keys(excluded.position)) AS sources)"
-)
+# How many times a long poll reads again after another poll of the same reader
+# saved a position first. Each lost save means another poll moved the reader,
+# so the next read starts from where that one stopped.
+_POLL_SAVE_ATTEMPTS = 5
 
 # How long `enqueue` waits before each retry of a write that failed because the
 # database connection or the connection pool did. After the last, the error is
@@ -250,10 +244,14 @@ class Conversation:
     that are not conversation (the agent's own messages, other kinds of event,
     rows that are already own events) are skipped, but they still count as read, so
     the reader's position moves past them and they are not examined again.
+    `cut` maps each room whose read stopped at the row limit, with rows still
+    to read after it, to when the last row read was sent (seconds since the
+    epoch).
     """
 
     events: list[BufferedEvent] = field(default_factory=list)
     through: dict[str, int] = field(default_factory=dict)
+    cut: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -848,6 +846,7 @@ class EventBuffer:
         started = time.perf_counter()
         events: list[BufferedEvent] = []
         through: dict[str, int] = {}
+        cut: dict[str, float] = {}
         async with tenant_session(self._session_factory, tenant_id) as session:
             me = await session.execute(
                 select(Client.transport_user_id, Client.id)
@@ -909,8 +908,7 @@ class EventBuffer:
                 room = rooms.get(room_id)
                 if room is None or room_id not in joined:
                     continue
-                rows: list[Message] = []
-                for row in (
+                fetched = (
                     await session.scalars(
                         select(Message)
                         .where(
@@ -918,9 +916,11 @@ class EventBuffer:
                             Message.seq > max(after_seq, 0),
                         )
                         .order_by(Message.seq)
-                        .limit(limit)
+                        .limit(limit + 1)
                     )
-                ).all():
+                ).all()
+                rows: list[Message] = []
+                for row in fetched[:limit]:
                     if (
                         row.seq > decided_through.get(room_id, 0)
                         and cast(datetime, row.sent_at) >= settled_before
@@ -929,6 +929,8 @@ class EventBuffer:
                     rows.append(row)
                 if not rows:
                     continue
+                if len(fetched) > limit and len(rows) == limit:
+                    cut[room_id] = _epoch(cast(datetime, rows[-1].sent_at))
                 room_events, room_through = await self._conversation_in(
                     session,
                     room,
@@ -942,7 +944,7 @@ class EventBuffer:
                 if room_through > after_seq:
                     through[room_id] = room_through
         self._record_scan(_READ, len(events), started)
-        return Conversation(events=events, through=through)
+        return Conversation(events=events, through=through, cut=cut)
 
     async def _conversation_in(
         self,
@@ -1013,6 +1015,21 @@ class EventBuffer:
             if not complete and cast(datetime, lead.sent_at) >= group_deadline:
                 first = min(row.seq for _, _, row in parts)
                 held_from = first if held_from is None else min(held_from, first)
+        # A group goes out at its last file, so one with a file before the
+        # hold and its last file at or after it would not go out in this read,
+        # while the read's place moved past its earlier files. The next read
+        # would then find only the later files and send the group without
+        # them. Such a group is held from its first file too, which can reach
+        # back to another group that starts earlier.
+        spans = [
+            (min(row.seq for _, _, row in parts), max(row.seq for _, _, row in parts))
+            for parts in groups.values()
+        ]
+        while held_from is not None:
+            spanning = [first for first, last in spans if first < held_from <= last]
+            if not spanning:
+                break
+            held_from = min(spanning)
 
         member_names = await self._member_names(
             session,
@@ -1220,7 +1237,29 @@ class EventBuffer:
         )
         for room_id, seq in conversation.through.items():
             looked[room_source(room_id)] = seq
-        return _interleaved([own_events, *_by_source(conversation.events)]), looked
+        events = _interleaved([own_events, *_by_source(conversation.events)])
+        # A source cut short at `limit` has more to read after the last row it
+        # returned. An event from another source that happened later than that
+        # row waits for the next read, or it would overtake the cut source's
+        # later events. The events go out as a prefix of the merged order,
+        # with at least one event, so every read moves forward even when
+        # clocks disagree. A source with an event held back keeps its position
+        # at the last event sent, so the next read finds the event again.
+        cut = {room_source(room_id): at for room_id, at in conversation.cut.items()}
+        if len(own_events) >= limit:
+            cut[OWN_EVENTS] = own_events[-1].at
+        if cut:
+            kept = len(events)
+            for index, item in enumerate(events[1:], start=1):
+                if any(
+                    item.at > at for source, at in cut.items() if source != item.source
+                ):
+                    kept = index
+                    break
+            for source in {item.source for item in events[kept:]}:
+                looked.pop(source, None)
+            events = events[:kept]
+        return events, looked
 
     # ------------------------------------------------------------------
     # Tickets, for clients that hold one number
@@ -1714,6 +1753,53 @@ class EventBuffer:
         """Read once for a long-polling reader, save its new position, and
         return the events.
 
+        Two polls of the same reader can overlap. Each saves its new position
+        only if the stored one is still the one it read from, so of two polls
+        that read the same events, one returns them and the other reads again
+        from where the first stopped. Returning nothing after the last attempt
+        loses nothing, because the position did not move.
+        """
+        for _ in range(_POLL_SAVE_ATTEMPTS):
+            stored, position = await self._poll_position(
+                tenant_id, agent_id, reader_id, rooms if conversation else set()
+            )
+            events, moved = await self._legacy_read(
+                tenant_id,
+                agent_id,
+                reader_id,
+                position,
+                rooms,
+                conversation,
+                notifiable_only,
+                rooms_are_membership,
+            )
+            if await self._save_poll_position(
+                tenant_id, agent_id, reader_id, moved, expected=stored
+            ):
+                return events
+        logger.warning(
+            "[EVENT-BUF] legacy poller %s for agent %s lost the save of its "
+            "position %s times in a row to overlapping polls; returning nothing",
+            reader_id,
+            agent_id,
+            _POLL_SAVE_ATTEMPTS,
+        )
+        return []
+
+    async def _legacy_read(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        reader_id: str,
+        position: Position,
+        rooms: set[str],
+        conversation: bool,
+        notifiable_only: bool,
+        rooms_are_membership: bool,
+    ) -> tuple[list[AgentEvent], Position]:
+        """Read for a long-polling reader from `position`, and return the
+        events with the position to save once they are returned.
+
         The bound on own event numbers is read before the own events and the read stops
         at it, so the saved position covers exactly the own events returned. When
         `rooms` is the agent's membership, the bound is the newest own event in
@@ -1723,9 +1809,6 @@ class EventBuffer:
         `poll_room` reads a fixed room chosen by the reader, so it passes
         `rooms_are_membership=False` and moves to the head.
         """
-        position = await self._poll_position(
-            tenant_id, agent_id, reader_id, rooms if conversation else set()
-        )
         after = position[OWN_EVENTS]
         if rooms_are_membership:
             through = await self._last_seq_in_rooms(tenant_id, agent_id, after, rooms)
@@ -1775,14 +1858,14 @@ class EventBuffer:
                 moved,
                 {room_source(room_id): seq for room_id, seq in said.through.items()},
             )
-        await self._save_poll_position(tenant_id, agent_id, reader_id, moved)
-        return [item.event for item in _interleaved(found)]
+        return [item.event for item in _interleaved(found)], moved
 
     async def _poll_position(
         self, tenant_id: str, agent_id: str, reader_id: str, rooms: set[str]
-    ) -> Position:
-        """A long-polling reader's position from `agent_poll_positions`, with a
-        number for each room in `rooms`.
+    ) -> tuple[Position | None, Position]:
+        """A long-polling reader's stored position from `agent_poll_positions`,
+        or None when it has none, and the position to read from, with a number
+        for each room in `rooms`.
 
         A reader seen for the first time starts just before the agent's oldest
         own event still kept, so own events written before the client first polled are
@@ -1791,13 +1874,14 @@ class EventBuffer:
         window, for the same reason.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
-            stored = await session.scalar(
+            row = await session.scalar(
                 select(AgentPollPosition.position).where(
                     AgentPollPosition.agent_id == agent_id,
                     AgentPollPosition.reader_id == reader_id,
                 )
             )
-        position: Position = dict(stored) if stored is not None else {}
+        stored: Position | None = dict(row) if row is not None else None
+        position: Position = dict(stored or {})
         if OWN_EVENTS not in position:
             position[OWN_EVENTS] = await self.before_retained(tenant_id, agent_id)
         missing = {room_id for room_id in rooms if room_source(room_id) not in position}
@@ -1805,20 +1889,32 @@ class EventBuffer:
             starts = await self.room_window_starts(tenant_id, missing)
             for room_id, start in starts.items():
                 position[room_source(room_id)] = start
-        return position
+        return stored, position
 
     async def _save_poll_position(
-        self, tenant_id: str, agent_id: str, reader_id: str, position: Position
-    ) -> None:
-        # The row is inserted from a SELECT on `agents`, so if the agent was
-        # deleted while the poll was in flight, nothing is saved and the insert
-        # does not fail on the foreign key. An existing row is merged with the
-        # new position, source by source, rather than replaced: two polls of
-        # the same reader can overlap, and the one that finishes last may have
-        # read less, so replacing would move the reader back and deliver the
-        # same events again.
+        self,
+        tenant_id: str,
+        agent_id: str,
+        reader_id: str,
+        position: Position,
+        *,
+        expected: Position | None,
+    ) -> bool:
+        """Store a long-polling reader's new position if its stored position is
+        still `expected` (None for no row), and return whether it was stored.
+
+        The row is inserted from a SELECT on `agents`, so if the agent was
+        deleted while the poll was in flight, nothing is saved and the insert
+        does not fail on the foreign key.
+        """
+        unchanged = (
+            AgentPollPosition.position
+            == literal(expected, AgentPollPosition.position.type)
+            if expected is not None
+            else literal(False)
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
-            await session.execute(
+            saved = await session.scalar(
                 insert(AgentPollPosition)
                 .from_select(
                     [
@@ -1839,10 +1935,15 @@ class EventBuffer:
                         AgentPollPosition.agent_id,
                         AgentPollPosition.reader_id,
                     ],
-                    set_={"position": _MERGED_POLL_POSITION},
+                    set_={
+                        "position": literal(position, AgentPollPosition.position.type)
+                    },
+                    where=unchanged,
                 )
+                .returning(AgentPollPosition.reader_id)
             )
             await session.commit()
+        return saved is not None
 
     async def _last_seq_in_rooms(
         self, tenant_id: str, agent_id: str, after_seq: int, rooms: set[str]
