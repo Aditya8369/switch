@@ -52,18 +52,22 @@ def _context_fields(record: logging.LogRecord) -> dict[str, str]:
 
 
 class TextFormatter(logging.Formatter):
-    """Human-readable single line, with the context in brackets."""
+    """Human-readable single line, with the process id and the context in
+    brackets."""
 
-    def __init__(self) -> None:
+    def __init__(self, process_id: str) -> None:
         super().__init__(
             fmt="%(asctime)s %(levelname)-5.5s [%(name)s]%(switch_context)s %(message)s",
             datefmt="%Y-%m-%dT%H:%M:%S",
         )
+        self._process_id = process_id
 
     def format(self, record: logging.LogRecord) -> str:
-        fields = _context_fields(record)
+        # Which switch-core process wrote the line comes first, under the same
+        # name as in the JSON format (`process_identity.py`).
+        fields = {"process_id": self._process_id, **_context_fields(record)}
         rendered = " ".join(f"{name}={value}" for name, value in fields.items())
-        record.switch_context = f" [{rendered}]" if rendered else ""
+        record.switch_context = f" [{rendered}]"
         return super().format(record)
 
 
@@ -153,7 +157,7 @@ def build_handler(
             )
         )
     else:
-        handler.setFormatter(TextFormatter())
+        handler.setFormatter(TextFormatter(process_id))
     handler.addFilter(AccessQueryRedaction())
     handler.addFilter(LogContextFilter(config.tenant_id))
     return handler
