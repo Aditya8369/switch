@@ -30,7 +30,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { cn } from '@renderer/utils/utils';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentChats, openAgentChat } from './agent-chats';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
 import { agentTabStore } from './agent-tab-store';
@@ -273,7 +273,16 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
     );
   if (!tabbed) return <ManagedAgentPage key={agent.agentId} agent={agent} serviceGrants />;
   if (tab === 'chats') return <AgentChats key={agent.agentId} agent={agent} />;
-  if (tab === 'connections') return <AgentConnectionsTab key={agent.agentId} agent={agent} />;
+  if (tab === 'connections')
+    return (
+      <AgentConnectionsTab
+        key={agent.agentId}
+        workspaceId={agent.workspaceId}
+        agentId={agent.agentId}
+        agentName={managedAgentLabel(agent)}
+        cloud={agent.machine !== null && isCloudMachine(agent.machine)}
+      />
+    );
   return <ManagedAgentPage key={agent.agentId} agent={agent} serviceGrants={false} />;
 });
 

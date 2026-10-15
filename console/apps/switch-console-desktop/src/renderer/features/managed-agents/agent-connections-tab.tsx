@@ -20,7 +20,6 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
-import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { OWNER_ONLY_POLICY } from '@shared/core/switch-servers/service-grants';
 import {
   type AgentConnectionCard,
@@ -30,7 +29,6 @@ import {
   showsOwnerOnlyWarning,
   unconnectedNote,
 } from './agent-connections';
-import { managedAgentLabel } from './managed-agent-state';
 
 type Access = 'read' | 'write';
 
@@ -50,14 +48,24 @@ export function useAgentServiceGrants(shown: boolean, workspaceId: string | null
 }
 
 /**
- * A managed agent's Connections tab: one card per service its owner has
- * connected, and a drawer to grant or change one. The drawer sits over the
- * page rather than replacing it: picking a service is a look, not a move.
+ * An agent's Connections tab, on a managed or a local agent's page: one card
+ * per service its owner has connected, and a drawer to grant or change one.
+ * The drawer sits over the page rather than replacing it: picking a service
+ * is a look, not a move. `cloud` is for a cloud agent, whose sessions have no
+ * GitHub sign-in of their own and run on no machine of the owner's.
  */
-export function AgentConnectionsTab({ agent }: { agent: ManagedAgentView }) {
-  const { workspaceId, agentId } = agent;
-  const label = managedAgentLabel(agent);
-  const cloud = agent.machine !== null && isCloudMachine(agent.machine);
+export function AgentConnectionsTab({
+  workspaceId,
+  agentId,
+  agentName: label,
+  cloud,
+}: {
+  workspaceId: string;
+  /** The agent's id in Switch. */
+  agentId: string;
+  agentName: string;
+  cloud: boolean;
+}) {
   const queryClient = useQueryClient();
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
