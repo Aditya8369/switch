@@ -25,11 +25,13 @@ import {
   type StatusReport,
   statusReportSchema,
   type ToolStatus,
+  type UpdatedBy,
 } from './schemas';
 import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from './sealed-logins';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { SelfUpdater } from './self-update';
 import {
+  noSessionMidTurn,
   type ProviderLocator,
   ProviderStatuses,
   StatusCollector,
@@ -70,6 +72,13 @@ export const DEFAULT_TIMING: ControllerTiming = {
   eventBufferLimit: 5_000,
 };
 
+/**
+ * How long an agent host restarted onto this controller's shared-host bundle
+ * is left before it is restarted again, when the restart failed or it still
+ * runs another bundle.
+ */
+export const OUTDATED_RESTART_RETRY_MS = 10 * 60 * 1000;
+
 export type ControllerDeps = {
   store: ControllerStore;
   secrets: SecretStore;
@@ -90,10 +99,11 @@ export type ControllerDeps = {
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
   version: string;
+  /** Who moves it onto another release, as its status reports to Switch. */
+  updatedBy: UpdatedBy;
   /**
-   * Follows the release Switch names for this controller; null where the
-   * controller is updated some other way (Switch Console's own, which
-   * updates with Console).
+   * Follows the release Switch names for this controller; null where Switch
+   * Console updates it instead.
    */
   selfUpdate: SelfUpdater | null;
   now: () => number;
@@ -404,6 +414,7 @@ export async function runController(
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
     version: deps.version,
+    updatedBy: deps.updatedBy,
     now: deps.now,
   });
   const reconcileDeps: ReconcileDeps = {
@@ -499,7 +510,16 @@ export async function runController(
     });
   };
 
-  const idle = async () => (await collector.collect(assignment)).machine.sessions_running === 0;
+  const idle = async () =>
+    noSessionMidTurn(
+      await Promise.all((assignment?.agents ?? []).map((entry) => runtime.observe(entry.agent_id)))
+    );
+  /** What the last status response named; looked at again while an update waits for idle. */
+  let offeredRelease: unknown = null;
+  const offerRelease = () => {
+    if (deps.selfUpdate && !stop.signal.aborted)
+      void deps.selfUpdate.offer(offeredRelease, { idle, restart, signal: stop.signal });
+  };
   reporter = new StatusReporter({
     collect: async () => {
       const collected = await collector.collect(assignment);
@@ -511,12 +531,8 @@ export async function runController(
       reportWithinS = answer.report_within_s;
       if (assignment === null || answer.assignment_revision > assignment.revision)
         void sync('status says the assignment moved on');
-      if (deps.selfUpdate && !stop.signal.aborted)
-        void deps.selfUpdate.offer(answer.controller_release, {
-          idle,
-          restart,
-          signal: stop.signal,
-        });
+      offeredRelease = answer.controller_release;
+      offerRelease();
     },
     seq: () => store.nextStatusSeq(deps.now()),
     minGapMs: timing.statusMinGapMs,
@@ -540,6 +556,61 @@ export async function runController(
         await reconcile(assignment, reconcileDeps);
       } catch (error) {
         failed('Reconciling the held assignment', error);
+      }
+    });
+  };
+
+  /** When each outdated agent host was last restarted onto this controller's bundle. */
+  const outdatedRestarts = new Map<string, number>();
+  let outdatedQueued = false;
+  /**
+   * Restarts each agent host that outlived this controller on another
+   * shared-host bundle (`AgentObservation.outdated`) onto this controller's,
+   * once none of its sessions is mid-turn: idle sessions restart with it and
+   * resume their conversations. An agent host already restarted for it is
+   * left for `OUTDATED_RESTART_RETRY_MS` before another try.
+   */
+  const restartOutdated = (): Promise<void> => {
+    if (outdatedQueued) return Promise.resolve();
+    outdatedQueued = true;
+    return queue.run(async () => {
+      outdatedQueued = false;
+      if (!assignment || stop.signal.aborted) return;
+      try {
+        for (const entry of assignment.agents) {
+          if (entry.desired_state !== 'running' || definitionProblem(entry)) continue;
+          const agentId = entry.agent_id;
+          const observation = await runtime.observe(agentId);
+          if (!observation.alive || !observation.outdated) continue;
+          const last = outdatedRestarts.get(agentId);
+          if (last !== undefined && deps.now() - last < OUTDATED_RESTART_RETRY_MS) continue;
+          if (!noSessionMidTurn([observation])) continue;
+          if (last !== undefined)
+            log.error(
+              'An agent host restarted onto this controller’s shared-host bundle is still on another (the restart failed, or it came back on another bundle); restarting it again',
+              { agentId, restartedAt: new Date(last).toISOString() }
+            );
+          outdatedRestarts.set(agentId, deps.now());
+          log.warn(
+            'Restarting an agent host that outlived this controller on another shared-host bundle, now that none of its sessions is mid-turn',
+            { agentId, version: deps.version }
+          );
+          await startAgent(
+            {
+              kind: 'start',
+              agentId,
+              entry,
+              restart: true,
+              replaceIdentity: false,
+              clearTakenOver: false,
+              relaunch: true,
+              why: 'agent host on another shared-host bundle',
+            },
+            reconcileDeps
+          );
+        }
+      } catch (error) {
+        failed('Restarting outdated agent hosts', error);
       }
     });
   };
@@ -608,6 +679,10 @@ export async function runController(
       return;
     }
     void reporter?.requestIfChanged();
+    // A turn ending changes nothing reported, so it would otherwise wait for
+    // the next periodic report to let the update through.
+    if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
+    void restartOutdated();
   }, timing.statusPollMs);
 
   let ending: ControllerExit = 'stopped';

@@ -37,9 +37,6 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.event_buffer import (
-    numbering_base as read_numbering_base,
-)
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
@@ -56,6 +53,7 @@ from switch_core.db.models import (
     ApprovalRequest,
     Message,
     User,
+    agent_event_boot_sequence,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.tenant_store import TenantStore
@@ -453,13 +451,15 @@ async def _serve(
     # and left from different asyncio contexts, where resetting the token
     # raises instead of unbinding.
     bind_tenant_id(TENANT_ZERO_ID)
-    # Numbered from the same base as `main` numbers it. The events are rows,
-    # and each agent's numbering is kept with them, so both outlive a restart.
+    # Numbered from this boot's base as `main` numbers it, so a Core that
+    # replaces another starts above every number the last one handed out and
+    # a host's cursor from before the restart reads as older, as it would in
+    # production. The events themselves are rows and outlive the restart.
     async with session_env.engine.begin() as connection:
-        numbering_base = await read_numbering_base(connection)
+        event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
     event_buffer = EventBuffer(
         session_factory,
-        sequence_base=numbering_base,
+        sequence_base=event_boot << 32,
         retention_seconds=config.agent_event_retention_seconds,
     )
     agent_event_listener = AgentEventListener(
