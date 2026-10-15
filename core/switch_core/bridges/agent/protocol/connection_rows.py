@@ -363,7 +363,8 @@ class SharedConnections:
     async def reload_all(self) -> None:
         """Read every tenant's rows again, and take any session commands
         waiting for a stream held here. Run when the signal connection comes
-        back and on the bus's periodic re-check."""
+        back and on the bus's periodic re-check, so a tenant that cannot be
+        read is logged and left to the next run, and the others are read."""
         with no_tenant():
             for tenant_id in await all_tenant_ids(self._session_factory):
                 try:
@@ -473,8 +474,15 @@ class SharedConnections:
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Read every other process's connections before this one serves."""
-        await self.reload_all()
+        """Read every other process's connections before this one serves.
+
+        A tenant that cannot be read fails the start, as reading the
+        controllers' connections does (`Management.load_connections`), rather
+        than being logged as a re-read is: this process would otherwise serve
+        and answer for that tenant's agents connected elsewhere as offline."""
+        with no_tenant():
+            for tenant_id in await all_tenant_ids(self._session_factory):
+                await self._reload_tenant(tenant_id)
 
     async def run(self) -> None:
         """Write closings and relays, forward beats and watch the leases, until

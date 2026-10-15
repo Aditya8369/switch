@@ -61,6 +61,7 @@ from switch_core.db.models import (
     AgentRoomRead,
     AgentSessionPlacement,
     SwitchCoreProcess,
+    Tenant,
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -951,3 +952,61 @@ class TestUnreadCountsFollowOnlyRecordedMoves:
         assert first.rooms == {ROOM}
         assert second.rooms == set()
         assert await _occupant(session_factory, ROOM) == (CONN, False)
+
+
+class TestStartingUp:
+    async def test_a_tenant_that_cannot_be_read_fails_the_start_not_a_reread(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        postgres_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A process that served before reading every tenant would answer for
+        the agents connected elsewhere in the one it missed as offline. Once
+        serving, a tenant that cannot be read again is logged and the others
+        are still read."""
+        a, _ = processes
+        await _open(a)
+        async with session_factory() as session:
+            session.add(Tenant(id="unreadable", slug="unreadable", name="Unreadable"))
+            await session.commit()
+        read_tenant = AgentConnectionStore.read_tenant
+
+        async def failing(
+            store: AgentConnectionStore,
+            session: AsyncSession,
+            tenant_id: str,
+            **kwargs: Any,
+        ) -> Any:
+            if tenant_id == "unreadable":
+                raise RuntimeError("the tenant's rows could not be read")
+            return await read_tenant(store, session, tenant_id, **kwargs)
+
+        monkeypatch.setattr(AgentConnectionStore, "read_tenant", failing)
+        process_id = new_process_id("test-pod")
+        registry = AgentConnectionRegistry()
+        starting = SharedConnections(
+            registry=registry,
+            session_factory=session_factory,
+            store=AgentConnectionStore(),
+            bus=SignalBus(
+                session_factory,
+                lambda: create_async_engine(postgres_url, poolclass=NullPool),
+                process_id=process_id,
+            ),
+            lease=ProcessLease(
+                process_id=process_id,
+                session_factory=session_factory,
+                processes=SwitchCoreProcessStore(),
+                key_ids=[key.id for key in TEST_KEYRING.keys],
+            ),
+        )
+
+        with pytest.raises(RuntimeError):
+            await starting.start()
+        await starting.reload_all()
+
+        assert registry.is_live(AGENT)
+        assert "unreadable" in caplog.text
