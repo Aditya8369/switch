@@ -70,6 +70,7 @@ class _Process:
     bus: SignalBus
     bodies: list[str] = field(default_factory=list)
     invited_at: list[int] = field(default_factory=list)
+    removed_from: list[str] = field(default_factory=list)
 
 
 async def _eventually(check: Callable[[], bool]) -> None:
@@ -204,6 +205,9 @@ def _process(
         process.invited_at.append(event.timestamp)
         await transport.join_room(room.room_id)
 
+    async def _on_removed(room: Any, _event: Any) -> None:
+        process.removed_from.append(room.room_id)
+
     async def _ignore(*_args: Any) -> None:
         return None
 
@@ -214,7 +218,7 @@ def _process(
             on_member_event=_ignore,
             on_custom_event=_ignore,
             on_invite=_on_invite,
-            on_removed=_ignore,
+            on_removed=_on_removed,
         )
     )
     return process
@@ -452,6 +456,55 @@ class TestAcrossProcesses:
         assert not await _is_member(session_factory, client_id, second_id)
         assert await _arrivals(session_factory, second_id, user_id) == 1
         assert second_id not in there.transport._watching
+
+    async def test_a_member_put_back_before_the_other_process_re_reads_is_not_handed_what_was_said_while_out(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        room_and_client: tuple[str, str, str, str, str],
+        two_processes: tuple[_Process, _Process],
+    ) -> None:
+        """Removed and added back, both committed before the other process
+        re-reads, so its re-read finds a row for the room either way. The row
+        is a new membership: that process is told the client was removed, and
+        reads the room again as a new member rather than from where it had
+        got to, which would hand it what was said while the client was out."""
+        room_id, transport_room_id, client_id, _, speaker_id = room_and_client
+        _, there = two_processes
+        speaker = _speaker(session_factory, speaker_id)
+
+        # The other process re-reads under this lock, so holding it keeps
+        # both changes' signals waiting until both have committed.
+        async with there.transport._reading_rooms:
+            async with session_factory() as session:
+                await session.execute(
+                    delete(ClientRoom).where(
+                        ClientRoom.client_id == client_id,
+                        ClientRoom.room_id == room_id,
+                    )
+                )
+                await session.commit()
+            await _say(
+                session_factory,
+                speaker,
+                transport_room_id,
+                "said while out",
+                room_id=room_id,
+            )
+            async with session_factory() as session:
+                await RoomStore().add_client(session, client_id, room_id)
+                await session.commit()
+        await there.membership.reconcile_all()
+        await _say(
+            session_factory,
+            speaker,
+            transport_room_id,
+            "said after being put back",
+            there,
+            room_id=room_id,
+        )
+
+        assert there.removed_from == [transport_room_id]
+        assert there.bodies == ["said after being put back"]
 
 
 class TestRecheck:
