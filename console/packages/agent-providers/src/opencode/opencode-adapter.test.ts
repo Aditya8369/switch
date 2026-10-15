@@ -34,6 +34,7 @@ function startInput(overrides: Partial<ProviderSessionStartInput> = {}): Provide
     runtimeMode: 'full-access',
     env: { PATH: '/usr/bin', HOME: '/home/switch' },
     mcpServers: {},
+    connectorMcpServers: [],
     model: { id: 'opencode/big-pickle' },
     ...overrides,
   };
@@ -773,4 +774,64 @@ it('sends the native model variant and clears it when returning to defaults', as
     session.calls.filter((call) => call.method === 'prompt').at(-1)?.args[0]
   ).not.toHaveProperty('variant');
   await adapter.stopAll();
+});
+
+describe('OpencodeAdapter connector tools', () => {
+  const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.mjs'] };
+  const servers = { switch: stdio, atlassian: stdio, gws: stdio, other: stdio };
+  const action = (rules: { permission: string; action: string }[], permission: string) =>
+    rules.find((rule) => rule.permission === permission)?.action;
+
+  it.each(['approval-required', 'auto-accept-edits'] as const)(
+    "in %s a connector gets no allow rule and asks under '*', while Switch's own never asks",
+    async (mode) => {
+      const { session } = await setup(mode, {
+        mcpServers: servers,
+        connectorMcpServers: ['atlassian', 'gws'],
+      });
+      const { permission, config } = session.opened;
+      expect(action(permission, '*')).toBe('ask');
+      expect(action(permission, 'switch_*')).toBe('allow');
+      expect(action(permission, 'other_*')).toBe('allow');
+      expect(action(permission, 'atlassian_*')).toBeUndefined();
+      expect(action(permission, 'gws_*')).toBeUndefined();
+      expect(config.permission['switch_*']).toBe('allow');
+      expect(config.permission['atlassian_*']).toBeUndefined();
+      expect(config.permission['*']).toBe('ask');
+      expect(Object.keys(config.mcp).sort()).toEqual(['atlassian', 'gws', 'other', 'switch']);
+    }
+  );
+
+  it('allows everything in full access', async () => {
+    const { session } = await setup('full-access', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    expect(session.opened.permission.every((rule) => rule.action === 'allow')).toBe(true);
+  });
+
+  it("still types a connector's tools as MCP tool approvals", () => {
+    expect(toRequestType('atlassian_search', ['switch', 'atlassian'])).toBe('mcp_tool_approval');
+  });
+
+  it('names the connector on the card it opens', async () => {
+    const { adapter, session, recorder } = await setup('approval-required', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'search' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(
+      opencodeEvent('permission.asked', {
+        id: 'per_1',
+        sessionID: NATIVE,
+        permission: 'atlassian_search',
+        patterns: ['*'],
+        metadata: {},
+        always: ['*'],
+      })
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened).toMatchObject({ requestType: 'mcp_tool_approval', connector: 'atlassian' });
+  });
 });

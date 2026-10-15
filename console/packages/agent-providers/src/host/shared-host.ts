@@ -26,7 +26,11 @@ import {
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
 import { githubRepositoryVisible } from './service-github';
-import { serviceFallbackNotice, ServiceNotices } from './service-notices';
+import {
+  CONNECTOR_APPROVAL_NOTICE,
+  serviceFallbackNotice,
+  ServiceNotices,
+} from './service-notices';
 import {
   connectParent,
   type BusyReason,
@@ -383,6 +387,7 @@ export async function runSharedHost(
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
+        connectorApproval: () => options.serviceNotices.raise(CONNECTOR_APPROVAL_NOTICE),
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>

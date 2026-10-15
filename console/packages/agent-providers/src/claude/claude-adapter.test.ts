@@ -16,6 +16,7 @@ function startInput(overrides: Partial<ProviderSessionStartInput> = {}): Provide
     runtimeMode: 'approval-required',
     env: { PATH: '/usr/bin', HOME: '/home/agent' },
     mcpServers: {},
+    connectorMcpServers: [],
     ...overrides,
   };
 }
@@ -212,6 +213,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     await adapter.startSession(
       startInput({
         mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['server.mjs'] } },
+        connectorMcpServers: [],
       })
     );
     expect(sdk.options().settings).toEqual({
@@ -1224,5 +1226,106 @@ describe('ClaudeAdapter background subagents', () => {
     );
     await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(true));
     await adapter.stopAll();
+  });
+});
+
+describe('ClaudeAdapter connector tools', () => {
+  const MODES: RuntimeMode[] = ['approval-required', 'auto-accept-edits', 'full-access'];
+  const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.mjs'] };
+  const toolOptions = (toolUseID: string, extra: Record<string, unknown> = {}) => ({
+    signal: new AbortController().signal,
+    toolUseID,
+    requestId: `control-${toolUseID}`,
+    ...extra,
+  });
+
+  async function startWithConnectors(runtimeMode: RuntimeMode) {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const recorder = new EventRecorder(adapter);
+    await adapter.startSession(
+      startInput({
+        runtimeMode,
+        mcpServers: {
+          switch: stdio,
+          atlassian: { transport: 'http', url: 'http://127.0.0.1:4100/mcp' },
+          // A vendor CLI the host serves to the CLI as an MCP server.
+          'google-workspace': stdio,
+          other: stdio,
+        },
+        connectorMcpServers: ['atlassian', 'google-workspace'],
+      })
+    );
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    return { sdk, adapter, recorder };
+  }
+
+  it.each(MODES)("never asks about Switch's own room tools, in %s", async (mode) => {
+    const { sdk, recorder } = await startWithConnectors(mode);
+    const allowed = await sdk.canUseTool()('mcp__switch__post_message', {}, toolOptions('t1'));
+    expect(allowed).toEqual({ behavior: 'allow' });
+    expect(recorder.ofType('request.opened')).toEqual([]);
+  });
+
+  it.each(MODES)('allows a server that is not a connector without asking, in %s', async (mode) => {
+    const { sdk, recorder } = await startWithConnectors(mode);
+    const allowed = await sdk.canUseTool()('mcp__other__run', {}, toolOptions('t1'));
+    expect(allowed).toEqual({ behavior: 'allow' });
+    expect(recorder.ofType('request.opened')).toEqual([]);
+  });
+
+  it.each(
+    MODES.flatMap((mode) =>
+      ['atlassian', 'google-workspace'].map((server) => [mode, server] as const)
+    )
+  )('in %s a %s tool asks, except in full access', async (mode, server) => {
+    const { sdk, adapter, recorder } = await startWithConnectors(mode);
+    const decision = sdk.canUseTool()(
+      `mcp__${server.replace(/[^A-Za-z0-9_-]/g, '_')}__search`,
+      { query: 'open issues' },
+      toolOptions('t1')
+    );
+    if (mode === 'full-access') {
+      expect(await decision).toEqual({ behavior: 'allow' });
+      expect(recorder.ofType('request.opened')).toEqual([]);
+      return;
+    }
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.requestType).toBe('mcp_tool_approval');
+    expect(opened.connector).toBe(server);
+    await adapter.respondToRequest(SESSION, opened.requestId, 'accept');
+    expect(await decision).toEqual({ behavior: 'allow' });
+  });
+
+  it('denies a declined connector call, telling the agent not to retry', async () => {
+    const { sdk, adapter, recorder } = await startWithConnectors('approval-required');
+    const decision = sdk.canUseTool()('mcp__atlassian__add_comment', {}, toolOptions('t1'));
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    await adapter.respondToRequest(SESSION, opened.requestId, 'decline');
+    expect(await decision).toEqual({
+      behavior: 'deny',
+      message: 'The user declined this request. Do not retry it another way.',
+    });
+  });
+
+  it('keeps "allow for this session" to the session', async () => {
+    const { sdk, adapter, recorder } = await startWithConnectors('auto-accept-edits');
+    const rule = {
+      type: 'addRules',
+      rules: [{ toolName: 'mcp__atlassian__search' }],
+      behavior: 'allow',
+      destination: 'localSettings',
+    };
+    const decision = sdk.canUseTool()(
+      'mcp__atlassian__search',
+      {},
+      toolOptions('t1', { suggestions: [rule] })
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    await adapter.respondToRequest(SESSION, opened.requestId, 'acceptForSession');
+    expect(await decision).toEqual({
+      behavior: 'allow',
+      updatedPermissions: [{ ...rule, destination: 'session' }],
+    });
   });
 });

@@ -51,6 +51,7 @@ import {
   type CodexInitializeParams,
   type CodexItemNotification,
   type CodexMcpElicitationParams,
+  type CodexMcpToolCallMeta,
   type CodexPermissionsApprovalParams,
   type CodexThreadItem,
   type CodexThreadOpenResponse,
@@ -122,6 +123,8 @@ interface CodexSessionState {
   unreportedUsage: TokenUsage[];
   /** The last model call's size against the window, cleared when a compaction makes it stale. */
   context?: { usedTokens: number; windowTokens: number | null };
+  /** Servers whose tool calls Codex asks about, rather than approving them itself. */
+  connectorMcpServers: Set<string>;
 }
 
 interface ThreadModeConfig {
@@ -212,6 +215,27 @@ function turnOutcomeOf(status: CodexTurnNotification['turn']['status']): TurnOut
     default:
       return 'error';
   }
+}
+
+/**
+ * The card for Codex asking to run an MCP tool: the server and tool in the
+ * title, the arguments as the detail. Codex names the tool only in its
+ * message, so a message worded otherwise leaves the tool out of the title.
+ */
+function mcpToolCallContent(
+  serverName: string,
+  message: string,
+  meta: CodexMcpToolCallMeta
+): { title: string; detail?: string } {
+  const tool = /run tool "([^"]+)"/.exec(message)?.[1];
+  const title = tool ? `${serverName} wants to run ${tool}` : `${serverName} wants to run a tool`;
+  const detail = (meta.tool_params_display ?? [])
+    .map(({ name, display_name, value }) => {
+      const shown = typeof value === 'string' ? value : JSON.stringify(value);
+      return `${display_name ?? name}: ${shown}`;
+    })
+    .join('\n');
+  return detail ? { title, detail } : { title };
 }
 
 function approvalOptions(decisions: ApprovalDecision[]): ApprovalOption[] {
@@ -305,7 +329,7 @@ export class CodexAdapter implements ProviderAdapter {
       throw new ProviderSessionError(PROVIDER, input.sessionId, 'session already started');
     }
     const mode = threadModeConfig(input.runtimeMode, input.cwd);
-    const mcp = mcpServerConfigArgs(input.mcpServers);
+    const mcp = mcpServerConfigArgs(input.mcpServers, input.connectorMcpServers, input.runtimeMode);
     const args = ['app-server', ...featureArgs(this.features), ...mode.configArgs, ...mcp.args];
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
@@ -332,6 +356,7 @@ export class CodexAdapter implements ProviderAdapter {
       exited: false,
       usage: new CumulativeUsage(),
       unreportedUsage: [],
+      connectorMcpServers: new Set(input.connectorMcpServers),
     };
     this.sessions.set(input.sessionId, state);
     this.registerHandlers(state);
@@ -844,16 +869,29 @@ export class CodexAdapter implements ProviderAdapter {
 
     client.onServerRequest(CODEX_SERVER_REQUESTS.mcpElicitation, (params) => {
       const payload = params as CodexMcpElicitationParams;
+      const toolCall =
+        payload._meta?.codex_approval_kind === 'mcp_tool_call' ? payload._meta : null;
+      // Codex keeps an approval for the thread only when the answer says so
+      // in `_meta`; the same `persist` inside `content` does nothing.
+      const forSession = toolCall?.persist?.includes('session') ?? false;
       return this.openApproval(state, {
         turnId: payload.turnId ?? state.activeNativeTurnId ?? '',
         requestType: 'mcp_tool_approval',
-        title: `${payload.serverName} needs a decision`,
-        detail: payload.message,
-        options: approvalOptions(['accept', 'decline', 'cancel']),
+        ...(toolCall
+          ? mcpToolCallContent(payload.serverName, payload.message, toolCall)
+          : { title: `${payload.serverName} needs a decision`, detail: payload.message }),
+        options: approvalOptions(
+          forSession
+            ? ['accept', 'acceptForSession', 'decline', 'cancel']
+            : ['accept', 'decline', 'cancel']
+        ),
+        ...(state.connectorMcpServers.has(payload.serverName)
+          ? { connector: payload.serverName }
+          : {}),
         respond: (decision) => ({
           action: decision === 'decline' ? 'decline' : decision === 'cancel' ? 'cancel' : 'accept',
           content: decision === 'accept' || decision === 'acceptForSession' ? {} : null,
-          _meta: null,
+          _meta: decision === 'acceptForSession' ? { persist: 'session' } : null,
         }),
       });
     });
@@ -891,6 +929,7 @@ export class CodexAdapter implements ProviderAdapter {
       title: string;
       detail?: string;
       options: ApprovalOption[];
+      connector?: string;
       respond: (decision: ApprovalDecision) => unknown;
     }
   ): Promise<unknown> {
@@ -906,6 +945,7 @@ export class CodexAdapter implements ProviderAdapter {
         title: spec.title,
         ...(spec.detail ? { detail: spec.detail } : {}),
         options: spec.options,
+        ...(spec.connector ? { connector: spec.connector } : {}),
       });
     });
   }

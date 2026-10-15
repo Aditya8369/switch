@@ -57,3 +57,10 @@ export function serviceFallbackNotice(service: string, reason: string, fallback:
     ? `${why}, so ${service === 'github' ? 'git and gh use' : 'it uses'} this machine's own ${name} sign-in instead, if it has one.`
     : `${why}.`;
 }
+
+/**
+ * Shown the first time a session asks to run a connector's tool. Connector
+ * tools used to be allowed in every mode; they now follow the agent's mode.
+ */
+export const CONNECTOR_APPROVAL_NOTICE =
+  'Connector tools now ask in this mode. Switch the agent to full access to allow them.';

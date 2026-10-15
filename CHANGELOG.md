@@ -1740,6 +1740,15 @@ version of their own to them without also giving them a release of their own.
 - **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
   `telemetry.flintai.dev`, an older name for the same relay that is being
   retired. Only where it is sent changes; what is sent, and the opt-out, do not.
+- **Connector tools ask in approval-required and auto-accept-edits mode.**
+  Calls to a granted service's tools (Jira and Confluence through Atlassian,
+  Datadog, Google Workspace) used to run without asking in every mode. They now
+  follow the agent's mode, as its other tools do: an approval card asks first,
+  and declining tells the agent the call was refused. Full access still allows
+  them, and Switch's own room tools never ask. The first such card in a session
+  comes with a notice saying why. Codex cards name the server and tool and can
+  be approved for the rest of the session. A session started before the update
+  keeps allowing them until it restarts.
 
 #### Fixed
 - **Signing in to a service through Core works on a server whose gateway and

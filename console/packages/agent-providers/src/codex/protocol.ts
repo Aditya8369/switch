@@ -286,9 +286,25 @@ export interface CodexToolRequestUserInputParams {
   }>;
 }
 
+/**
+ * What Codex adds to an elicitation it raises to approve an MCP tool call
+ * (codex-cli 0.162.1). It names no tool: the tool is only in `message`
+ * ("Allow the <server> MCP server to run tool \"<tool>\"?").
+ */
+export interface CodexMcpToolCallMeta {
+  codex_approval_kind?: string;
+  /** The scopes an accept may keep the approval for: `session`, `always`. */
+  persist?: string[];
+  tool_description?: string;
+  tool_params?: Record<string, unknown>;
+  tool_params_display?: Array<{ name: string; value: unknown; display_name?: string }>;
+}
+
 export interface CodexMcpElicitationParams {
   threadId: string;
   turnId: string | null;
   serverName: string;
   message: string;
+  /** Present on a tool-call approval; a server's own elicitation carries none. */
+  _meta?: CodexMcpToolCallMeta | null;
 }

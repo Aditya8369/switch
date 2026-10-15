@@ -94,6 +94,7 @@ function setup(provider: Session['provider']) {
       runtimeMode: 'approval-required' as const,
       env: {},
       mcpServers: {},
+      connectorMcpServers: [],
     },
   };
   return { adapter, config, emit };
@@ -1611,4 +1612,38 @@ it('keeps tool input and output off the event stream, the journal and the snapsh
       tools: [expect.objectContaining({ input, output: 'PRIVATE OUTPUT', toolName: 'Read' })],
     },
   ]);
+});
+
+it("tells its owner when the provider asks to run a connector's tool, and only then", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  const asked: string[] = [];
+  const host = await HostedSession.start(
+    root,
+    { ...fixture.config, connectorApproval: (connector) => asked.push(connector) },
+    fixture.adapter
+  );
+  hosts.push(host);
+  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.command(message('turn'));
+  fixture.emit({
+    type: 'request.opened',
+    turnId: 'turn',
+    requestId: 'bash',
+    requestType: 'command_execution_approval',
+    title: 'ls',
+    options: [{ decision: 'accept', label: 'Allow once' }],
+  });
+  fixture.emit({
+    type: 'request.opened',
+    turnId: 'turn',
+    requestId: 'search',
+    requestType: 'mcp_tool_approval',
+    title: 'atlassian wants to run search',
+    options: [{ decision: 'accept', label: 'Allow once' }],
+    connector: 'atlassian',
+  });
+  await waitFor(() => expect(host.snapshot().requests).toHaveLength(2));
+  expect(asked).toEqual(['atlassian']);
 });
