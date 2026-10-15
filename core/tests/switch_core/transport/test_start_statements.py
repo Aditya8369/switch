@@ -91,7 +91,8 @@ async def test_a_room_left_before_its_membership_is_read_is_not_watched(
     real = transport._room_store.member_room_ids
 
     async def _left_one(session, client, ids):  # type: ignore[no-untyped-def]
-        return (await real(session, client, ids)) - {gone}
+        members = await real(session, client, ids)
+        return {room: joined for room, joined in members.items() if room != gone}
 
     transport._room_store.member_room_ids = _left_one  # type: ignore[method-assign]
     task = asyncio.create_task(transport.receive_forever())
@@ -114,7 +115,7 @@ async def test_a_failed_batch_read_releases_every_claim(
     client_id, user_id, _ = await _client_in_rooms(session_factory, 3)
     transport = _transport(session_factory, client_id=client_id, user_id=user_id)
 
-    async def _fail(*_args: object) -> set[str]:
+    async def _fail(*_args: object) -> dict[str, object]:
         raise OSError("connection lost")
 
     transport._room_store.member_room_ids = _fail  # type: ignore[method-assign]
