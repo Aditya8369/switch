@@ -43,7 +43,7 @@ from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
-    UnknownControllerConnectionError,
+    ControllerRevokedError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import (
     IDLE,
@@ -364,15 +364,29 @@ async def open_connection(
     so its socket can attach through any process.
     """
     presence = protocol.connections.controllers
+    resume_cursors = body.resume_cursors()
+    if presence.is_revoked(principal.controller_id):
+        raise _connection_refusal(ControllerRevokedError(principal.controller_id))
+    # Recorded before it is held: a read of the row in between would find the
+    # connection this one replaces still named there, and close this one.
+    identity = presence.new_connection()
+    connection_id, generation = identity
+    await management.record_opened(
+        session,
+        principal,
+        connection_id=connection_id,
+        generation=generation,
+        resume_cursors=resume_cursors,
+    )
     try:
         conn = presence.open(
             controller_id=principal.controller_id,
             tenant_id=principal.tenant_id,
-            resume_cursors=body.resume_cursors(),
+            resume_cursors=resume_cursors,
+            identity=identity,
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
-    await management.record_opened(session, principal, conn)
     logger.info(
         "Controller %s opened connection %s (client=%s version=%s)",
         principal.controller_id,
@@ -408,20 +422,12 @@ async def attach_stream(
     nudges = management.notifier.subscribe(principal.controller_id)
     try:
         async with tenant_session(session_factory, principal.tenant_id) as session:
-            try:
-                conn = presence.require(
-                    principal.controller_id, connection_id, generation
-                )
-            except UnknownControllerConnectionError:
-                # Opened through another process, or held there before the
-                # socket dropped: held here instead, if it is still the one
-                # the controller opened last.
-                adopted = await management.adopt_connection(
-                    session, principal, connection_id, generation
-                )
-                if adopted is None:
-                    raise
-                conn = adopted
+            # Wherever it was opened or last held: decided on the
+            # controller's row, which says whether it is still the one the
+            # controller opened last.
+            conn = await management.hold_connection(
+                session, principal, connection_id, generation
+            )
             state = await management.connection_state(session, principal)
     except ControllerConnectionError as exc:
         nudges.close()

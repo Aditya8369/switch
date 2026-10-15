@@ -43,6 +43,9 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     DISCONNECT_REVOKED,
     ControllerConnection,
     ControllerPresence,
+    ControllerRevokedError,
+    ControllerTakenOverError,
+    UnknownControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
@@ -493,52 +496,91 @@ class ManagementService:
         self,
         session: AsyncSession,
         principal: ControllerPrincipal,
-        conn: ControllerConnection,
+        *,
+        connection_id: str,
+        generation: int,
+        resume_cursors: dict[str, int | None],
     ) -> None:
-        """Record the connection the controller just opened and tell every
+        """Record the connection the controller is opening and tell every
         other process: its socket may attach through any of them, and a
         connection another process holds for this controller has been taken
-        over."""
+        over.
+
+        Committed before the connection is held here, so a read of the row
+        that lands in between finds the new connection named there, or finds
+        the earlier one while this process still holds only that one."""
         await self.controllers.record_opened(
             session,
             principal.tenant_id,
             principal.controller_id,
-            connection_id=conn.id,
-            generation=conn.generation,
+            connection_id=connection_id,
+            generation=generation,
             process_id=self.signals.process_id,
-            resume_cursors=conn.resume_cursors,
+            resume_cursors=resume_cursors,
         )
         await session.commit()
         self.signals.connection_changed(principal.tenant_id, principal.controller_id)
 
-    async def adopt_connection(
+    async def hold_connection(
         self,
         session: AsyncSession,
         principal: ControllerPrincipal,
         connection_id: str,
         generation: int,
-    ) -> ControllerConnection | None:
-        """Hold here the connection the controller opened through another
-        process, when it is the one it last opened and nothing has ended it.
-        None when it is not, and the controller must open another."""
+    ) -> ControllerConnection:
+        """The connection a socket attaching names, held here, or the refusal.
+
+        Decided on the controller's row rather than on this process's memory,
+        which may be a moment behind what another process has done: only a
+        connection older than the one the row names is refused as taken
+        over. The row names the connection the controller opened last and the
+        process holding it:
+
+        - this connection, held by this process: the copy here is the one
+          that counts, and none here means it ended here (its heartbeat
+          lapsed, say), which is final, as it always was;
+        - another connection: the controller has opened a newer one, so a
+          copy of this one still here is closed `taken_over`, and the attach
+          refused as this process answers for it;
+        - this connection, held by another process: it is taken up here,
+          replacing any copy this process kept from holding it before.
+        """
+        presence = self.presence
+        controller_id = principal.controller_id
         controller = await self.controllers.get(
-            session, principal.tenant_id, principal.controller_id
+            session, principal.tenant_id, controller_id
         )
-        if controller is None or is_revoked(controller):
-            return None
-        if (
-            controller.open_connection_id != connection_id
-            or controller.open_generation != generation
-            # Recorded as held here, yet not held here: it ended here (its
-            # heartbeat lapsed, say), and ending is final, as it always was.
-            or controller.open_process_id == self.signals.process_id
-        ):
-            return None
-        if (
+        if controller is None:
+            raise UnknownControllerConnectionError(connection_id)
+        if is_revoked(controller):
+            raise ControllerRevokedError(controller_id)
+        if controller.open_connection_id != connection_id:
+            local = presence.current_connection(controller_id)
+            if local is not None and local.id == connection_id:
+                presence.supersede(controller_id)
+            return presence.require(controller_id, connection_id, generation)
+        if controller.open_process_id == self.signals.process_id:
+            return presence.require(controller_id, connection_id, generation)
+        return await self._take_up(
+            session, principal, controller, connection_id, generation
+        )
+
+    async def _take_up(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        controller: AgentController,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection:
+        """Hold here the connection the controller opened last, which another
+        process holds or held, unless something has ended it. Recorded before
+        it is held, as an open is."""
+        if controller.open_generation != generation or (
             controller.connection_id == connection_id
             and controller.disconnect_reason in _ENDING_REASONS
         ):
-            return None
+            raise UnknownControllerConnectionError(connection_id)
         resume_cursors = _resume_cursors(controller.open_cursors)
         if not await self.controllers.record_taken_up(
             session,
@@ -547,7 +589,8 @@ class ManagementService:
             connection_id=connection_id,
             process_id=self.signals.process_id,
         ):
-            return None
+            # The controller opened another connection since the row was read.
+            raise ControllerTakenOverError(connection_id)
         await session.commit()
         conn = self.presence.adopt(
             controller_id=principal.controller_id,

@@ -13,6 +13,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import update
@@ -21,7 +22,7 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.presence import agents_present_in
-from switch_core.db.models import SwitchCoreProcess
+from switch_core.db.models import TENANT_ZERO_ID, SwitchCoreProcess
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.process_lease import LEASE_TTL
@@ -29,6 +30,7 @@ from tests.switch_core.management.harness import (
     Harness,
     add_member,
     add_room,
+    attach,
     build_harness,
     connect,
     cookies_for,
@@ -370,3 +372,127 @@ class TestTheConnectionOnAnyProcess:
             )
             is None
         )
+
+
+class TestTakenOverOnlyByANewerConnection:
+    """`taken_over` is terminal for a controller: it exits and nothing
+    restarts it. So it is the answer only for a connection older than the one
+    the controller's row names, never for the current one reaching a process
+    whose memory of it is a moment old."""
+
+    async def test_a_reattach_through_the_opener_after_the_other_held_it(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        stream = await open_stream(there, controller, opened)
+        await take(stream, 1)
+        presence = here.protocol.connections.controllers
+        await _eventually(
+            lambda: presence.current_connection(controller.controller_id) is None
+        )
+        await stream.aclose()  # type: ignore[attr-defined]  # the socket drops
+        await there.management.ledger.flush_all()
+
+        answer = await attach(
+            here, controller, opened["connection_id"], opened["generation"]
+        )
+
+        assert answer.status_code == 200, answer.text
+        held = presence.current_connection(controller.controller_id)
+        assert held is not None
+        assert held.id == opened["connection_id"]
+        await _eventually(
+            lambda: (
+                there.protocol.connections.controllers.current_connection(
+                    controller.controller_id
+                )
+                is None
+            )
+        )
+
+    async def test_a_reattach_through_the_opener_before_it_heard_of_the_other(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        """The opener has not yet read that the other process took the
+        connection up when the socket comes back through it; reading that
+        later must not close the connection the socket is on."""
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        await here.bus.stop()  # `here` hears nothing from `there`
+        stream = await open_stream(there, controller, opened)
+        await take(stream, 1)
+        await stream.aclose()  # type: ignore[attr-defined]  # the socket drops
+        await there.management.ledger.flush_all()
+
+        answer = await attach(
+            here, controller, opened["connection_id"], opened["generation"]
+        )
+        assert answer.status_code == 200, answer.text
+        presence = here.protocol.connections.controllers
+        held = presence.current_connection(controller.controller_id)
+        assert held is not None
+        await here.management.service.signals._read_connection(
+            TENANT_ZERO_ID, controller.controller_id
+        )
+
+        assert held.closure is None
+        assert presence.current_connection(controller.controller_id) is held
+
+    async def test_a_read_of_the_row_during_an_open_leaves_the_new_connection(
+        self,
+        processes: tuple[Harness, Harness],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One process is enough: a re-check of the controller's row runs
+        while the open is being recorded."""
+        here, _ = processes
+        owner = await add_member(here.session_factory, "ada")
+        service = here.management.service
+        store = service.controllers
+        record_opened = store.record_opened
+
+        async def with_a_read_alongside(
+            session: AsyncSession, tenant_id: str, controller_id: str, **kwargs: Any
+        ) -> None:
+            await service.signals._read_connection(tenant_id, controller_id)
+            await record_opened(session, tenant_id, controller_id, **kwargs)
+
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            await connect(client, controller)
+            monkeypatch.setattr(store, "record_opened", with_a_read_alongside)
+            second = await open_connection(client, controller)
+
+        answer = await attach(
+            here, controller, second["connection_id"], second["generation"]
+        )
+        assert answer.status_code == 200, answer.text
+
+    async def test_a_connection_the_controller_replaced_is_still_taken_over(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            first = await open_connection(client, controller)
+        async with there.client() as elsewhere:
+            await open_connection(elsewhere, controller)
+        presence = here.protocol.connections.controllers
+        await _eventually(
+            lambda: presence.current_connection(controller.controller_id) is None
+        )
+
+        answer = await attach(
+            here, controller, first["connection_id"], first["generation"]
+        )
+
+        assert answer.status_code == 409
+        assert answer.json()["error"]["code"] == "taken_over"
