@@ -35,9 +35,6 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.event_buffer import (
-    numbering_base as read_numbering_base,
-)
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -124,6 +121,7 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     ApiKey,
     User,
+    agent_event_boot_sequence,
 )
 from switch_core.db.runtime_role import (
     RuntimeRoleError,
@@ -606,7 +604,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # session-level lock, held for the whole span, actually serialises it.
     async with boot_lock(config):
         async with engine.begin() as connection:
-            numbering_base = await read_numbering_base(connection)
+            event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
         await _seed_admin_user(session_factory, user_store, config)
         await _seed_agent_registration_bootstrap_key(
             session_factory, user_store, api_key_store, agent_store, config
@@ -615,7 +613,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(
         session_factory,
-        sequence_base=numbering_base,
+        sequence_base=event_boot << 32,
         retention_seconds=config.agent_event_retention_seconds,
     )
     # Listens for the `NOTIFY` that each insert into `agent_events` sends, and

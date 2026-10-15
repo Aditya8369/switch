@@ -10,6 +10,7 @@ import { type AgentAssignment, type SealedLoginResponse, statusReportSchema } fr
 import { SealedLogins } from './sealed-logins';
 import {
   mapAgentProcess,
+  noSessionMidTurn,
   PathProviderLocator,
   PROVIDER_TTL_MS,
   providerStatusFrom,
@@ -182,6 +183,34 @@ describe('mapAgentProcess', () => {
       'starting'
     );
     expect(map(observed({}))).toMatchObject({ process: 'crashed', reason: 'internal' });
+  });
+});
+
+describe('noSessionMidTurn', () => {
+  const reporting = (busy: string[] | undefined, current = true) =>
+    observed({ alive: true, health: { ...health('connected', null, current)!, busy } });
+
+  it('holds while an agent host reports a session mid-turn, however many sit idle', () => {
+    expect(noSessionMidTurn([reporting([])])).toBe(true);
+    expect(noSessionMidTurn([reporting([]), reporting(['session-a'])])).toBe(false);
+  });
+
+  it('holds while an agent host too old to report busy sessions has any session', () => {
+    expect(noSessionMidTurn([reporting(undefined)])).toBe(false);
+    const empty = reporting(undefined);
+    empty.health!.placements = {};
+    expect(noSessionMidTurn([empty])).toBe(true);
+  });
+
+  it('counts no session for an agent host not running or whose report is not its own', () => {
+    expect(noSessionMidTurn([reporting(['session-a'], false)])).toBe(true);
+    expect(
+      noSessionMidTurn([
+        observed({ alive: false, health: { ...health('connected')!, busy: ['x'] } }),
+      ])
+    ).toBe(true);
+    expect(noSessionMidTurn([emptyObservation(), observed({ alive: true })])).toBe(true);
+    expect(noSessionMidTurn([])).toBe(true);
   });
 });
 
@@ -575,6 +604,7 @@ describe('StatusCollector', () => {
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
       version: '0.1.0',
+      updatedBy: 'self',
       now: () => clock,
     });
     store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
@@ -583,7 +613,12 @@ describe('StatusCollector', () => {
     const assignment = { revision: 7, agents: [entry()] };
     const first = await collector.collect(assignment);
     expect(statusReportSchema.safeParse({ ...first, seq: 1 }).success).toBe(true);
-    expect(first.controller).toEqual({ version: '0.1.0', protocol: 2, assignment_revision: 7 });
+    expect(first.controller).toEqual({
+      version: '0.1.0',
+      protocol: 2,
+      assignment_revision: 7,
+      updated_by: 'self',
+    });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
     expect(first.tools).toEqual([
       { tool: 'git', state: 'ok' },
