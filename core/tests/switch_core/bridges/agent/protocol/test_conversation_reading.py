@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
