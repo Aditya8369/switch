@@ -1007,16 +1007,22 @@ class AgentCore:
         if self._agent_removal_listener is not None:
             await self._agent_removal_listener(tenant_id, resolved_id)
         await self.client_lifecycle.stop(client_id)
-        self.event_buffer.remove(resolved_id)
+        try:
+            self.event_buffer.remove(resolved_id)
 
-        await self._remove_bridge_identities(tenant_id, resolved_name)
+            await self._remove_bridge_identities(tenant_id, resolved_name)
 
-        # One transaction for the agent and its client, stopped above; see
-        # `ClientLifecycleService.delete_record`.
-        async with self.session_factory() as session:
-            await self.agent_store.delete(session, resolved_id)
-            await self.client_lifecycle.delete_record(session, client_id)
-            await session.commit()
+            # One transaction for the agent and its client, stopped above; see
+            # `ClientLifecycleService.delete_record`.
+            async with self.session_factory() as session:
+                await self.agent_store.delete(session, resolved_id)
+                await self.client_lifecycle.delete_record(session, client_id)
+                await session.commit()
+        except BaseException:
+            # A deletion that did not commit leaves the agent in place, and
+            # its client must not stay stopped here.
+            self.client_lifecycle.deletion_failed(client_id)
+            raise
         self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
 
