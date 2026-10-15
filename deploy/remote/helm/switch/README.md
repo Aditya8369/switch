@@ -158,9 +158,19 @@ example), leave `tls.enabled` false and annotate.
 
 **switch-core can run more than one replica.** `switchCore.replicaCount` sets
 how many. Shared state lives in the database: replicas signal each other through
-Postgres notifications, and each bridge, consumer and background job is owned by
-one replica at a time through a lease. Any replica can hold any client's
-connection.
+Postgres notifications, and each bridge's listener and outbound relay, each
+server connector and each command reader is owned by one replica at a time
+through a lease. Any replica can hold any client's connection. Two things are
+not single-owner and run on every replica: the shared Discord gateway
+connection of the distributed Discord app, and each Teams bridge's Graph
+subscriptions, which every replica adopts and renews.
+
+One replica upgrades with `Recreate`, so an upgrade has a brief outage. More
+than one rolls (`switchCore.rollingUpdate`, one extra pod at a time by
+default) and gets a PodDisruptionBudget (`switchCore.podDisruptionBudget`) and
+a soft spread across nodes (`switchCore.topologySpread`). On SIGTERM a pod
+hands its owned work to the others before it stops, inside
+`switchCore.terminationGracePeriodSeconds`.
 
 **Bridges are created at runtime, not in values.** You register a collaboration
 bridge in the gateway dashboard, with its credentials, after the chart is
