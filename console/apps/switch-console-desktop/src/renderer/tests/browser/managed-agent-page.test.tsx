@@ -132,7 +132,7 @@ beforeEach(async () => {
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <ManagedAgentPage agent={AGENT} />
+        <ManagedAgentPage agent={AGENT} serviceGrants />
       </QueryClientProvider>
     );
   });
@@ -261,6 +261,7 @@ it('shows where the machine will make the agent’s directory when nothing names
       <QueryClientProvider client={client}>
         <ManagedAgentPage
           key="unplaced"
+          serviceGrants
           agent={{ ...AGENT, definition: { ...AGENT.definition, directory: null } }}
         />
       </QueryClientProvider>
@@ -283,7 +284,7 @@ it('gives an agent on the Switch cloud machine the cloud agent’s service acces
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <ManagedAgentPage key="cloud" agent={{ ...AGENT, machine }} />
+        <ManagedAgentPage key="cloud" agent={{ ...AGENT, machine }} serviceGrants />
       </QueryClientProvider>
     );
   });

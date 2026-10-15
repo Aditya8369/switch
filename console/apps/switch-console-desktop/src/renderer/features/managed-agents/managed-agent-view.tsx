@@ -271,10 +271,10 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
         </p>
       </ServerPage>
     );
-  if (!tabbed) return <ManagedAgentPage key={agent.agentId} agent={agent} />;
+  if (!tabbed) return <ManagedAgentPage key={agent.agentId} agent={agent} serviceGrants />;
   if (tab === 'chats') return <AgentChats key={agent.agentId} agent={agent} />;
   if (tab === 'connections') return <AgentConnectionsTab key={agent.agentId} agent={agent} />;
-  return <ManagedAgentPage key={agent.agentId} agent={agent} />;
+  return <ManagedAgentPage key={agent.agentId} agent={agent} serviceGrants={false} />;
 });
 
 export const managedAgentView = {
