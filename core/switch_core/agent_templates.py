@@ -780,6 +780,13 @@ class _Planner:
             self.problem(
                 slot, "invalid_auto_approve", "auto_approve is not true or false."
             )
+        can_manage_agents = interpolate(entry.get("can_manage_agents", False), values)
+        if not isinstance(can_manage_agents, bool):
+            self.problem(
+                slot,
+                "invalid_can_manage_agents",
+                "can_manage_agents is not true or false.",
+            )
         advanced = self.text(
             slot, entry.get("advanced_config") or {}, values, "advanced_config"
         )
@@ -814,6 +821,7 @@ class _Planner:
             auto_approve=bool(auto_approve),
             directory=directory,
             addressing=addressing,
+            can_manage_agents=bool(can_manage_agents),
             connections=connections,
             joins=join,
         )

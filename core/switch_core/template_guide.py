@@ -62,6 +62,8 @@ A condition reads one param: "{param}" (true when it has a value) or
   advanced_config: {key: value}  # optional; see get_advanced_config(provider)
   isolation: shared | isolated   # optional; default shared
   auto_approve: true | false     # optional; default false
+  can_manage_agents: true | false  # optional; default false. It may create
+                                 # agents on the deployer's machines
   addressing: owner | owner-agents | anyone | {anyone_in: [room keys]}
                                  # optional; default owner (only the deployer)
   connections:                   # optional; the deployer's connections it gets

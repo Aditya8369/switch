@@ -4,7 +4,9 @@ They are not rows: the server lists them beside the stored templates and
 serves them by an ``official:`` id, so every workspace sees the version this
 release ships and nobody can change or delete one. A template a deployment
 can only use where agents are managed comes in two documents, and the
-server's ``agent_management`` feature flag picks which it serves.
+server's ``agent_management`` feature flag picks which it serves. One that
+only makes sense as a managed agent (switch-buddy) is served only with that
+flag on.
 
 Each lives in a directory here: ``template.yaml`` (for agent management),
 optionally ``template.console.yaml`` (for a server without it, whose agents
@@ -52,6 +54,8 @@ class _Shipped:
     name: str
     description: str
     kind: str
+    # Served only where agents are managed: it has no Console-run document.
+    managed_only: bool
 
 
 _SHIPPED = (
@@ -63,6 +67,17 @@ _SHIPPED = (
             "up or why something is off."
         ),
         kind="agent",
+        managed_only=False,
+    ),
+    _Shipped(
+        slug="switch-buddy",
+        name="switch-buddy",
+        description=(
+            "Your own assistant in Switch. It creates agents and rooms for you, "
+            "answers anything about Switch and helps with any task."
+        ),
+        kind="agent",
+        managed_only=True,
     ),
 )
 
@@ -126,6 +141,7 @@ def official_templates(agent_management: bool) -> list[OfficialTemplate]:
             content=_document(shipped.slug, agent_management),
         )
         for shipped in _SHIPPED
+        if agent_management or not shipped.managed_only
     ]
 
 

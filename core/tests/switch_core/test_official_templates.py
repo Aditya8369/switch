@@ -38,12 +38,27 @@ def test_the_flag_picks_the_document():
 
 def test_the_instructions_are_written_in_and_the_documents_are_clean():
     for flag in (True, False):
-        (template,) = official_templates(flag)
-        data = yaml.safe_load(template.content)
-        agent = data["resources"]["expert"] if "resources" in data else data["agent"]
-        assert len(agent["instructions"]) > 1000
-        result = lint_template(template.content)
-        assert result.errors == [] and result.warnings == []
+        for template in official_templates(flag):
+            data = yaml.safe_load(template.content)
+            agent = (
+                next(iter(data["resources"].values()))
+                if "resources" in data
+                else data["agent"]
+            )
+            assert len(agent["instructions"]) > 1000
+            result = lint_template(template.content)
+            assert result.errors == [] and result.warnings == [], template.id
+
+
+def test_switch_buddy_is_served_only_where_agents_are_managed():
+    assert [t.id for t in official_templates(agent_management=False)] == [
+        "official:switch-expert"
+    ]
+    buddy = official_template("official:switch-buddy", agent_management=True)
+    assert buddy is not None
+    agent = yaml.safe_load(buddy.content)["resources"]["buddy"]
+    assert agent["can_manage_agents"] is True
+    assert agent["addressing"] == "owner"
 
 
 def test_an_unknown_official_id_is_none():

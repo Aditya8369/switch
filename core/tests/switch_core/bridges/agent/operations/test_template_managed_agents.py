@@ -468,6 +468,50 @@ agent:
     assert await _rooms(managed) == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("written", "expected"), [("true", True), (None, False)])
+async def test_a_template_says_whether_its_agent_can_manage_agents(
+    managed, written, expected
+):
+    line = f"  can_manage_agents: {written}\n" if written else ""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: helper\n"
+        "  instructions: Help.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/helper\n" + line,
+        kind="agent",
+    )
+
+    await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    async with managed["session_factory"]() as session:
+        agent = (
+            await session.execute(select(Agent).where(Agent.name == "helper"))
+        ).scalar_one()
+    assert agent.can_manage_agents is expected
+
+
+@pytest.mark.asyncio
+async def test_switch_buddy_is_created_under_its_name_and_can_manage_agents(managed):
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id="official:switch-buddy",
+        inputs={"agent_name": "switch-buddy-max"},
+    )
+
+    assert [a["name"] for a in result["created_agents"]] == ["switch-buddy-max"]
+    async with managed["session_factory"]() as session:
+        agent = (
+            await session.execute(select(Agent).where(Agent.name == "switch-buddy-max"))
+        ).scalar_one()
+    assert agent.can_manage_agents is True
+    assert managed["management"].created[0].display_name == "switch-buddy"
+
+
 def _plan(template: str, **kw: Any) -> Any:
     return plan_template(
         template,
@@ -487,6 +531,14 @@ def _codes(template: str, **kw: Any) -> set[str]:
 def test_an_agent_must_say_how_it_runs():
     bare = "agent:\n  name: a\n  instructions: Hi.\n"
     assert _codes(bare) == {"machine_unsaid", "provider_unsaid", "directory_unsaid"}
+
+
+def test_can_manage_agents_must_be_true_or_false():
+    template = (
+        "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
+        "  machine: laptop\n  directory: /srv/a\n  can_manage_agents: maybe\n"
+    )
+    assert _codes(template) == {"invalid_can_manage_agents"}
 
 
 def test_a_location_names_a_machine_only_when_it_is_one():
