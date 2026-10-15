@@ -1,4 +1,4 @@
-import { Plug } from 'lucide-react';
+import { Check, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -15,15 +15,22 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { cn } from '@renderer/utils/utils';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { TONE_BADGE, connectorCardState } from './connector-card-state';
 import { ConnectorProfile } from './connector-profile';
-import { type ConnectorsTab, connectorsInTab, connectorsPageAccess } from './connectors-catalog';
+import {
+  type ConnectorsTab,
+  cardQuickAction,
+  connectorsInTab,
+  connectorsPageAccess,
+} from './connectors-catalog';
 import {
   useConnectorCatalog,
   useServerFeatureFlags,
   useWorkspaceServices,
 } from './connectors-queries';
+import { useConnectService } from './use-connect-service';
 import { WorkspaceServicesSection } from './workspace-services-section';
 
 function useServerId(): string {
@@ -82,6 +89,7 @@ function Connectors({
   const [tab, setTab] = useState<ConnectorsTab>('yours');
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState<string | null>(null);
+  const connect = useConnectService(serverId, workspaceId);
 
   // An admin's switches, where the server has them: a server without them
   // answers null, and the page then has no workspace layer at all.
@@ -95,17 +103,24 @@ function Connectors({
   const shownTab = tab === 'workspace' && !switchesShown ? 'yours' : tab;
 
   const opened = catalog.data?.find((entry) => entry.slug === open);
+  // The profile replaces the whole page, title included: it is a place of its
+  // own, reached from the catalog, with the way back at its top. Same column
+  // as `ServerPage`, so moving between the two does not shift the content.
   if (opened)
     return (
-      <ServerPage width={880} title="Connectors" description={DESCRIPTION}>
-        <ConnectorProfile
-          serverId={serverId}
-          workspaceId={workspaceId}
-          connection={opened}
-          administers={administers}
-          onBack={() => setOpen(null)}
-        />
-      </ServerPage>
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+          <div className="mx-auto w-full p-6" style={{ maxWidth: 880 }}>
+            <ConnectorProfile
+              serverId={serverId}
+              workspaceId={workspaceId}
+              connection={opened}
+              administers={administers}
+              onBack={() => setOpen(null)}
+            />
+          </div>
+        </div>
+      </div>
     );
 
   return (
@@ -121,7 +136,7 @@ function Connectors({
           <SearchInput
             className="flex-1"
             aria-label="Search connectors"
-            placeholder="Search by name or category"
+            placeholder="Search by name, category or description"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
@@ -150,6 +165,7 @@ function Connectors({
           tab={shownTab}
           query={query}
           onOpen={setOpen}
+          onConnect={(entry) => connect(entry, 'connect')}
         />
       )}
     </ServerPage>
@@ -161,11 +177,13 @@ function ConnectorGrid({
   tab,
   query,
   onOpen,
+  onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
   tab: 'yours' | 'discover';
   query: string;
   onOpen: (slug: string) => void;
+  onConnect: (entry: ConnectionCatalogEntry) => void;
 }) {
   if (entries.length === 0)
     return (
@@ -174,42 +192,94 @@ function ConnectorGrid({
           ? `No connector matches “${query.trim()}”.`
           : tab === 'yours'
             ? 'You have not connected anything yet. Find a service under Discover.'
-            : 'You have connected every service there is.'}
+            : 'This server offers no connectors.'}
       </p>
     );
   return (
     <div
       role="group"
       aria-label="Connectors"
-      className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2"
+      className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3"
     >
-      {entries.map((entry) => {
-        const state = connectorCardState(entry);
-        return (
-          <button
-            key={entry.slug}
-            type="button"
-            title={entry.description}
-            disabled={state.kind === 'coming_soon'}
-            onClick={() => onOpen(entry.slug)}
-            className="group flex items-start gap-3 rounded-lg border border-border p-3 text-left enabled:cursor-pointer enabled:hover:bg-background-tertiary-2 disabled:cursor-not-allowed"
-          >
-            <ConnectionIcon slug={entry.slug} name={entry.name} />
-            <span className="min-w-0 flex-1 group-disabled:opacity-60">
-              <span className="block truncate text-sm font-medium text-foreground">
-                {entry.name}
-              </span>
-              <span className="block truncate text-xs text-foreground-muted">{entry.category}</span>
-              <Badge className="mt-1.5" variant={TONE_BADGE[state.tone]}>
-                {state.label}
-              </Badge>
-              {state.detail && (
-                <span className="mt-1 block text-xs text-foreground-muted">{state.detail}</span>
-              )}
-            </span>
-          </button>
-        );
-      })}
+      {entries.map((entry) => (
+        <ConnectorCard
+          key={entry.slug}
+          entry={entry}
+          onOpen={() => onOpen(entry.slug)}
+          onConnect={() => onConnect(entry)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One catalog card. The whole card opens the profile; the control at its top
+ * right connects in one click, or marks a connection that is already there.
+ * Disconnecting is only on the profile.
+ */
+function ConnectorCard({
+  entry,
+  onOpen,
+  onConnect,
+}: {
+  entry: ConnectionCatalogEntry;
+  onOpen: () => void;
+  onConnect: () => void;
+}) {
+  const state = connectorCardState(entry);
+  const quick = cardQuickAction(entry);
+  const comingSoon = state.kind === 'coming_soon';
+  return (
+    <div
+      className={cn(
+        'relative flex items-start gap-3 rounded-lg border border-border p-4 transition-colors',
+        comingSoon ? 'opacity-60' : 'hover:bg-background-tertiary-2'
+      )}
+    >
+      <ConnectionIcon slug={entry.slug} name={entry.name} size="lg" />
+      <button
+        type="button"
+        disabled={comingSoon}
+        onClick={onOpen}
+        className="focus-visible:ring-ring min-w-0 flex-1 rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none enabled:cursor-pointer disabled:cursor-not-allowed"
+      >
+        {/* Stretched over the card, so the whole card opens the profile while the
+            control beside it keeps its own target. */}
+        <span aria-hidden className="absolute inset-0 rounded-lg" />
+        <span className="block truncate text-sm font-medium text-foreground">{entry.name}</span>
+        <span className="mt-1 line-clamp-2 block text-sm text-foreground-muted">
+          {entry.description}
+        </span>
+        <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
+          {entry.category}
+          {state.kind !== 'connect' && state.kind !== 'connected' && (
+            <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
+          )}
+        </span>
+      </button>
+      {quick === 'connect' && (
+        <Button
+          variant="outline"
+          size="icon"
+          className="relative z-10 shrink-0"
+          aria-label={`Connect ${entry.name}`}
+          title={`Connect ${entry.name}`}
+          onClick={onConnect}
+        >
+          <Plus className="size-4" />
+        </Button>
+      )}
+      {quick === 'connected' && (
+        <span
+          role="img"
+          aria-label={`${entry.name} connected`}
+          title="Connected"
+          className="relative z-10 flex size-8 shrink-0 items-center justify-center rounded-md border border-border-success bg-background-success text-foreground-success"
+        >
+          <Check className="size-4" />
+        </span>
+      )}
     </div>
   );
 }

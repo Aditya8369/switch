@@ -20,9 +20,10 @@ import {
 } from './connectors-catalog';
 import { useConnectionAgents, useReloadConnectors } from './connectors-queries';
 import { agentsUnlistedText, offersChecklist } from './grant-agents';
+import { useConnectService } from './use-connect-service';
 
 const ACTION_LABEL = {
-  connect: 'Connect',
+  connect: 'Connect to Switch',
   reconnect: 'Reconnect',
   manage: 'Manage repositories',
 } as const;
@@ -47,7 +48,7 @@ export function ConnectorProfile({
   onBack: () => void;
 }) {
   const reload = useReloadConnectors(workspaceId);
-  const showConnect = useShowModal('connectServiceModal');
+  const connect = useConnectService(serverId, workspaceId);
   const showDisconnect = useShowModal('disconnectServiceModal');
   const agents = useConnectionAgents(workspaceId, connection.slug);
   const [enabling, setEnabling] = useState(false);
@@ -61,15 +62,6 @@ export function ConnectorProfile({
   const action = profileConnectAction(connection);
   const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
 
-  const connect = (entry: ConnectionCatalogEntry, startAt: 'connect' | 'grant') =>
-    showConnect({
-      serverId,
-      workspaceId,
-      connection: entry,
-      startAt,
-      onSuccess: () => void reload(),
-      onClose: () => void reload(),
-    });
   const enable = async () => {
     setEnabling(true);
     setError(null);
@@ -90,17 +82,21 @@ export function ConnectorProfile({
   };
 
   return (
-    <div className="space-y-6">
-      <Button variant="ghost" size="sm" onClick={onBack}>
+    <div>
+      <Button variant="ghost" size="sm" className="-ml-2" onClick={onBack}>
         <ArrowLeft className="size-4" />
-        All connectors
+        Connectors
       </Button>
-      <header className="flex items-start gap-4">
-        <ConnectionIcon slug={connection.slug} name={connection.name} />
+      <header className="mt-4 flex items-start gap-4">
+        <ConnectionIcon slug={connection.slug} name={connection.name} size="xl" />
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-center gap-2">
-            <h2 className="truncate text-2xl font-semibold text-foreground">{connection.name}</h2>
-            <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
+            <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">
+              {connection.name}
+            </h1>
+            {state.kind !== 'connect' && state.kind !== 'connected' && (
+              <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
+            )}
           </div>
           <p className="text-sm text-foreground-muted">{connection.description}</p>
           {connectedAs && <p className="text-sm">{connectedAs}</p>}
@@ -135,7 +131,7 @@ export function ConnectorProfile({
       </header>
 
       {offNotice && (
-        <div className="flex items-center gap-3 rounded-lg border border-border p-3">
+        <div className="mt-4 flex items-center gap-3 rounded-lg border border-border p-3">
           <p className="flex-1 text-sm">{offNotice.text}</p>
           {offNotice.canEnable && (
             <Button size="sm" disabled={enabling} onClick={() => void enable()}>
@@ -148,17 +144,17 @@ export function ConnectorProfile({
         </div>
       )}
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="mt-4 text-sm text-destructive">
           {error}
         </p>
       )}
 
-      <div className="grid grid-cols-[1fr_220px] gap-6">
-        <section className="space-y-2">
+      <div className="mt-6 grid grid-cols-[minmax(0,1fr)_240px] gap-8 border-t border-border pt-6">
+        <section className="min-w-0 space-y-2">
           <div className="flex items-center gap-2">
-            <h3 className="flex-1 text-sm font-medium">Used by</h3>
+            <h2 className="flex-1 text-lg font-semibold text-foreground">Used by</h2>
             {state.kind === 'connected' && offersChecklist(connection) && (
-              <Button size="sm" variant="ghost" onClick={() => connect(connection, 'grant')}>
+              <Button size="sm" variant="outline" onClick={() => connect(connection, 'grant')}>
                 Turn on for agents
               </Button>
             )}
@@ -186,23 +182,29 @@ export function ConnectorProfile({
             Turn it on or off for one agent from that agent&apos;s settings.
           </p>
         </section>
-        <aside className="space-y-3 text-sm">
-          <Fact label="Category" value={connection.category} />
-          <Fact label="Sign-in" value={signInLabel(connection)} />
-          <Fact label="Agent access lasts" value={tokenLifetimeLabel(connection)} />
+        <aside className="space-y-6">
+          <Fact label="Category">
+            <span className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-sm">
+              {connection.category}
+            </span>
+          </Fact>
+          <Fact label="Sign-in">{signInLabel(connection)}</Fact>
+          <Fact label="Agent access lasts">{tokenLifetimeLabel(connection)}</Fact>
           {connection.key?.help_url && (
-            <button
-              type="button"
-              className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-              onClick={() =>
-                void openExternalUrl(
-                  connection.key!.help_url!,
-                  `Could not open ${connection.name}'s help on keys`
-                )
-              }
-            >
-              How to make a {connection.name} key <ExternalLink className="size-3" />
-            </button>
+            <Fact label="More info">
+              <button
+                type="button"
+                className="flex w-fit items-center gap-1 text-sm underline underline-offset-2 hover:text-foreground"
+                onClick={() =>
+                  void openExternalUrl(
+                    connection.key!.help_url!,
+                    `Could not open ${connection.name}'s help on keys`
+                  )
+                }
+              >
+                How to make a {connection.name} key <ExternalLink className="size-3.5" />
+              </button>
+            </Fact>
           )}
         </aside>
       </div>
@@ -210,11 +212,11 @@ export function ConnectorProfile({
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-xs text-foreground-muted">{label}</div>
-      <div>{value}</div>
+      <h3 className="text-xs font-medium tracking-wide text-foreground-muted uppercase">{label}</h3>
+      <div className="mt-1.5 text-sm text-foreground">{children}</div>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   workspaceSwitchNote,
 } from '@renderer/features/connectors/connector-copy';
 import {
+  cardQuickAction,
   connectedAsLine,
   connectorsInTab,
   connectorsPageAccess,
@@ -109,7 +110,13 @@ describe('the state a connector card shows', () => {
 describe('the Yours and Discover tabs', () => {
   const catalog = [
     entry({ slug: 'atlassian', name: 'Atlassian', category: 'Project management' }),
-    entry({ slug: 'datadog', name: 'Datadog', category: 'Observability', status: 'connected' }),
+    entry({
+      slug: 'datadog',
+      name: 'Datadog',
+      category: 'Observability',
+      description: 'Monitors, logs and incidents.',
+      status: 'connected',
+    }),
     entry({ slug: 'github', name: 'GitHub', category: 'Source control', status: 'error' }),
     entry({
       slug: 'jira-ish',
@@ -125,15 +132,45 @@ describe('the Yours and Discover tabs', () => {
     expect(names(connectorsInTab(catalog, 'yours', ''))).toEqual(['Datadog', 'GitHub', 'Linear']);
   });
 
-  it('puts the rest on Discover, coming soon included', () => {
-    expect(names(connectorsInTab(catalog, 'discover', ''))).toEqual(['Atlassian', 'Notion']);
+  it('puts the whole catalog on Discover, connected services and coming soon included', () => {
+    expect(names(connectorsInTab(catalog, 'discover', ''))).toEqual([
+      'Atlassian',
+      'Datadog',
+      'GitHub',
+      'Linear',
+      'Notion',
+    ]);
   });
 
-  it('searches within the tab by name or category', () => {
-    expect(names(connectorsInTab(catalog, 'discover', 'project'))).toEqual(['Atlassian']);
+  it('searches within the tab by name, category or description', () => {
+    expect(names(connectorsInTab(catalog, 'discover', 'project'))).toEqual(['Atlassian', 'Linear']);
     expect(names(connectorsInTab(catalog, 'yours', 'project'))).toEqual(['Linear']);
     expect(names(connectorsInTab(catalog, 'yours', 'atlas'))).toEqual([]);
     expect(names(connectorsInTab(catalog, 'discover', ' NOTION '))).toEqual(['Notion']);
+    expect(names(connectorsInTab(catalog, 'discover', 'incidents'))).toEqual(['Datadog']);
+  });
+});
+
+describe("a card's own control", () => {
+  it('connects where the profile would offer Connect', () => {
+    expect(cardQuickAction(entry())).toBe('connect');
+    // Connectable where it cannot be granted: still offered, as on the profile.
+    expect(cardQuickAction(entry({ unavailable_reason: 'Not fully set up.' }))).toBe('connect');
+  });
+
+  it('only marks a connection, never offering to disconnect it', () => {
+    expect(cardQuickAction(entry({ status: 'connected' }))).toBe('connected');
+    expect(cardQuickAction(entry({ status: 'connected', workspace_enabled: false }))).toBe(
+      'connected'
+    );
+  });
+
+  it('offers nothing it would be refused, or that needs the profile', () => {
+    expect(cardQuickAction(entry({ connectable: false }))).toBeNull();
+    expect(cardQuickAction(entry({ workspace_enabled: false }))).toBeNull();
+    expect(cardQuickAction(entry({ status: 'coming_soon' }))).toBeNull();
+    expect(cardQuickAction(entry({ status: 'needs_reauthorization' }))).toBeNull();
+    expect(cardQuickAction(entry({ status: 'error' }))).toBeNull();
   });
 });
 
@@ -365,8 +402,8 @@ describe('with the service_connections flag off', () => {
     expect(workspaceNavViews({ managed: true, serviceConnections: true })).toEqual([
       'server',
       'serverAgents',
-      'connectors',
       'serverRooms',
+      'connectors',
       'templates',
       'managedServer',
     ]);

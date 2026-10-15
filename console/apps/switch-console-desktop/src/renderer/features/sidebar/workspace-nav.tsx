@@ -24,8 +24,8 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { currentView } = useWorkspaceSlots();
   const { params: homeParams } = useParams('server');
   const { params: agentsParams } = useParams('serverAgents');
-  const { params: connectorsParams } = useParams('connectors');
   const { params: roomsParams } = useParams('serverRooms');
+  const { params: connectorsParams } = useParams('connectors');
   const { params: templatesParams } = useParams('templates');
   const { params: managedServerParams } = useParams('managedServer');
   const active = switchServersStore.activeServer;
@@ -43,8 +43,8 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   > = {
     server: { icon: House, label: 'Home', params: homeParams },
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
-    connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     serverRooms: { icon: DoorOpen, label: 'Your Rooms', params: roomsParams },
+    connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     managedServer: { icon: Server, label: 'Server', params: managedServerParams },
   };

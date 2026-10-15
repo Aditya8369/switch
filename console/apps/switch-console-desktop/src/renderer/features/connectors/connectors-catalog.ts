@@ -12,14 +12,37 @@ export function isYours(entry: ConnectionCatalogEntry): boolean {
   return entry.status !== 'not_connected' && entry.status !== 'coming_soon';
 }
 
-/** The catalog cards a tab lists, narrowed by the search. */
+/**
+ * The catalog cards a tab lists, narrowed by the search. Yours holds what the
+ * person has connected; Discover holds the whole catalog, connected services
+ * included, so a search there finds anything.
+ */
 export function connectorsInTab(
   entries: ConnectionCatalogEntry[],
   tab: 'yours' | 'discover',
   query: string
 ): ConnectionCatalogEntry[] {
-  const inTab = entries.filter((entry) => isYours(entry) === (tab === 'yours'));
-  return filterConnections(inTab, query);
+  const needle = query.trim().toLocaleLowerCase();
+  const inTab = entries.filter(
+    (entry) =>
+      (tab === 'discover' || isYours(entry)) &&
+      (!needle ||
+        [entry.name, entry.category, entry.description].some((text) =>
+          text.toLocaleLowerCase().includes(needle)
+        ))
+  );
+  return filterConnections(inTab, '');
+}
+
+/**
+ * The card's own control, beside the part that opens the profile: a way to
+ * connect where the profile would offer Connect, and a mark (not a button)
+ * once connected. Disconnecting stays on the profile, so the grid can never
+ * remove anyone's access by a stray click.
+ */
+export function cardQuickAction(entry: ConnectionCatalogEntry): 'connect' | 'connected' | null {
+  if (entry.status === 'connected') return 'connected';
+  return profileConnectAction(entry) === 'connect' && entry.connectable ? 'connect' : null;
 }
 
 /**
