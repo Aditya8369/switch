@@ -369,7 +369,8 @@ async def _release_process(
 ) -> None:
     """Hand the work this process owns to the others, record the agent
     connections and controller sockets that went, then mark this process's
-    lease stopped. In that order: the lease must not read as stopped while
+    lease stopped and tell the others, which take the work over on hearing
+    it. In that order: the lease must not read as stopped while
     owned work still runs here, or another process would start it beside
     this one. Once the owned work has stopped, the lease is marked stopped
     even when the recording fails, so the connections this process held read
@@ -395,6 +396,7 @@ async def _release_process(
                     await management.flush()
             finally:
                 await lease.stop()
+                ownership.gone()
     except TimeoutError:
         logger.warning(
             "Gave up releasing switch-core process %s after %.1fs; its "

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import OwnershipLease, SwitchCoreProcess
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.main import _release_process
 from switch_core.ownership import Fence, OwnedKind, Ownership, owner_of
 from switch_core.process_lease import LEASE_TTL, ProcessLease
 from switch_core.signals import SignalBus
@@ -234,6 +235,48 @@ class TestHandingOver:
         assert set(a.stopped) == a_had
         assert everywhere.overlaps == []
         assert await _holders(session_factory) == dict.fromkeys(KEYS, b.process_id)
+
+    async def test_a_process_that_stops_is_taken_over_on_its_last_signal(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two: tuple[_Process, _Process],
+        everywhere: _Everywhere,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Shut down as `main` does (`_release_process`). The other process
+        balances when it hears a signal, so the last one a sends must come
+        once a's lease reads as stopped, or b claims nothing until its next
+        interval."""
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        a_had = a.runs()
+        assert a_had
+
+        sent_with_lease_stopped: list[bool] = []
+        publish = a.ownership._bus.publish
+
+        def recording(kind: str, **fields: Any) -> None:
+            sent_with_lease_stopped.append(a.lease._stopped)
+            publish(kind, **fields)
+
+        monkeypatch.setattr(a.ownership._bus, "publish", recording)
+
+        class _NoConnections:
+            async def flush(self) -> None:
+                pass
+
+        await _release_process(
+            a.ownership,
+            _NoConnections(),  # type: ignore[arg-type]
+            None,
+            a.lease,
+        )
+
+        assert sent_with_lease_stopped[-1:] == [True]
+        await b.ownership.balance()  # on hearing it
+        assert b.runs() == set(KEYS)
+        assert everywhere.overlaps == []
 
     async def test_a_process_that_died_is_taken_over_once_its_lease_lapses(
         self,
