@@ -33,7 +33,10 @@ How the transaction runs, and why in this order:
    and writers to one room wait on each other while it is held, so only
    inserts happen inside it.
 2. The row is inserted and numbered (`MessageStore.create`, called from here
-   and nowhere else; a test holds the code to that).
+   and nowhere else; a test holds the code to that). An agent whose arrival
+   committed between the reads and the lock comes before the row in the
+   room, so the members are checked once more and, if one joined, the row is
+   decided again from the members as they are.
 3. The own events are inserted, one savepoint per agent, in the order of the
    agents' ids. Each claims the agent's next number from its row in
    `agent_event_heads`, which stays locked to commit, so an agent's events are
@@ -64,8 +67,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.budgets import BudgetGuard
@@ -74,17 +78,21 @@ from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import (
     Agent,
+    AgentConnectionRecord,
     Client,
     ClientRoom,
     CollaborationBridge,
     Message,
     PendingAttachmentGroup,
+    RoleLease,
     Room,
+    SwitchCoreProcess,
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.recipient import (
+    NOTHING,
     AgentRecipient,
     Delivery,
     RecipientServices,
@@ -93,7 +101,6 @@ from switch_core.delivery.recipient import (
     file_index,
 )
 from switch_core.events import (
-    CommandEvent,
     SwitchEvent,
     TaskAccept,
     TaskCancel,
@@ -104,6 +111,7 @@ from switch_core.events import (
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
+from switch_core.process_lease import LEASE_TTL
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import (
@@ -210,9 +218,10 @@ class RoomReads:
     ) -> RoomReads | None:
         """The room and its agent members, or None when the room is gone.
 
-        A member counts from the moment its membership was written: one that
-        joined after this transaction began is not handed the row, as the
-        consumer it replaced did not hand a client a row from before its join.
+        A member is one whose membership has committed by the time this
+        reads it. Its arrival was written under the room's lock and committed
+        with the membership, so it comes before the row being decided in the
+        room's order, whatever the clocks of the two transactions say.
         """
         found = (
             await session.execute(
@@ -251,10 +260,7 @@ class RoomReads:
                         room_agents.c.agent_id == Agent.id,
                     ),
                 )
-                .where(
-                    ClientRoom.room_id == room_id,
-                    ClientRoom.joined_at <= func.now(),
-                )
+                .where(ClientRoom.room_id == room_id)
             )
         ).all()
         members = [
@@ -309,9 +315,42 @@ class RoomReads:
         )
 
     async def role_names(self, session: AsyncSession) -> dict[str, str]:
+        """The role each agent live-holds in the room, by agent id.
+
+        A seat taken over a connection is held while that connection is
+        live. This process's memory knows its own connections, but its copy
+        of another process's can be missing or late, and a message decided
+        without a live holder is never decided again. So the connections
+        recorded as holding a seat here are read as well: one counts while
+        its row is open and the process named on it holds its lease.
+        """
         if self._roles is None:
+            live = self._services.connections.live_connection_ids()
+            live |= set(
+                (
+                    await session.scalars(
+                        select(AgentConnectionRecord.id).where(
+                            AgentConnectionRecord.id.in_(
+                                select(RoleLease.transport_session_id).where(
+                                    RoleLease.room_id == self.room_id
+                                )
+                            ),
+                            AgentConnectionRecord.closed_at.is_(None),
+                            select(SwitchCoreProcess.id)
+                            .where(
+                                SwitchCoreProcess.id
+                                == AgentConnectionRecord.process_id,
+                                SwitchCoreProcess.stopped_at.is_(None),
+                                SwitchCoreProcess.beat_at
+                                > func.now() - literal(LEASE_TTL),
+                            )
+                            .exists(),
+                        )
+                    )
+                ).all()
+            )
             self._roles = await self._services.room_role_store.room_role_names(
-                session, self.room_id, self._services.connections.live_connection_ids()
+                session, self.room_id, live
             )
         return self._roles
 
@@ -455,8 +494,6 @@ class _Plan:
     deliveries: list[tuple[AgentRecipient, Delivery]] = field(default_factory=list)
     # The agent whose arrival this row is, when it is one.
     arrival: AgentRecipient | None = None
-    # The agents a room command is run for once it has committed.
-    commands: list[AgentRecipient] = field(default_factory=list)
     group: _GroupStep | None = None
 
 
@@ -529,10 +566,6 @@ class Routed:
         if plan.arrival is not None:
             arrival = plan.arrival
             work.append((arrival, _bind(arrival, lambda _row: arrival.greet(), row)))
-        if plan.commands:
-            assert isinstance(row, InboundCustomEvent)
-            for recipient in plan.commands:
-                work.append((recipient, _bind_command(recipient, row)))
         if work:
             router.after_commit(reads.tenant_id, reads.room_id, work)
 
@@ -545,17 +578,6 @@ def _bind(
     async def run() -> None:
         await recipient.actor.connect()
         await after(row)
-
-    return run
-
-
-def _bind_command(
-    recipient: AgentRecipient, row: InboundCustomEvent
-) -> Callable[[], Awaitable[None]]:
-    async def run() -> None:
-        await recipient.actor.connect()
-        # A command of its own for each agent: its handler may change it.
-        await recipient.handle_command(command_event(row))
 
     return run
 
@@ -798,6 +820,27 @@ class MessageRouter:
             session, message, attachments
         ):
             return None
+        if reads is not None and await self._joined_since(session, reads):
+            # An agent's arrival committed between the reads and the room's
+            # lock, so it comes before this row in the room and the row is
+            # for it as much as for the members read. Rare enough to decide
+            # the row again, inside the lock, from the members as they are.
+            reads = await RoomReads.load(
+                session,
+                services=self.services,
+                client_store=self._client_store,
+                budget_store=self._budget_store,
+                tenant_id=tenant_id,
+                room_id=room_id,
+            )
+            plan = _Plan()
+            if reads is not None:
+                plan = await self._decide(
+                    session,
+                    reads,
+                    unwritten,
+                    sender_client_id=message.sender_client_id,
+                )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
         stored: list[str] = []
@@ -814,6 +857,23 @@ class MessageRouter:
             stored=stored,
             deadline_in=deadline_in,
         )
+
+    @staticmethod
+    async def _joined_since(session: AsyncSession, reads: RoomReads) -> bool:
+        """Whether an agent became a member of the room after `reads` read
+        its members. Read with the room's lock held, when every arrival
+        numbered before the row being written has committed."""
+        known = {member.client_id for member in reads.members}
+        now = set(
+            (
+                await session.scalars(
+                    select(ClientRoom.client_id)
+                    .join(Agent, Agent.client_id == ClientRoom.client_id)
+                    .where(ClientRoom.room_id == reads.room_id)
+                )
+            ).all()
+        )
+        return bool(now - known)
 
     async def membership_changed(self, change: tuple[str, str, str]) -> None:
         """Bring what this process holds in memory for an agent up to date
@@ -968,7 +1028,7 @@ class MessageRouter:
         if isinstance(event, InboundMedia):
             return await self._decide_file(session, reads, recipients, event)
         if isinstance(event, InboundCustomEvent):
-            return self._decide_custom(recipients, event)
+            return await self._decide_custom(recipients, event)
         assert isinstance(event, InboundMessage)
         return await self._decide_message(session, recipients, event)
 
@@ -979,7 +1039,12 @@ class MessageRouter:
         event: InboundMessage,
     ) -> _Plan:
         deliveries = [
-            (recipient, await recipient.decide_message(session, event))
+            (
+                recipient,
+                await _decided(
+                    recipient, event, lambda: recipient.decide_message(session, event)
+                ),
+            )
             for recipient in recipients
         ]
         if not any(delivery.named for _, delivery in deliveries):
@@ -1046,24 +1111,23 @@ class MessageRouter:
     ) -> list[tuple[AgentRecipient, Delivery]]:
         deliveries = []
         for recipient in recipients:
-            named = False
-            for part in files:
-                if await recipient.addressed_by(session, part):
-                    named = True
-                    break
-            deliveries.append(
-                (
-                    recipient,
-                    await recipient.decide_post(
-                        session,
-                        files,
-                        named=named,
-                        lead=lead,
-                        complete=complete,
-                        message_key=key,
-                    ),
+
+            async def decide(recipient: AgentRecipient = recipient) -> Delivery:
+                named = False
+                for part in files:
+                    if await recipient.addressed_by(session, part):
+                        named = True
+                        break
+                return await recipient.decide_post(
+                    session,
+                    files,
+                    named=named,
+                    lead=lead,
+                    complete=complete,
+                    message_key=key,
                 )
-            )
+
+            deliveries.append((recipient, await _decided(recipient, lead, decide)))
         return deliveries
 
     async def _decide_arrival(
@@ -1076,7 +1140,14 @@ class MessageRouter:
     ) -> _Plan:
         plan = _Plan(
             deliveries=[
-                (recipient, await recipient.decide_arrival(session, event))
+                (
+                    recipient,
+                    await _decided(
+                        recipient,
+                        event,
+                        lambda: recipient.decide_arrival(session, event),
+                    ),
+                )
                 for recipient in recipients
             ]
         )
@@ -1089,21 +1160,33 @@ class MessageRouter:
             plan.arrival = self._recipient(reads, joining)
         return plan
 
-    def _decide_custom(
+    async def _decide_custom(
         self, recipients: list[AgentRecipient], event: InboundCustomEvent
     ) -> _Plan:
         if event.event_type == _COMMAND_EVENT:
             try:
-                CommandEvent(**event.content)
+                command = command_event(event)
             except Exception:
                 logger.exception(
                     "Failed to parse %s event in %s", event.event_type, event.room_id
                 )
                 return _Plan()
-            # A command is decided by its handler, once it has committed:
-            # whom it targets, whether the sender may command the agent, and
-            # what it does are all answered there.
-            return _Plan(commands=recipients)
+            # A command that is queued for the agent is decided here, so it
+            # is numbered for the agent before anything written after it;
+            # the rest are decided by their handlers once they have committed.
+            return _Plan(
+                deliveries=[
+                    (
+                        recipient,
+                        await _decided(
+                            recipient,
+                            event,
+                            lambda: recipient.decide_command(command),
+                        ),
+                    )
+                    for recipient in recipients
+                ]
+            )
         kind = _TASK_EVENTS.get(event.event_type)
         if kind is None:
             return _Plan()
@@ -1116,7 +1199,8 @@ class MessageRouter:
             return _Plan()
         return _Plan(
             deliveries=[
-                (recipient, recipient.decide_task(typed)) for recipient in recipients
+                (recipient, await _decided(recipient, event, _task(recipient, typed)))
+                for recipient in recipients
             ]
         )
 
@@ -1355,12 +1439,18 @@ class MessageRouter:
         and the deadline is read on the database's clock, the one that set it.
         """
         decided = 0
-        while await self._flush_one(tenant_id):
-            decided += 1
+        while (outcome := await self._flush_one(tenant_id)) is not None:
+            decided += outcome
         return decided
 
-    async def _flush_one(self, tenant_id: str) -> bool:
-        """Decide one post whose wait is over; False when none is due."""
+    async def _flush_one(self, tenant_id: str) -> bool | None:
+        """Decide one post whose wait is over: True when it was decided,
+        False when it was put off, None when none is due.
+
+        A post that cannot be decided is put off for another wait and logged,
+        so the posts due after it, and the tenants swept after this one, are
+        not held up behind it, and it is tried again once that wait is over.
+        """
         async with tenant_session(self.services.session_factory, tenant_id) as session:
             due = await session.scalar(
                 select(PendingAttachmentGroup)
@@ -1370,62 +1460,97 @@ class MessageRouter:
                 .with_for_update(skip_locked=True)
             )
             if due is None:
-                return False
+                return None
             room_id, group_id = due.room_id, due.group_id
-            total, from_seq = due.total, due.from_seq
-            await session.delete(due)
-            reads = await RoomReads.load(
-                session,
-                services=self.services,
-                client_store=self._client_store,
-                budget_store=self._budget_store,
-                tenant_id=tenant_id,
-                room_id=room_id,
-            )
-            files: list[InboundMedia] = []
-            sender: str | None = None
-            if reads is not None:
-                files, sender = await self._files_of(session, reads, group_id, from_seq)
-            if reads is None or not files:
-                await session.commit()
-                return True
-            lead = files[0]
-            present = len({file_index(part) for part in files})
-            complete = present >= total
-            if not complete:
+            try:
+                routed = await self._decide_due(session, tenant_id, due)
+            except Exception:
+                await session.rollback()
+                metrics().increment(ROUTING_FAILURES, {"stage": "sweep"})
                 logger.error(
-                    "Attachment group %s incomplete: %d of %d parts arrived within "
-                    "%ss; delivering what arrived",
+                    "Could not decide multi-file post %s in room %s whose wait "
+                    "is over; trying again in %ss",
                     group_id,
-                    present,
-                    total,
+                    room_id,
                     ATTACHMENT_GROUP_TIMEOUT_SECONDS,
+                    exc_info=True,
                 )
-            # Members from before the post began, as a member who joined after
-            # its first file would not have been handed that file.
-            began = lead.timestamp
-            recipients = [
-                self._recipient(reads, member)
-                for member in reads.members
-                if member.client_id != sender
-                and int(member.joined_at.timestamp() * 1000) <= began
-            ]
-            plan = _Plan(
-                deliveries=await self._decide_post(
-                    session,
-                    recipients,
-                    files,
-                    lead=lead,
-                    complete=complete,
-                    key=group_id,
+                await session.execute(
+                    update(PendingAttachmentGroup)
+                    .where(
+                        PendingAttachmentGroup.room_id == room_id,
+                        PendingAttachmentGroup.group_id == group_id,
+                    )
+                    .values(
+                        deadline=func.now()
+                        + timedelta(seconds=ATTACHMENT_GROUP_TIMEOUT_SECONDS)
+                    )
                 )
-            )
-            stored = await self._store_own_events(session, reads, plan.deliveries, lead)
-            await session.commit()
-        Routed(
-            self, reads, plan, lead, seq=lead.seq, stored=stored, deadline_in=None
-        ).committed()
+                await session.commit()
+                return False
+        if routed is not None:
+            routed.committed()
         return True
+
+    async def _decide_due(
+        self, session: AsyncSession, tenant_id: str, due: PendingAttachmentGroup
+    ) -> Routed | None:
+        """Decide the post `due` with the files that did arrive, delete its
+        pending row and commit; None when there was nothing left to decide."""
+        room_id, group_id = due.room_id, due.group_id
+        total, from_seq = due.total, due.from_seq
+        await session.delete(due)
+        reads = await RoomReads.load(
+            session,
+            services=self.services,
+            client_store=self._client_store,
+            budget_store=self._budget_store,
+            tenant_id=tenant_id,
+            room_id=room_id,
+        )
+        files: list[InboundMedia] = []
+        sender: str | None = None
+        if reads is not None:
+            files, sender = await self._files_of(session, reads, group_id, from_seq)
+        if reads is None or not files:
+            await session.commit()
+            return None
+        lead = files[0]
+        present = len({file_index(part) for part in files})
+        complete = present >= total
+        if not complete:
+            logger.error(
+                "Attachment group %s incomplete: %d of %d parts arrived within "
+                "%ss; delivering what arrived",
+                group_id,
+                present,
+                total,
+                ATTACHMENT_GROUP_TIMEOUT_SECONDS,
+            )
+        # Members from before the post began, as a member who joined after
+        # its first file would not have been handed that file.
+        began = lead.timestamp
+        recipients = [
+            self._recipient(reads, member)
+            for member in reads.members
+            if member.client_id != sender
+            and int(member.joined_at.timestamp() * 1000) <= began
+        ]
+        plan = _Plan(
+            deliveries=await self._decide_post(
+                session,
+                recipients,
+                files,
+                lead=lead,
+                complete=complete,
+                key=group_id,
+            )
+        )
+        stored = await self._store_own_events(session, reads, plan.deliveries, lead)
+        await session.commit()
+        return Routed(
+            self, reads, plan, lead, seq=lead.seq, stored=stored, deadline_in=None
+        )
 
     # ── After the commit ──────────────────────────────────────────────────────
 
@@ -1452,6 +1577,43 @@ class MessageRouter:
         for timer in self._timers:
             timer.cancel()
         self._timers.clear()
+
+
+async def _decided(
+    recipient: AgentRecipient,
+    event: InboundEvent,
+    decide: Callable[[], Awaitable[Delivery]],
+) -> Delivery:
+    """What `decide` decides for one agent, or nothing for it when deciding
+    raises: a rule that cannot be applied to one agent must not fail the
+    write of a row every other member is owed, nor block every later row
+    that names that agent. A database error is raised all the same: the
+    transaction it broke cannot write the row, and the writer tries again.
+    """
+    try:
+        return await decide()
+    except DBAPIError:
+        raise
+    except Exception:
+        metrics().increment(ROUTING_FAILURES, {"stage": "decide"})
+        logger.error(
+            "Could not decide row %s in room %s for agent %s; the row is "
+            "written and the agent misses it",
+            event.event_id,
+            event.room_id,
+            recipient.agent.name,
+            exc_info=True,
+        )
+        return NOTHING
+
+
+def _task(
+    recipient: AgentRecipient, event: SwitchEvent
+) -> Callable[[], Awaitable[Delivery]]:
+    async def decide() -> Delivery:
+        return recipient.decide_task(event)
+
+    return decide
 
 
 def _unwritten(message: Message) -> _Unwritten:

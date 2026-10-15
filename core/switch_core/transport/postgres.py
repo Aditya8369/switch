@@ -254,6 +254,12 @@ class PostgresTransport:
         # the join, or it would watch from the head and the client would miss
         # its own arrival.
         self._joining: set[str] = set()
+        # Rooms a re-check has handed to `on_invite` because it read this
+        # client's membership row, until the join that follows runs. That
+        # join only takes up a row the read saw. Finding the row gone means a
+        # removal committed after the read, and writing it again would undo
+        # the removal.
+        self._adopting: set[str] = set()
         # Held while this client reads its rooms and compares them with the
         # ones it watches: on its first read at start, and on every re-read
         # after (`_reconcile_membership`). A re-read during the first read
@@ -523,10 +529,14 @@ class PostgresTransport:
                 self.user_id,
                 membership.transport_room_id,
             )
-            await self._invite_self(
-                membership.transport_room_id,
-                int(membership.joined_at.timestamp() * 1000),
-            )
+            self._adopting.add(membership.room_id)
+            try:
+                await self._invite_self(
+                    membership.transport_room_id,
+                    int(membership.joined_at.timestamp() * 1000),
+                )
+            finally:
+                self._adopting.discard(membership.room_id)
 
     async def _on_removed(self, transport_room_id: str) -> None:
         """This client was taken out of a room while it was running.
@@ -1230,19 +1240,31 @@ class PostgresTransport:
         once and the subscription is taken whenever it is missing.
         """
         switch_room_id, tenant_id = await self._resolve_room_and_tenant(room_id)
+        adopting = switch_room_id in self._adopting
+        self._adopting.discard(switch_room_id)
         self._joining.add(switch_room_id)
         try:
-            return await self._join_room(room_id, switch_room_id, tenant_id)
+            return await self._join_room(
+                room_id, switch_room_id, tenant_id, adopting=adopting
+            )
         finally:
             self._joining.discard(switch_room_id)
 
     async def _join_room(
-        self, room_id: str, switch_room_id: str, tenant_id: str
+        self, room_id: str, switch_room_id: str, tenant_id: str, *, adopting: bool
     ) -> bool:
         async with tenant_session(self._session_factory, tenant_id) as session:
             existing = await session.get(
                 ClientRoom, {"client_id": self.client_id, "room_id": switch_room_id}
             )
+            if existing is None and adopting:
+                logger.info(
+                    "Client %s was removed from %s while it re-read its rooms; "
+                    "it does not join",
+                    self.user_id,
+                    room_id,
+                )
+                return False
             joined = existing is None and await self._room_store.add_client(
                 session, self.client_id, switch_room_id
             )

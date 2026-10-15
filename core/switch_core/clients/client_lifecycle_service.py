@@ -343,6 +343,16 @@ class ClientLifecycleService:
         Collaboration clients (bridges and the people they speak for) are the
         bridges' to start and stop, and a client that crashed stays stopped.
         """
+        # Only a client already running before the read can be judged deleted
+        # by it. One registered in this process while the read awaits has a
+        # row the read may not have seen, and stopping it would put it in
+        # `_left_stopped`, where later re-checks leave it.
+        running_before = [
+            client_id
+            for client_id, client_tenant in self._client_tenants.items()
+            if client_tenant == tenant_id
+            and self._client_types.get(client_id) not in self.COLLAB_CLIENT_TYPES
+        ]
         async with tenant_session(self._session_factory, tenant_id) as session:
             records = [
                 record
@@ -359,12 +369,8 @@ class ClientLifecycleService:
             if client_tenant != tenant_id or client_id in present
         }
         agents_changed = False
-        for client_id, client_tenant in list(self._client_tenants.items()):
-            if (
-                client_tenant == tenant_id
-                and self._client_types.get(client_id) not in self.COLLAB_CLIENT_TYPES
-                and client_id not in present
-            ):
+        for client_id in running_before:
+            if client_id in self._client_tenants and client_id not in present:
                 logger.info("Client %s was deleted elsewhere; stopping it", client_id)
                 agents_changed |= self._client_types.get(client_id) == "agent"
                 await self.stop(client_id)

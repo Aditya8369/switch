@@ -832,6 +832,57 @@ class AgentRecipient:
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
+    async def decide_command(self, event: CommandEvent) -> Delivery:
+        """What a room command does for the agent, decided as its row is
+        written.
+
+        A session control (`!reset`, `!compact`, `!interrupt`) is queued for
+        the agent as an own event, stored with the command's row so the agent
+        gets it before anything written after it; what it says in the room
+        is said once it has committed. Every other command queues nothing and
+        is run by its handler once it has committed (`handle_command`).
+        """
+        cmd = COMMANDS_BY_NAME.get(event.command)
+        if cmd is None or cmd.admin_owned:
+            return NOTHING
+        if cmd.decide is None:
+
+            async def run(row: InboundEvent) -> None:
+                assert isinstance(row, InboundCustomEvent)
+                await self.handle_command(command_event(row))
+
+            return Delivery(own_event=None, after=run)
+        meta = self._meta
+        if not await cmd.addressed(self, event.args, meta.room_id):
+            return NOTHING
+        refusal = await self._command_refusal(self._room, event, meta)
+        if refusal is not None:
+            return Delivery(own_event=None, after=lambda _row: refusal())
+        decision = await cmd.decide(self, self._room, event)
+        answer = decision.answer
+        queued = decision.queued
+        own_event: Callable[[InboundEvent], OwnEvent] | None = None
+        if queued is not None:
+
+            def own_event(row: InboundEvent) -> OwnEvent:
+                return OwnEvent(
+                    AgentEvent(
+                        type="command",
+                        room_id=meta.room_id,
+                        bridge_id=meta.bridge_id,
+                        channel_type=meta.channel_type,
+                        payload=queued,
+                    ),
+                    room_seq=row.seq,
+                    message_key=row.event_id,
+                )
+
+        async def after(_row: InboundEvent) -> None:
+            if answer is not None:
+                await answer()
+
+        return Delivery(own_event=own_event, after=after)
+
     async def handle_command(self, event: CommandEvent) -> None:
         """Run a room command for the agent, once the command has committed.
 
@@ -907,23 +958,37 @@ class AgentRecipient:
         would flood a room holding several restricted agents; those are declined
         quietly, with a warning in the log.
         """
+        refusal = await self._command_refusal(room, event, meta)
+        if refusal is None:
+            return True
+        await refusal()
+        return False
+
+    async def _command_refusal(
+        self, room: RoomRef, event: CommandEvent, meta: RoomMeta
+    ) -> Callable[[], Awaitable[None]] | None:
+        """None when the sender may command this agent, and otherwise how the
+        command is declined (`_gate_command`)."""
         async with self.session_factory() as session:
             agent = await self._fresh_agent(session)
             decision = await self._addressing_allowed(
                 session, agent, event.user_id, meta.room_id
             )
             if decision.allowed:
-                return True
+                return None
             targets_me = await self._command_targets_me_explicitly(
                 session, event.args, meta.room_id
             )
-        if targets_me:
-            await self.reply_command(
-                room.room_id,
-                decision.refusal,
-                thread_root_id=event.thread_id,
-            )
-        else:
+        refusal = decision.refusal
+
+        async def decline() -> None:
+            if targets_me:
+                await self.reply_command(
+                    room.room_id,
+                    refusal,
+                    thread_root_id=event.thread_id,
+                )
+                return
             logger.warning(
                 "Command %s from %s declined for %s in room %s: sender may not "
                 "address this agent",
@@ -932,7 +997,8 @@ class AgentRecipient:
                 self.agent.name,
                 meta.room_id,
             )
-        return False
+
+        return decline
 
     async def _handle_command(self, room: RoomRef, event: CommandEvent) -> bool:
         is_direct = await self._is_direct_room(room.room_id)

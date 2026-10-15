@@ -620,6 +620,8 @@ class ClientRoom(TenantScoped, Base):
             "room_id",
             name="uq_client_rooms_tenant_client_room",
         ),
+        # The router reads a room's members on every row it writes there.
+        Index("ix_client_rooms_room_id", "room_id"),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],

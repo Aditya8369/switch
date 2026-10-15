@@ -270,8 +270,10 @@ class AgentConnectionStore:
         transport: str,
         speaks: int | None,
         accepts: int | None,
-    ) -> None:
-        """The connection opened, or was reattached, on `process_id`."""
+    ) -> bool:
+        """The connection opened, or was reattached, on `process_id`. Returns
+        whether it was written: an id another agent's connection has is left
+        to that agent, whichever process recorded it."""
         values: dict[str, Any] = {
             "agent_id": agent_id,
             "process_id": process_id,
@@ -286,13 +288,17 @@ class AgentConnectionStore:
             "closed_at": None,
             "close_reason": None,
         }
-        await session.execute(
+        result = await session.execute(
             insert(AgentConnectionRecord)
             .values(id=connection_id, tenant_id=tenant_id, **values)
             .on_conflict_do_update(
-                index_elements=[AgentConnectionRecord.id], set_=values
+                index_elements=[AgentConnectionRecord.id],
+                set_=values,
+                where=AgentConnectionRecord.agent_id == agent_id,
             )
+            .returning(AgentConnectionRecord.id)
         )
+        return result.scalar_one_or_none() is not None
 
     async def replace_slots(
         self,

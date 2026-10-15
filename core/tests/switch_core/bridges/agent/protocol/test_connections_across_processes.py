@@ -43,6 +43,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
     Closure,
     SupersededReattachError,
+    UnknownConnectionError,
 )
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -241,6 +242,19 @@ async def _subscribe(
         AGENT,
         ConnectionSubscribeRequest(
             connection_id=CONN, room_id=room_id, generation=generation
+        ),
+        agent=_Agent(),  # type: ignore[arg-type]
+        protocol=process.protocol,
+    )
+
+
+async def _place(
+    process: Process, generation: int, placements: dict[str, str]
+) -> dict[str, Any]:
+    return await connection_placements(
+        AGENT,
+        ConnectionPlacementsRequest(
+            connection_id=CONN, placements=placements, generation=generation
         ),
         agent=_Agent(),  # type: ignore[arg-type]
         protocol=process.protocol,
@@ -469,6 +483,35 @@ class TestServedAnywhere:
         assert caller is not None
         assert caller.room_id == ROOM
 
+    async def test_a_session_moved_through_one_process_calls_from_its_new_room(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """The move is answered before the other process has read it, and
+        the session's next call may land there: it must post where the
+        session is now, not where that process last saw it."""
+        a, b = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        await _eventually(lambda: b.registry.session_room(AGENT, "session-1") == ROOM)
+        await b.bus.stop()  # `b` hears nothing more from `a`
+
+        await _place(a, conn.stream_generation, {"session-1": OTHER_ROOM})
+        with tenant_scope(TENANT_ZERO_ID):
+            _, caller = await resolve_caller(
+                agent_id=AGENT,
+                protocol=b.protocol,
+                factory=session_factory,
+                connection_id=CONN,
+                session_id="session-1",
+                host_id="host",
+                epoch="1",
+            )
+
+        assert caller is not None
+        assert caller.room_id == OTHER_ROOM
+
     async def test_a_claim_made_on_the_other_process_wakes_the_parked_stream(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -623,6 +666,99 @@ class TestTakeover:
 
         assert first.stream_generation != second.stream_generation
         assert min(first.stream_generation, second.stream_generation) >= 2**33
+
+    async def test_a_reattach_elsewhere_draws_a_later_incarnation(
+        self, processes: tuple[Process, Process]
+    ) -> None:
+        """Each process draws incarnations in batches, so one drawn from an
+        earlier batch is not later than the one recorded. A reattach must
+        still move the connection's incarnation forward: a process that sees
+        a later one presented knows its own copy is the stale one."""
+        a, b = processes
+        await _open(b, connection_id="conn-b")  # b draws its batch first
+        held = (await _open(a)).stream_generation
+
+        winner = await _open(b, expected_generation=held)
+
+        assert winner.stream_generation > held
+
+    async def test_the_previous_holder_admits_the_current_incarnation(
+        self, processes: tuple[Process, Process]
+    ) -> None:
+        """The client reattached through the other process and its next
+        requests reach the process it left, before that one has read the
+        reattach: they are served, not refused as taken over."""
+        a, b = processes
+        first = await _open(a)
+        a.registry.detach_stream(first, first.stream_generation)
+        await a.bus.stop()  # `a` hears nothing from `b`
+        second = await _open(b, expected_generation=first.stream_generation)
+
+        answer = await connection_placements(
+            AGENT,
+            ConnectionPlacementsRequest(
+                connection_id=CONN,
+                placements={"session-1": ROOM},
+                generation=second.stream_generation,
+            ),
+            agent=_Agent(),  # type: ignore[arg-type]
+            protocol=a.protocol,
+        )
+        with tenant_scope(TENANT_ZERO_ID):
+            beat = await connection_beat(
+                AGENT,
+                ConnectionBeatRequest(
+                    connection_id=CONN, generation=second.stream_generation
+                ),
+                agent=_Agent(),  # type: ignore[arg-type]
+                protocol=a.protocol,
+            )
+
+        assert answer["placements"] == {"session-1": ROOM}
+        assert beat["ok"] is True
+        assert first.closure is not None
+        assert first.closure.code == "taken_over"
+        assert second.closure is None
+        # The client it took the connection from is still refused.
+        with pytest.raises(HTTPException) as refused:
+            await _subscribe(a, ROOM, first.stream_generation)
+        assert refused.value.detail["code"] == "taken_over"
+
+    async def test_another_agent_cannot_take_a_connection_id_on_the_other_process(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """The other process has no copy of the connection yet, so only the
+        row can refuse the second agent; it keeps the first agent's."""
+        a, b = processes
+        await b.bus.stop()  # `b` never hears of the first agent's connection
+        held = await _open(a)
+        intruder = "agent-2"
+        await seed_agent(session_factory, intruder)
+
+        with tenant_scope(TENANT_ZERO_ID), pytest.raises(UnknownConnectionError):
+            async with b.registry.slots(intruder), b.registry.recorded(intruder):
+                b.registry.open(
+                    agent_id=intruder,
+                    connection_id=CONN,
+                    scope="single",
+                    delivery_filter="addressed",
+                    spawn_capable=False,
+                    position={OWN_EVENTS: 0},
+                    declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+                    expected_generation=None,
+                )
+
+        async with session_factory() as session:
+            row = await session.get(AgentConnectionRecord, CONN)
+        assert row is not None
+        assert (row.agent_id, row.process_id, row.incarnation) == (
+            AGENT,
+            a.lease.process_id,
+            held.stream_generation,
+        )
+        assert b.registry.get(CONN) is None
 
 
 class TestOneProcess:
