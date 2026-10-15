@@ -760,6 +760,35 @@ class TestChangesMadeElsewhere:
         assert held is not None and held.active
         assert platform.listening == [held.adapter]
 
+    async def test_what_a_bridge_learned_and_stored_restarts_no_copy(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """Teams stores the service URL and each channel's team as it learns
+        them from traffic, in the bridge's config. That is not an edit: the
+        re-check restarts no copy of the bridge for it."""
+        holder, quiet = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+        running = [p.bridges.get(bridge.bridge_id) for p in (holder, quiet)]
+
+        await holder.bridges._persist_service_url(
+            bridge.bridge_id, TENANT_ZERO_ID, "https://smba.example/emea/"
+        )
+        await holder.bridges._persist_channel_team(
+            bridge.bridge_id, TENANT_ZERO_ID, "C9", "team-9"
+        )
+        for process in (holder, quiet):
+            await process.bridges.reconcile_all()
+
+        assert [p.bridges.get(bridge.bridge_id) for p in (holder, quiet)] == running
+
     async def test_a_bridge_removed_through_the_quiet_process_stops_listening(
         self,
         postgres_url: str,
