@@ -237,6 +237,19 @@ async def _subscribe(
     )
 
 
+async def _place(
+    process: Process, generation: int, placements: dict[str, str]
+) -> dict[str, Any]:
+    return await connection_placements(
+        AGENT,
+        ConnectionPlacementsRequest(
+            connection_id=CONN, placements=placements, generation=generation
+        ),
+        agent=_Agent(),  # type: ignore[arg-type]
+        protocol=process.protocol,
+    )
+
+
 class TestPresence:
     async def test_an_agent_connected_to_one_process_reads_online_from_the_other(
         self, processes: tuple[Process, Process]
@@ -388,6 +401,35 @@ class TestServedAnywhere:
 
         assert caller is not None
         assert caller.room_id == ROOM
+
+    async def test_a_session_moved_through_one_process_calls_from_its_new_room(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """The move is answered before the other process has read it, and
+        the session's next call may land there: it must post where the
+        session is now, not where that process last saw it."""
+        a, b = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        await _eventually(lambda: b.registry.session_room(AGENT, "session-1") == ROOM)
+        await b.bus.stop()  # `b` hears nothing more from `a`
+
+        await _place(a, conn.stream_generation, {"session-1": OTHER_ROOM})
+        with tenant_scope(TENANT_ZERO_ID):
+            _, caller = await resolve_caller(
+                agent_id=AGENT,
+                protocol=b.protocol,
+                factory=session_factory,
+                connection_id=CONN,
+                session_id="session-1",
+                host_id="host",
+                epoch="1",
+            )
+
+        assert caller is not None
+        assert caller.room_id == OTHER_ROOM
 
     async def test_a_claim_made_on_the_other_process_wakes_the_parked_stream(
         self, processes: tuple[Process, Process]
