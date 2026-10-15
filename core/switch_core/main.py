@@ -240,8 +240,9 @@ _FORCED_EXIT_GRACE_SECONDS = 3.0
 # stop and has taken itself out of readiness: long enough for the Service to
 # stop sending it new requests, so they go to another replica rather than
 # being refused. A single replica has nowhere to send them, and stops at once
-# as it always has. Inside the kubelet's 30-second grace period with the
-# bridge stops and `_FORCED_EXIT_GRACE_SECONDS` after it.
+# as it always has. Inside the chart's 45-second grace period
+# (`switchCore.terminationGracePeriodSeconds`) with the bridge stops and
+# `_FORCED_EXIT_GRACE_SECONDS` after it.
 _DRAIN_SECONDS = 5.0
 
 
@@ -365,8 +366,9 @@ _RELEASE_SECONDS = 1.0
 # handed over, before the rest of its release. Each consumer finishes the row
 # in hand within a grace of its own (`transport/postgres.py`), so this is a
 # backstop for a stop that hangs on a platform: the lease then lapses on its
-# own and the work is taken over after it. Inside the kubelet's 30-second
-# grace period with the drain and the rest of the shutdown after it.
+# own and the work is taken over after it. Inside the chart's 45-second grace
+# period (`switchCore.terminationGracePeriodSeconds`) with the drain and the
+# rest of the shutdown after it.
 _HAND_OVER_SECONDS = 10.0
 
 
