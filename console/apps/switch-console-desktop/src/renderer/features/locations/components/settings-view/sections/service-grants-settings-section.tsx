@@ -26,6 +26,7 @@ import {
   REMOVED_GRANT_NOTE,
   grantedRepositoryIds,
   grantedRepositoryNames,
+  onOffGrantBlock,
   onOffGrantNote,
 } from './service-grants';
 
@@ -269,9 +270,7 @@ function OnOffGrant({
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
-  const connected = service.status === 'connected';
-  // A grant can be turned off whatever the server's state; on needs a usable connection.
-  const blocked = grant === null && (!connected || service.unavailable_reason !== null);
+  const block = onOffGrantBlock(service, grant !== null);
   return (
     <div className="rounded-lg border border-border p-3">
       <div className="flex items-center gap-2">
@@ -280,19 +279,12 @@ function OnOffGrant({
         <Switch
           aria-label={`${service.name} for ${agentName}`}
           checked={grant !== null}
-          disabled={busy || blocked}
+          disabled={busy || block?.blocksOn === true}
           onCheckedChange={(on) => (on ? onTurnOn() : onTurnOff())}
         />
       </div>
       {grant && <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>}
-      {service.unavailable_reason && (
-        <p className="mt-1 text-sm text-foreground-muted">{service.unavailable_reason}</p>
-      )}
-      {!grant && !connected && !service.unavailable_reason && (
-        <p className="mt-1 text-sm text-foreground-muted">
-          To turn {service.name} on, first connect it from the server&apos;s Connections.
-        </p>
-      )}
+      {block && <p className="mt-1 text-sm text-foreground-muted">{block.reason}</p>}
       <p className="mt-1 text-xs text-foreground-muted">{onOffGrantNote(agentName, service)}</p>
     </div>
   );
@@ -375,7 +367,7 @@ function GitHubGrantForm({
   if (github.data.status === 'not_connected')
     return (
       <p className="text-sm text-foreground-muted">
-        To grant GitHub, first connect your GitHub account from the server&apos;s Connections.
+        To grant GitHub, first connect your GitHub account from Connectors.
       </p>
     );
 

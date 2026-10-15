@@ -367,7 +367,7 @@ it('cannot turn on a service that is not connected, or not available, and says w
 
   await vi.waitFor(() => expect(exampleSwitch(el)).not.toBeNull());
   expect(exampleSwitch(el)!.getAttribute('aria-disabled') ?? '').not.toBe('false');
-  expect(el.textContent).toContain("first connect it from the server's Connections");
+  expect(el.textContent).toContain('first connect it from Connectors');
   expect(el.textContent).toContain('Switched off on this server.');
   await act(async () => exampleSwitch(el)!.click());
   await act(async () => el.querySelector<HTMLElement>('[aria-label="Other for helper"]')!.click());
