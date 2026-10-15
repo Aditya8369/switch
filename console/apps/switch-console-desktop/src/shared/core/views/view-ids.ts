@@ -18,6 +18,7 @@ export const VIEW_IDS = [
   'server',
   'managedServer',
   'serverAgents',
+  'connectors',
   'serverRooms',
   'remoteHosts',
   'remoteHost',

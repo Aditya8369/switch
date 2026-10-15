@@ -35,11 +35,14 @@ export function ServiceKeyStep({
   connection,
   form,
   onBack,
+  onConnected,
 }: {
   serverId: string;
   connection: ConnectionCatalogEntry;
   form: ServiceKeyForm;
   onBack: () => void;
+  /** Moves on once the key is connected, with the warning Switch gave. */
+  onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
   const name = connection.name;
@@ -75,6 +78,7 @@ export function ServiceKeyStep({
       setWarning(result.warning);
       setConnected(true);
       setReplacing(false);
+      onConnected?.(result.warning);
     } catch (cause) {
       setError(failureText(cause, `Could not connect ${name}.`));
     } finally {

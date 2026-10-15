@@ -1,5 +1,7 @@
 import { RenameChatModal } from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
+import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
+import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
@@ -93,6 +95,8 @@ export const modalRegistry = {
   }),
   connectChatModal: createModal(ConnectChatModal, { size: 'md' }),
   connectionsModal: createModal(ConnectionsModal, { size: 'md' }),
+  connectServiceModal: createModal(ConnectServiceModal, { size: 'md' }),
+  disconnectServiceModal: createModal(DisconnectServiceDialog, { size: 'sm' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
     size: 'md',
     dismissOnOutsideClick: false,

@@ -23,10 +23,13 @@ export function ServiceConnectStep({
   serverId,
   connection,
   onBack,
+  onConnected,
 }: {
   serverId: string;
   connection: ConnectionCatalogEntry;
   onBack: () => void;
+  /** Moves on once the account is connected, with the warning Switch gave. */
+  onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
   const [connected, setConnected] = useState(connection.status === 'connected');
@@ -166,6 +169,7 @@ export function ServiceConnectStep({
                     setFlow(null);
                     setWarning(result.warning);
                     setConnected(true);
+                    onConnected?.(result.warning);
                   })
                 }
               >
