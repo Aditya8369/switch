@@ -20,7 +20,9 @@ class BridgeMessageMapStore:
         """Claim a room message for posting to the platform: a row with no
         external post yet. False when the message has a row already, posted,
         or claimed within `unposted_after` and not posted yet. A claim older
-        than that with no post is claimed again, from now."""
+        than that with no post is claimed again, from now and for
+        `external_channel_id`, the channel the post goes to: the room may
+        have moved to another channel since the first claim."""
         statement = insert(BridgeMessageMap).values(
             bridge_id=bridge_id,
             external_channel_id=external_channel_id,
@@ -33,7 +35,10 @@ class BridgeMessageMapStore:
                     BridgeMessageMap.bridge_id,
                     BridgeMessageMap.transport_event_id,
                 ],
-                set_={"created_at": func.now()},
+                set_={
+                    "created_at": func.now(),
+                    "external_channel_id": statement.excluded.external_channel_id,
+                },
                 where=(
                     BridgeMessageMap.external_post_id.is_(None)
                     & (BridgeMessageMap.created_at < func.now() - unposted_after)
