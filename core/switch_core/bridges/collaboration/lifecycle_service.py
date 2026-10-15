@@ -1610,27 +1610,31 @@ class CollaborationBridgeLifecycleService:
         collaboration_core = self._bridges.get(bridge_id)
         was_connected = bridge_id in self._connected
         self._connected.discard(bridge_id)
-        if collaboration_core:
-            await collaboration_core.stop()
+        try:
+            if collaboration_core:
+                await collaboration_core.stop()
+        finally:
+            # Unregistered whatever the stop raised, as the lease is let go
+            # of all the same: left here, the copy would read as running and
+            # be stopped again at shutdown.
+            task = self._tasks.pop(bridge_id, None)
+            if task and not task.done():
+                task.cancel()
 
-        task = self._tasks.pop(bridge_id, None)
-        if task and not task.done():
-            task.cancel()
-
-        self._bridges.pop(bridge_id, None)
-        self._held_resources.pop(bridge_id, None)
-        self._running_workspaces.pop(bridge_id, None)
-        self._running_adapter_classes.pop(bridge_id, None)
-        self._started.discard(bridge_id)
-        # A bridge cancelled before it connected never reaches an outcome, and
-        # `_run_bridge`'s handler does not catch `CancelledError`, so its
-        # reading would otherwise sit here for the life of the process — and be
-        # spent by the *next* attempt on the same id, which would then report a
-        # duration measured from the one before it.
-        self._connect_started.pop(bridge_id, None)
+            self._bridges.pop(bridge_id, None)
+            self._held_resources.pop(bridge_id, None)
+            self._running_workspaces.pop(bridge_id, None)
+            self._running_adapter_classes.pop(bridge_id, None)
+            self._started.discard(bridge_id)
+            # A bridge cancelled before it connected never reaches an outcome, and
+            # `_run_bridge`'s handler does not catch `CancelledError`, so its
+            # reading would otherwise sit here for the life of the process — and be
+            # spent by the *next* attempt on the same id, which would then report a
+            # duration measured from the one before it.
+            self._connect_started.pop(bridge_id, None)
+            self._started_rows.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
-        self._started_rows.pop(bridge_id, None)
         # `_bridges` membership is set before the connection is attempted, so
         # on its own it would report a bridge that never connected. Reported
         # where the bridge was held, once.
