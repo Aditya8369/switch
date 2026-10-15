@@ -1,6 +1,6 @@
 import { Lock, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
@@ -69,9 +69,12 @@ const Notice = ({ icon, title, body }: { icon: React.ReactNode; title: string; b
 export const ChatPanel = observer(function ChatPanel({
   serverId,
   roomId,
+  intro,
 }: {
   serverId: string;
   roomId: string;
+  /** What the chat opens with above its messages, written by the app; null for none. */
+  intro: ReactNode | null;
 }) {
   const timeline = chatsStore.timelines.get(serverId, roomId);
   const chat = chatsStore.chat(roomId);
@@ -147,6 +150,7 @@ export const ChatPanel = observer(function ChatPanel({
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent className="mx-auto w-full max-w-[860px] gap-0 px-5 py-6">
+            {intro}
             {!timeline.loaded && timeline.loading ? (
               <p className="text-sm text-foreground-muted">Loading the conversation…</p>
             ) : (
@@ -158,11 +162,14 @@ export const ChatPanel = observer(function ChatPanel({
                 onReply={setReplyTo}
               />
             )}
-            {timeline.loaded && timeline.messages.length === 0 && timeline.pending.length === 0 && (
-              <p className="mt-10 text-center text-sm text-foreground-muted">
-                No messages yet. Say what you need below.
-              </p>
-            )}
+            {intro === null &&
+              timeline.loaded &&
+              timeline.messages.length === 0 &&
+              timeline.pending.length === 0 && (
+                <p className="mt-10 text-center text-sm text-foreground-muted">
+                  No messages yet. Say what you need below.
+                </p>
+              )}
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <div

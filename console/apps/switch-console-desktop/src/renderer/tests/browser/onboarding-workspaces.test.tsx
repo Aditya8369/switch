@@ -76,11 +76,11 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   },
 }));
 
-// The last page of the flow, and not what these tests are about — stubbed so
-// reaching it is a fact the test can assert without dragging in the bridge
-// reads behind it.
-vi.mock('@renderer/features/switch-servers/link-accounts-step', () => ({
-  LinkAccountsStep: () => <div>Link your messaging accounts</div>,
+// The page after the workspace, and not what these tests are about — stubbed
+// so reaching it is a fact the test can assert without dragging in this
+// computer's setup behind it.
+vi.mock('@renderer/features/switch-buddy/meet-buddy-page', () => ({
+  MeetBuddyPage: () => <div>Meet switch-buddy</div>,
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
@@ -261,7 +261,7 @@ describe('picking a workspace after signing in', () => {
       expect.objectContaining({ id: 'inv-1' })
     );
     expect(setActiveWorkspace).toHaveBeenCalledWith('ws-9');
-    expect(onboardingStore.page).toBe('linkAccounts');
+    expect(onboardingStore.page).toBe('meetBuddy');
   });
 
   it('stays on the picker with the error when accepting fails', async () => {
@@ -314,7 +314,7 @@ describe('picking a workspace after signing in', () => {
       expect.objectContaining({ tenantId: 't-9' })
     );
     expect(setActiveWorkspace).toHaveBeenCalledWith('ws-9');
-    expect(onboardingStore.page).toBe('linkAccounts');
+    expect(onboardingStore.page).toBe('meetBuddy');
   });
 
   it('does not choose for you when the domain check failed', async () => {
@@ -333,8 +333,8 @@ describe('picking a workspace after signing in', () => {
     const el = await renderAtPickWorkspace();
 
     expect(setActiveWorkspace).toHaveBeenCalledWith('ws-1');
-    expect(onboardingStore.page).toBe('linkAccounts');
-    expect(el.textContent).toContain('Link your messaging accounts');
+    expect(onboardingStore.page).toBe('meetBuddy');
+    expect(el.textContent).toContain('Meet switch-buddy');
   });
 
   it('goes straight to creating one when the account is in none', async () => {
@@ -409,7 +409,7 @@ describe('picking a workspace after signing in', () => {
 
     expect(createWorkspace).toHaveBeenCalledWith('srv-1', 'Acme');
     expect(setActiveWorkspace).toHaveBeenCalledWith('ws-9');
-    expect(onboardingStore.page).toBe('linkAccounts');
+    expect(onboardingStore.page).toBe('meetBuddy');
   });
 
   /**
@@ -433,7 +433,7 @@ describe('picking a workspace after signing in', () => {
     await click(el, 'Open workspace');
 
     expect(createWorkspace).toHaveBeenCalledTimes(1);
-    expect(onboardingStore.page).toBe('linkAccounts');
+    expect(onboardingStore.page).toBe('meetBuddy');
   });
 
   it('keeps the form and says why when the name is refused', async () => {

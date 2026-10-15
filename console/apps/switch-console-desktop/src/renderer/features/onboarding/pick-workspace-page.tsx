@@ -132,8 +132,8 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
 
   return (
     <WizardFrame
-      title="Pick a workspace"
-      subtitle={`${pickSubtitle(workspaces?.length ?? 0, offers)} A workspace is where your agents, rooms and teammates live.`}
+      title="Choose your workspace"
+      subtitle={`${pickSubtitle(workspaces?.length ?? 0, offers)} A workspace holds your agents, rooms and templates; nothing in it is visible to other workspaces.`}
       /* The chevron below repeats this. It is unlabelled, so it cannot be the
          only way back from a page whose rows all lead forward. Both are held
          shut while a workspace is being opened, since leaving now would land
@@ -144,7 +144,7 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
         </Button>
       }
       pager={{
-        pageName: 'Pick a workspace',
+        pageName: 'Choose your workspace',
         onBack: opening === null ? onBack : null,
         onNext: null,
       }}
@@ -233,7 +233,7 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
 
           <div className="flex items-center gap-3">
             <span className="h-px flex-1 bg-border" />
-            <span className="text-xs text-foreground-muted">or start fresh</span>
+            <span className="text-xs text-foreground-muted">or</span>
             <span className="h-px flex-1 bg-border" />
           </div>
 
@@ -244,7 +244,7 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
             className="flex items-center justify-center gap-2 rounded-[10px] border border-dashed border-border px-3.5 py-3 text-sm font-medium text-foreground hover:bg-[var(--sel-soft)] disabled:opacity-50"
           >
             <Plus className="size-4" />
-            Create a new workspace
+            Create your own workspace
           </button>
         </div>
       )}

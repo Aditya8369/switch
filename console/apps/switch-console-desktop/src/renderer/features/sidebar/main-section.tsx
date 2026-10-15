@@ -3,11 +3,16 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
+import { BUDDY_DISPLAY_NAME, isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
@@ -58,8 +63,14 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
       </div>
       {tab === 'agents' ? (
         <>
+          {BUILD_FEATURE_FLAGS.onboarding &&
+            switchServersStore.activeServerId !== null &&
+            agents.data &&
+            !agents.data.some(isBuddy) && (
+              <PendingBuddyRow serverId={switchServersStore.activeServerId} />
+            )}
           <ManagedAgentList />
-          {agents.data?.length === 0 && (
+          {agents.data?.length === 0 && !BUILD_FEATURE_FLAGS.onboarding && (
             <p className="px-[9px] py-2 text-xs text-foreground-muted">No agents yet.</p>
           )}
           {!flags.agent_chats && <ChatsTeaser />}
@@ -70,6 +81,26 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
     </section>
   );
 });
+
+/**
+ * switch-buddy before it exists — skipped in onboarding, or never set up —
+ * so its chat, and the way to give it a provider, can always be found.
+ */
+function PendingBuddyRow({ serverId }: { serverId: string }) {
+  const active = useCurrentViewId() === 'switchBuddy';
+  return (
+    <SidebarMenuRow
+      isActive={active}
+      title="switch-buddy — connect an AI provider to start it"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => appState.navigation.navigate('switchBuddy', { serverId })}
+      className="h-[30px] py-0 text-[13px]"
+    >
+      <BuddyAvatar size={17} />
+      <span className="min-w-0 flex-1 truncate">{BUDDY_DISPLAY_NAME}</span>
+    </SidebarMenuRow>
+  );
+}
 
 /** One row per room: its messaging app and its name. Nothing is nested under it. */
 const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummary[] }) {

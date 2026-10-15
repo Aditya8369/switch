@@ -96,7 +96,46 @@ export function WizardFrame({
   }
 
   return (
-    <div className="flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]">
+    <OnboardingSurface exit={exit} pager={pager} footer={footer}>
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="text-2xl font-semibold">{title}</h1>
+        {subtitle && <p className="text-sm text-foreground-muted">{subtitle}</p>}
+      </div>
+      {children}
+    </OnboardingSurface>
+  );
+}
+
+/**
+ * A soft wash of colour behind the first-run pages, low enough in alpha to
+ * read on the light and the dark theme alike.
+ */
+const BACKDROP =
+  'radial-gradient(60% 45% at 50% 48%, rgba(120, 180, 185, 0.12), transparent 70%), ' +
+  'radial-gradient(70% 55% at 10% 100%, rgba(255, 160, 110, 0.22), transparent 70%), ' +
+  'radial-gradient(60% 50% at 90% 100%, rgba(255, 190, 150, 0.14), transparent 70%)';
+
+/**
+ * The window-filling surface every first-run page is drawn on: the backdrop,
+ * the way out at the top, the page centred, and its buttons centred at the
+ * foot, where the eye ends up after reading the page.
+ */
+export function OnboardingSurface({
+  exit,
+  pager,
+  footer,
+  children,
+}: {
+  exit: WizardExit | null;
+  pager: WizardPager | null;
+  footer: ReactNode | null;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="relative flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]"
+      style={{ backgroundImage: BACKDROP }}
+    >
       {exit && (
         <div className="flex justify-end px-3 pt-3 [-webkit-app-region:no-drag]">
           <Button variant="ghost" size="sm" onClick={exit.onExit}>
@@ -105,15 +144,15 @@ export function WizardFrame({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <div className="mx-auto flex w-full max-w-[620px] flex-1 flex-col justify-center gap-6 px-8 py-10 [-webkit-app-region:no-drag]">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <h1 className="text-2xl font-semibold">{title}</h1>
-            {subtitle && <p className="text-sm text-foreground-muted">{subtitle}</p>}
-          </div>
+        <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-6 px-8 py-10 [-webkit-app-region:no-drag]">
           {children}
-          {footer && <div className="flex gap-2">{footer}</div>}
         </div>
       </div>
+      {footer && (
+        <div className="flex justify-center gap-2 px-8 pt-2 pb-6 [-webkit-app-region:no-drag]">
+          {footer}
+        </div>
+      )}
       {pager && (
         <div className="[-webkit-app-region:no-drag]">
           <StepPager {...pager} />
@@ -121,4 +160,9 @@ export function WizardFrame({
       )}
     </div>
   );
+}
+
+/** The way out the surrounding flow offers, for a page that draws its own surface. */
+export function useWizardExit(): WizardExit | null {
+  return useContext(WizardExitContext);
 }
