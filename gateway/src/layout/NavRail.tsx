@@ -3,6 +3,7 @@ import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
+import ExtensionOutlined from "@mui/icons-material/ExtensionOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
@@ -60,7 +61,10 @@ const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
   { label: "Usage", path: "/usage", icon: DataUsageOutlined },
 ];
 
-const ADMIN_ITEMS: NavItem[] = [{ label: "Users", path: "/users", icon: PeopleOutlined }];
+const ADMIN_ITEMS: NavItem[] = [
+  { label: "Users", path: "/users", icon: PeopleOutlined },
+  { label: "Connector apps", path: "/connector-apps", icon: ExtensionOutlined },
+];
 
 const TARGET = 44;
 // The logo sits slightly inside the nav button footprint: it is a solid mark
