@@ -9,7 +9,7 @@ inserted into or deleted from `client_rooms`, so every process re-reads that
 client's memberships.
 
 Revision ID: e5b2c8d1f7a3
-Revises: d7a3f9c2e4b8
+Revises: c4d8e2f6a913
 Create Date: 2026-10-14 00:00:00.000000
 
 """
@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "e5b2c8d1f7a3"
-down_revision: str | None = "d7a3f9c2e4b8"
+down_revision: str | None = "c4d8e2f6a913"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
