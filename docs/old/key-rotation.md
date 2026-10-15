@@ -72,7 +72,10 @@ the old key available for decrypting and verifying.
    verify and decrypt with the new key; nothing uses it yet.
 2. Move the new key **first**: `SECRET_KEYS=202611:<new>,202610:<old>`.
    Deploy. New sessions, signatures and encrypted values use the new key, and
-   the boot re-encrypts stored credentials under it.
+   the boot re-encrypts stored credentials under it. Where replicas are
+   updated one by one, a replica not yet replaced keeps encrypting under the
+   old key after the new replicas' boots have run, so restart switch-core
+   once the roll has finished: that boot re-encrypts what they wrote.
 3. Wait at least 24 hours, so sessions signed with the old key have expired.
 4. Remove the old key and deploy. Buttons on Mattermost cards posted before
    step 2 stop working; nothing else is affected.
@@ -84,7 +87,8 @@ running process left to check, so it is not held back.
 
 Rotate on a schedule, and at once if a key may have leaked. For a suspected
 leak, skip the wait: deploy `<old>,<new>`, deploy `<new>,<old>` once that has
-reached every replica, check the boot log reports the re-encryption, then
+reached every replica, restart switch-core once that has too (where replicas
+are updated one by one), check the boot log reports the re-encryption, then
 deploy `<new>` alone straight away. Skip step 1 as well only where no
 switch-core process is still running when the first new one starts, as with a
 single replica replaced in one step. While an old process is still running,
