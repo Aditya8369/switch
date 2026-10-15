@@ -2324,8 +2324,8 @@ class CollaborationCore:
                 admin_marker=admin_marker if is_system else None,
                 is_system=is_system,
             )
-        except Exception:
-            await self._release_outbound(event.event_id)
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(event.event_id))
             raise
         await self._settle_outbound(event.event_id, message_ref)
 
@@ -2564,8 +2564,8 @@ class CollaborationCore:
                     caption=caption,
                     thread_root_id=thread_root_ref,
                 )
-        except Exception:
-            await self._release_outbound(event.event_id)
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(event.event_id))
             raise
         await self._settle_outbound(event.event_id, message_ref)
 
@@ -2694,8 +2694,8 @@ class CollaborationCore:
                 caption=pending.caption,
                 thread_root_id=thread_root_ref,
             )
-        except Exception:
-            await self._release_outbound(claim_event_id)
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(claim_event_id))
             raise
         await self._settle_outbound(claim_event_id, message_ref)
 
@@ -2778,9 +2778,13 @@ class CollaborationCore:
         """Claim a room message for posting to the platform, before posting
         it. False when it is claimed already: posted, or being posted, by
         whoever held the bridge before. Claiming first is what keeps a
-        hand-over between processes from posting a message twice; a process
-        that stops between the claim and the post leaves it unposted rather
-        than doubled."""
+        hand-over between processes from posting a message twice.
+
+        A post that fails, or is cancelled because the bridge stopped before
+        it finished, lets its claim go, so whoever holds the bridge next posts
+        it; one the platform took just before the cancel then shows twice. A
+        process that dies between the claim and the post leaves the claim, and
+        the message is not posted."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -2820,7 +2824,8 @@ class CollaborationCore:
             await session.commit()
 
     async def _release_outbound(self, transport_event_id: str) -> None:
-        """Let a claim go after the platform refused the post."""
+        """Let a claim go after the platform refused the post, or the post
+        was cancelled before it finished."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:

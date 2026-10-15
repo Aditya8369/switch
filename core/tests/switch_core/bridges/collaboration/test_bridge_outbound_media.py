@@ -464,3 +464,37 @@ async def test_a_file_arriving_while_its_group_times_out_is_still_posted() -> No
     ]
     assert bridge._outbound_groups == {}
     assert bridge._flushing_outbound_groups == []
+
+
+async def test_a_post_cancelled_by_a_stop_lets_its_claim_go() -> None:
+    """A bridge stopping past its grace cancels the post in hand. The claim
+    goes with it, so the next holder, reading the message again, posts it."""
+    bridge = _fake_bridge()
+    sending = asyncio.Event()
+
+    async def hanging_send_attachment(*args: Any, **kwargs: Any) -> str:
+        sending.set()
+        await asyncio.Event().wait()
+        raise AssertionError("never answered")
+
+    bridge._adapter.send_attachment = hanging_send_attachment
+    released: list[str] = []
+    release = bridge._release_outbound
+
+    async def recording_release(transport_event_id: str) -> None:
+        released.append(transport_event_id)
+        await release(transport_event_id)
+
+    bridge._release_outbound = recording_release
+    posting = asyncio.create_task(
+        CollaborationCore.handle_outbound_media(
+            bridge, _room(), _media_event(event_id="$cut-short"), bridge.client
+        )
+    )
+    await asyncio.wait_for(sending.wait(), 1.0)
+
+    posting.cancel()
+    await asyncio.gather(posting, return_exceptions=True)
+
+    assert posting.cancelled()
+    assert released == ["$cut-short"]
