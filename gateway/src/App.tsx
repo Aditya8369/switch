@@ -142,7 +142,7 @@ export function AppRoutes() {
         <Route path="registration-keys" element={<RegistrationKeysPage />} />
         <Route path="usage" element={<UsagePage />} />
         <Route path="users" element={<UsersPage />} />
-        <Route path="connector-apps" element={<ConnectorAppsPage />} />
+        <Route path="connectors" element={<ConnectorAppsPage />} />
         <Route path="workspace" element={<WorkspacePage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />

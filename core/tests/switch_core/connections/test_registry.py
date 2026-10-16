@@ -186,7 +186,7 @@ def test_an_app_not_set_up_here_says_who_sets_it_up(
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {})
     reason = (
         "{} is not set up on this server. Ask whoever runs your Switch server "
-        "to add it under Connector apps in the Switch dashboard."
+        "to add it under Connectors in the Switch dashboard."
     )
     assert broker.availability("example") == reason.format("Example")
     assert broker.availability("github") == reason.format("GitHub")

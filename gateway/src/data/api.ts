@@ -2208,7 +2208,7 @@ export interface ServiceConnection {
   connectable: boolean;
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: string | null;
-  /** Whether it waits on the server's operator setting up its app under Connector apps. */
+  /** Whether it waits on the server's operator setting up its app under Connectors. */
   server_setup_needed: boolean;
   status: "not_connected" | "active" | "needs_reauthorization" | "error";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
@@ -2291,7 +2291,7 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
   ],
 };
 
-// ── Connector apps (the server's operator only) ──────────────────────────────
+// ── Connector app credentials (the server's operator only) ───────────────
 
 export type ConnectorAppKind = "github_app" | "oauth_client";
 export type ConnectorAppField = "client_id" | "client_secret" | "private_key";

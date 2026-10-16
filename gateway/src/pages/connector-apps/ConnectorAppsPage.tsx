@@ -8,10 +8,10 @@ import { cardOrder, ONLY_THE_OPERATOR, PUBLIC_URL_BANNER, REGISTERED_NOTE } from
 function Heading() {
   return (
     <Box mb={2}>
-      <Typography variant="h5">Connector apps</Typography>
+      <Typography variant="h5">Connectors</Typography>
       <Typography variant="body2" color="text.secondary">
-        Some connectors need an app registered at the vendor before anyone can connect. Set
-        each up once, for the whole server.
+        Some connectors sign in through an app you register at the vendor. Set each up once,
+        for the whole server, before anyone can connect it.
       </Typography>
     </Box>
   );

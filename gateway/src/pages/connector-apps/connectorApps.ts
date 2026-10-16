@@ -1,5 +1,5 @@
 /**
- * What the Connector apps page shows, decided here and only displayed by the
+ * What the Connectors page shows, decided here and only displayed by the
  * components: each card's state, the one sentence and button that go with
  * it, the order, which actions it offers, and the wording of every dialog.
  * Labels follow what Google and GitHub call things, so the operator can copy
@@ -331,7 +331,7 @@ export const PUBLIC_URL_BANNER =
   "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";
 
 export const ONLY_THE_OPERATOR =
-  "Only the person who runs this Switch server can set up connector apps.";
+  "Only the person who runs this Switch server can set up connectors.";
 
 export const REGISTERED_NOTE = (names: string[]): string =>
   `${names.join(" and ")} ${names.length === 1 ? "sets itself" : "set themselves"} up the first time someone connects. Nothing to do here.`;

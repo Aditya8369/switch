@@ -209,7 +209,7 @@ Before upgrading an installation that has cloud machines:
 
 GitHub connections are not part of cloud machines. To let users link their
 GitHub account and grant agents repositories, set up the GitHub App under
-Connector apps in the Switch dashboard, or in the chart with
+Connectors in the Switch dashboard, or in the chart with
 `switchCore.githubConnectionsSecret` and `switchCore.githubAppPrivateKeyPath`
 ([GitHub App setup](../../docs/old/github-app-setup.md)). Register
 `<GATEWAY_PUBLIC_URL>/gateway/provider-connections/github/callback` as the

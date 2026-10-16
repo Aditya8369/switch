@@ -1,4 +1,4 @@
-"""Connector apps: the operator sets up the apps connectors sign in through.
+"""The operator sets up the apps connectors sign in through.
 
 Deployment-operator only: `require_admin` (`users.role == "admin"`) gates
 every route here, never `require_tenant_admin`, since one app serves every

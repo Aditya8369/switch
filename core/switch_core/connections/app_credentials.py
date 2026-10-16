@@ -100,7 +100,7 @@ def not_set_up(name: str) -> str:
     """What members are told about a service whose app is not set up here."""
     return (
         f"{name} is not set up on this server. Ask whoever runs your Switch "
-        "server to add it under Connector apps in the Switch dashboard."
+        "server to add it under Connectors in the Switch dashboard."
     )
 
 

@@ -46,7 +46,7 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - **The server's operator sets up connector apps from the dashboard.** A
-  Connector apps page, beside Users and for the operator alone, sets up the
+  Connectors page, beside Users and for the operator alone, sets up the
   GitHub App and Google Workspace's OAuth client (and any static client the
   catalog adds) with no restart. Each save is checked with the vendor first,
   and stored, encrypted, only if the vendor accepts it; GitHub's App name is
@@ -58,7 +58,7 @@ version of their own to them without also giving them a release of their own.
   app, and **Copy into Switch** moves one into the dashboard with nothing
   retyped. Changes are recorded in a new server-wide audit log
   (`server_audit_events`). Members of a server without an app are told to ask
-  whoever runs it to add it under Connector apps; `GET /service-connections`
+  whoever runs it to add it under Connectors; `GET /service-connections`
   gains `server_setup_needed`. See `docs/old/github-app-setup.md` and
   `docs/old/google-workspace-setup.md`.
 - **A connection knows the app it signed in through.** A connection made

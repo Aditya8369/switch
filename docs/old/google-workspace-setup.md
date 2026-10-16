@@ -10,7 +10,7 @@ under Google Workspace.
 
 Without the app, Google Workspace is listed on the server as "Google
 Workspace is not set up on this server. Ask whoever runs your Switch server to
-add it under Connector apps in the Switch dashboard."
+add it under Connectors in the Switch dashboard."
 
 ## What you need
 
@@ -69,7 +69,7 @@ the app first. Switch cannot tell which a client is, and works with either.
 
 ## Give Switch the client
 
-In the Switch dashboard, open **Connector apps** (shown to the server's
+In the Switch dashboard, open **Connectors** (shown to the server's
 operator, beside Users) and choose **Set up Google Workspace**. The dialog
 shows the redirect URI to register, with a copy button; paste the client's
 **Client ID** and **Client secret** as Google Cloud labels them, and choose
@@ -153,7 +153,7 @@ agents' next token requests:
 
 - add it to `DISABLED_SERVICES`, e.g.
   `DISABLED_SERVICES='{"google-workspace": "Paused while we review access."}'`;
-- remove its client under Connector apps in the dashboard;
+- remove its client under Connectors in the dashboard;
 - unset `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`, where it is set from
   configuration.
 

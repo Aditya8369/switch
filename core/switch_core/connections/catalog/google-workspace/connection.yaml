@@ -10,7 +10,7 @@ auth:
   refresh: reusable
   oauth:
     # Each server's operator registers a Google app (a Web client) and saves
-    # it under Connector apps in the dashboard, or names its settings in
+    # it under Connectors in the dashboard, or names its settings in
     # GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH.
     registration: static
     client_settings: GOOGLE_WORKSPACE

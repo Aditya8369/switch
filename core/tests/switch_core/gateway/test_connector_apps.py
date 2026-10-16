@@ -1,4 +1,4 @@
-"""The operator's Connector apps routes, against Postgres and fake vendors.
+"""The operator's connector-app routes, against Postgres and fake vendors.
 
 Only the server's operator reaches them; a save is checked with the vendor
 and stored only when the vendor accepts it; it is in use at once; and no

@@ -42,7 +42,7 @@ an organization, under the organization's settings).
 
 ## Give Switch the App
 
-In the Switch dashboard, open **Connector apps** (shown to the server's
+In the Switch dashboard, open **Connectors** (shown to the server's
 operator, beside Users) and choose **Set up GitHub**. The dialog shows the
 callback URL to register, with a copy button. Paste the App's **Client ID**
 and **Client secret**, and choose the **Private key** file; it is read in your
@@ -113,6 +113,6 @@ saved App is called back at `GATEWAY_PUBLIC_URL`.
 ## One replica
 
 Sign-ins in progress are held in the switch-core process, and a change made
-on the Connector apps page takes effect in that process, so run switch-core
+on the Connectors page takes effect in that process, so run switch-core
 as one replica. Keep query strings out of every access log in front of the
 callback: its URL carries a single-use OAuth code.

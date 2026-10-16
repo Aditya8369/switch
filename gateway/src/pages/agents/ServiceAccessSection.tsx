@@ -287,7 +287,7 @@ export function onOffGrantNote(
 /** The operator's way from a service that is not set up to where it is set up. */
 function SetUpLink() {
   return (
-    <Button component={RouterLink} to="/connector-apps" size="small" sx={{ ml: 1 }}>
+    <Button component={RouterLink} to="/connectors" size="small" sx={{ ml: 1 }}>
       Set up
     </Button>
   );

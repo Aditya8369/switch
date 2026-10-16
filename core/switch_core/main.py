@@ -1118,7 +1118,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
 
-    # ── Connector apps ────────────────────────────────────────────────────────
+    # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,
     # before anything that serves a sign-in reads them.
     service_http = guarded_async_client(config.outbound_policy, timeout=20)

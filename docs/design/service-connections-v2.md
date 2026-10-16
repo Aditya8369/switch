@@ -382,7 +382,7 @@ one of three shapes. Pick the first that fits:
 1. **A remote MCP server with OAuth** (Atlassian): `adapter: oauth` with `mcp`.
    Where the vendor offers dynamic client registration, nothing is set up on
    the server (`registration: dynamic`); otherwise each server's operator
-   registers an OAuth app and saves it under Connector apps in the dashboard,
+   registers an OAuth app and saves it under Connectors in the dashboard,
    or names it in `<PREFIX>_CLIENT_CONFIG_PATH` (`registration: static`).
 2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
    `cli`, a pinned release per platform with its SHA-256, and the allow and
@@ -453,7 +453,7 @@ Built from a spike against a test Workspace with an Internal app:
 - **Its own client per server.** Each server's operator registers an internal
   Google app, a Web client whose redirect is Core's callback,
   `<GATEWAY_PUBLIC_URL>/gateway/service-connections/google-workspace/flows/callback`,
-  and saves it under Connector apps in the dashboard, or names its settings in
+  and saves it under Connectors in the dashboard, or names its settings in
   `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`
   ([operator setup](../old/google-workspace-setup.md)). Without either, Google
   Workspace is listed as not set up on this server.
@@ -497,7 +497,7 @@ as unavailable through its own deployment settings, not this repository:
 `DISABLED_SERVICES` `{"google-workspace": "<the reason people see>"}`.
 
 To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
-`enabled: false`, or remove its client (under Connector apps, or by unsetting
+`enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 

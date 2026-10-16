@@ -3,7 +3,7 @@ import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
-import ExtensionOutlined from "@mui/icons-material/ExtensionOutlined";
+import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
@@ -63,7 +63,7 @@ const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
 
 const ADMIN_ITEMS: NavItem[] = [
   { label: "Users", path: "/users", icon: PeopleOutlined },
-  { label: "Connector apps", path: "/connector-apps", icon: ExtensionOutlined },
+  { label: "Connectors", path: "/connectors", icon: PowerOutlined },
 ];
 
 const TARGET = 44;

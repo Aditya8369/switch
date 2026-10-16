@@ -276,7 +276,7 @@ describe("ServiceAccessSection", () => {
   });
 
   const NOT_SET_UP =
-    "Example is not set up on this server. Ask whoever runs your Switch server to add it under Connector apps in the Switch dashboard.";
+    "Example is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.";
 
   it("offers the operator Set up for a service waiting on its app, and nobody else", async () => {
     const services = [
@@ -296,13 +296,13 @@ describe("ServiceAccessSection", () => {
       </MemoryRouter>,
     );
     const setUp = await screen.findByRole("link", { name: "Set up" });
-    expect(setUp.getAttribute("href")).toBe("/connector-apps");
+    expect(setUp.getAttribute("href")).toBe("/connectors");
     vi.mocked(useAuth).mockReturnValue({ isOperator: false } as ReturnType<typeof useAuth>);
   });
 
   it("says GitHub is not set up, rather than an error, when its App is not", async () => {
     const reason =
-      "GitHub is not set up on this server. Ask whoever runs your Switch server to add it under Connector apps in the Switch dashboard.";
+      "GitHub is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.";
     mockServer(NONE, [
       onOff("not_connected", {
         slug: "github",

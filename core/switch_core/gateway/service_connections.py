@@ -127,7 +127,7 @@ async def list_service_connections(
                 "configured": unavailable is None,
                 "unavailable_reason": unavailable,
                 # Whether it waits on the server's operator setting up its app
-                # under Connector apps, so a client can offer them that.
+                # under Connectors, so a client can offer them that.
                 "server_setup_needed": broker.server_setup_needed(definition.slug),
                 # Whether a workspace admin left it on for this workspace.
                 "workspace_enabled": definition.slug not in switched_off,

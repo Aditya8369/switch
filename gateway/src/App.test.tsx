@@ -106,10 +106,10 @@ describe("AppRoutes", () => {
     expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Workspace/ })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
-    expect(screen.queryByRole("link", { name: /Connector apps/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Connectors/ })).toBeNull();
   });
 
-  it("gives the server's operator Connector apps beside Users", async () => {
+  it("gives the server's operator Connectors beside Users", async () => {
     mockFetch({
       "/auth/session": [
         200,
@@ -122,10 +122,10 @@ describe("AppRoutes", () => {
       ],
       "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [], registered: [] }],
     });
-    renderAt("/connector-apps");
-    expect(await screen.findByRole("heading", { name: "Connector apps" })).toBeTruthy();
+    renderAt("/connectors");
+    expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Users/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Connector apps/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Connectors/ })).toBeTruthy();
   });
 
   it("puts a pending invite before everything else", async () => {

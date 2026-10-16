@@ -371,7 +371,7 @@ class TestAvailability:
                 False,
                 {},
                 "Google Workspace is not set up on this server. Ask whoever runs "
-                "your Switch server to add it under Connector apps in the Switch "
+                "your Switch server to add it under Connectors in the Switch "
                 "dashboard.",
             ),
             (

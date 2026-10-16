@@ -66,7 +66,7 @@ _ALLOWED_MODULES = {
     # then bind each tenant and work under its own policy, the same shape as
     # session-activity upkeep above.
     "switch_core.connections.maintenance",
-    # The operator's Connector apps page counts who is connected through each
+    # The operator's Connectors page counts who is connected through each
     # app, and who would have to reconnect if it were replaced, across every
     # workspace: enumerate, then read each one's connections under its own
     # policy, the same shape as service-token upkeep above.
