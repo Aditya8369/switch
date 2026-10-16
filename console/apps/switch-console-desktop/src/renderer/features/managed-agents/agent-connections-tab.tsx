@@ -114,7 +114,7 @@ export function AgentConnectionsTab({
     <ServerPage
       width={900}
       title="Connections"
-      description={`What ${label} may use of your own connections. Its sessions are given short-lived access for what you grant, and nothing else.`}
+      description={`What ${label} may use of your own connections. Its sessions are given short-lived access for what you turn on, and nothing else.`}
     >
       {children}
     </ServerPage>
@@ -196,7 +196,7 @@ export function AgentConnectionsTab({
           )}
           {services.isSuccess && cards.length === 0 && note === null && (
             <p className="text-sm text-foreground-muted">
-              No service on this server can be granted to {label} yet.
+              No service on this server can be turned on for {label} yet.
             </p>
           )}
           {note && <p className="text-sm text-foreground-muted">{note}</p>}
@@ -206,7 +206,7 @@ export function AgentConnectionsTab({
         <ConnectionDrawer key={opened.slug} card={opened} onClose={() => open(null)}>
           {change.isError && (
             <p role="alert" className="text-xs text-destructive">
-              {failureText(change.error, 'Could not change the grant.')}
+              {failureText(change.error, `Could not change its ${opened.name} access.`)}
             </p>
           )}
           {notice && <p className="text-xs text-foreground-muted">{notice}</p>}
@@ -224,6 +224,7 @@ export function AgentConnectionsTab({
             <GitHubDrawerBody
               card={opened}
               github={github}
+              agentName={label}
               cloud={cloud}
               busy={change.isPending}
               editing={editing}
@@ -341,6 +342,7 @@ function ConnectionDrawer({
 function GitHubDrawerBody({
   card,
   github,
+  agentName,
   cloud,
   busy,
   editing,
@@ -350,6 +352,7 @@ function GitHubDrawerBody({
 }: {
   card: AgentConnectionCard;
   github: Parameters<typeof GitHubGrantForm>[0]['github'];
+  agentName: string;
   cloud: boolean;
   busy: boolean;
   /** Whether the form for changing an existing grant is open. */
@@ -375,6 +378,7 @@ function GitHubDrawerBody({
         <GitHubGrantForm
           github={github}
           current={grant}
+          agentName={agentName}
           busy={busy}
           onCancel={grant ? () => onEdit(false) : null}
           onSave={onSave}

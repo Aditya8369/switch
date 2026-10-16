@@ -154,7 +154,7 @@ it('says what removing a grant does, and does not, on your computer', async () =
   expect(button(el, 'Remove')!.title).toContain('may still use your own sign-in');
   await act(async () => button(el, 'Remove')!.click());
   await vi.waitFor(() =>
-    expect(el.textContent).toContain('Removing a grant stops Switch giving this access.')
+    expect(el.textContent).toContain('Removing it stops Switch giving this access.')
   );
   expect(workspaces.removeServiceGrant).toHaveBeenCalledWith({
     workspaceId: 'workspace',
@@ -174,8 +174,9 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
   const search = () => el.querySelector<HTMLInputElement>('input[aria-label="Add repository"]');
   await vi.waitFor(() => expect(search()).not.toBeNull());
   expect(el.querySelector('[aria-label="GitHub account"]')).toBeNull();
+  expect(el.textContent).toContain('Turn GitHub on for helper');
   expect(el.textContent).toContain('No repository chosen.');
-  expect(button(el, 'Grant')?.disabled).toBe(true);
+  expect(button(el, 'Turn on')?.disabled).toBe(true);
   await act(async () => {
     const input = search()!;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -187,8 +188,8 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
     option.textContent?.includes('docs')
   );
   await act(async () => docs!.click());
-  expect(button(el, 'Grant')?.disabled).toBe(false);
-  await act(async () => button(el, 'Grant')!.click());
+  expect(button(el, 'Turn on')?.disabled).toBe(false);
+  await act(async () => button(el, 'Turn on')!.click());
 
   await vi.waitFor(() =>
     expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
@@ -222,6 +223,20 @@ it('draws nothing, and asks nothing, where the server has service connections of
   await act(async () => {});
   expect(el.textContent).toBe('');
   expect(workspaces.getServiceGrants).not.toHaveBeenCalled();
+});
+
+it('changes which repositories a GitHub grant reaches, in a form that never says "grant"', async () => {
+  workspaces.getServiceGrants.mockResolvedValue(GRANTED);
+  const el = await render();
+
+  await vi.waitFor(() => expect(button(el, 'Change')).toBeDefined());
+  await act(async () => button(el, 'Change')!.click());
+  await vi.waitFor(() =>
+    expect(el.textContent).toContain('Change which repositories helper reaches')
+  );
+  const form = button(el, 'Save')!.closest('.rounded-lg')!;
+  expect(form.textContent).toContain('Change which repositories helper reaches');
+  expect(form.textContent).not.toMatch(/\bgrant/i);
 });
 
 it('says so when the grants could not be loaded', async () => {

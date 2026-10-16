@@ -157,12 +157,12 @@ export function ServiceGrantsRow({
         <span className="text-sm font-medium">Service access</span>
         <p className="text-sm text-foreground-muted">
           What {agentName} may use of your own connections. Its sessions are given short-lived
-          access for what you grant, and nothing else.
+          access for what you turn on, and nothing else.
         </p>
       </div>
       {change.isError && (
         <span className="text-xs text-destructive">
-          {failureText(change.error, 'Could not change the grant.')}
+          {failureText(change.error, 'Could not change its access.')}
         </span>
       )}
       {notice && <span className="text-xs text-foreground-muted">{notice}</span>}
@@ -227,6 +227,7 @@ export function ServiceGrantsRow({
         <GitHubGrantForm
           github={github}
           current={githubGrant}
+          agentName={agentName}
           busy={change.isPending}
           onCancel={githubGrant ? () => setEditing(false) : null}
           onSave={(access, resources) => set('github', access, resources)}
@@ -328,12 +329,14 @@ export function GrantCard({
 export function GitHubGrantForm({
   github,
   current,
+  agentName,
   busy,
   onCancel,
   onSave,
 }: {
   github: { data: GitHubConnection | undefined; isError: boolean; error: unknown };
   current: ServiceGrant | null;
+  agentName: string;
   busy: boolean;
   onCancel: (() => void) | null;
   onSave: (access: Access, resources: Record<string, unknown>) => void;
@@ -361,7 +364,7 @@ export function GitHubGrantForm({
   if (github.data.status === 'not_connected')
     return (
       <p className="text-sm text-foreground-muted">
-        To grant GitHub, first connect your GitHub account from Connectors.
+        To turn GitHub on, first connect your GitHub account from Connectors.
       </p>
     );
 
@@ -371,7 +374,9 @@ export function GitHubGrantForm({
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
       <span className="text-sm font-medium">
-        {current ? 'Change the GitHub grant' : 'Grant GitHub'}
+        {current
+          ? `Change which repositories ${agentName} reaches`
+          : `Turn GitHub on for ${agentName}`}
       </span>
       {reach && <GitHubGrantPicker github={reach} value={choice} onChange={setChoice} />}
       <div className="flex gap-2">
@@ -380,7 +385,7 @@ export function GitHubGrantForm({
           disabled={busy || resources === null}
           onClick={() => resources && onSave(choice.access, resources)}
         >
-          {current ? 'Save' : 'Grant'}
+          {current ? 'Save' : 'Turn on'}
         </Button>
         {onCancel && (
           <Button size="sm" variant="ghost" onClick={onCancel}>
