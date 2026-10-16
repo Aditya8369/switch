@@ -15,6 +15,7 @@ import {
 } from '@shared/core/chats/chats';
 import { foldTurnEndNotices, placeTurns, type TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
+import { hiddenStopRows } from '../stop-rows';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
@@ -159,6 +160,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     ])
   );
   const liveNotices = liveSessionStartingNotices(timeline.messages, turnAgents);
+  const stopRows = hiddenStopRows(timeline.messages);
   // Open requests whose turn shows under no loaded message still need an answer.
   const shownRequests = new Set(
     [...blocksByAnchor.values()].flatMap((blocks) =>
@@ -198,7 +200,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       {timeline.messages.map((message) => {
         const notice = isSessionStartingNotice(message);
         if (notice && !liveNotices.has(message.messageId)) return null;
-        if (foldedNotices.has(message.messageId)) return null;
+        if (foldedNotices.has(message.messageId) || stopRows.has(message.messageId)) return null;
         const ended = turnEndNotice(message);
         const sentAt = new Date(message.sentAt);
         // The conversation's first message gets no separator above it; a later group does.

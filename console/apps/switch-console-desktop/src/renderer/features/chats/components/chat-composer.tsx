@@ -7,6 +7,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { snippetOf } from '../chat-threads';
+import { isInterruptAck } from '../stop-rows';
 import type { AgentActivity, ControlRequest } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
 import { chatTitler } from '../stores/chats';
@@ -73,6 +74,14 @@ const ControlStatus = observer(function ControlStatus({
           : undefined;
         const failed = control.state === 'failed';
         const unknown = control.state === 'unknown';
+        // The turn's "Stopped" row says a Stop worked; only its failures show here.
+        if (
+          control.command === 'interrupt' &&
+          !failed &&
+          !unknown &&
+          (!reply || isInterruptAck(reply))
+        )
+          return null;
         return (
           <div
             key={control.requestId}
