@@ -27,7 +27,7 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import markdown
 from sqlalchemy import (
@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.authz import administers_tenant
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
@@ -98,6 +98,10 @@ from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.types import MessageFormat
+
+if TYPE_CHECKING:
+    from switch_core.chats.signals import ChatSignals
+    from switch_core.delivery.router import MessageRouter, Routed
 
 logger = logging.getLogger(__name__)
 
@@ -153,15 +157,16 @@ class ChatService:
         agent_store: AgentStore,
         user_store: UserStore,
         message_store: MessageStore,
+        router: MessageRouter,
         media_store: MediaStore,
         usage_store: UsageStore,
         id_server_name: str,
         media_max_bytes: int,
         agent_chats_enabled: bool,
-        controllers: ControllerPresence,
+        connections: AgentConnectionRegistry,
     ) -> None:
         self.session_factory = session_factory
-        self._controllers = controllers
+        self._connections = connections
         self.agent_chats_enabled = agent_chats_enabled
         self.listener = listener
         self.activity_listener = activity_listener
@@ -173,6 +178,7 @@ class ChatService:
         self._agent_store = agent_store
         self._user_store = user_store
         self._message_store = message_store
+        self._router = router
         self._media_store = media_store
         self._usage_store = usage_store
         self._id_server_name = id_server_name
@@ -181,6 +187,9 @@ class ChatService:
             weakref.WeakValueDictionary()
         )
         self._membership_watchers: dict[tuple[str, str], set[Callable[[], None]]] = {}
+        # Where a change to people's chats made here is announced to the
+        # other processes, once wired (`use_signals`).
+        self._signals: ChatSignals | None = None
         self._addressing = AddressingResolver(
             room_store=room_store,
             room_role_store=RoomRoleStore(),
@@ -193,10 +202,16 @@ class ChatService:
 
     # ── Membership signals ───────────────────────────────────────────────────
 
+    def use_signals(self, signals: ChatSignals) -> None:
+        """Where a change to people's chats made here is announced, so every
+        other process wakes the streams it holds for them (`signals.py`)."""
+        self._signals = signals
+
     def watch_memberships(
         self, tenant_id: str, user_id: str, callback: Callable[[], None]
     ) -> None:
-        """Call `callback` whenever this process changes the user's chats."""
+        """Call `callback` whenever the user's chats change: at once when this
+        process changed them, and once told when another process did."""
         self._membership_watchers.setdefault((tenant_id, user_id), set()).add(callback)
 
     def unwatch_memberships(
@@ -209,12 +224,27 @@ class ChatService:
         if not watchers:
             del self._membership_watchers[(tenant_id, user_id)]
 
-    def _memberships_changed(self, tenant_id: str, user_ids: list[str]) -> None:
+    def wake_membership_watchers(self, tenant_id: str, user_ids: list[str]) -> None:
+        """Call every callback watching these users' chats in this process."""
         for user_id in user_ids:
             for callback in list(
                 self._membership_watchers.get((tenant_id, user_id), ())
             ):
                 callback()
+
+    def wake_all_membership_watchers(self) -> None:
+        """Call every callback watching anyone's chats in this process, once."""
+        for watchers in list(self._membership_watchers.values()):
+            for callback in list(watchers):
+                callback()
+
+    def _memberships_changed(self, tenant_id: str, user_ids: list[str]) -> None:
+        """The users' chats changed through this process, and the change has
+        committed: the streams here are woken at once, and the other
+        processes are told to wake theirs."""
+        self.wake_membership_watchers(tenant_id, user_ids)
+        if self._signals is not None:
+            self._signals.memberships_changed(tenant_id, user_ids)
 
     def _lock(self, *key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -1108,6 +1138,7 @@ class ChatService:
                 ),
             )
             posted: list[Message] = []
+            routed: list[Routed] = []
             for index, content in enumerate(contents):
                 message = message_row(
                     room_id=room.id,
@@ -1119,11 +1150,17 @@ class ChatService:
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
-                posted.append(
-                    await self._message_store.create(
-                        session, message, attachments_in(content)
+                routed.append(
+                    await self._router.store(
+                        session,
+                        tenant_id=tenant_id,
+                        room_id=room.id,
+                        transport_room_id=room.transport_room_id,
+                        message=message,
+                        attachments=attachments_in(content),
                     )
                 )
+                posted.append(message)
             await self._usage_store.record(
                 session,
                 tenant_id=tenant_id,
@@ -1142,6 +1179,8 @@ class ChatService:
                 .values(result={"messageIds": [m.transport_event_id for m in posted]})
             )
             await session.commit()
+        for each in routed:
+            each.committed()
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
@@ -1213,9 +1252,12 @@ class ChatService:
                 return str((operation.result or {})["commandId"])
 
             command_id = new_event_id()
-            await self._message_store.create(
+            routed = await self._router.store(
                 session,
-                message_row(
+                tenant_id=tenant_id,
+                room_id=room.id,
+                transport_room_id=room.transport_room_id,
+                message=message_row(
                     room_id=room.id,
                     event_id=command_id,
                     sender_id=client.transport_user_id,
@@ -1230,7 +1272,7 @@ class ChatService:
                     },
                     client_txn_id=request_id,
                 ),
-                [],
+                attachments=[],
             )
             await session.execute(
                 update(ChatOperation)
@@ -1242,14 +1284,17 @@ class ChatService:
                 .values(result={"commandId": command_id})
             )
             await session.commit()
+        routed.committed()
         return command_id
 
     async def warm(
         self, tenant_id: str, user: User, room_id: str, *, agent_id: str
     ) -> None:
-        """Ask the agent's controller again to start its session for a chat
-        that already exists, as creating it did. Anyone a message from would
-        start the session may ask: it grants nothing that message does not."""
+        """Ask the controller of the user's own agent to start its session for
+        this chat before the first message. A hint: nothing waits for it, and
+        an agent no controller hosts is not warmed. The controller is asked
+        through whichever process holds its socket
+        (`AgentConnectionRegistry.relay_warm`)."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
@@ -1268,9 +1313,9 @@ class ChatService:
     def _start_session(self, agent_id: str, room_id: str) -> None:
         """A hint to a controller-hosted agent: nothing waits for it. An agent
         no controller hosts is started by the Console that runs it."""
-        if not self._controllers.is_bound(agent_id):
+        if not self._connections.controllers.is_bound(agent_id):
             return
-        if not self._controllers.relay_warm(agent_id, room_id):
+        if not self._connections.relay_warm(agent_id, room_id):
             logger.warning(
                 "Could not start agent %s's session for room %s: its controller is not connected or it is stopped",
                 agent_id,
