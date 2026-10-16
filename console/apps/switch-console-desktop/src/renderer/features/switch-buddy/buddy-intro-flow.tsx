@@ -1,39 +1,53 @@
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { useState } from 'react';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { appState } from '@renderer/lib/stores/app-state';
-import { WizardChromeProvider } from '@renderer/lib/ui/wizard-frame';
+import { Button } from '@renderer/lib/ui/button';
+import { Spinner } from '@renderer/lib/ui/spinner';
+import { OnboardingSurface } from '@renderer/lib/ui/wizard-frame';
+import { BuddyAvatar } from './buddy-avatar';
+import { firstNameOf, isBuddy } from './buddy-identity';
+import { BuddyIntroLines } from './buddy-intro-lines';
 import { buddyIntroStore } from './buddy-intro-store';
-import { MeetBuddyPage } from './meet-buddy-page';
 import { openBuddyChat } from './open-buddy';
 
 /**
- * The first run's Meet switch-buddy page, over the whole window, for someone
- * who already uses Switch: the same providers, Start with…, Skip, and the same
- * chat it ends in. "Back to the app" leaves it as it was.
+ * switch-buddy, introduced over the whole window to someone who already uses
+ * Switch, the way the first run introduces it, with one way on: its page. That
+ * is its chat when it exists, else the page where an AI provider is connected
+ * to start it. "Back to the app" leaves everything as it was.
  */
 export const BuddyIntroFlow = observer(function BuddyIntroFlow({ serverId }: { serverId: string }) {
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const user = switchServersStore.statusFor(serverId)?.user ?? null;
+  const buddy = useManagedAgents(serverId).data?.find(isBuddy) ?? null;
+  const [opening, setOpening] = useState(false);
   const close = () => buddyIntroStore.close();
-  // No workspace open on that server any more: nothing to meet the buddy in.
-  useEffect(() => {
-    if (workspaceId === null) buddyIntroStore.close();
-  }, [workspaceId]);
-  if (workspaceId === null) return null;
+
+  const meet = async () => {
+    setOpening(true);
+    // The destination is ready before the page goes, so the app opens on it.
+    if (buddy) await openBuddyChat(serverId, buddy);
+    else appState.navigation.navigate('switchBuddy', { serverId });
+    close();
+  };
+
   return (
-    <WizardChromeProvider chrome="page" exit={{ label: 'Back to the app', onExit: close }}>
-      <MeetBuddyPage
-        serverId={serverId}
-        workspaceId={workspaceId}
-        onCreated={(agent) => {
-          // The chat is ready before the page goes, so the app opens on it.
-          void openBuddyChat(serverId, agent).finally(close);
-        }}
-        onSkip={() => {
-          appState.navigation.navigate('switchBuddy', { serverId });
-          close();
-        }}
-      />
-    </WizardChromeProvider>
+    <OnboardingSurface
+      exit={{ label: 'Back to the app', onExit: close }}
+      footer={
+        <Button onClick={() => void meet()} disabled={opening}>
+          {opening && <Spinner className="size-3.5" />}
+          Meet switch-buddy
+        </Button>
+      }
+    >
+      <div className="flex flex-col items-center gap-2 text-center">
+        <BuddyAvatar size={80} shape="tile" />
+        <h1 className="mt-2 text-2xl font-semibold">Meet switch-buddy</h1>
+        <p className="text-sm text-foreground-muted">Your first AI assistant in Switch</p>
+      </div>
+      <BuddyIntroLines firstName={firstNameOf(user?.name)} />
+    </OnboardingSurface>
   );
 });

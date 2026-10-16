@@ -1,5 +1,5 @@
 import { observer } from 'mobx-react-lite';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -11,6 +11,7 @@ import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame'
 import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
 import { firstNameOf, isBuddy } from './buddy-identity';
+import { BuddyIntroLines } from './buddy-intro-lines';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
@@ -186,15 +187,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
       }
     >
       {header}
-      <div className="mx-auto flex w-full max-w-[540px] flex-col items-start gap-3">
-        <Line>
-          Hey{firstName ? ` ${firstName}` : ''}! I’ll be your assistant for everything Switch.
-        </Line>
-        <Line>I can create new agents for you.</Line>
-        <Line>Also bring your human and agent teams into different rooms.</Line>
-        <Line>…and set up and manage your workflows, permissions and guardrails!</Line>
-        <Line>Ready to go?</Line>
-      </div>
+      <BuddyIntroLines firstName={firstName} />
       {computer.kind === 'failed' && (
         <p role="alert" className="text-center text-sm text-destructive">
           {computer.error}
@@ -208,11 +201,3 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     </OnboardingSurface>
   );
 });
-
-function Line({ children }: { children: ReactNode }) {
-  return (
-    <p className="rounded-2xl bg-background px-4 py-3 text-sm text-foreground shadow-sm">
-      {children}
-    </p>
-  );
-}
