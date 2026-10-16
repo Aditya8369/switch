@@ -1,9 +1,9 @@
 /**
- * The Admin page of the workspace in scope: a workspace admin's switch for
- * each service, drawn as tiles. A switch asks before it reaches other
- * people, shows what the server says rather than what was asked, and keeps
- * its place when it flips. Someone who administers nothing is told whose
- * page it is.
+ * The Admin page of the workspace in scope: its sections down the side,
+ * under what they reach, and a workspace admin's switch for each service,
+ * drawn as tiles. A switch asks before it reaches other people, shows what
+ * the server says rather than what was asked, and keeps its place when it
+ * flips. Someone who administers nothing is told whom to ask.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -40,6 +40,10 @@ vi.mock('@renderer/lib/ipc', () => ({
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { onServerInScope: () => ({ id: 'workspace', name: 'Acme' }) },
+}));
+
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }] },
 }));
 
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
@@ -116,17 +120,19 @@ function switchFor(page: HTMLElement, name: string): HTMLElement | null {
   return page.querySelector<HTMLElement>(`[aria-label="${name} for this workspace"]`);
 }
 
-it('shows each service as a tile with who it reaches, and says whom the page affects', async () => {
+it('lists its sections under what they reach, and each service as a tile with who it uses', async () => {
   workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
   const page = await render();
 
   await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
   expect(workspaces.getWorkspaceServices).toHaveBeenCalledWith('workspace');
-  expect(page.textContent).toContain('for everyone in Acme');
+  expect(page.textContent).toContain('Choose which services people in Acme can connect');
+  const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
+  expect(workspace.textContent).toBe('Workspace · AcmeConnectors');
+  expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Connectors');
+  expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
   expect(tiles(page)!.textContent).toContain('3 members connected · 2 agents use it');
   expect(tiles(page)!.textContent).toContain('Nobody has connected it yet');
-  // One tab is a title, not a choice.
-  expect(page.querySelector('[aria-label="Admin"][role="group"]')).toBeNull();
 });
 
 it('asks before switching off a service people use, then shows what the server says', async () => {
@@ -157,8 +163,10 @@ it('asks before switching off a service people use, then shows what the server s
     service: 'atlassian',
     enabled: false,
   });
-  await vi.waitFor(() => expect(tiles(page)!.textContent).toContain('Off for the workspace'));
-  expect(tiles(page)!.textContent).toContain('Switched off by Ada');
+  await vi.waitFor(() =>
+    expect(tiles(page)!.textContent).toContain('Switched off by Ada, Oct 16, 2026.')
+  );
+  expect(switchFor(page, 'Atlassian')!.getAttribute('aria-checked')).toBe('false');
   expect(page.querySelector('[role="status"]')?.textContent).toBe(
     'One session could not be reached yet.'
   );
@@ -205,12 +213,12 @@ it('says when the server has no workspace switches, rather than drawing none', a
   );
 });
 
-it('tells someone who administers nothing whose page it is, asking the server nothing', async () => {
+it('tells someone who administers nothing whom to ask, asking the server nothing', async () => {
   admin.administers = false;
   const page = await render();
 
   await vi.waitFor(() =>
-    expect(page.textContent).toContain('Only an admin of this workspace, or the operator')
+    expect(page.textContent).toContain('Ask a workspace admin to change these.')
   );
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
 });

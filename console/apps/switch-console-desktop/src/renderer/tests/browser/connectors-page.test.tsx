@@ -442,7 +442,7 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   let page = await render();
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
-  expect(button(/Manage for the workspace/, page)).toBeUndefined();
+  expect(button(/Manage in Admin/, page)).toBeUndefined();
   expect(page.querySelector('button[aria-label="Workspace"]')).toBeNull();
   await act(async () => root!.unmount());
   root = null;
@@ -450,8 +450,8 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
 
   admin.administers = true;
   page = await render();
-  await vi.waitFor(() => expect(button(/Manage for the workspace/, page)).toBeDefined());
-  await act(async () => button(/Manage for the workspace/, page)!.click());
+  await vi.waitFor(() => expect(button(/Manage in Admin/, page)).toBeDefined());
+  await act(async () => button(/Manage in Admin/, page)!.click());
   expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', tab: 'connectors' });
+  expect(navigation.params()).toEqual({ serverId: 'server', section: 'connectors' });
 });

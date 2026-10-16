@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adminTabs, shownAdminTab } from '@renderer/features/admin/admin-tabs';
+import { adminGroups, shownAdminSection } from '@renderer/features/admin/admin-sections';
 import { switchStanding, switchTiles } from '@renderer/features/admin/workspace-switches';
 import type {
   ConnectionCatalogEntry,
@@ -40,16 +40,19 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
   };
 }
 
-describe('the Admin page’s tabs', () => {
-  it('shows the workspace switches to its admins only', () => {
-    expect(adminTabs({ administers: true })).toEqual(['connectors']);
-    expect(adminTabs({ administers: false })).toEqual([]);
+describe('the Admin page’s sections', () => {
+  it('shows the workspace switches, under Workspace, to its admins only', () => {
+    expect(adminGroups({ administers: true })).toEqual([
+      { scope: 'workspace', sections: ['connectors'] },
+    ]);
+    expect(adminGroups({ administers: false })).toEqual([]);
   });
 
-  it('opens the tab asked for when the person may use it, otherwise the first', () => {
-    expect(shownAdminTab(['connectors'], 'connectors')).toBe('connectors');
-    expect(shownAdminTab(['connectors'], undefined)).toBe('connectors');
-    expect(shownAdminTab([], 'connectors')).toBeNull();
+  it('opens the section asked for when the person may use it, otherwise the first', () => {
+    const groups = adminGroups({ administers: true });
+    expect(shownAdminSection(groups, 'connectors')).toBe('connectors');
+    expect(shownAdminSection(groups, undefined)).toBe('connectors');
+    expect(shownAdminSection([], 'connectors')).toBeNull();
   });
 });
 

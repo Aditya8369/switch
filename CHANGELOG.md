@@ -1802,12 +1802,15 @@ version of their own to them without also giving them a release of their own.
 - **A workspace's service switches are on an Admin page.** They were a
   "Workspace" tab on the Connectors page, beside Yours and Discover. An Admin
   entry in the sidebar, shown to the workspace's admins and the server's
-  operator where service connections are on, opens them as tiles like
-  Discover's: each service with its category, how many members have connected
-  it and agents use it, and who last changed it, with its switch. A tile keeps
-  its place when it flips, and switching one off still asks first when anyone
-  uses it. The Connectors page has Yours and Discover again, with "Manage for
-  the workspace" in its header for an admin.
+  operator where service connections are on, opens a page laid out like
+  Settings: its sections down the side, grouped under what they reach
+  ("Workspace" and the workspace's name). Its Connectors section shows the
+  switches as tiles like Discover's: each service with its category, how many
+  members have connected it and agents use it, and who last changed it, with
+  its switch. A tile keeps its place when it flips, and switching one off
+  still asks first when anyone uses it. The Connectors page has Yours and
+  Discover again, with "Manage in Admin" in its header for an admin, and its
+  search now fills the row.
 - **Connector tools ask in approval-required and auto-accept-edits mode.**
   Calls to a granted service's tools (Jira and Confluence through Atlassian,
   Datadog, Google Workspace) used to run without asking in every mode. They now

@@ -148,9 +148,9 @@ function Connectors({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('admin', { serverId, tab: 'connectors' })}
+            onClick={() => navigate('admin', { serverId, section: 'connectors' })}
           >
-            Manage for the workspace
+            Manage in Admin
             <ArrowRight className="size-3.5" />
           </Button>
         )

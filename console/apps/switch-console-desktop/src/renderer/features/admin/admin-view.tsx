@@ -6,22 +6,36 @@ import { connectorsPageAccess } from '@renderer/features/connectors/connectors-c
 import { useServerFeatureFlags } from '@renderer/features/connectors/connectors-queries';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { PageHeader } from '@renderer/lib/components/page-header';
+import {
+  PageContent,
+  PageLayout,
+  type PageSidebarGroup,
+  PageSidebarGroups,
+} from '@renderer/lib/components/page-layout';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { ADMIN_TAB_LABELS, type AdminTab, adminTabs, shownAdminTab } from './admin-tabs';
+import {
+  ADMIN_SECTION_LABELS,
+  type AdminGroup,
+  type AdminSection,
+  adminGroups,
+  shownAdminSection,
+} from './admin-sections';
 import { WorkspaceSwitchesTab } from './workspace-switches-tab';
 
 type AdminParams = {
   serverId: string;
-  /** The tab asked for; the first the person may use when absent or not theirs. */
-  tab?: AdminTab;
+  /** The section asked for; the first the person may use when absent or not theirs. */
+  section?: AdminSection;
 };
 
-const WIDTH = 880;
+/** Wider than a list page, so the tiles keep two columns beside the side menu. */
+const WIDTH = 1120;
 
 const AdminTitlebar = observer(function AdminTitlebar() {
   const { serverId } = useParams('admin').params;
@@ -30,10 +44,11 @@ const AdminTitlebar = observer(function AdminTitlebar() {
 
 /**
  * What the workspace's admins, and the server's operator, manage for other
- * people: one page, with a tab for each thing, each shown only to the role
- * that may use it. Like the Connectors page it is behind the server's
- * `service_connections` flag, since everything on it is about connectors:
- * with it off there is no page, and reaching it anyway goes to Your Agents.
+ * people. Laid out like Settings: its sections down the side, grouped by
+ * what they reach, each shown only to the role that may use it. Like the
+ * Connectors page it is behind the server's `service_connections` flag,
+ * since everything on it is about connectors: with it off there is no page,
+ * and reaching it anyway goes to Your Agents.
  */
 const AdminPanel = observer(function AdminPanel() {
   const { params } = useParams('admin');
@@ -47,76 +62,93 @@ const AdminPanel = observer(function AdminPanel() {
 
   if (access !== 'shown' || workspace === null)
     return (
-      <ServerPage width={WIDTH} title="Admin" description="">
+      <ServerPage width={880} title="Admin" description="">
         <Spinner />
       </ServerPage>
     );
-  const tabs = adminTabs({ administers: administersWorkspaceInScope(serverId) });
+  const groups = adminGroups({ administers: administersWorkspaceInScope(serverId) });
+  const section = shownAdminSection(groups, params.section);
+  if (section === null)
+    return (
+      <ServerPage width={880} title="Admin" description="Ask a workspace admin to change these.">
+        {null}
+      </ServerPage>
+    );
   // Keyed so a workspace switch starts the search afresh.
   return (
     <Admin
       key={workspace.id}
-      tabs={tabs}
-      tab={shownAdminTab(tabs, params.tab)}
+      groups={groups}
+      section={section}
       workspace={workspace}
-      onTab={(tab) => navigate('admin', { serverId, tab })}
+      serverName={switchServersStore.servers.find((s) => s.id === serverId)?.name ?? 'This server'}
+      onSection={(next) => navigate('admin', { serverId, section: next })}
     />
   );
 });
 
 function Admin({
-  tabs,
-  tab,
+  groups,
+  section,
   workspace,
-  onTab,
+  serverName,
+  onSection,
 }: {
-  tabs: AdminTab[];
-  tab: AdminTab | null;
+  groups: AdminGroup[];
+  section: AdminSection;
   workspace: { id: string; name: string };
-  onTab: (tab: AdminTab) => void;
+  serverName: string;
+  onSection: (section: AdminSection) => void;
 }) {
   const [query, setQuery] = useState('');
-  if (tab === null)
-    return (
-      <ServerPage
-        width={WIDTH}
-        title="Admin"
-        description="Only an admin of this workspace, or the operator of this server, manages what is here."
-      >
-        {null}
-      </ServerPage>
-    );
+  const detail = { workspace: workspace.name, server: serverName };
+  const menu: PageSidebarGroup<AdminSection>[] = groups.map((group) => ({
+    label: group.scope === 'workspace' ? 'Workspace' : 'Server',
+    detail: detail[group.scope],
+    items: group.sections.map((id) => ({ id, label: ADMIN_SECTION_LABELS[id] })),
+  }));
   return (
-    <ServerPage width={WIDTH} title="Admin" description={tabDescription(tab, workspace.name)}>
-      <div className="flex items-center gap-3">
-        {/* One tab is a title, not a choice. */}
-        {tabs.length > 1 && (
-          <SegmentedControl
-            ariaLabel="Admin"
-            value={tab}
-            onChange={onTab}
-            options={tabs.map((value) => ({ value, label: ADMIN_TAB_LABELS[value] }))}
+    <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden bg-background">
+      <PageLayout
+        width={WIDTH}
+        sidebar={
+          <PageSidebarGroups
+            groups={menu}
+            activeId={section}
+            onSelect={(item) => {
+              setQuery('');
+              onSection(item.id);
+            }}
           />
-        )}
-        <SearchInput
-          containerClassName="flex-1"
-          aria-label="Search services"
-          placeholder="Search by name or category"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </div>
-      <WorkspaceSwitchesTab workspaceId={workspace.id} query={query} />
-    </ServerPage>
+        }
+      >
+        <PageContent className="px-0">
+          <div className="space-y-6 pb-10">
+            <PageHeader
+              sticky
+              title={ADMIN_SECTION_LABELS[section]}
+              description={`Choose which services people in ${workspace.name} can connect and give to their agents.`}
+            >
+              <div className="space-y-2">
+                <SearchInput
+                  containerClassName="w-full"
+                  aria-label="Search services"
+                  placeholder="Search by name or category"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+                <p className="text-xs text-foreground-muted">
+                  Turning a service off takes it from every agent within a minute. Turning it back
+                  on restores their access.
+                </p>
+              </div>
+            </PageHeader>
+            <WorkspaceSwitchesTab workspaceId={workspace.id} query={query} />
+          </div>
+        </PageContent>
+      </PageLayout>
+    </div>
   );
-}
-
-/** Each tab says who it reaches, since the tabs reach different people. */
-function tabDescription(tab: AdminTab, workspaceName: string): string {
-  switch (tab) {
-    case 'connectors':
-      return `Turn a service on or off for everyone in ${workspaceName}. Switched off, nobody here can connect it, grant it or use it, and agents that have it lose it within a minute. Grants are kept, so switching it back on returns them.`;
-  }
 }
 
 export const adminView = {

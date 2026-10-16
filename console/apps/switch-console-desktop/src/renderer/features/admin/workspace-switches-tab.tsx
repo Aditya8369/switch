@@ -14,7 +14,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -150,10 +149,9 @@ export function WorkspaceSwitchesTab({
               </>
             }
           >
-            <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
-              {category}
-              {!service.enabled && <Badge variant="secondary">Off for the workspace</Badge>}
-            </span>
+            {category && (
+              <span className="mt-1 block text-xs text-foreground-muted">{category}</span>
+            )}
             <span className="mt-2 block text-sm text-foreground-muted">
               {switchStanding(service)}
             </span>
