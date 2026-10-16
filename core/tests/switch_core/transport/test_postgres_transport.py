@@ -53,6 +53,7 @@ from switch_core.transport import (
     TransportHandlers,
 )
 from switch_core.transport import postgres as postgres_module
+from switch_core.transport.cursors import FromHead
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.observer import (
@@ -867,7 +868,7 @@ class TestReceiving:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(transport_room_id)
-        task = asyncio.create_task(transport.receive_forever())
+        task = asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
         self._tasks.append((task, transport))
         await _watched_room(transport)
         return transport, listener, received, transport_room_id, user_id
@@ -923,7 +924,7 @@ class TestReceiving:
         )
         reader.register_handlers(received.handlers())
         await reader.join_room(room)
-        task = asyncio.create_task(reader.receive_forever())
+        task = asyncio.create_task(reader.receive_forever(FromHead(MessageStore())))
         self._tasks.append((task, reader))
         switch_room_id = await _watched_room(reader)
         await listener.announce(switch_room_id)
@@ -1034,7 +1035,9 @@ class TestPresence:
         )
         watcher.register_handlers(received.handlers())
         await watcher.join_room(room)
-        self._tasks.append(asyncio.create_task(watcher.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(watcher.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(watcher)
 
         sender = _transport(
@@ -1067,7 +1070,9 @@ class TestPresence:
         )
         watcher.register_handlers(received.handlers())
         await watcher.join_room(room)
-        self._tasks.append(asyncio.create_task(watcher.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(watcher.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(watcher)
 
         sender = _transport(
@@ -1098,7 +1103,7 @@ class TestPresence:
         )
         watcher.register_handlers(received.handlers())
         await watcher.join_room(room)
-        task = asyncio.create_task(watcher.receive_forever())
+        task = asyncio.create_task(watcher.receive_forever(FromHead(MessageStore())))
         self._tasks.append(task)
         await _watched_room(watcher)
         await watcher.close()
@@ -1141,7 +1146,9 @@ class TestOneClientCannotStallAnother:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         switch_room_id = await _watched_room(transport)
 
         await transport.send_message(
@@ -1174,7 +1181,9 @@ class TestOneClientCannotStallAnother:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         switch_room_id = await _watched_room(transport)
 
         await transport.send_message(
@@ -1219,7 +1228,9 @@ class TestJoiningARoomAlreadyRecorded:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(transport)
 
         # Somebody else records the membership — what a moderation invite does
@@ -1272,7 +1283,9 @@ class TestHearingYourOwnArrival:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(transport)
 
         await transport.join_room(later)
@@ -1308,7 +1321,9 @@ class TestHearingYourOwnArrival:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(transport)
 
         await transport.join_room(later)
@@ -1381,7 +1396,9 @@ class TestDeliveryBindsTheRoomsTenant:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(transport_room_id)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         switch_room_id = await _watched_room(transport)
 
         await transport.send_message(
@@ -1626,7 +1643,9 @@ class TestATransportActsInItsClientsTenant:
         transport.register_handlers(received.handlers())
         await transport.join_room(mxid_a)
         await transport.join_room(mxid_b)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(transport)
 
         await transport.send_message(
@@ -1775,7 +1794,9 @@ class TestWhatIsMeasured:
         )
         transport.register_handlers(handlers or _Received().handlers())
         await transport.join_room(transport_room_id)
-        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(transport)
         return transport, listener, transport_room_id
 
@@ -2003,8 +2024,12 @@ class TestBeingRemovedFromARoom:
             invites=invites,
         )
         member.register_handlers(_Received().handlers())
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
-        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
+        self._tasks.append(
+            asyncio.create_task(member.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(removed)
         await _watched_room(member)
 
@@ -2065,8 +2090,12 @@ class TestBeingRemovedFromARoom:
             invites=invites,
         )
         member.register_handlers(_Received().handlers())
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
-        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
+        self._tasks.append(
+            asyncio.create_task(member.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(removed)
         await _watched_room(member)
 
@@ -2117,7 +2146,9 @@ class TestBeingRemovedFromARoom:
             invites=invites,
         )
         removed.register_handlers(received.handlers(on_removed=_on_removed))
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(removed)
 
         await self._provisioning(session_factory, invites).kick_user(room, leaving[1])
@@ -2164,8 +2195,12 @@ class TestBeingRemovedFromARoom:
             invites=invites,
         )
         removed.register_handlers(_Received().handlers(on_message=_kick_on_the_first))
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
-        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
+        self._tasks.append(
+            asyncio.create_task(member.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(removed)
         await _watched_room(member)
 
@@ -2222,7 +2257,9 @@ class TestBeingRemovedFromARoom:
             invites=invites,
         )
         removed.register_handlers(_Received().handlers())
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
 
         await asyncio.wait_for(kicked.wait(), timeout=5)
         # Let the rest of the startup path run and decide what to subscribe
@@ -2263,14 +2300,16 @@ class TestBeingRemovedFromARoom:
             invites=InviteBus(),
         )
         removed.register_handlers(_Received().handlers())
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(removed)
 
         # A subscription dropped without its cursor: the shape the two maps
         # take when anything writes one and not the other.
         del removed._watching[room_id]
 
-        await removed._watch(room)
+        await removed._watch(room, arrival_seq=None)
 
         assert room_id in removed._watching
 
@@ -2322,8 +2361,12 @@ class TestBeingRemovedFromARoom:
         removed.register_handlers(
             _Received().handlers(on_message=_kick_on_the_page_boundary)
         )
-        self._tasks.append(asyncio.create_task(removed.receive_forever()))
-        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(removed.receive_forever(FromHead(MessageStore())))
+        )
+        self._tasks.append(
+            asyncio.create_task(member.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(removed)
         await _watched_room(member)
 
@@ -2370,9 +2413,13 @@ class TestBeingRemovedFromARoom:
             return t
 
         old, new = _make(), _make()
-        self._tasks.append(asyncio.create_task(old.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(old.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(old)
-        self._tasks.append(asyncio.create_task(new.receive_forever()))
+        self._tasks.append(
+            asyncio.create_task(new.receive_forever(FromHead(MessageStore())))
+        )
         await _watched_room(new)
 
         # The older loop finishes unwinding after the newer one took the slot.

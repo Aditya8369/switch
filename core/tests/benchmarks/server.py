@@ -56,6 +56,9 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.budget_store import BudgetStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
@@ -69,6 +72,7 @@ from switch_core.main import (
 )
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.ownership import Ownership
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
@@ -76,10 +80,12 @@ from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService, SwitchUser
 from switch_core.sessions.contract import ApprovalResult
+from switch_core.signals import SignalBus
 from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
@@ -98,6 +104,7 @@ from tests.integration.conftest import (
     _NoBridges,
     _truncate_all,
 )
+from tests.ownership import process_lease_on
 
 # Agents driven by a host process, which is what the benchmark spawns. The
 # profile has to say so: `session_passive` would suppress the addressed
@@ -571,6 +578,10 @@ async def _serve(
     client_factory.register("user", HumanActor)
     client_factory.register("bridge", Actor)
 
+    # This process's lease and what it owns, as `main` wires them. Only agent
+    # clients run here, which have no consumer, so nothing is ever claimed;
+    # the signal bus is never started.
+    lease = process_lease_on(session_factory)
     client_lifecycle = ClientLifecycleService(
         provisioning=provisioning,
         client_store=session_env.client_store,
@@ -579,6 +590,23 @@ async def _serve(
         session_factory=session_factory,
         config=config,
         tenants_isolated=True,
+        ownership=Ownership(
+            lease=lease,
+            session_factory=session_factory,
+            bus=SignalBus(
+                session_factory,
+                lambda: create_unpooled_engine(config),
+                process_id=lease.process_id,
+            ),
+            store=OwnershipLeaseStore(),
+            processes=SwitchCoreProcessStore(),
+        ),
+        cursor_writer=CursorWriter(
+            session_factory=session_factory,
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=lease.process_id,
+        ),
     )
 
     room_service = RoomService(

@@ -16,6 +16,7 @@ from switch_core.db.models import (
     require_tenant_id,
     room_agents,
 )
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 
 # Keys in a room's `metadata` for the follow-the-conversation settings. Both
 # are absent by default (follow-ups on, no main agent), so rooms made before
@@ -530,6 +531,11 @@ class RoomStore:
             .on_conflict_do_nothing(index_elements=["client_id", "room_id"])
             .returning(ClientRoom.client_id)
         )
+        # The client's consumer starts reading the room here, wherever and
+        # whenever it learns of the membership: the process that owns the
+        # client may not be this one. A membership that already existed keeps
+        # the cursor it has.
+        await DeliveryCursorStore().seed(session, client_id, room_id)
         await session.flush()
         return recorded is not None
 

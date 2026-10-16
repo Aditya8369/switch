@@ -236,6 +236,10 @@ handled in a way that leaves no trace.
 - **`switch.messages.delivery_failures`** — the delivery loop swallows one
   room's exception so it cannot stop the others. Correct, and it means a room
   that stopped delivering leaves only a log line.
+- **`switch.messages.backlog_skipped`**: a consumer resuming from its
+  stored cursor steps over rows older than its replay cap rather than answer
+  them late. The rows stay in the room; what they would have caused (a
+  command's reply, a platform post) never happens, and only this says so.
 - **`switch.messages.send_failures`** — a send that raises before the commit
   writes nothing, so the symptom is an absence, and an absence is what a quiet
   room looks like too.

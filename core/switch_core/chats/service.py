@@ -27,7 +27,7 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import markdown
 from sqlalchemy import (
@@ -86,7 +86,6 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
-from switch_core.delivery.router import MessageRouter, Routed
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -99,6 +98,9 @@ from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.types import MessageFormat
+
+if TYPE_CHECKING:
+    from switch_core.delivery.router import MessageRouter, Routed
 
 logger = logging.getLogger(__name__)
 
@@ -1154,8 +1156,8 @@ class ChatService:
                 .values(result={"messageIds": [m.transport_event_id for m in posted]})
             )
             await session.commit()
-        for row in routed:
-            row.committed()
+        for each in routed:
+            each.committed()
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
@@ -1227,7 +1229,7 @@ class ChatService:
                 return str((operation.result or {})["commandId"])
 
             command_id = new_event_id()
-            command_routed = await self._router.store(
+            routed = await self._router.store(
                 session,
                 tenant_id=tenant_id,
                 room_id=room.id,
@@ -1259,7 +1261,7 @@ class ChatService:
                 .values(result={"commandId": command_id})
             )
             await session.commit()
-        command_routed.committed()
+        routed.committed()
         return command_id
 
     async def warm(

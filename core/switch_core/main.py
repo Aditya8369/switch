@@ -52,7 +52,9 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.bridges.agent.server_connectors.signals import ConnectorSignals
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
 )
@@ -142,6 +144,7 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
@@ -150,6 +153,7 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -188,6 +192,7 @@ from switch_core.observability.pool import (
 )
 from switch_core.observability.query import instrument_queries
 from switch_core.outbound import guarded_async_client
+from switch_core.ownership import Ownership
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
@@ -205,6 +210,7 @@ from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
@@ -236,8 +242,9 @@ _FORCED_EXIT_GRACE_SECONDS = 3.0
 # stop and has taken itself out of readiness: long enough for the Service to
 # stop sending it new requests, so they go to another replica rather than
 # being refused. A single replica has nowhere to send them, and stops at once
-# as it always has. Inside the kubelet's 30-second grace period with the
-# bridge stops and `_FORCED_EXIT_GRACE_SECONDS` after it.
+# as it always has. Inside the chart's 45-second grace period
+# (`switchCore.terminationGracePeriodSeconds`) with the bridge stops and
+# `_FORCED_EXIT_GRACE_SECONDS` after it.
 _DRAIN_SECONDS = 5.0
 
 
@@ -353,19 +360,51 @@ async def _connection_sweep_loop(protocol: AgentCore) -> None:
 
 # Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
 # writes is what lets every other process see this one's connections go
-# offline now rather than when its lease lapses.
+# offline, and take over the work it owned, now rather than when its lease
+# lapses.
 _RELEASE_SECONDS = 1.0
+
+# How long a process shutting down gives the work it owns to stop and be
+# handed over, before the rest of its release. Each consumer finishes the row
+# in hand within a grace of its own (`transport/postgres.py`), so this is a
+# backstop for a stop that hangs on a platform: the lease then lapses on its
+# own and the work is taken over after it. Inside the chart's 45-second grace
+# period (`switchCore.terminationGracePeriodSeconds`) with the drain and the
+# rest of the shutdown after it.
+_HAND_OVER_SECONDS = 10.0
 
 
 async def _release_process(
+    ownership: Ownership,
     connections: SharedConnections,
     management: Management | None,
     lease: ProcessLease,
 ) -> None:
-    """Record the agent connections and controller sockets that went, then
-    mark this process's lease stopped. The lease is marked stopped even when
-    the recording fails, so the connections this process held read offline
-    either way. Never raises: if it all fails, the lease lapses on its own."""
+    """Hand the work this process owns to the others, record the agent
+    connections and controller sockets that went, then mark this process's
+    lease stopped and tell the others, which take the work over on hearing
+    it. In that order: the lease must not read as stopped while
+    owned work still runs here, or another process would start it beside
+    this one. Once the owned work has stopped, the lease is marked stopped
+    even when the recording fails, so the connections this process held read
+    offline either way. Never raises: if it all fails, the lease lapses on
+    its own.
+
+    Run from the signal handler and again from the lifespan's teardown, in
+    either order: once one call has given up on the owned work, the other
+    leaves the lease to lapse as well (`Ownership.stop` raises)."""
+    try:
+        async with asyncio.timeout(_HAND_OVER_SECONDS):
+            await ownership.stop()
+    except Exception:
+        logger.warning(
+            "Stopping this process's owned work at shutdown failed or took "
+            "longer than %.0fs; the other processes take it over once its "
+            "lease lapses.",
+            _HAND_OVER_SECONDS,
+            exc_info=True,
+        )
+        return
     try:
         async with asyncio.timeout(_RELEASE_SECONDS):
             try:
@@ -374,6 +413,7 @@ async def _release_process(
                     await management.flush()
             finally:
                 await lease.stop()
+                ownership.gone()
     except TimeoutError:
         logger.warning(
             "Gave up releasing switch-core process %s after %.1fs; its "
@@ -603,6 +643,27 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
+    # Renewed from here on, not from when the process starts serving: the
+    # owned work started during boot stops once the lease is not sure
+    # (`ProcessLease.surely_held`), and a boot can take longer than that.
+    lease_task = asyncio.create_task(process_lease.run())
+    # Which of the work that must run once this process runs (`ownership.py`),
+    # held under that lease. With one process, all of it.
+    ownership = Ownership(
+        lease=process_lease,
+        session_factory=session_factory,
+        bus=signal_bus,
+        store=OwnershipLeaseStore(),
+        processes=SwitchCoreProcessStore(),
+    )
+    # Every owned consumer's progress, written in batches
+    # (`transport/cursors.py`).
+    cursor_writer = CursorWriter(
+        session_factory=session_factory,
+        cursors=DeliveryCursorStore(),
+        leases=OwnershipLeaseStore(),
+        process_id=process_id,
+    )
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
@@ -824,6 +885,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         session_factory=session_factory,
         config=config,
         tenants_isolated=tenants_isolated,
+        ownership=ownership,
+        cursor_writer=cursor_writer,
     )
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
@@ -846,9 +909,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         session_activity_listener=session_activity_listener,
         session_activity_service=AgentSessionActivityService(session_factory),
         connections=connections,
+        ownership=ownership,
+        cursor_writer=cursor_writer,
         telemetry=telemetry,
         trust_client=trust_client,
     )
+    # Bridges registered, edited or removed in another process are applied to
+    # this process's copies too (`bridges/collaboration/bridge_signals.py`),
+    # and agents registered or deleted elsewhere reach their identities here.
+    BridgeSignals(lifecycle=collab_lifecycle, bus=signal_bus)
+    client_lifecycle.add_agents_changed_listener(collab_lifecycle.agents_changed)
 
     # ── Room service ─────────────────────────────────────────────────────────
     room_service = RoomService(
@@ -930,7 +1000,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         keyring=config.keyring,
         telemetry=telemetry,
         outbound_policy=config.outbound_policy,
+        ownership=ownership,
     )
+    ConnectorSignals(lifecycle=connector_lifecycle, bus=signal_bus)
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
     )
@@ -1233,8 +1305,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
-            lease_task = asyncio.create_task(process_lease.run())
             shared_connections_task = asyncio.create_task(shared_connections.run())
+            cursor_writer_task = asyncio.create_task(cursor_writer.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1263,11 +1335,19 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
-                lease_task.cancel()
                 shared_connections_task.cancel()
                 if management_task is not None:
                     management_task.cancel()
-                await _release_process(shared_connections, management, process_lease)
+                ownership_task.cancel()
+                # The lease goes on being renewed while the owned work is
+                # handed over, which can take a few seconds: it must not lapse
+                # under work still running here. A renewal after the release
+                # does nothing.
+                await _release_process(
+                    ownership, shared_connections, management, process_lease
+                )
+                lease_task.cancel()
+                cursor_writer_task.cancel()
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
@@ -1347,6 +1427,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             _run_telegram_app(telegram_app), name="telegram-app"
         )
 
+    # Start the work this process owns, before it serves: with one process,
+    # all of it. Then the quiet copies of the bridges another process holds.
+    await ownership.start()
+    # Running from here, so the rest of the boot is covered: a lease that
+    # stops being sure stops the work it holds there and then.
+    ownership_task = asyncio.create_task(ownership.run())
+    await collab_lifecycle.start_quiet_copies()
+
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
     # just-started clients accept the invites on their first sync. Under the
@@ -1381,7 +1469,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                     server,
                     draining.set,
                     lambda: _release_process(
-                        shared_connections, management, process_lease
+                        ownership, shared_connections, management, process_lease
                     ),
                     _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
                     connections.controllers,
@@ -1916,7 +2004,8 @@ async def _shutdown(
     # Also before the sockets close, and not left to the lifespan's teardown:
     # uvicorn runs that only once every connection has closed, and a stream
     # still open when the process is killed would mean it never runs. Every
-    # other process reads this one's machines offline from here.
+    # other process reads this one's machines offline from here, and has taken
+    # over the consumers, bridges and connectors it owned.
     await release()
     if drain_seconds:
         await asyncio.sleep(drain_seconds)
