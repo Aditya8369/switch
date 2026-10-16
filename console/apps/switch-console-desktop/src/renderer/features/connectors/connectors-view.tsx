@@ -159,7 +159,7 @@ function Connectors({
       <div className="flex items-center gap-3">
         <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
         <SearchInput
-          className="flex-1"
+          containerClassName="flex-1"
           aria-label="Search connectors"
           placeholder="Search by name, category or description"
           value={query}
