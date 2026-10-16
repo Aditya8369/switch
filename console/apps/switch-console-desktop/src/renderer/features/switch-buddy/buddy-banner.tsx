@@ -31,6 +31,7 @@ export const BuddyBanner = observer(function BuddyBanner() {
   if (
     !BUILD_FEATURE_FLAGS.onboarding ||
     onBuddyPage ||
+    buddyIntroStore.skippedThisSession ||
     serverId === null ||
     workspaceId === null ||
     !flags.switch_buddy ||

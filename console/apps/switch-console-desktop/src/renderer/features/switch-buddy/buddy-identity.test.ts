@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import { buddyAgentName, isBuddy } from './buddy-identity';
 
 describe('buddyAgentName', () => {
@@ -23,9 +22,10 @@ describe('buddyAgentName', () => {
 });
 
 describe('isBuddy', () => {
-  it('knows a buddy by its name and its picture', () => {
-    expect(isBuddy({ name: 'switch-buddy-max', iconUrl: BUDDY_ICON_URL })).toBe(true);
-    expect(isBuddy({ name: 'helper', iconUrl: BUDDY_ICON_URL })).toBe(false);
-    expect(isBuddy({ name: 'switch-buddy-max', iconUrl: null })).toBe(false);
+  it('knows a buddy by its name, whatever its picture', () => {
+    expect(isBuddy({ name: 'switch-buddy-max' })).toBe(true);
+    expect(isBuddy({ name: 'switch-buddy' })).toBe(true);
+    expect(isBuddy({ name: 'helper' })).toBe(false);
+    expect(isBuddy({ name: 'switch-buddyish' })).toBe(false);
   });
 });

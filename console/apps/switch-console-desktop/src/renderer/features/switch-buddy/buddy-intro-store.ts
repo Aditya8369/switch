@@ -8,6 +8,12 @@ import { makeAutoObservable } from 'mobx';
  */
 class BuddyIntroStore {
   serverId: string | null = null;
+  /**
+   * The person chose Skip at Meet switch-buddy since the app started: the
+   * banner leaves them alone until the next launch rather than asking again
+   * straight away.
+   */
+  skippedThisSession = false;
 
   constructor() {
     makeAutoObservable(this);
@@ -19,6 +25,10 @@ class BuddyIntroStore {
 
   close(): void {
     this.serverId = null;
+  }
+
+  skipped(): void {
+    this.skippedThisSession = true;
   }
 }
 

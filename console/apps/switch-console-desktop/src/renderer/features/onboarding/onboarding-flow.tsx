@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { buddyIntroStore } from '@renderer/features/switch-buddy/buddy-intro-store';
 import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
 import { openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
 import {
@@ -128,7 +129,10 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     // page for the moment that takes, then jump to the buddy.
     await switchServersStore.setActive(serverId);
     if (agent) await openBuddyChat(serverId, agent);
-    else navigate('switchBuddy', { serverId });
+    else {
+      buddyIntroStore.skipped();
+      navigate('switchBuddy', { serverId });
+    }
     onboardingStore.reset();
   };
 

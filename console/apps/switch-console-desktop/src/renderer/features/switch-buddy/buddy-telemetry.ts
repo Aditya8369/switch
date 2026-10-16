@@ -31,8 +31,7 @@ export function reportBuddyStep(action: BuddyAction, provider: string | null): v
  */
 export function reportBuddyMessage(agents: readonly ChatAgent[], sentBefore: number): void {
   const [agent] = agents;
-  if (agents.length !== 1 || !agent || !isBuddy({ name: agent.name, iconUrl: agent.iconUrl }))
-    return;
+  if (agents.length !== 1 || !agent || !isBuddy({ name: agent.name })) return;
   const nth = sentBefore + 1;
   report('buddy_message_sent', {
     nth: nth >= 6 ? '6+' : (String(nth) as '1' | '2' | '3' | '4' | '5'),

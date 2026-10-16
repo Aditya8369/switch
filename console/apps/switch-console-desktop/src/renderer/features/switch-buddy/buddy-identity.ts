@@ -1,4 +1,3 @@
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 /** The template every person's buddy is created from, served by the server. */
@@ -38,10 +37,13 @@ export function buddyAgentName(
 
 /**
  * Whether one of the person's own managed agents is their buddy: named as
- * buddies are, and wearing the picture the buddy template gives it.
+ * buddies are created (`switch-buddy` or `switch-buddy-<person>`). Read off
+ * the name rather than the picture, which the person, or the buddy itself,
+ * may change; the list holds only their own agents, so another person's
+ * buddy is never taken for theirs.
  */
-export function isBuddy(agent: Pick<ManagedAgentView, 'name' | 'iconUrl'>): boolean {
-  return agent.iconUrl === BUDDY_ICON_URL && agent.name.startsWith(NAME_PREFIX);
+export function isBuddy(agent: Pick<ManagedAgentView, 'name'>): boolean {
+  return agent.name === NAME_PREFIX || agent.name.startsWith(`${NAME_PREFIX}-`);
 }
 
 /** The first name to greet someone by: the first word of their name. */
