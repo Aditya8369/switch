@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from switch_core.delivery.recipient import AgentRecipient
+from switch_core.delivery.recipient import AgentRecipient, opening_message_for
 
 
 class _Recorder:
@@ -110,3 +110,10 @@ async def test_a_greeting_written_for_another_agent_is_not_said() -> None:
         )
     )
     assert send_message.calls[0]["body"].startswith("Hi! I'm cc-bug-fixing")
+
+
+def test_the_opening_message_is_told_only_to_the_agent_it_was_written_for() -> None:
+    meta = SimpleNamespace(agent_greeting={"agent_id": "agent-1", "body": "Welcome!"})
+    assert opening_message_for(meta, "agent-1") == "Welcome!"  # type: ignore[arg-type]
+    assert opening_message_for(meta, "agent-2") is None  # type: ignore[arg-type]
+    assert opening_message_for(SimpleNamespace(agent_greeting=None), "agent-1") is None  # type: ignore[arg-type]
