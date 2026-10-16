@@ -1,9 +1,11 @@
+import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
 import { BuddyAvatar } from './buddy-avatar';
+import { buddyWelcomeMessage } from './buddy-welcome-message';
 
 /**
- * switch-buddy's opening lines while it does not exist yet: the start of the
- * message it posts once created, drawn as a message from it would be. The tips
- * that follow in the real one name the agent and wait for it.
+ * switch-buddy's welcome while it does not exist yet: the very message it
+ * posts once created, drawn the way the chat draws an agent's message, so
+ * nothing changes but the box below when the real one arrives.
  */
 export function BuddyWelcome({
   firstName,
@@ -13,27 +15,10 @@ export function BuddyWelcome({
   agentName: string;
 }) {
   return (
-    <div className="flex flex-col gap-1 py-2" data-testid="buddy-welcome">
-      <div className="flex items-center gap-3">
-        <BuddyAvatar size={28} shape="round" />
-        <span className="text-sm font-semibold text-foreground">{agentName}</span>
-      </div>
-      <div className="min-w-0 space-y-3 pl-10 text-sm text-foreground">
-        <p>
-          Hi{firstName ? ` ${firstName}` : ''}, I’m <strong>{agentName}</strong>, your assistant for
-          everything Switch. 👋
-          <br />
-          Switch brings your team to work with your agents, and I’m the first one.
-        </p>
-        <div>
-          <p>I can help you:</p>
-          <ul className="mt-1 space-y-0.5">
-            <li>🤖 Create agents</li>
-            <li>🏠 Make rooms</li>
-            <li>💬 Answer anything about Switch</li>
-            <li>🧑‍💻 Any task, from researching a topic to writing a document</li>
-          </ul>
-        </div>
+    <div className="flex gap-3" data-testid="buddy-welcome">
+      <BuddyAvatar size={28} shape="round" className="mt-0.5" />
+      <div className="min-w-0 flex-1 text-sm leading-relaxed">
+        <ChatMarkdown>{buddyWelcomeMessage({ firstName, agentName })}</ChatMarkdown>
       </div>
     </div>
   );
