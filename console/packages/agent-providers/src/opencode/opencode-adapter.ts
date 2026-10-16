@@ -25,6 +25,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { mcpApprovalContent } from '../mcp-approval';
 import { CumulativeUsage } from '../usage';
 import { buildConfigFile, parseModelId, permissionRulesFor } from './config';
 import type { OpencodeSkill } from './server';
@@ -654,7 +655,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     record: SessionRecord,
     event: Extract<OpencodeEvent, { type: 'permission.asked' }>
   ): Promise<void> {
-    const { id, permission, patterns, metadata } = event.properties;
+    const { id, permission, patterns, metadata, tool } = event.properties;
     if (record.activeTurnId === undefined) {
       await record.transport.replyPermission(id, 'reject');
       this.emit(record, {
@@ -685,6 +686,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     record.pendingApprovals.set(id, { turnId });
     const title = permissionTitle(permission, patterns);
     const command = metadata['command'];
+    const mcpTool = mcpToolOf(permission, record.mcpNames);
     this.emit(
       record,
       {
@@ -692,16 +694,36 @@ export class OpencodeAdapter implements ProviderAdapter {
         requestId: id,
         requestType: toRequestType(permission, record.mcpNames),
         ...connectorOf(permission, record.connectorMcpServers),
-        title,
-        // Only when it says something the title does not: for a short `bash`
-        // the pattern *is* the command, and a card showing it twice reads as
-        // two different things to check.
-        ...(typeof command === 'string' && command !== title ? { detail: command } : {}),
+        ...(mcpTool
+          ? mcpApprovalContent(mcpTool.server, mcpTool.tool, this.toolInput(record, tool?.callID))
+          : {
+              title,
+              // Only when it says something the title does not: for a short
+              // `bash` the pattern *is* the command, and a card showing it
+              // twice reads as two different things to check.
+              ...(typeof command === 'string' && command !== title ? { detail: command } : {}),
+            }),
         options: APPROVAL_OPTIONS,
       },
       turnId,
       event
     );
+  }
+
+  /**
+   * The input of the tool call a permission ask is for, from the tool part
+   * OpenCode streamed before asking. Without it the card shows no input, so
+   * that is logged rather than passed over.
+   */
+  private toolInput(record: SessionRecord, callId: string | undefined): Record<string, unknown> {
+    const input = callId === undefined ? undefined : record.items.get(callId)?.payload?.['input'];
+    if (typeof input === 'object' && input !== null && !Array.isArray(input))
+      return input as Record<string, unknown>;
+    this.logger.warn('opencode: no tool input for a permission ask; the card shows none', {
+      sessionId: record.sessionId,
+      callId,
+    });
+    return {};
   }
 
   private async handleQuestionAsked(
@@ -996,6 +1018,23 @@ function toolTitle(
 export function permissionTitle(permission: string, patterns: string[]): string {
   const pattern = patterns[0];
   return pattern === undefined || pattern === '' || pattern === '*' ? permission : pattern;
+}
+
+/**
+ * The server and tool in OpenCode's `<server>_<tool>` name, for a server this
+ * session runs. The longest server name wins, so `switch_echo_run` is
+ * `switch_echo`'s `run`, not `switch`'s `echo_run`.
+ */
+export function mcpToolOf(
+  permission: string,
+  mcpNames: string[]
+): { server: string; tool: string } | undefined {
+  const name = permission.toLowerCase();
+  const server = mcpNames
+    .filter((mcp) => name.startsWith(`${mcp.toLowerCase()}_`))
+    .sort((a, b) => b.length - a.length)[0];
+  if (server === undefined || permission.length <= server.length + 1) return undefined;
+  return { server, tool: permission.slice(server.length + 1) };
 }
 
 /** `{ connector }` when `permission` is one of the connectors' tools. */

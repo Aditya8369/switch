@@ -1746,9 +1746,11 @@ version of their own to them without also giving them a release of their own.
   follow the agent's mode, as its other tools do: an approval card asks first,
   and declining tells the agent the call was refused. Full access still allows
   them, and Switch's own room tools never ask. The first such card in a session
-  comes with a notice saying why. Codex cards name the server and tool and can
-  be approved for the rest of the session. A session started before the update
-  keeps allowing them until it restarts.
+  comes with a notice saying why. Claude Code, Codex and OpenCode cards name the
+  server and tool and show what the call will send, so the text of a comment
+  can be read before it is posted; a long input is cut and the card says how
+  much is not shown. Codex cards can be approved for the rest of the session. A
+  session started before the update keeps allowing them until it restarts.
 - **A Console session in "approval required" no longer inherits your own
   Claude Code default mode.** Console now starts a Claude Code session in that
   mode with Claude Code's `default` permission mode. It used to leave the mode

@@ -17,6 +17,7 @@ import {
   createOpencodeAdapter,
   fromPermissionReply,
   type OpencodeAdapter,
+  mcpToolOf,
   permissionTitle,
   subagentName,
   toolItemType,
@@ -833,5 +834,46 @@ describe('OpencodeAdapter connector tools', () => {
     );
     const opened = await recorder.waitFor('request.opened', () => true, 1_000);
     expect(opened).toMatchObject({ requestType: 'mcp_tool_approval', connector: 'atlassian' });
+  });
+
+  it('says which server wants to run which tool, with the input it will run', async () => {
+    const { adapter, session, recorder } = await setup('approval-required', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'comment' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg1', 'assistant'));
+    session.push(
+      toolPart(NATIVE, 'msg1', 'c1', 'atlassian_addCommentToJiraIssue', {
+        status: 'running',
+        input: { issueIdOrKey: 'PROJ-1', commentBody: 'Shipped in 1.2.' },
+        time: { start: 0 },
+      })
+    );
+    session.push(
+      opencodeEvent('permission.asked', {
+        id: 'per_1',
+        sessionID: NATIVE,
+        permission: 'atlassian_addCommentToJiraIssue',
+        patterns: ['*'],
+        metadata: {},
+        always: ['*'],
+        tool: { messageID: 'msg1', callID: 'c1' },
+      })
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened).toMatchObject({
+      title: 'atlassian wants to run addCommentToJiraIssue',
+      detail: '{"issueIdOrKey":"PROJ-1","commentBody":"Shipped in 1.2."}',
+    });
+  });
+
+  it('splits a tool name by the longest server it starts with', () => {
+    expect(mcpToolOf('switch_echo_run', ['switch', 'switch_echo'])).toEqual({
+      server: 'switch_echo',
+      tool: 'run',
+    });
+    expect(mcpToolOf('bash', ['switch'])).toBeUndefined();
   });
 });

@@ -5,6 +5,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { McpServerSpec, RuntimeMode } from '../adapter';
 import type { ItemType, RequestType, TurnOutcome, UserInputQuestion } from '../events';
+import { mcpApprovalContent } from '../mcp-approval';
 
 const COMMAND_TOOLS = new Set(['Bash', 'BashOutput', 'KillShell', 'KillBash']);
 const FILE_CHANGE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -41,6 +42,15 @@ export function truncate(value: string, max = 160): string {
 
 export function isMcpTool(toolName: string): boolean {
   return toolName.startsWith(MCP_PREFIX);
+}
+
+/** The server and tool in Claude's `mcp__<server>__<tool>` name. */
+export function mcpToolParts(toolName: string): { server: string; tool: string } | undefined {
+  if (!isMcpTool(toolName)) return undefined;
+  const rest = toolName.slice(MCP_PREFIX.length);
+  const split = rest.indexOf('__');
+  if (split <= 0 || split + 2 >= rest.length) return undefined;
+  return { server: rest.slice(0, split), tool: rest.slice(split + 2) };
 }
 
 export function itemTypeForTool(toolName: string): ItemType {
@@ -95,9 +105,15 @@ export function toolTitle(toolName: string, input: Record<string, unknown>): str
  *
  * Both halves of the prose are kept when the host sends both: a title says what
  * the command is for and a description often says what it will cost, and
- * someone deciding needs the second one most. Nothing is cut here — a consumer
- * that cuts also records that it did, and answers for whether what survived is
- * still enough to decide on. Cutting first hides that judgement from it.
+ * someone deciding needs the second one most. Prose is not cut here — a
+ * consumer that cuts also records that it did, and answers for whether what
+ * survived is still enough to decide on. Cutting first hides that judgement
+ * from it.
+ *
+ * An MCP tool is titled by its server and tool, and its input is the detail:
+ * the input is what will run, the text of a comment included, and the SDK
+ * rarely describes the call. Input can be any size, so it is the one thing cut
+ * here, and the cut says so (`mcpApprovalContent`).
  */
 export function approvalContent(
   toolName: string,
@@ -115,6 +131,11 @@ export function approvalContent(
         detail: command,
       };
     }
+  }
+  const mcp = mcpToolParts(toolName);
+  if (mcp) {
+    const content = mcpApprovalContent(mcp.server, mcp.tool, input);
+    return description ? { ...content, title: `${content.title} — ${description}` } : content;
   }
   return {
     title: title ?? toolTitle(toolName, input),

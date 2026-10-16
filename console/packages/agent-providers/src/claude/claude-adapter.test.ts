@@ -1299,6 +1299,8 @@ describe('ClaudeAdapter connector tools', () => {
     const opened = await recorder.waitFor('request.opened', () => true, 1_000);
     expect(opened.requestType).toBe('mcp_tool_approval');
     expect(opened.connector).toBe(server);
+    expect(opened.title).toBe(`${server.replace(/[^A-Za-z0-9_-]/g, '_')} wants to run search`);
+    expect(opened.detail).toBe('{"query":"open issues"}');
     await adapter.respondToRequest(SESSION, opened.requestId, 'accept');
     expect(await decision).toEqual({ behavior: 'allow' });
   });
