@@ -17,8 +17,10 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectorApp, ConnectorAppCheck } from '@shared/core/switch-servers/connector-apps';
 import {
+  type DetailRow,
   STATE_BADGE,
   actionLabel,
+  appDetails,
   attention,
   cardState,
   configuredSentence,
@@ -26,12 +28,11 @@ import {
   menuLabel,
   notSetUpSentence,
   primaryAction,
-  secretSummary,
-  sentBackTo,
   stateLabel,
   usedBy,
 } from './connector-apps';
 import { changeBlocked, useConnectorAppDialogs } from './connector-apps-tab';
+import { CopyButton } from './copy-button';
 
 /**
  * One connector app on its own page, in front of the tiles: whether it is
@@ -64,7 +65,6 @@ export function ConnectorAppProfile({
   const needs = attention(app, checkFailure);
   const primary = primaryAction(app, checkFailure);
   const menu = menuActions(app);
-  const summary = secretSummary(app);
   const blocked = changeBlocked(app, publicUrl);
 
   const check = async () => {
@@ -182,59 +182,52 @@ export function ConnectorAppProfile({
         </p>
       )}
 
-      {app.source !== 'none' || app.saved_client_id !== null ? (
-        <section className="flex flex-col gap-4">
-          <h2 className="text-sm font-semibold text-foreground">App</h2>
-          <div className="grid grid-cols-3 gap-6">
-            <Fact label="Client ID">
-              <code className="font-mono text-xs break-all">
-                {app.client_id ?? app.saved_client_id}
-              </code>
-            </Fact>
-            {app.fields.slug && <Fact label="GitHub App">{app.fields.slug}</Fact>}
-            {summary && <Fact label="Secret">{summary}</Fact>}
-            {app.updated_at && (
-              <Fact label="Last changed">
-                {app.updated_by_name ?? 'A deleted account'},{' '}
-                {format(new Date(app.updated_at), 'MMM d, yyyy')}
-              </Fact>
-            )}
-            {needs?.cause === 'saved_ignored' && app.saved_client_id && (
-              <Fact label="Saved here">
-                <code className="font-mono text-xs break-all">{app.saved_client_id}</code>
-              </Fact>
-            )}
-          </div>
+      {appDetails(app, publicUrl, (iso) => format(new Date(iso), 'MMM d, yyyy')).map((section) => (
+        <section key={section.title} className="flex flex-col gap-3">
+          <h2 className="text-sm font-semibold text-foreground">{section.title}</h2>
+          <dl className="divide-y divide-border rounded-lg border border-border">
+            {section.rows.map((detail) => (
+              <DetailItem key={detail.label} detail={detail} />
+            ))}
+          </dl>
         </section>
-      ) : null}
-
-      {(app.install_url || publicUrl) && state !== 'not_set_up' && (
-        <section className="flex flex-col gap-2">
-          <h2 className="text-sm font-semibold text-foreground">For the people who connect</h2>
-          {publicUrl && <p className="text-sm text-foreground-muted">{sentBackTo(publicUrl)}</p>}
-          {app.install_url && (
-            <button
-              type="button"
-              className="flex w-fit items-center gap-1 text-sm text-foreground underline underline-offset-2"
-              onClick={() =>
-                void openExternalUrl(app.install_url!, `Could not open ${app.name}'s install page`)
-              }
-            >
-              Where people install the App
-              <ExternalLink className="size-3.5" />
-            </button>
-          )}
-        </section>
-      )}
+      ))}
     </div>
   );
 }
 
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * One label and its value, the labels in one column so values line up. An
+ * identifier is set in a fixed-width face with a copy button; a link opens
+ * in the browser.
+ */
+function DetailItem({ detail }: { detail: DetailRow }) {
   return (
-    <div className="min-w-0">
-      <h3 className="text-xs font-medium tracking-wide text-foreground-muted uppercase">{label}</h3>
-      <div className="mt-1.5 text-sm text-foreground">{children}</div>
+    <div className="grid grid-cols-[10rem_minmax(0,1fr)] items-center gap-4 px-4 py-2.5">
+      <dt className="text-sm text-foreground-muted">{detail.label}</dt>
+      <dd className="flex min-w-0 items-center gap-1">
+        {detail.href ? (
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-1 text-left text-sm text-foreground underline underline-offset-2"
+            onClick={() =>
+              void openExternalUrl(detail.href!, `Could not open ${detail.label.toLowerCase()}`)
+            }
+          >
+            <span className="truncate">{detail.value}</span>
+            <ExternalLink className="size-3.5 shrink-0" />
+          </button>
+        ) : detail.code ? (
+          <>
+            <code className="min-w-0 truncate font-mono text-xs" title={detail.value}>
+              {detail.value}
+            </code>
+            <CopyButton value={detail.value} />
+          </>
+        ) : (
+          <span className="min-w-0 text-sm text-foreground">{detail.value}</span>
+        )}
+      </dd>
     </div>
   );
 }

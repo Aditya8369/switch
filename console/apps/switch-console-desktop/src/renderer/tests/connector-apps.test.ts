@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   actionLabel,
+  appDetails,
   attention,
   audienceText,
   cardOrder,
@@ -350,5 +351,70 @@ describe('a tile', () => {
     // Checking and moving off configuration are the profile's.
     expect(tileAction(app(), null)).toBeNull();
     expect(tileAction(CONFIGURED, null)).toBeNull();
+  });
+});
+
+describe("an app's details", () => {
+  const date = (iso: string) => `on ${iso}`;
+  const shape = (sections: ReturnType<typeof appDetails>) =>
+    sections.map((section) => [section.title, section.rows.map((r) => r.label)]);
+
+  it('are in the same three sections for every app, each with what it has', () => {
+    expect(shape(appDetails(app(), PUBLIC_URL, date))).toEqual([
+      ['Credentials', ['Client ID', 'Client secret']],
+      ['Setup', ['Source', 'Redirect URI', 'Last changed']],
+      ['For people who connect', ['Sent back to']],
+    ]);
+    const installed = {
+      ...GITHUB,
+      install_url: 'https://github.com/apps/example-app/installations/new',
+    };
+    expect(shape(appDetails(installed, PUBLIC_URL, date))).toEqual([
+      ['Credentials', ['Client ID', 'GitHub App', 'Client secret', 'Private key']],
+      ['Setup', ['Source', 'Callback URL', 'Last changed']],
+      ['For people who connect', ['Sent back to', 'Install page']],
+    ]);
+  });
+
+  it('show identifiers to copy, a secret by its last characters, and never more', () => {
+    const [credentials] = appDetails(GITHUB, PUBLIC_URL, date);
+    const byLabel = Object.fromEntries(credentials!.rows.map((r) => [r.label, r]));
+    expect(byLabel['Client ID']).toMatchObject({ code: true });
+    expect(byLabel['Client secret']).toMatchObject({
+      value: expect.stringMatching(/^•••• /),
+      code: false,
+    });
+    expect(byLabel['Private key']).toMatchObject({ code: true });
+    expect(byLabel['GitHub App']!.href).toBe('https://github.com/apps/example-app');
+  });
+
+  it('name a value an app added later from its key', () => {
+    const later = app({
+      fields: { tenant_domain: 'example.test' } as ConnectorApp['fields'],
+      secrets: { signing_key: { set: true, last4: 'zz99' } },
+    });
+    expect(appDetails(later, null, date)[0]!.rows.map((r) => [r.label, r.value])).toEqual([
+      ['Client ID', 'example-client-id'],
+      ['Tenant domain', 'example.test'],
+      ['Signing key', '•••• zz99'],
+    ]);
+  });
+
+  it('say where an app comes from, who changed it, and who must reconnect', () => {
+    const setup = (a: ConnectorApp) =>
+      Object.fromEntries(appDetails(a, null, date)[1]!.rows.map((r) => [r.label, r.value]));
+    expect(setup(app())).toMatchObject({
+      Source: 'Saved in Switch',
+      'Last changed': 'Ada · on 2026-10-15T10:00:00Z',
+    });
+    expect(setup(CONFIGURED).Source).toBe(
+      'Server configuration (GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH)'
+    );
+    expect(setup(NONE)).toMatchObject({ Source: 'Not set up' });
+    const people = appDetails(app({ stale_connections: 2 }), PUBLIC_URL, date).at(-1)!;
+    expect(people.rows.map((r) => [r.label, r.value])).toEqual([
+      ['Sent back to', PUBLIC_URL],
+      ['Need to reconnect', '2 people'],
+    ]);
   });
 });

@@ -399,8 +399,14 @@ it("opens an app's profile from its tile, and a failed check stays on the tile a
     app: 'google-workspace',
   });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Google Workspace'));
-  expect(page.textContent).toContain('example-client-id');
-  expect(page.textContent).toContain('Secret ends in ab12');
+  const credentials = page.querySelector('section dl')!;
+  expect([...credentials.querySelectorAll('dt')].map((dt) => dt.textContent)).toEqual([
+    'Client ID',
+    'Client secret',
+  ]);
+  expect(credentials.textContent).toContain('example-client-id');
+  expect(credentials.textContent).toContain('•••• ab12');
+  expect(page.querySelector('button[aria-label="Copy example-client-id"]')).not.toBeNull();
 
   await act(async () => button(/^Check it works$/, page)!.click());
   await vi.waitFor(() => expect(page.textContent).toContain('Google refused the secret.'));

@@ -413,3 +413,107 @@ export function tileAction(
   const action = primaryAction(app, checkFailure);
   return action === 'check' || action === 'manage_here' ? null : action;
 }
+
+export interface DetailRow {
+  label: string;
+  value: string;
+  /** An identifier, shown in a fixed-width face with a copy button. */
+  code: boolean;
+  href: string | null;
+}
+
+export interface DetailSection {
+  title: string;
+  rows: DetailRow[];
+}
+
+/** What GitHub and Google call each value; anything newer is named from its key. */
+const DETAIL_LABELS: Record<string, string> = {
+  client_secret: 'Client secret',
+  private_key: 'Private key',
+  slug: 'GitHub App',
+};
+
+function detailLabel(name: string): string {
+  const known = DETAIL_LABELS[name];
+  if (known) return known;
+  const words = name.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function row(label: string, value: string, code = false, href: string | null = null): DetailRow {
+  return { label, value, code, href };
+}
+
+/**
+ * An app's details in the same three sections for every app, so the
+ * operator finds a value in the same place whichever app it is: what
+ * identifies it at the vendor, how Switch holds it, and what it means for
+ * the people who connect. The values an app has are read from what the
+ * server sends (its fields and its secrets), so an app added later shows
+ * its own with no change here; a section with nothing to say is left out.
+ */
+export function appDetails(
+  app: ConnectorApp,
+  publicUrl: string | null,
+  formatDate: (iso: string) => string
+): DetailSection[] {
+  const credentials: DetailRow[] = [];
+  const clientId = app.client_id ?? app.saved_client_id;
+  if (clientId !== null) credentials.push(row('Client ID', clientId, true));
+  for (const [name, value] of Object.entries(app.fields)) {
+    if (!value) continue;
+    credentials.push(
+      name === 'slug' && app.kind === 'github_app'
+        ? row(detailLabel(name), value, false, `https://github.com/apps/${value}`)
+        : row(detailLabel(name), value)
+    );
+  }
+  for (const [name, secret] of Object.entries(app.secrets)) {
+    const label = detailLabel(name);
+    if (!secret.set) credentials.push(row(label, 'Not set'));
+    else if (secret.fingerprint) credentials.push(row(label, secret.fingerprint, true));
+    else if (secret.last4) credentials.push(row(label, `•••• ${secret.last4}`));
+    else credentials.push(row(label, 'Set'));
+  }
+
+  const setup: DetailRow[] = [
+    row(
+      'Source',
+      app.source === 'configuration'
+        ? `Server configuration (${variables(app)})`
+        : app.source === 'saved'
+          ? 'Saved in Switch'
+          : 'Not set up'
+    ),
+  ];
+  if (app.redirect_uri !== null)
+    setup.push(
+      row(app.kind === 'github_app' ? 'Callback URL' : 'Redirect URI', app.redirect_uri, true)
+    );
+  if (app.updated_at !== null)
+    setup.push(
+      row(
+        'Last changed',
+        `${app.updated_by_name ?? 'A deleted account'} · ${formatDate(app.updated_at)}`
+      )
+    );
+
+  const people: DetailRow[] = [];
+  if (publicUrl !== null) people.push(row('Sent back to', publicUrl));
+  if (app.install_url !== null)
+    people.push(row('Install page', app.install_url, false, app.install_url));
+  if (app.stale_connections > 0)
+    people.push(
+      row(
+        'Need to reconnect',
+        app.stale_connections === 1 ? '1 person' : `${app.stale_connections} people`
+      )
+    );
+
+  return [
+    { title: 'Credentials', rows: credentials },
+    { title: 'Setup', rows: setup },
+    { title: 'For people who connect', rows: people },
+  ].filter((section) => section.rows.length > 0);
+}

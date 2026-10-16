@@ -1,4 +1,4 @@
-import { Check, CircleCheck, Circle, Copy, ExternalLink, FileKey } from 'lucide-react';
+import { CircleCheck, Circle, ExternalLink, FileKey } from 'lucide-react';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -37,6 +37,7 @@ import {
   vendorName,
 } from './connector-apps';
 import { useReloadConnectorApps } from './connector-apps-queries';
+import { CopyButton } from './copy-button';
 
 export type SetupMode = 'set_up' | 'switch' | 'enter_again';
 
@@ -66,27 +67,10 @@ function useSave(serverId: string, service: string, failure: string) {
 
 /** A value to paste at the vendor, with a button that copies it. */
 function Copyable({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
   return (
     <span className="mt-1.5 flex items-center gap-1 rounded-md border border-border bg-background-1 py-1 pr-1 pl-2">
       <code className="min-w-0 flex-1 font-mono text-xs break-all">{value}</code>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        aria-label={copied ? 'Copied' : `Copy ${value}`}
-        onClick={() =>
-          void navigator.clipboard.writeText(value).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          })
-        }
-      >
-        {copied ? (
-          <Check className="size-3.5 text-foreground-success" />
-        ) : (
-          <Copy className="size-3.5" />
-        )}
-      </Button>
+      <CopyButton value={value} />
     </span>
   );
 }
