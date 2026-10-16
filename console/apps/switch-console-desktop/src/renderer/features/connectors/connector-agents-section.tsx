@@ -243,7 +243,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
       )}
       {!offersAddAgent(connection) && (
         <p className="text-xs text-foreground-muted">
-          Turn it on for an agent from that agent&apos;s settings.
+          Turn it on for an agent from the agent&apos;s Connections tab.
         </p>
       )}
       {connection.slug === 'github' && usedBy.length > 0 && (
