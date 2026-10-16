@@ -1,4 +1,5 @@
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { ServiceGrant, ServiceGrants } from '@shared/core/switch-servers/service-grants';
 
 /**
@@ -93,4 +94,14 @@ export function unconnectedNote(names: readonly string[]): string | null {
 /** Whether to warn that anyone who can address the agent can use its grants. */
 export function showsOwnerOnlyWarning(grants: ServiceGrants): boolean {
   return grants.addressing_open && grants.grants.length > 0;
+}
+
+/** The warning shown with {@link showsOwnerOnlyWarning}. */
+export function ownerOnlyWarningText(label: string): string {
+  return `Anyone who can address ${label} can have it use these grants. Owner-only stops that: only you can address it. It still reads what others write in shared rooms and posts results there.`;
+}
+
+/** What "Make owner-only" asks the server for: its owner alone, none of the owner's agents. */
+export function ownerOnlyRequest(workspaceId: string, agentId: string) {
+  return { workspaceId, agentId, policy: ownerOnlyPolicy() };
 }

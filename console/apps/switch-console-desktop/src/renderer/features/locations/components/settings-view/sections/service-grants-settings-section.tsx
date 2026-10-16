@@ -7,6 +7,10 @@ import {
   githubGrantResources,
 } from '@renderer/features/connectors/github-grant';
 import { GitHubGrantPicker } from '@renderer/features/connectors/github-grant-picker';
+import {
+  ownerOnlyRequest,
+  ownerOnlyWarningText,
+} from '@renderer/features/managed-agents/agent-connections';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
@@ -17,7 +21,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { Switch } from '@renderer/lib/ui/switch';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
-import { OWNER_ONLY_POLICY, type ServiceGrant } from '@shared/core/switch-servers/service-grants';
+import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
 import {
   CLOUD_GITHUB_GRANT_NOTES,
   GITHUB_GRANT_NOTES,
@@ -165,11 +169,7 @@ export function ServiceGrantsRow({
 
       {grants.data.addressing_open && grants.data.grants.length > 0 && (
         <Alert variant="warning">
-          <AlertDescription>
-            Anyone who can address {agentName} can have it use these grants. Owner-only stops that,
-            but it still reads what others write in shared rooms, can be reached through your other
-            agents that are open, and posts results to shared rooms.
-          </AlertDescription>
+          <AlertDescription>{ownerOnlyWarningText(agentName)}</AlertDescription>
           <AlertAction>
             <Button
               size="sm"
@@ -177,11 +177,9 @@ export function ServiceGrantsRow({
               disabled={change.isPending}
               onClick={() =>
                 change.mutate(async () => {
-                  await rpc.workspaces.updateAddressingPolicy({
-                    workspaceId,
-                    agentId,
-                    policy: OWNER_ONLY_POLICY,
-                  });
+                  await rpc.workspaces.updateAddressingPolicy(
+                    ownerOnlyRequest(workspaceId, agentId)
+                  );
                   await queryClient.invalidateQueries({
                     queryKey: ['agent-addressing-policy', workspaceId, agentId],
                   });

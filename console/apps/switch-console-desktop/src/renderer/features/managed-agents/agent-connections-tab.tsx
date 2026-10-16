@@ -20,12 +20,13 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
-import { OWNER_ONLY_POLICY } from '@shared/core/switch-servers/service-grants';
 import {
   type AgentConnectionCard,
   agentConnectionCards,
   connectionCardDetail,
   connectionCardStatus,
+  ownerOnlyRequest,
+  ownerOnlyWarningText,
   showsOwnerOnlyWarning,
   unconnectedNote,
 } from './agent-connections';
@@ -143,11 +144,7 @@ export function AgentConnectionsTab({
         <>
           {showsOwnerOnlyWarning(current) && (
             <Alert variant="warning">
-              <AlertDescription>
-                Anyone who can address {label} can have it use these grants. Owner-only stops that,
-                but it still reads what others write in shared rooms, can be reached through your
-                other agents that are open, and posts results to shared rooms.
-              </AlertDescription>
+              <AlertDescription>{ownerOnlyWarningText(label)}</AlertDescription>
               <AlertAction>
                 <Button
                   size="sm"
@@ -155,11 +152,9 @@ export function AgentConnectionsTab({
                   disabled={change.isPending}
                   onClick={() =>
                     change.mutate(async () => {
-                      await rpc.workspaces.updateAddressingPolicy({
-                        workspaceId,
-                        agentId,
-                        policy: OWNER_ONLY_POLICY,
-                      });
+                      await rpc.workspaces.updateAddressingPolicy(
+                        ownerOnlyRequest(workspaceId, agentId)
+                      );
                       await queryClient.invalidateQueries({
                         queryKey: ['agent-addressing-policy', workspaceId, agentId],
                       });

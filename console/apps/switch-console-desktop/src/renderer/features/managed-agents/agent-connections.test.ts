@@ -5,6 +5,8 @@ import {
   agentConnectionCards,
   connectionCardDetail,
   connectionCardStatus,
+  ownerOnlyRequest,
+  ownerOnlyWarningText,
   showsOwnerOnlyWarning,
   unconnectedNote,
 } from './agent-connections';
@@ -160,5 +162,18 @@ describe('the owner-only warning', () => {
       false
     );
     expect(showsOwnerOnlyWarning({ addressing_open: true, grants: [] })).toBe(false);
+  });
+
+  it('says owner-only means only you can address it, and what it still does in shared rooms', () => {
+    expect(ownerOnlyWarningText('m2')).toBe(
+      'Anyone who can address m2 can have it use these grants. Owner-only stops that: only you can address it. It still reads what others write in shared rooms and posts results there.'
+    );
+  });
+
+  it("makes the agent its owner's alone, not reachable through the owner's other agents", () => {
+    const request = ownerOnlyRequest('workspace', 'agent');
+    expect(request).toMatchObject({ workspaceId: 'workspace', agentId: 'agent' });
+    expect(request.policy.rules).toHaveLength(1);
+    expect(request.policy.rules[0]).toMatchObject({ owner: true, owner_agents: false, agents: [] });
   });
 });

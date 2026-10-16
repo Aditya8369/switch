@@ -10,7 +10,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import { OWNER_ONLY_POLICY, type ServiceGrants } from '@shared/core/switch-servers/service-grants';
+import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 
 const agents = vi.hoisted(() => ({ getAgents: vi.fn() }));
 const workspaces = vi.hoisted(() => ({
@@ -140,7 +141,7 @@ it('makes the agent owner-only from the warning', async () => {
     expect(workspaces.updateAddressingPolicy).toHaveBeenCalledWith({
       workspaceId: 'workspace',
       agentId: 'agent',
-      policy: OWNER_ONLY_POLICY,
+      policy: ownerOnlyPolicy(),
     })
   );
 });
