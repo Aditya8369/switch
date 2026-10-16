@@ -50,6 +50,12 @@ SERVICE_CONNECTIONS = "service_connections"
 # messages reach nobody, as before.
 FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 
+# Agent chats in Switch Console: an agent's page opens on its chats (its
+# direct chats and the rooms it is in) beside the conversation. Core puts an
+# agent's owner back in each chat they started that holds the agent; with it
+# off, owning an agent gives no room membership.
+AGENT_CHATS = "agent_chats"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -59,5 +65,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_MANAGEMENT,
         SERVICE_CONNECTIONS,
         FOLLOW_THE_CONVERSATION,
+        AGENT_CHATS,
     }
 )

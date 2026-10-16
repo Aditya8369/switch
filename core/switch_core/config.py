@@ -15,6 +15,7 @@ from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
+    AGENT_CHATS,
     AGENT_MANAGEMENT,
     FOLLOW_THE_CONVERSATION,
     HOSTED_AGENTS,
@@ -1182,6 +1183,10 @@ class SwitchConfig(BaseSettings):
     @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
+
+    @property
+    def agent_chats_enabled(self) -> bool:
+        return self.feature_flags[AGENT_CHATS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
