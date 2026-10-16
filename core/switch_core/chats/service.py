@@ -24,7 +24,7 @@ import logging
 import re
 import uuid
 import weakref
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -125,6 +125,9 @@ class StagedUpload:
 
 
 RemovalReason = Literal["access", "unlisted"]
+
+# Long enough for a welcome with tips; a greeting is not a document.
+GREETING_MAX_CHARS = 4000
 RoomControl = Literal["interrupt", "reset", "compact"]
 
 
@@ -159,9 +162,12 @@ class ChatService:
         media_max_bytes: int,
         agent_chats_enabled: bool,
         controllers: ControllerPresence,
+        post_as_agent: Callable[[str, str, str], Awaitable[str]],
     ) -> None:
         self.session_factory = session_factory
         self._controllers = controllers
+        # Posts (agent_id, room_id, body) as the agent, through its own client.
+        self._post_as_agent = post_as_agent
         self.agent_chats_enabled = agent_chats_enabled
         self.listener = listener
         self.activity_listener = activity_listener
@@ -1245,6 +1251,60 @@ class ChatService:
             )
             await session.commit()
         return command_id
+
+    async def greet(
+        self, tenant_id: str, user: User, room_id: str, *, agent_id: str, body: str
+    ) -> None:
+        """Have the user's own agent open a direct chat the user started with
+        `body`, posted as the agent: an agent's first words, written for it
+        (switch-buddy's welcome). Only into an empty chat, so it can only ever
+        be the first message and never put words into a conversation."""
+        if not body.strip():
+            raise ChatError(422, "EMPTY_MESSAGE", "There is nothing to send.")
+        if len(body) > GREETING_MAX_CHARS:
+            raise ChatError(
+                422,
+                "GREETING_TOO_LONG",
+                f"A greeting is at most {GREETING_MAX_CHARS} characters.",
+            )
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room, _ = await self.require_member(session, tenant_id, user, room_id)
+            if room.channel_type != "direct" or room.owner_id != user.id:
+                raise ChatError(
+                    403,
+                    "NOT_YOUR_DIRECT_CHAT",
+                    "Only a direct chat you started can open with a greeting.",
+                )
+            if agent_id not in await self._room_store.get_agent_ids(session, room.id):
+                raise ChatError(
+                    422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat."
+                )
+            agent = await self._agent_store.get(session, agent_id)
+            assert agent is not None
+            if agent.owner_id != user.id:
+                raise ChatError(
+                    403,
+                    "NOT_AGENT_OWNER",
+                    "Only the agent's owner can have it greet.",
+                )
+            if await self._message_store.has_messages_of_type(
+                session, room.id, MESSAGE_EVENT_TYPE
+            ):
+                raise ChatError(
+                    409,
+                    "CHAT_NOT_EMPTY",
+                    "The chat already has messages; a greeting only opens one.",
+                )
+        try:
+            await self._post_as_agent(agent_id, room.id, body)
+        except ValueError as error:
+            if "not running" in str(error):
+                raise ChatError(
+                    409,
+                    "AGENT_NOT_READY",
+                    "The agent is still starting; try again in a moment.",
+                ) from error
+            raise ChatError(422, "GREETING_NOT_POSTED", str(error)) from error
 
     async def warm(
         self, tenant_id: str, user: User, room_id: str, *, agent_id: str

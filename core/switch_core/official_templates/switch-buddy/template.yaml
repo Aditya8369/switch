@@ -11,7 +11,7 @@ params:
   agent_name:
     type: string
     label: Agent name
-    description: The name it is created under. One per person, so Switch Console adds the person's name.
+    description: The name it is created under and shown by. One per person, so Switch Console adds the person's name.
     default: switch-buddy
   provider:
     type: provider
@@ -35,7 +35,7 @@ resources:
   buddy:
     type: agent
     name: "{agent_name}"
-    display_name: switch-buddy
+    # Switch Console shows its bundled copy for this exact URL (BUDDY_ICON_URL).
     icon_url: https://raw.githubusercontent.com/sandbox-quantum/switch/main/assets/switch-buddy.png
     description: >-
       Your assistant in Switch. Creates agents and rooms for you, answers

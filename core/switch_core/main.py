@@ -896,6 +896,9 @@ async def run(config: SwitchConfig) -> None:
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
         controllers=connections.controllers,
+        post_as_agent=lambda agent_id, room_id, body: protocol.send_message(
+            agent_id, room_id, body
+        ),
     )
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)

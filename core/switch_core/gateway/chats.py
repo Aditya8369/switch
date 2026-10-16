@@ -399,6 +399,23 @@ async def send_control(
     return ControlAccepted(command_id=command_id)
 
 
+class GreetRequest(CamelModel):
+    agent_id: str
+    body: str
+
+
+@router.post("/{room_id}/greeting", status_code=204)
+async def greet(
+    room_id: str, req: GreetRequest, user: CurrentUser, service: Service
+) -> Response:
+    """Have the caller's own agent open the caller's empty direct chat with
+    `body`, posted as the agent."""
+    await service.greet(
+        require_tenant_id(), user, room_id, agent_id=req.agent_id, body=req.body
+    )
+    return Response(status_code=204)
+
+
 class WarmRequest(CamelModel):
     agent_id: str
 

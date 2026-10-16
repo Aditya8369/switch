@@ -510,7 +510,8 @@ async def test_switch_buddy_is_created_under_its_name_and_can_manage_agents(mana
             await session.execute(select(Agent).where(Agent.name == "switch-buddy-max"))
         ).scalar_one()
     assert agent.can_manage_agents is True
-    assert managed["management"].created[0].display_name == "switch-buddy"
+    # Shown by its own name, which carries its person's.
+    assert managed["management"].created[0].display_name is None
     assert (
         managed["management"].created[0].icon_url.endswith("/assets/switch-buddy.png")
     )

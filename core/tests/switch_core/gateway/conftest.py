@@ -113,6 +113,21 @@ class _FakeControllers:
         return True
 
 
+class _FakeGreetings:
+    """What the service had agents post: (agent_id, room_id, body), or a
+    failure to raise instead, as the agent's client would."""
+
+    def __init__(self) -> None:
+        self.posted: list[tuple[str, str, str]] = []
+        self.fail_with: Exception | None = None
+
+    async def post(self, agent_id: str, room_id: str, body: str) -> str:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.posted.append((agent_id, room_id, body))
+        return f"$event-{len(self.posted)}"
+
+
 class _Harness(SimpleNamespace):
     client: httpx.AsyncClient
     factory: async_sessionmaker[AsyncSession]
@@ -122,6 +137,7 @@ class _Harness(SimpleNamespace):
     activity: _FakeActivityListener
     lifecycle: _FakeLifecycle
     controllers: _FakeControllers
+    greetings: _FakeGreetings
     alice: User
     bob: User
     carol: User
@@ -244,6 +260,7 @@ async def chats(
     listener = _FakeListener()
     activity = _FakeActivityListener()
     controllers = _FakeControllers()
+    greetings = _FakeGreetings()
     service = ChatService(
         session_factory=session_factory,
         room_service=room_service,
@@ -260,6 +277,7 @@ async def chats(
         media_max_bytes=1024,
         agent_chats_enabled=True,
         controllers=controllers,  # type: ignore[arg-type]
+        post_as_agent=greetings.post,
     )
     room_service.on_room_agents_changed(service.sync_room)
 
@@ -287,6 +305,7 @@ async def chats(
             activity=activity,
             lifecycle=lifecycle,
             controllers=controllers,
+            greetings=greetings,
             alice=alice,
             bob=bob,
             carol=carol,

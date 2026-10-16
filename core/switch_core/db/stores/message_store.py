@@ -144,6 +144,22 @@ class MessageStore:
         )
         return max(int(result.scalar_one()), 0)
 
+    async def has_messages_of_type(
+        self, session: AsyncSession, room_id: str, event_type: str
+    ) -> bool:
+        """Whether anything of `event_type` was sent into the room live (not
+        reconstructed history)."""
+        result = await session.execute(
+            select(Message.id)
+            .where(
+                Message.room_id == room_id,
+                Message.event_type == event_type,
+                Message.seq > 0,
+            )
+            .limit(1)
+        )
+        return result.first() is not None
+
     async def head_seqs(
         self, session: AsyncSession, room_ids: list[str]
     ) -> dict[str, int]:
