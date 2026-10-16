@@ -176,6 +176,7 @@ export function liveSessionStartingNotices(
 
 /** What the host posts for a turn that ended without the agent posting, then why it ended. */
 export const UNPOSTED_REPLY_MESSAGE = 'I finished without replying.';
+export const TURN_FAILED_MESSAGE = 'My turn failed before I could reply';
 export const TURN_FAILED_PHRASE = 'The turn failed';
 export const TURN_INTERRUPTED_PHRASE = 'The turn was interrupted';
 
@@ -187,7 +188,11 @@ export type TurnEndNotice = {
 /** The host's notice of a turn that ended without a reply, or null for any other message. */
 export function turnEndNotice(message: ChatMessage): TurnEndNotice | null {
   const body = message.body.trim();
-  if (message.sender.kind !== 'agent' || !body.startsWith(UNPOSTED_REPLY_MESSAGE)) return null;
+  if (message.sender.kind !== 'agent') return null;
+  if (body === `${TURN_FAILED_MESSAGE}.`) return { outcome: 'failed', reason: null };
+  if (body.startsWith(`${TURN_FAILED_MESSAGE}: `))
+    return { outcome: 'failed', reason: body.slice(TURN_FAILED_MESSAGE.length + 2).trim() };
+  if (!body.startsWith(UNPOSTED_REPLY_MESSAGE)) return null;
   const rest = body.slice(UNPOSTED_REPLY_MESSAGE.length).trim();
   if (!rest) return { outcome: 'completed', reason: null };
   for (const [phrase, outcome] of [

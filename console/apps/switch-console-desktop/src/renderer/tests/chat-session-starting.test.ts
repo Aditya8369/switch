@@ -5,7 +5,7 @@ import {
   type ChatMessage,
   liveSessionStartingNotices,
   SESSION_STARTING_MESSAGE,
-  TURN_FAILED_PHRASE,
+  TURN_FAILED_MESSAGE,
   TURN_INTERRUPTED_PHRASE,
   turnEndNotice,
   UNPOSTED_REPLY_MESSAGE,
@@ -93,6 +93,14 @@ describe('turn-end notices', () => {
       reason: null,
     });
     expect(read('I finished without replying.')).toEqual({ outcome: 'completed', reason: null });
+    expect(read('My turn failed before I could reply: API Error: 400 bad request')).toEqual({
+      outcome: 'failed',
+      reason: 'API Error: 400 bad request',
+    });
+    expect(read('My turn failed before I could reply.')).toEqual({
+      outcome: 'failed',
+      reason: null,
+    });
   });
 
   it('leaves other messages alone', () => {
@@ -114,7 +122,9 @@ describe('turn-end notices', () => {
     );
     expect(source).toContain(`'${UNPOSTED_REPLY_MESSAGE}'`);
     expect(source).toContain(`\`${UNPOSTED_REPLY_MESSAGE} \${failure}\``);
-    expect(source).toContain(`\`${TURN_FAILED_PHRASE}\${reason}\``);
+    expect(source).toContain(
+      `\`${TURN_FAILED_MESSAGE}\${error ? \`: \${cap(error, 1000)}\` : '.'}\``
+    );
     expect(source).toContain(`\`${TURN_INTERRUPTED_PHRASE}\${reason}\``);
     expect(source).toContain("? `: ${cap(detail.trim(), 1000)}` : '.'");
   });
