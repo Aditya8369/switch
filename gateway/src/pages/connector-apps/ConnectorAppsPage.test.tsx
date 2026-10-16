@@ -250,6 +250,35 @@ describe("ConnectorAppsPage", () => {
     );
   });
 
+  it("goes back a step, keeping what was entered, and never before the first", async () => {
+    serve(listOf(NONE_GOOGLE));
+    render(<ConnectorAppsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up Google Workspace" }));
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open Clients" }).getAttribute("href")).toBe(
+      "https://console.cloud.google.com/auth/clients",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.change(screen.getByLabelText("Client ID"), { target: { value: "example-client-id" } });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByText(/Step 1 of 3/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect((screen.getByLabelText("Client ID") as HTMLInputElement).value).toBe("example-client-id");
+  });
+
+  it("goes back from creating the app to the warning when switching", async () => {
+    serve(listOf(app()));
+    render(<ConnectorAppsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "More for Google Workspace" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Use a different app" }));
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByText(/Step 1 of 3/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByText(/Everyone connected through the current app/)).toBeTruthy();
+  });
+
   it("walks moving off configuration, ticking copying in once it is done", async () => {
     const configured = app({ source: "configuration", saved_client_id: null });
     let imported = false;

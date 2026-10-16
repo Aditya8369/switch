@@ -146,14 +146,14 @@ function ManageHereDialog({
  */
 export default function ConnectorAppCard({
   app,
-  setupDisabled,
+  publicUrl,
   checkFailure,
   onCheckFailure,
   onChanged,
 }: {
   app: ConnectorApp;
-  /** GATEWAY_PUBLIC_URL is unset: the vendor has nowhere to send people back. */
-  setupDisabled: boolean;
+  /** GATEWAY_PUBLIC_URL; while it is unset the vendor has nowhere to send people back. */
+  publicUrl: string | null;
   checkFailure: string | null;
   onCheckFailure: (message: string | null) => void;
   onChanged: (message: string) => void;
@@ -172,7 +172,7 @@ export default function ConnectorAppCard({
   const primary = primaryAction(app, checkFailure);
   const actions = menuActions(app);
   const summary = secretSummary(app);
-  const blocked = setupDisabled || app.setup_blocked !== null;
+  const blocked = publicUrl === null || app.setup_blocked !== null;
 
   const check = async () => {
     setChecking(true);
@@ -304,6 +304,7 @@ export default function ConnectorAppCard({
       {setup && (
         <SetupDialog
           app={app}
+          publicUrl={publicUrl}
           mode={setup}
           open
           onClose={() => setSetup(null)}

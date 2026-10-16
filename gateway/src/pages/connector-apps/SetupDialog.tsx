@@ -35,7 +35,6 @@ import {
   secretFields,
   setupInstructions,
   switchWarning,
-  vendorLink,
   vendorName,
 } from "./connectorApps";
 
@@ -49,7 +48,7 @@ function Copyable({ value }: { value: string }) {
   return (
     <Stack direction="row" alignItems="center" spacing={0.5}>
       <Typography
-        variant="body2"
+        variant="body1"
         sx={{ fontFamily: "monospace", wordBreak: "break-all", flexGrow: 1 }}
       >
         {value}
@@ -132,12 +131,14 @@ export function SecretInputs({
  */
 export default function SetupDialog({
   app,
+  publicUrl,
   mode,
   open,
   onClose,
   onSaved,
 }: {
   app: ConnectorApp;
+  publicUrl: string | null;
   mode: SetupMode;
   open: boolean;
   onClose: () => void;
@@ -165,7 +166,6 @@ export default function SetupDialog({
 
   const fields = secretFields(app);
   const complete = clientId.trim() !== "" && fields.every((f) => (secrets[f.name] ?? "") !== "");
-  const link = vendorLink(app);
   const replacing = app.saved_client_id !== null && clientId.trim() !== app.saved_client_id;
 
   const save = async () => {
@@ -217,12 +217,12 @@ export default function SetupDialog({
 
           {step === 1 && (
             <>
-              <Typography variant="subtitle2">
+              <Typography variant="subtitle1">
                 Step 1 of 3 · Create the app at {vendorName(app)}
               </Typography>
               {asksWhoConnects(app) && (
                 <Box>
-                  <Typography variant="body2" fontWeight={600}>
+                  <Typography variant="body1" fontWeight={600}>
                     Who will connect?
                   </Typography>
                   <RadioGroup
@@ -243,24 +243,29 @@ export default function SetupDialog({
                 </Box>
               )}
               <Box component="ol" sx={{ pl: 2.5, m: 0 }}>
-                {setupInstructions(app, audience).map((instruction) => (
-                  <Box component="li" key={instruction.text} sx={{ mb: 1 }}>
-                    <Typography variant="body2">{instruction.text}</Typography>
+                {setupInstructions(app, audience, publicUrl).map((instruction) => (
+                  <Box component="li" key={instruction.text} sx={{ mb: 1.5 }}>
+                    <Typography variant="body1">
+                      {instruction.text}
+                      {instruction.link && (
+                        <>
+                          {" "}
+                          <Link href={instruction.link.href} target="_blank" rel="noreferrer">
+                            {instruction.link.label}
+                          </Link>
+                        </>
+                      )}
+                    </Typography>
                     {instruction.copy && <Copyable value={instruction.copy} />}
                   </Box>
                 ))}
               </Box>
-              {link && (
-                <Link href={link.href} target="_blank" rel="noreferrer">
-                  {link.label}
-                </Link>
-              )}
             </>
           )}
 
           {step === 2 && (
             <>
-              <Typography variant="subtitle2">Step 2 of 3 · Paste its values</Typography>
+              <Typography variant="subtitle1">Step 2 of 3 · Paste its values</Typography>
               <TextField
                 label="Client ID"
                 value={clientId}
@@ -304,6 +309,11 @@ export default function SetupDialog({
         <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
+        {step > first && (
+          <Button onClick={() => setStep(step - 1)} disabled={busy}>
+            Back
+          </Button>
+        )}
         {step < 2 ? (
           <Button variant="contained" onClick={() => setStep(step + 1)}>
             {step === 0 ? "Continue" : "Next"}

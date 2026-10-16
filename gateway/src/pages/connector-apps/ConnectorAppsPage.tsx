@@ -56,7 +56,7 @@ function ConnectorAppsList() {
           <ConnectorAppCard
             key={app.slug}
             app={app}
-            setupDisabled={missingUrl}
+            publicUrl={data.public_url}
             checkFailure={checkFailures[app.slug] ?? null}
             onCheckFailure={(message) =>
               setCheckFailures((current) => {

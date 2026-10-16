@@ -34,6 +34,8 @@ export interface Instruction {
   text: string;
   /** A value to paste at the vendor, offered with a copy button. */
   copy: string | null;
+  /** The vendor's page for this step, where it has one of its own. */
+  link: { label: string; href: string } | null;
 }
 
 export interface SecretField {
@@ -234,55 +236,88 @@ export function asksWhoConnects(app: Pick<ConnectorApp, "slug">): boolean {
 
 export function audienceText(audience: Audience): string {
   return audience === "internal"
-    ? "Choose Internal as the user type. Only people in your Google organization can connect, and Google doesn't need to review the app."
-    : "Choose External as the user type. Google must review the app, and because Switch reads Drive, that includes a security assessment renewed every year. Until then, only test users you list can connect, and they must reconnect every 7 days.";
+    ? "Under Audience, choose Internal. Only people in your Google organization can connect, and Google doesn't need to review the app."
+    : "Under Audience, choose External, and add the people who will try it as test users. Until Google verifies the app, only test users can connect, and they must reconnect every 7 days. Because Switch reads Drive, Google's review includes a security assessment renewed every year.";
 }
 
-export function vendorLink(app: ConnectorApp): { label: string; href: string } | null {
-  if (app.kind === "github_app")
-    return { label: "Open GitHub", href: "https://github.com/settings/apps/new" };
-  if (app.slug === GOOGLE)
-    return { label: "Open Google Cloud", href: "https://console.cloud.google.com/auth/clients" };
-  return null;
-}
+const GOOGLE_CLOUD = "https://console.cloud.google.com";
 
-/** Step 1 of setting up: creating the app at the vendor. */
-export function setupInstructions(app: ConnectorApp, audience: Audience): Instruction[] {
+/** Step 1 of setting up: creating the app at the vendor, one page at a time. */
+export function setupInstructions(
+  app: ConnectorApp,
+  audience: Audience,
+  publicUrl: string | null,
+): Instruction[] {
   const redirect = app.redirect_uri;
   if (app.kind === "github_app")
     return [
       {
-        text: "In GitHub, open Settings, Developer settings, GitHub Apps, and create a new GitHub App.",
+        text: "In GitHub, create a new GitHub App: Settings, Developer settings, GitHub Apps. For an App owned by an organization, start from the organization's settings instead.",
         copy: null,
+        link: { label: "Open GitHub", href: "https://github.com/settings/apps/new" },
       },
-      { text: "Set the Callback URL to:", copy: redirect },
-      { text: "Turn on Expire user authorization tokens.", copy: null },
+      { text: "Set the Homepage URL to Switch's public URL:", copy: publicUrl, link: null },
+      { text: "Set the Callback URL to:", copy: redirect, link: null },
+      { text: "Keep Expire user authorization tokens turned on.", copy: null, link: null },
+      {
+        text: "Under Webhook, untick Active. Switch doesn't use GitHub's webhooks, and GitHub asks for a webhook URL while it is ticked.",
+        copy: null,
+        link: null,
+      },
       {
         text: "Under Repository permissions, set Contents and Pull requests to Read and write.",
         copy: null,
+        link: null,
       },
       {
-        text: "Create the App, then generate a client secret and a private key.",
+        text: "Under Where can this GitHub App be installed, choose Any account, so people can install it on their own accounts and organizations. Choose Only on this account only if every member's repositories are in your own organization.",
         copy: null,
+        link: null,
+      },
+      {
+        text: "Create the GitHub App. On its page, generate a client secret, then a private key, and keep the downloaded .pem file.",
+        copy: null,
+        link: null,
       },
     ];
   if (app.slug === GOOGLE)
     return [
-      { text: audienceText(audience), copy: null },
       {
-        text: "In Google Cloud, open Google Auth Platform, Clients, and create a client of type Web application.",
+        text: "In Google Cloud, create a project for Switch, or pick an existing one.",
         copy: null,
+        link: { label: "Create a project", href: `${GOOGLE_CLOUD}/projectcreate` },
       },
-      { text: "Add this under Authorized redirect URIs:", copy: redirect },
+      {
+        text: "In Google Auth Platform, under Branding, enter an app name people will recognise and a support email.",
+        copy: null,
+        link: { label: "Open Branding", href: `${GOOGLE_CLOUD}/auth/branding` },
+      },
+      {
+        text: audienceText(audience),
+        copy: null,
+        link: { label: "Open Audience", href: `${GOOGLE_CLOUD}/auth/audience` },
+      },
+      {
+        text: "Under Clients, create a client of type Web application.",
+        copy: null,
+        link: { label: "Open Clients", href: `${GOOGLE_CLOUD}/auth/clients` },
+      },
+      {
+        text: "Add this under Authorized redirect URIs, create the client, and copy its Client ID and Client secret:",
+        copy: redirect,
+        link: null,
+      },
       {
         text: "Enable the Google Drive, Docs, Sheets, Slides and Calendar APIs for the project.",
         copy: null,
+        link: { label: "Open the API Library", href: `${GOOGLE_CLOUD}/apis/library` },
       },
     ];
   return [
     {
       text: `Register an OAuth client for Switch at ${app.name}, with this redirect URI:`,
       copy: redirect,
+      link: null,
     },
   ];
 }

@@ -20,6 +20,8 @@ import {
 } from "./connectorApps";
 import { app } from "./testFixtures";
 
+const PUBLIC_URL = "https://switch.example.test";
+
 const NONE = app({
   source: "none",
   client_id: null,
@@ -225,20 +227,54 @@ describe("wording", () => {
   });
 
   it("changes only the instructions with who will connect", () => {
-    const internal = setupInstructions(NONE, "internal");
-    const external = setupInstructions(NONE, "external");
-    expect(internal[0]!.text).toBe(audienceText("internal"));
-    expect(external[0]!.text).toBe(audienceText("external"));
-    expect(internal.slice(1)).toEqual(external.slice(1));
-    expect(internal.map((i) => i.copy)).toContain(NONE.redirect_uri);
+    const internal = setupInstructions(NONE, "internal", PUBLIC_URL);
+    const external = setupInstructions(NONE, "external", PUBLIC_URL);
+    expect(internal[2]!.text).toBe(audienceText("internal"));
+    expect(external[2]!.text).toBe(audienceText("external"));
+    expect(internal.filter((_, i) => i !== 2)).toEqual(external.filter((_, i) => i !== 2));
+    expect(audienceText("external")).toMatch(/add the people who will try it as test users/);
+    expect(audienceText("external")).toMatch(/reconnect every 7 days/);
     expect(audienceText("external")).toMatch(/security assessment renewed every year/);
   });
 
-  it("tells GitHub's callback URL and permissions", () => {
-    const steps = setupInstructions(GITHUB, "internal");
-    expect(steps.map((s) => s.copy)).toContain(GITHUB.redirect_uri);
-    expect(steps.map((s) => s.text).join(" ")).toMatch(/Contents and Pull requests/);
-    expect(steps.map((s) => s.text).join(" ")).toMatch(/Expire user authorization tokens/);
+  it("walks Google's set-up page by page, each with its link", () => {
+    const steps = setupInstructions(NONE, "internal", PUBLIC_URL);
+    expect(steps.map((s) => s.link?.href ?? null)).toEqual([
+      "https://console.cloud.google.com/projectcreate",
+      "https://console.cloud.google.com/auth/branding",
+      "https://console.cloud.google.com/auth/audience",
+      "https://console.cloud.google.com/auth/clients",
+      null,
+      "https://console.cloud.google.com/apis/library",
+    ]);
+    expect(steps[1]!.text).toMatch(/app name .* support email/);
+    expect(steps[4]!.copy).toBe(NONE.redirect_uri);
+    expect(steps[5]!.text).toBe(
+      "Enable the Google Drive, Docs, Sheets, Slides and Calendar APIs for the project.",
+    );
+  });
+
+  it("walks GitHub's form from top to bottom, with what to paste", () => {
+    const steps = setupInstructions(GITHUB, "internal", PUBLIC_URL);
+    expect(steps[0]!.link).toEqual({ label: "Open GitHub", href: "https://github.com/settings/apps/new" });
+    expect(steps.slice(1).every((s) => s.link === null)).toBe(true);
+    expect(steps.map((s) => s.copy).filter((c) => c !== null)).toEqual([PUBLIC_URL, GITHUB.redirect_uri]);
+    const texts = steps.map((s) => s.text);
+    expect(texts[1]).toMatch(/^Set the Homepage URL/);
+    expect(texts[2]).toMatch(/^Set the Callback URL/);
+    expect(texts[3]).toMatch(/Expire user authorization tokens turned on/);
+    expect(texts[4]).toMatch(/^Under Webhook, untick Active/);
+    expect(texts[5]).toMatch(/Contents and Pull requests to Read and write/);
+    expect(texts[6]).toMatch(/Where can this GitHub App be installed, choose Any account/);
+    expect(texts[7]).toMatch(/generate a client secret, then a private key/);
+  });
+
+  it("links only to the vendors' public pages", () => {
+    const links = [
+      ...setupInstructions(NONE, "external", PUBLIC_URL),
+      ...setupInstructions(GITHUB, "internal", PUBLIC_URL),
+    ].flatMap((s) => (s.link ? [s.link.href] : []));
+    expect(links.every((href) => /^https:\/\/(console\.cloud\.google\.com|github\.com)\//.test(href))).toBe(true);
   });
 });
 
