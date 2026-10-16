@@ -120,6 +120,10 @@ secrets:
   # each secret at least 32 characters. Every signing and encryption key is
   # derived from these. To rotate, put a new entry first and keep the old one
   # until a boot has re-encrypted stored values (docs/old/key-rotation.md).
+  # With more than one replica, rotate in two upgrades: first add the new entry
+  # last, then once every pod runs with it, move it first. A pod whose first
+  # key a running pod lacks refuses to start, since that pod could not read
+  # what it writes.
   # Generate one with: echo "$(date +%Y%m):$(openssl rand -hex 32)"
   secretKeys: ""
   # Legacy: the single secret used before secretKeys. Keep it set through the
@@ -615,7 +619,7 @@ switchCore:
     # default.
     port: 8081
   # switch-core MUST run as a single replica. Live state stays in the process
-  # rather than the database: GitHub sign-in flows, the per-agent event buffer,
+  # rather than the database: the per-agent event buffer,
   # the invite and presence buses, and the message listener's subscriber registry. A
   # second replica would hold its own copy of each, so a signal raised in one
   # would never reach a client attached to the other. This is enforced at
@@ -756,7 +760,12 @@ postgresql:
   # past the server's TTL loses its connection — so under-sizing this shows up
   # as fleet-wide agent disconnects, not as database errors.
   # size + maxOverflow must stay under Postgres max_connections, remembering
-  # Mattermost and Keycloak share the same instance.
+  # Mattermost and Keycloak share the same instance. The pool is per pod: every
+  # replica holds its own, plus four LISTEN connections (and one for the
+  # database sampler when metrics are exported), and a rolling deploy of
+  # several replicas runs one extra pod. switch-core adds this up at boot
+  # against max_connections; over budget, several replicas refuse to start and
+  # one replica logs a warning.
   pool:
     size: 30
     maxOverflow: 10

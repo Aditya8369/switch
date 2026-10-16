@@ -77,7 +77,6 @@ from switch_core.management.placement import (
     is_revoked,
     require_placement,
 )
-from switch_core.management.process_lease import ProcessLeases, read_leases
 from switch_core.management.schemas import (
     ControllerDescription,
     CreateManagedAgentRequest,
@@ -94,6 +93,7 @@ from switch_core.management.schemas import (
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
 from switch_core.management.signals import ControllerSignals
+from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.providers.registry import provider_ids
 
 logger = logging.getLogger(__name__)

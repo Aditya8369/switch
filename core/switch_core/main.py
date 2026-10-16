@@ -6,8 +6,7 @@ import logging
 import os
 import signal
 import time
-import uuid
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -109,12 +108,16 @@ from switch_core.connections.maintenance import (
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
+from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.key_rotation import reencrypt_stored_secrets
+from switch_core.db.key_rotation import (
+    reencrypt_stored_secrets,
+    require_front_key_readable,
+)
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     ApiKey,
@@ -126,7 +129,10 @@ from switch_core.db.runtime_role import (
     grant_runtime_role,
     verify_restricted_role,
 )
-from switch_core.db.schema_version import require_schema_at_head
+from switch_core.db.schema_version import (
+    require_schema_at_head,
+    schema_ahead_through_expand_only,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -152,6 +158,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -177,6 +184,8 @@ from switch_core.observability.pool import (
 )
 from switch_core.observability.query import instrument_queries
 from switch_core.outbound import guarded_async_client
+from switch_core.process_identity import new_process_id
+from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -218,6 +227,14 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+# With several replicas, how long a process keeps serving after it is told to
+# stop and has taken itself out of readiness: long enough for the Service to
+# stop sending it new requests, so they go to another replica rather than
+# being refused. A single replica has nowhere to send them, and stops at once
+# as it always has. Inside the kubelet's 30-second grace period with the
+# bridge stops and `_FORCED_EXIT_GRACE_SECONDS` after it.
+_DRAIN_SECONDS = 5.0
 
 
 async def _agent_event_retention_loop(
@@ -296,25 +313,33 @@ async def _connection_sweep_loop(protocol: AgentCore) -> None:
 # Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
 # writes is what lets every other process see this one's machines go offline
 # now rather than when its lease lapses.
-_MANAGEMENT_STOP_SECONDS = 1.0
+_RELEASE_SECONDS = 1.0
 
 
-async def _stop_management(management: Management) -> None:
-    """Record the controller sockets that went and mark this process's lease
-    stopped. Never raises: if it fails, the lease lapses on its own."""
+async def _release_process(management: Management | None, lease: ProcessLease) -> None:
+    """Record the controller sockets that went, then mark this process's lease
+    stopped. The lease is marked stopped even when the recording fails, so
+    the machines this process held read offline either way. Never raises: if
+    it all fails, the lease lapses on its own."""
     try:
-        async with asyncio.timeout(_MANAGEMENT_STOP_SECONDS):
-            await management.stop()
+        async with asyncio.timeout(_RELEASE_SECONDS):
+            try:
+                if management is not None:
+                    await management.flush()
+            finally:
+                await lease.stop()
     except TimeoutError:
         logger.warning(
-            "Gave up recording controller disconnections after %.1fs; their "
-            "machines read offline once this process's lease lapses.",
-            _MANAGEMENT_STOP_SECONDS,
+            "Gave up releasing switch-core process %s after %.1fs; its "
+            "controllers' machines read offline once its lease lapses.",
+            lease.process_id,
+            _RELEASE_SECONDS,
         )
     except Exception:
         logger.warning(
-            "Recording controller disconnections at shutdown failed; their "
-            "machines read offline once this process's lease lapses.",
+            "Releasing switch-core process %s at shutdown failed; its "
+            "controllers' machines read offline once its lease lapses.",
+            lease.process_id,
             exc_info=True,
         )
 
@@ -476,7 +501,7 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def run(config: SwitchConfig) -> None:
+async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
     # Switch's boot-time advisory lock, before this coroutine was ever started
@@ -486,6 +511,7 @@ async def run(config: SwitchConfig) -> None:
     encrypted_json.configure(config.keyring)
     engine = create_engine_from_config(config, poolclass=WaitTimedQueuePool)
     tenants_isolated = await _check_tenant_isolation(config, engine)
+    await check_connection_budget(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
     # keeps knowing nothing about observability. Unconditional: the listeners
@@ -518,8 +544,19 @@ async def run(config: SwitchConfig) -> None:
     signal_bus = SignalBus(
         session_factory,
         lambda: create_unpooled_engine(config),
-        process_id=str(uuid.uuid4()),
+        process_id=process_id,
     )
+    # This process's row in `switch_core_processes`, claimed before anything
+    # can record a connection against it and held until the process drains.
+    # What another process reads to know this one is alive.
+    process_lease = ProcessLease(
+        process_id=process_id,
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+        key_ids=[key.id for key in config.keyring.keys],
+    )
+    await process_lease.renew()
+    logger.info("Claimed switch-core process lease %s", process_id)
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
@@ -567,12 +604,11 @@ async def run(config: SwitchConfig) -> None:
     # `_seed_agent_registration_bootstrap_key`'s docstring), so only a
     # session-level lock, held for the whole span, actually serialises it.
     async with boot_lock(config):
+        await _seed_admin_and_bootstrap_key(
+            session_factory, user_store, api_key_store, agent_store, config, process_id
+        )
         async with engine.begin() as connection:
             event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
-        await _seed_admin_user(session_factory, user_store, config)
-        await _seed_agent_registration_bootstrap_key(
-            session_factory, user_store, api_key_store, agent_store, config
-        )
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(
@@ -628,10 +664,15 @@ async def run(config: SwitchConfig) -> None:
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
-    await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
-    # After rotation, which has opened every stored GitHub secret or stopped
-    # the boot: the move reads them, once per tenant.
-    await move_github_connections(session_factory, config.keyring, tenant_ids)
+    # Under the boot lock, so two processes starting together do not rewrite
+    # the same secrets at once, and after `_seed_admin_and_bootstrap_key` has
+    # checked that every process still running can read the key they are
+    # rewritten under.
+    async with boot_lock(config):
+        await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
+        # After rotation, which has opened every stored GitHub secret or
+        # stopped the boot: the move reads them, once per tenant.
+        await move_github_connections(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     provisioning: Provisioning = PostgresProvisioning(
@@ -770,7 +811,7 @@ async def run(config: SwitchConfig) -> None:
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
     management = create_management(
-        config, session_factory, connections.controllers, signal_bus
+        config, session_factory, connections.controllers, signal_bus, process_lease
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
@@ -963,9 +1004,16 @@ async def run(config: SwitchConfig) -> None:
 
     # Set by the lifespan; before that the honest answer is "no".
     observability: Observability | None = None
+    # Set as shutdown begins, so the Service stops routing here first.
+    draining = asyncio.Event()
 
     @agent_bridge_app.get("/health/ready")
     async def readiness_check() -> JSONResponse:
+        if draining.is_set():
+            return JSONResponse(
+                {"status": "not ready", "checks": {"draining": {"healthy": False}}},
+                status_code=503,
+            )
         if observability is None:
             return JSONResponse(
                 {"status": "not ready", "checks": {"startup": {"healthy": False}}},
@@ -1004,16 +1052,20 @@ async def run(config: SwitchConfig) -> None:
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
-        await management.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
-    await client_lifecycle.ensure_system_client("admin")
+    # Under the boot lock: it checks, then creates, and two processes starting
+    # on a fresh install would otherwise both create tenant zero's admin.
+    async with boot_lock(config):
+        await client_lifecycle.ensure_system_client("admin")
 
     probes = RuntimeProbes(
         listener_connected=message_listener.connected.is_set,
         session_activity_listener_connected=session_activity_listener.connected.is_set,
+        agent_event_listener_connected=agent_event_listener.connected.is_set,
+        signal_bus_connected=signal_bus.connected.is_set,
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
@@ -1074,6 +1126,7 @@ async def run(config: SwitchConfig) -> None:
                 version=switch_core_version(),
                 session_factory=session_factory,
                 probes=probes,
+                process_id=process_id,
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
             asyncio.create_task(connector_lifecycle.start_all())
@@ -1090,6 +1143,7 @@ async def run(config: SwitchConfig) -> None:
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
+            lease_task = asyncio.create_task(process_lease.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1116,10 +1170,10 @@ async def run(config: SwitchConfig) -> None:
                 service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
-                if management is not None:
-                    assert management_task is not None
+                lease_task.cancel()
+                if management_task is not None:
                     management_task.cancel()
-                    await _stop_management(management)
+                await _release_process(management, process_lease)
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
@@ -1201,8 +1255,11 @@ async def run(config: SwitchConfig) -> None:
 
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
-    # just-started clients accept the invites on their first sync.
-    await room_service.reconcile_room_clients()
+    # just-started clients accept the invites on their first sync. Under the
+    # boot lock, so two processes starting together do not both invite the
+    # same missing client.
+    async with boot_lock(config):
+        await room_service.reconcile_room_clients()
 
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port
@@ -1228,6 +1285,9 @@ async def run(config: SwitchConfig) -> None:
             lambda: asyncio.create_task(
                 _shutdown(
                     server,
+                    draining.set,
+                    lambda: _release_process(management, process_lease),
+                    _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
                     connections.controllers,
                     client_lifecycle,
                     collab_lifecycle,
@@ -1243,6 +1303,29 @@ async def run(config: SwitchConfig) -> None:
         )
 
     await server.serve()
+
+
+async def _seed_admin_and_bootstrap_key(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    api_key_store: ApiKeyStore,
+    agent_store: AgentStore,
+    config: SwitchConfig,
+    process_id: str,
+) -> None:
+    """Seed the admin user and the agent-registration bootstrap key, after
+    checking that every live process can read this one's front key.
+
+    The check comes first because the bootstrap key is the first thing a boot
+    encrypts: it is written under the front key when it is created or
+    AGENT_REGISTRATION_TOKEN changes, and a process refused only after that
+    would already have stored a value the others cannot decrypt.
+    """
+    await require_front_key_readable(session_factory, config.keyring, process_id)
+    await _seed_admin_user(session_factory, user_store, config)
+    await _seed_agent_registration_bootstrap_key(
+        session_factory, user_store, api_key_store, agent_store, config
+    )
 
 
 async def _seed_admin_user(
@@ -1713,6 +1796,9 @@ def _distributed_teams_app(
 
 async def _shutdown(
     server: uvicorn.Server,
+    begin_draining: Callable[[], None],
+    release: Callable[[], Awaitable[None]],
+    drain_seconds: float,
     controllers: ControllerPresence,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
@@ -1727,9 +1813,17 @@ async def _shutdown(
     telegram_app_task: asyncio.Task[None] | None = None,
 ) -> None:
     logger.info("Shutting down...")
+    begin_draining()
     # Before uvicorn closes the sockets, so the controllers' are recorded as
     # closed by the server.
     controllers.begin_shutdown()
+    # Also before the sockets close, and not left to the lifespan's teardown:
+    # uvicorn runs that only once every connection has closed, and a stream
+    # still open when the process is killed would mean it never runs. Every
+    # other process reads this one's machines offline from here.
+    await release()
+    if drain_seconds:
+        await asyncio.sleep(drain_seconds)
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
@@ -1800,12 +1894,37 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
     """
     alembic_cfg = _alembic_config()
     async with boot_lock(config):
+        if await _schema_ahead(config, alembic_cfg):
+            # A newer release has migrated, and this one is still rolling out
+            # or being rolled back. Alembic has no file for the database's
+            # head and would refuse; the newer release already granted what
+            # its tables need, and this release reads none of them.
+            logger.warning(
+                "The database is ahead of switch-core %s by expand-only "
+                "revisions only; nothing to migrate.",
+                switch_core_version() or "(version unknown)",
+            )
+            return
         await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
         await _prepare_database(config)
     logger.info(
         "Database migrations applied as %s",
         config.db_owner_user or config.db_user,
     )
+
+
+async def _schema_ahead(config: SwitchConfig, alembic_cfg: AlembicConfig) -> bool:
+    """Whether the database is ahead of this build by expand-only revisions,
+    read on the connection the migration would run on."""
+    engine = create_async_engine(
+        config.owner_database_url or config.database_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+    )
+    try:
+        return await schema_ahead_through_expand_only(engine, alembic_cfg)
+    finally:
+        await engine.dispose()
 
 
 async def _check_schema_at_head(config: SwitchConfig) -> None:
@@ -1822,7 +1941,7 @@ async def _check_schema_at_head(config: SwitchConfig) -> None:
         await require_schema_at_head(engine, _alembic_config())
     finally:
         await engine.dispose()
-    logger.info("Database schema is at head; migrations were applied before boot")
+    logger.info("Database schema is servable; migrations were applied before boot")
 
 
 def _alembic_config() -> AlembicConfig:
@@ -1849,7 +1968,7 @@ def migrate() -> None:
     """
     config = SwitchConfig()
     running_version = switch_core_version()
-    configure_logging(config, running_version)
+    configure_logging(config, running_version, new_process_id(config.pod_name))
 
     logger.info("Migrating switch-core %s", running_version or "(version unknown)")
 
@@ -1859,9 +1978,14 @@ def migrate() -> None:
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
-    configure_logging(config, running_version)
+    process_id = new_process_id(config.pod_name)
+    configure_logging(config, running_version, process_id)
 
-    logger.info("Starting switch-core %s", running_version or "(version unknown)")
+    logger.info(
+        "Starting switch-core %s as process %s",
+        running_version or "(version unknown)",
+        process_id,
+    )
     for warning in deprecated_env_names():
         logger.warning(warning)
 
@@ -1870,7 +1994,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config))
+    asyncio.run(run(config, process_id))
 
 
 if __name__ == "__main__":

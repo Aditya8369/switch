@@ -109,6 +109,12 @@ _ALLOWED_MODULES = {
     # the tenant it produced, so a wrong answer here is a miss rather than a
     # cross-tenant read.
     "switch_core.bridges.collaboration.install_service",
+    # A sign-in's browser steps (leaving for the vendor, coming back,
+    # continuing to Switch Console) carry no Switch session, only the flow's
+    # state, and may reach any process. The state is the one thing that names
+    # the flow's tenant, and the flow is then read scoped to it, so a wrong
+    # answer is a missing flow rather than a cross-tenant read.
+    "switch_core.connections.sign_in_flows",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
@@ -192,7 +198,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     # This process's lease in `switch_core_processes`, a table with no tenant
     # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
     # so its lease belongs to none. It touches only that table.
-    "switch_core.management.process_lease",
+    "switch_core.process_lease",
     # The boot-time re-encryption sweep's per-tenant pass binds a tenant
     # (`tenant_session`); this raw call is its separate pass over
     # the global tables' encrypted values (`trust_settings`'s key,

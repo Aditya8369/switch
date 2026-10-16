@@ -156,6 +156,8 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
     return RuntimeProbes(
         listener_connected=lambda: True,
         session_activity_listener_connected=lambda: True,
+        agent_event_listener_connected=lambda: True,
+        signal_bus_connected=lambda: True,
         bridges_running=lambda: 0,
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
