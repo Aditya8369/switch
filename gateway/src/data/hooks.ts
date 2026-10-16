@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  ApiError,
+  CONNECTORS_NOT_ENABLED,
   type ConnectorApps,
   fetchConnectorApps,
   type AgentDetail,
@@ -203,7 +205,13 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
       },
       (err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
+        setError(
+          err instanceof ApiError && err.status === 404
+            ? CONNECTORS_NOT_ENABLED
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        );
         setLoading(false);
       },
     );

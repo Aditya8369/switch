@@ -1,5 +1,6 @@
 import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
 import { useState } from "react";
+import { CONNECTORS_NOT_ENABLED } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useConnectorApps } from "../../data/hooks";
 import ConnectorAppCard from "./ConnectorAppCard";
@@ -40,7 +41,7 @@ function ConnectorAppsList() {
     return (
       <>
         {heading}
-        <Alert severity="error">{error}</Alert>
+        <Alert severity={error === CONNECTORS_NOT_ENABLED ? "info" : "error"}>{error}</Alert>
       </>
     );
   if (data === null) return heading;

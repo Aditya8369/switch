@@ -3,8 +3,10 @@
 Deployment-operator only: `require_admin` (`users.role == "admin"`) gates
 every route here, never `require_tenant_admin`, since one app serves every
 workspace on the server. A workspace admin keeps the switch per service
-(`gateway/workspace_services.py`) and nothing more. Mounted whatever the
-`service_connections` flag says, as GitHub works without it.
+(`gateway/workspace_services.py`) and nothing more. Mounted only with the
+`service_connections` flag, with the rest of service connections, so a
+server without the feature shows none of it; an app saved earlier still
+loads at boot and serves GitHub's own sign-in.
 
 Where an app comes from, and why configuration wins over a saved one, is
 `connections/app_credentials.py`. A save is checked with the vendor first

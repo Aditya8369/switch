@@ -43,7 +43,8 @@ an organization, under the organization's settings).
 ## Give Switch the App
 
 In the Switch dashboard, open **Connectors** (shown to the server's
-operator, beside Users) and choose **Set up GitHub**. The dialog shows the
+operator, beside Users, and there only with the server's `service_connections`
+flag on) and choose **Set up GitHub**. The dialog shows the
 callback URL to register, with a copy button. Paste the App's **Client ID**
 and **Client secret**, and choose the **Private key** file; it is read in your
 browser and never shown. Then choose **Check and save**.

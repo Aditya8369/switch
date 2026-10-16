@@ -2376,6 +2376,11 @@ export class ConnectorAppRefusal extends ApiError {
   }
 }
 
+/** What the operator reads when the server has no connector-apps routes:
+ * they are mounted only with the `service_connections` flag. */
+export const CONNECTORS_NOT_ENABLED =
+  "Connectors are not enabled on this server. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
+
 export async function fetchConnectorApps(): Promise<ConnectorApps> {
   return jsonRequest<ConnectorApps>("/connector-apps", "GET");
 }

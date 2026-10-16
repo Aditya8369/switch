@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConnectorApp, ConnectorApps } from "../../data/api";
+import { CONNECTORS_NOT_ENABLED, type ConnectorApp, type ConnectorApps } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import ConnectorAppsPage from "./ConnectorAppsPage";
 import { audienceText, ONLY_THE_OPERATOR, PUBLIC_URL_BANNER } from "./connectorApps";
@@ -84,6 +84,13 @@ describe("ConnectorAppsPage", () => {
     render(<ConnectorAppsPage />);
     expect(screen.getByText(ONLY_THE_OPERATOR)).toBeTruthy();
     expect(calls).toEqual([]);
+  });
+
+  it("says what to turn on where the server has no connectors at all", async () => {
+    serve(listOf(), { "GET /gateway/connector-apps": [404, { detail: "Not Found" }] });
+    render(<ConnectorAppsPage />);
+    expect(await screen.findByText(CONNECTORS_NOT_ENABLED)).toBeTruthy();
+    expect(screen.queryAllByTestId(/connector-app-/)).toEqual([]);
   });
 
   it("lists every app, what needs setting up first, and who sets themselves up", async () => {

@@ -163,7 +163,6 @@ def create_gateway_app(
         tags=["provider-connections"],
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
-    app.include_router(connector_apps_router, tags=["connector-apps"])
     app.include_router(providers_router, tags=["agent providers"])
     # Sign-ins under way, GitHub's and the catalog's, in Postgres so that any
     # switch-core process can take any step of one.
@@ -175,6 +174,7 @@ def create_gateway_app(
         app.include_router(service_connections_router, tags=["service-connections"])
         app.include_router(service_flows_router, tags=["service-connections"])
         app.include_router(workspace_services_router, tags=["service-connections"])
+        app.include_router(connector_apps_router, tags=["connector-apps"])
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie

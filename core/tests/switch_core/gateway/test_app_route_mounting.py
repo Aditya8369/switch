@@ -74,6 +74,8 @@ SERVICE_ROUTES = {
     "/service-connections/{service}/agents",
     "/workspace/services",
     "/workspace/services/{service}",
+    "/connector-apps",
+    "/connector-apps/{service}",
 }
 
 
