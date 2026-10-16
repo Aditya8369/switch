@@ -14,6 +14,7 @@ import {
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
@@ -123,11 +124,20 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
     if (workspaces === null || offersPending || settled.current) return;
     settled.current = true;
     onboardingStore.resolved(workspaces, offers);
-    if (offersFailed || offers > 0) return;
+    const shown = () =>
+      report('onboarding_page', {
+        page: 'choose_workspace',
+        path: onboardingStore.via,
+      });
+    if (offersFailed || offers > 0) {
+      shown();
+      return;
+    }
     // A question with one answer is not a question, and with none there is
     // nothing here to answer it with.
     if (workspaces.length === 0) onCreate();
     else if (workspaces.length === 1) void open(workspaces[0]!);
+    else shown();
   }, [workspaces, offers, offersPending, offersFailed, open, onCreate]);
 
   return (

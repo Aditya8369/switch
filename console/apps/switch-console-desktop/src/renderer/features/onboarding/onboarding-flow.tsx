@@ -99,6 +99,9 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
   // Every page as it opens, so the last one an install reports is where it
   // stopped.
   useEffect(() => {
+    // The workspace picker says so itself: it often moves straight on, and a
+    // page the person never saw must not count as reached.
+    if (page === 'pickWorkspace') return;
     report('onboarding_page', { page: FUNNEL_PAGE[page], path: funnelPath(page) });
   }, [page]);
 
