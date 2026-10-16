@@ -17,6 +17,8 @@ export type LocalServerEnvParams = {
   namespace: string;
   /** Free host ports chosen for this machine (published on 127.0.0.1). */
   ports: LocalServerPorts;
+  /** The server's FEATURE_FLAGS_ENABLED (see {@link managedServerFeatureFlags}). */
+  featureFlags: readonly string[];
   secrets: LocalServerSecrets;
   /**
    * The user's "Share usage data" answer, applied to the server as well as to
@@ -37,6 +39,29 @@ export type LocalServerEnvParams = {
  * stack starts with no feature flags on (agent management included). */
 export const MANAGED_SERVER_FEATURE_FLAGS = [] as const;
 
+/** The variable a dev build reads to start its managed stack with other flags. */
+export const MANAGED_FEATURE_FLAGS_ENV = 'SWITCH_CONSOLE_MANAGED_FEATURE_FLAGS';
+
+/**
+ * The flags a managed stack starts with: {@link MANAGED_SERVER_FEATURE_FLAGS},
+ * or, in a dev build only, the comma-separated list in
+ * {@link MANAGED_FEATURE_FLAGS_ENV}. That lets work still behind a flag be
+ * tried end to end on a stack built from the checkout, without turning the
+ * flag on for anyone else. A name the server does not know stops it at
+ * startup, which is the point: a typo should not look like a flag that is off.
+ */
+export function managedServerFeatureFlags(
+  isDev: boolean,
+  env: Record<string, string | undefined>
+): readonly string[] {
+  const override = isDev ? env[MANAGED_FEATURE_FLAGS_ENV] : undefined;
+  if (override === undefined) return MANAGED_SERVER_FEATURE_FLAGS;
+  return override
+    .split(',')
+    .map((flag) => flag.trim())
+    .filter((flag) => flag.length > 0);
+}
+
 /** The variable the server reads its telemetry gate from. Named here because
  * reading the choice back off a host has to look for the same key. */
 export const TELEMETRY_ENABLED_KEY = 'TELEMETRY_ENABLED';
@@ -53,6 +78,7 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     registry,
     namespace,
     ports,
+    featureFlags,
     secrets,
     telemetryEnabled,
     telemetryEnvironment,
@@ -89,10 +115,11 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `AGENT_REGISTRATION_TOKEN=${secrets.agentRegistrationToken}`,
     `JWT_SECRET_KEY=${secrets.jwtSecretKey}`,
     `SECRET_KEYS=${secrets.secretKeys}`,
-    // The flags a managed stack runs with (MANAGED_SERVER_FEATURE_FLAGS).
-    // Currently none: a managed stack starts with agent management off. The
-    // variable is still written (empty) so the stack's flag set is explicit.
-    `FEATURE_FLAGS_ENABLED=${MANAGED_SERVER_FEATURE_FLAGS.join(',')}`,
+    // The flags a managed stack runs with (managedServerFeatureFlags). None
+    // outside a dev build that asks for some: a managed stack starts with
+    // agent management off. The variable is still written, empty, so the
+    // stack's flag set is explicit.
+    `FEATURE_FLAGS_ENABLED=${featureFlags.join(',')}`,
     `CONTROLLER_TOKEN_SECRET=${secrets.controllerTokenSecret}`,
     `GATEWAY_ADMIN_EMAIL=${LOCAL_SERVER_ADMIN_EMAIL}`,
     `GATEWAY_ADMIN_PASSWORD=${secrets.gatewayAdminPassword}`,

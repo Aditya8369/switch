@@ -2,7 +2,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile, keysDisagreeing, readStackEnv, telemetryRequested } from './env-file';
+import {
+  buildEnvFile,
+  keysDisagreeing,
+  managedServerFeatureFlags,
+  readStackEnv,
+  telemetryRequested,
+} from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -30,6 +36,7 @@ describe('buildEnvFile', () => {
     registry: 'ghcr.io',
     namespace: 'sandbox-quantum',
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+    featureFlags: [],
     secrets,
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',
@@ -183,6 +190,7 @@ describe('buildEnvFile', () => {
       registry: 'ghcr.io',
       namespace: 'sandbox-quantum',
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      featureFlags: [],
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
@@ -199,6 +207,7 @@ describe('buildEnvFile', () => {
       registry: 'ghcr.io',
       namespace: 'sandbox-quantum',
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      featureFlags: [],
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'local',
@@ -217,6 +226,7 @@ describe('buildEnvFile', () => {
       registry: 'ghcr.io',
       namespace: 'sandbox-quantum',
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      featureFlags: [],
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
@@ -251,6 +261,7 @@ describe('readStackEnv', () => {
     registry: 'ghcr.io',
     namespace: 'sandbox-quantum',
     ports,
+    featureFlags: [],
     secrets,
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
@@ -365,6 +376,7 @@ describe('keysDisagreeing', () => {
     registry: 'ghcr.io',
     namespace: 'sandbox-quantum',
     ports,
+    featureFlags: [],
     secrets,
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
@@ -424,5 +436,37 @@ describe('keysDisagreeing', () => {
     expect(
       keysDisagreeing(partial, { ports, secrets: { ...secrets, dbRuntimePassword: 'other' } })
     ).toEqual(['DB_PASSWORD']);
+  });
+});
+
+describe('managedServerFeatureFlags', () => {
+  it('starts a managed stack with no flags', () => {
+    expect(managedServerFeatureFlags(false, {})).toEqual([]);
+    expect(managedServerFeatureFlags(true, {})).toEqual([]);
+  });
+
+  it('takes the flags a dev build names', () => {
+    const env = { SWITCH_CONSOLE_MANAGED_FEATURE_FLAGS: ' agent_management, switch_buddy ,' };
+    expect(managedServerFeatureFlags(true, env)).toEqual(['agent_management', 'switch_buddy']);
+  });
+
+  it('ignores the variable in a packaged build', () => {
+    const env = { SWITCH_CONSOLE_MANAGED_FEATURE_FLAGS: 'agent_management' };
+    expect(managedServerFeatureFlags(false, env)).toEqual([]);
+  });
+
+  it('writes the flags it is given', () => {
+    const written = buildEnvFile({
+      version: '1.2.3',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      featureFlags: ['agent_management', 'switch_buddy'],
+      secrets,
+      telemetryEnabled: false,
+      telemetryEnvironment: 'prod',
+      telemetryInternal: false,
+    });
+    expect(written).toContain('FEATURE_FLAGS_ENABLED=agent_management,switch_buddy\n');
   });
 });

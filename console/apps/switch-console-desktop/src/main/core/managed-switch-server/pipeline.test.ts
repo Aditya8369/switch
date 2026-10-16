@@ -61,6 +61,7 @@ vi.mock('./ports', () => ({
 vi.mock('./env-file', () => ({
   buildEnvFile: buildEnvFileMock,
   readEnvValue: vi.fn(),
+  managedServerFeatureFlags: () => [],
   TELEMETRY_ENABLED_KEY: 'TELEMETRY_ENABLED',
 }));
 vi.mock('./telemetry-consent', () => ({

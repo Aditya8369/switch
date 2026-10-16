@@ -29,7 +29,12 @@ import {
   LOCAL_SERVER_ADMIN_EMAIL,
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
-import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
+import {
+  buildEnvFile,
+  keysDisagreeing,
+  managedServerFeatureFlags,
+  telemetryRequested,
+} from './env-file';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
@@ -569,6 +574,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     registry: GHCR_REGISTRY,
     namespace: RELEASE_REPO_OWNER,
     ports: settings.ports,
+    featureFlags: managedServerFeatureFlags(import.meta.env.DEV, process.env),
     secrets: settings.secrets,
     telemetryEnabled,
     telemetryEnvironment: currentFlintEnv(),

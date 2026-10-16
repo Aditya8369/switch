@@ -50,6 +50,7 @@ function envFor(overrides: Partial<LocalServerSecrets> = {}, version = '0.27.0')
     registry: 'ghcr.io',
     namespace: 'sandbox-quantum',
     ports,
+    featureFlags: [],
     secrets: { ...secrets, ...overrides },
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',

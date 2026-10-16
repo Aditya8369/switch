@@ -53,6 +53,7 @@ vi.mock('./ports', () => ({
 vi.mock('./env-file', () => ({
   buildEnvFile: () => 'SWITCH_VERSION=0.24.0\n',
   readEnvValue: vi.fn(),
+  managedServerFeatureFlags: () => [],
   TELEMETRY_ENABLED_KEY: 'TELEMETRY_ENABLED',
 }));
 vi.mock('./telemetry-consent', () => ({

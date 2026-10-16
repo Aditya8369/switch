@@ -93,6 +93,27 @@ local-cloud:
 local-cloud-console:
     cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
+# For trying work still behind a flag on the "On this computer" path, without
+# a release or turning the flag on for anyone: a new Console data folder, so
+# the first-run pages start over and the stack is its own, with "Build
+# switch-core from this checkout" already on and the managed stack started
+# with `flags`. The first start builds the images, which takes a while.
+# Start Switch Console as a brand-new person running the server from this checkout
+local-server-fresh flags="agent_management,agent_chats,switch_buddy":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname)" in
+      Darwin) app_data="$HOME/Library/Application Support" ;;
+      Linux) app_data="${XDG_CONFIG_HOME:-$HOME/.config}" ;;
+      *) echo "✋ Only macOS and Linux are covered: set the checkout build on by hand elsewhere." >&2; exit 1 ;;
+    esac
+    dir="switchdash-server-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$app_data/$dir/local-switch-server"
+    echo '{ "enabled": true }' > "$app_data/$dir/local-switch-server/checkout-build.json"
+    echo "Console data: $dir. Pick \"On this computer\": it builds switch-core from $(pwd)"
+    echo "and starts it with FEATURE_FLAGS_ENABLED={{ flags }}."
+    cd console && SWITCH_CONSOLE_USER_DATA_DIR="$dir" SWITCH_CONSOLE_MANAGED_FEATURE_FLAGS='{{ flags }}' pnpm dev
+
 # Made by the gateway admin from .env, so it joins the admin's workspace, as
 # every admin-made account does. Use the admin's domain (switch.local by
 # default) for an account that should be able to join by domain.
