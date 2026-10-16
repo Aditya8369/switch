@@ -1,5 +1,5 @@
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
 import { openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
 import {
@@ -19,6 +19,7 @@ import type {
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { CreateWorkspacePage } from './create-workspace-page';
 import { type CloudChoiceState, HowToRunPage } from './how-to-run-page';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
@@ -72,8 +73,34 @@ const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
  * connection form and the sign-in cannot drift from what the rest of the app
  * does.
  */
+/** Each page as the first-run funnel names it. */
+const FUNNEL_PAGE: Record<OnboardingPage, RendererTelemetryEvents['onboarding_page']['page']> = {
+  welcome: 'welcome',
+  howToRun: 'how_to_run',
+  local: 'local_setup',
+  connect: 'server_address',
+  signIn: 'sign_in',
+  pickWorkspace: 'choose_workspace',
+  createWorkspace: 'create_workspace',
+  meetBuddy: 'meet_buddy',
+};
+
+/** How the install runs Switch, once the page on screen says. */
+function funnelPath(page: OnboardingPage): RendererTelemetryEvents['onboarding_page']['path'] {
+  if (page === 'welcome' || page === 'howToRun') return 'none';
+  if (page === 'local') return 'local';
+  if (page === 'connect') return 'external';
+  return onboardingStore.via;
+}
+
 export const OnboardingFlow = observer(function OnboardingFlow() {
   const { navigate } = useNavigate();
+  const page = onboardingStore.page;
+  // Every page as it opens, so the last one an install reports is where it
+  // stopped.
+  useEffect(() => {
+    report('onboarding_page', { page: FUNNEL_PAGE[page], path: funnelPath(page) });
+  }, [page]);
 
   const goTo = (page: OnboardingPage) => {
     onboardingStore.goTo(page);

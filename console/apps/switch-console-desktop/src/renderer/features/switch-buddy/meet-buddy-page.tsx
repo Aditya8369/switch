@@ -1,8 +1,10 @@
 import { observer } from 'mobx-react-lite';
 import { useMemo, useState, type ReactNode } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
@@ -10,6 +12,7 @@ import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
 import { firstNameOf, isBuddy } from './buddy-identity';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
+import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
 import { ProviderSetup } from './provider-setup';
 import { useThisComputer } from './use-this-computer';
@@ -71,9 +74,21 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   const user = switchServersStore.statusFor(serverId)?.user ?? null;
   const firstName = firstNameOf(user?.name);
 
+  const skip = () => {
+    reportBuddyStep('skip', null);
+    onSkip();
+  };
+
+  const openSetup = () => {
+    reportBuddyStep('setup_opened', null);
+    report('onboarding_page', { page: 'provider_setup', path: onboardingStore.via });
+    setSettingUp(true);
+  };
+
   const startWith = async (providerId: string) => {
     if (computer.kind !== 'ready') return;
     setStarting(providerId);
+    reportBuddyStep('start', providerId);
     setError(null);
     try {
       onCreated(
@@ -110,7 +125,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             <Button variant="outline" onClick={() => setSettingUp(false)}>
               Back
             </Button>
-            <Button variant="ghost" onClick={onSkip}>
+            <Button variant="ghost" onClick={skip}>
               Skip for now
             </Button>
           </>
@@ -127,10 +142,17 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
       exit={exit}
       footer={
         existing ? (
-          <Button onClick={() => onCreated(existing)}>Open switch-buddy</Button>
+          <Button
+            onClick={() => {
+              reportBuddyStep('opened_existing', null);
+              onCreated(existing);
+            }}
+          >
+            Open switch-buddy
+          </Button>
         ) : (
           <div className="relative flex gap-2">
-            <Button variant="outline" onClick={onSkip} disabled={busy}>
+            <Button variant="outline" onClick={skip} disabled={busy}>
               Skip
             </Button>
             {ready.map((provider, index) => (
@@ -146,7 +168,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             ))}
             <Button
               variant={ready.length === 0 ? 'default' : 'outline'}
-              onClick={() => setSettingUp(true)}
+              onClick={openSetup}
               disabled={busy}
             >
               {ready.length === 0 ? 'Set up AI provider' : 'Use another provider'}

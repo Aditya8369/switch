@@ -13,6 +13,7 @@ import { showModal } from '@renderer/lib/modal/modal-provider';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BuddyAvatar } from './buddy-avatar';
 import { expectedBuddyName, firstNameOf, isBuddy } from './buddy-identity';
+import { reportBuddyStep } from './buddy-telemetry';
 import { BuddyWelcome } from './buddy-welcome';
 import { BUDDY_CHAT_NAME, openBuddyChat } from './open-buddy';
 
@@ -84,6 +85,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
 
   const connect = () => {
     if (workspaceId === null) return;
+    reportBuddyStep('setup_opened', null);
     showModal('buddySetupModal', {
       serverId,
       workspaceId,

@@ -1,6 +1,7 @@
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { BUDDY_TEMPLATE_ID, buddyAgentName, isBuddy } from './buddy-identity';
+import { reportBuddyStep } from './buddy-telemetry';
 
 /** How many names to try when someone else in the workspace already has the one picked. */
 const NAME_ATTEMPTS = 5;
@@ -16,6 +17,23 @@ export class BuddyNotCreated extends Error {}
  * and the next number is tried.
  */
 export async function createBuddy(input: {
+  serverId: string;
+  workspaceId: string;
+  machineId: string;
+  provider: string;
+  person: { name: string | null; email: string | null };
+}): Promise<{ agentId: string; name: string }> {
+  try {
+    const created = await createBuddyAgent(input);
+    reportBuddyStep('created', input.provider);
+    return created;
+  } catch (error) {
+    reportBuddyStep('create_failed', input.provider);
+    throw error;
+  }
+}
+
+async function createBuddyAgent(input: {
   serverId: string;
   workspaceId: string;
   machineId: string;

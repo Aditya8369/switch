@@ -15,6 +15,7 @@ import { agentProviders, requireProvider } from '@shared/core/providers/agent-pr
 import { linksIn } from '@shared/core/providers/provider-login';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
+import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
 import { type ThisComputer, useThisComputer } from './use-this-computer';
 
@@ -67,6 +68,7 @@ export const ProviderSetup = observer(function ProviderSetup({
   const [checked, setChecked] = useState<string | null>(null);
 
   const checkAgain = useCallback(async () => {
+    reportBuddyStep('check_again', null);
     setBusy('check');
     setError(null);
     setChecked(null);
@@ -105,6 +107,7 @@ export const ProviderSetup = observer(function ProviderSetup({
   useEffect(() => () => void rpc.providers.cancelLogin(), []);
 
   const signIn = async (provider: BuddyProvider) => {
+    reportBuddyStep('sign_in', provider.id);
     setError(null);
     try {
       const { attemptId } = await rpc.providers.startLogin(provider.id);
@@ -115,6 +118,7 @@ export const ProviderSetup = observer(function ProviderSetup({
   };
 
   const install = async (provider: BuddyProvider) => {
+    reportBuddyStep('install', provider.id);
     setBusy('install');
     setError(null);
     try {
@@ -130,6 +134,7 @@ export const ProviderSetup = observer(function ProviderSetup({
 
   const start = async (provider: BuddyProvider) => {
     if (computer.kind !== 'ready') return;
+    reportBuddyStep('start', provider.id);
     setBusy('create');
     setError(null);
     const user = switchServersStore.statusFor(serverId)?.user ?? null;
