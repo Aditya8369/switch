@@ -3,6 +3,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import { err, ok, type Result } from '@switch-console/shared';
 import { BrowserWindow, session as electronSession, shell } from 'electron';
 import { z } from 'zod';
+import { appReturnUrl, bringToFront } from '@main/app/deeplinks';
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { readSecrets } from '@main/core/managed-switch-server/secrets';
@@ -363,15 +364,21 @@ async function oidcBrowserLogin(
   return new Promise<Result<true, LoginError>>((resolve) => {
     let settled = false;
     let port = 0;
-    const page = (status: number, text: string, res: ServerResponse) => {
+    const page = (status: number, text: string, res: ServerResponse, returnUrl: string | null) => {
       res.writeHead(status, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
         'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
       });
+      // The scheme link is what reliably puts the person back in the app: the
+      // OS brings its handler forward, where the app asking for focus may only
+      // flash in the taskbar.
+      const back = returnUrl
+        ? `<meta http-equiv="refresh" content="0;url=${returnUrl}"><p><a href="${returnUrl}" style="display:inline-block;margin-top:1rem;padding:.6rem 1.2rem;border-radius:.5rem;background:#111;color:#fff;text-decoration:none">Open Switch Console</a></p>`
+        : '';
       res.end(
-        `<!doctype html><meta charset="utf-8"><title>Switch</title><body style="font-family:system-ui;padding:3rem;text-align:center"><p>${text}</p></body>`
+        `<!doctype html><meta charset="utf-8"><title>Switch</title><body style="font-family:system-ui;padding:3rem;text-align:center"><p>${text}</p>${back}</body>`
       );
     };
     const listener = createServer((req, res) => {
@@ -379,7 +386,7 @@ async function oidcBrowserLogin(
       try {
         url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
       } catch {
-        page(400, 'Invalid sign-in response.', res);
+        page(400, 'Invalid sign-in response.', res, null);
         return;
       }
       const code = url.searchParams.get('code');
@@ -394,7 +401,8 @@ async function oidcBrowserLogin(
         page(
           400,
           'This sign-in was not started by this Switch Console. Start it again from the app.',
-          res
+          res,
+          null
         );
         return;
       }
@@ -402,10 +410,12 @@ async function oidcBrowserLogin(
         page(
           result.success ? 200 : 400,
           result.success
-            ? 'Signed in. You can close this tab and go back to Switch Console.'
+            ? 'Signed in. You can close this tab.'
             : 'Sign-in could not be completed. Go back to Switch Console and try again.',
-          res
+          res,
+          appReturnUrl()
         );
+        bringToFront();
         finish(result);
       });
     });
