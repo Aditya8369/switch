@@ -66,14 +66,16 @@ const ADMIN_ITEMS: NavItem[] = [
   { label: "Connectors", path: "/connectors", icon: PowerOutlined },
 ];
 
-// Sized so an operator's eleven labelled items and the account button fit a
-// laptop window; anything shorter scrolls the items.
-const TARGET = 36;
-const ICON = 20;
-const ITEM_GAP = 6;
+// The rail follows the window's height: at a laptop's it is sized so an
+// operator's eleven labelled items and the account button fit, and it grows
+// with the window up to its full size. Shorter still, the items scroll.
+const TARGET = "clamp(36px, 4vh, 44px)";
+const ICON = "clamp(20px, 2.2vh, 22px)";
+const ITEM_GAP = "clamp(4px, 1.4vh, 16px)";
+const LABEL = "clamp(0.6875rem, 1.05vh, 0.75rem)";
 // The logo sits slightly inside the nav button footprint: it is a solid mark
 // against thin-stroke icons, so matching the container would read as heavier.
-const LOGO = 24;
+const LOGO = "clamp(24px, 2.6vh, 28px)";
 
 function RailItem({ item, active }: { item: NavItem; active: boolean }) {
   return (
@@ -115,7 +117,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
         <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
       </Box>
       <Typography
-        sx={{ fontSize: "0.6875rem", lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
+        sx={{ fontSize: LABEL, lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
       >
         {item.label}
       </Typography>
@@ -175,7 +177,7 @@ export default memo(function NavRail() {
         flexShrink: 0,
         minHeight: 0,
         alignItems: "center",
-        py: 2,
+        py: 1.5,
         color: "text.primary",
       }}
     >
@@ -224,7 +226,7 @@ export default memo(function NavRail() {
         sx={{
           width: "100%",
           alignItems: "center",
-          gap: `${ITEM_GAP}px`,
+          gap: ITEM_GAP,
           // On a window shorter still, the items scroll and the account
           // button stays put; the rail is too narrow for a scrollbar.
           flex: 1,
