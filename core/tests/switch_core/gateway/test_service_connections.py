@@ -17,6 +17,7 @@ from switch_core.addressing import (
     AddressingPolicy,
     AddressingRule,
     owner_and_owner_agents_policy,
+    owner_only_policy,
 )
 from switch_core.connections.adapters import ServiceAdapterError
 from switch_core.connections.broker import ServiceBroker
@@ -211,18 +212,19 @@ class TestGrants:
     @pytest.mark.parametrize(
         ("policy", "warned"),
         [
-            (owner_and_owner_agents_policy(), False),
+            (owner_only_policy([]), False),
+            (owner_and_owner_agents_policy(), True),
             (
                 AddressingPolicy(
                     rules=[
-                        *owner_and_owner_agents_policy().rules,
+                        *owner_only_policy([]).rules,
                         AddressingRule(rooms=["room-x"], users="*", agents=[]),
                     ]
                 ),
                 True,
             ),
         ],
-        ids=["owner-and-their-agents", "anyone-in-one-room"],
+        ids=["owner-alone", "owner-and-their-agents", "anyone-in-one-room"],
     )
     async def test_the_warning_follows_who_else_can_address_the_agent(
         self, harness: Harness, policy: AddressingPolicy, warned: bool
@@ -556,12 +558,14 @@ async def _agents(harness: Harness, user, service: str = "github"):
         )
 
 
-async def _owner_only(harness: Harness, agent_id: str) -> None:
+async def _set_policy(
+    harness: Harness, agent_id: str, policy: AddressingPolicy
+) -> None:
     async with harness.session_factory() as session:
         await session.execute(
             update(Agent)
             .where(Agent.id == agent_id)
-            .values(addressing_policy=owner_and_owner_agents_policy().model_dump())
+            .values(addressing_policy=policy.model_dump())
         )
         await session.commit()
 
@@ -585,7 +589,7 @@ class TestYourAgents:
         await agent_with_key(elsewhere, owner, "elsewhere")
         await connect(harness.session_factory, owner.id)
         await grant_directly(harness.session_factory, granted_id, owner.id)
-        await _owner_only(harness, plain_id)
+        await _set_policy(harness, plain_id, owner_only_policy([]))
 
         response = await _agents(harness, owner)
 
@@ -603,6 +607,20 @@ class TestYourAgents:
                 "granted": False,
                 "addressing_open": False,
             },
+        ]
+
+    async def test_an_agent_its_owners_agents_can_address_is_open(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        await _set_policy(harness, agent_id, owner_and_owner_agents_policy())
+
+        response = await _agents(harness, owner)
+
+        assert response.status_code == 200, response.text
+        assert [(a["agent_id"], a["addressing_open"]) for a in response.json()] == [
+            (agent_id, True)
         ]
 
     async def test_a_member_with_no_agents_gets_an_empty_list(

@@ -300,20 +300,14 @@ async def list_service_grants(
 
 
 async def _others_can_address(session: AsyncSession, agent: Agent, owner: User) -> bool:
-    """Whether someone other than the owner, or another person's agent, may
-    address the agent: what makes its grants usable by them."""
+    """Whether someone other than the owner, or any agent, may address the
+    agent: what makes its grants usable by them."""
     policy = parse_policy(agent.addressing_policy)
     if policy.is_open():
         return True
     identities = await ExternalUserStore().get_by_user(session, owner.id)
-    own_agents = await session.scalars(
-        select(Agent.id).where(
-            Agent.tenant_id == require_tenant_id(), Agent.owner_id == owner.id
-        )
-    )
     return policy.admits_others(
-        owner_identity_ids={identity.id for identity in identities},
-        owner_agent_ids=set(own_agents),
+        owner_identity_ids={identity.id for identity in identities}
     )
 
 

@@ -229,6 +229,17 @@ whether others can address it, for the "used by" list and the checklist
 Console offers after connecting. Another member's agents never appear; an
 unknown or placeholder slug is 404.
 
+"Others can address it" (`addressing_open`, here and on the agent's grants
+list) is false only for owner-only in its strict sense: the owner alone, in
+person. Any agent sender counts as someone else, the owner's own agents
+included, so "you and your agents" (`owner_agents`) and any named agent make it
+true. An agent is not the person: whoever addressed the owner's other agent can
+have it pass the request on, and the grant is then used for them. This is what
+Console reports and warns about; it does not refuse the agent-to-agent path,
+which an `owner_agents` rule still admits. Carrying the originating person on
+agent-to-agent messages, so that "you and your agents" can be safe for an agent
+with grants, is a later follow-up.
+
 ## Switching connections on
 
 The whole feature is behind the `service_connections` feature flag
