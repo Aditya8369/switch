@@ -250,14 +250,25 @@ async def callback(
         return page(INTERRUPTED, 400)
 
 
-@router.post("/flows/{flow_id}/complete", status_code=204)
+async def _settled(
+    flows: SignInFlows, flow: StoredFlow, status: str, **changes: str | None
+) -> None:
+    """The flow's outcome, kept without the token for Console to read."""
+    await flows.advance(flow, expect=("checking",), to=status, changes=changes)
+
+
+@router.post("/flows/{flow_id}/complete")
 async def complete(
     flow_id: str,
     body: CompleteFlow,
     user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
+    """Console hands back the code its listener received, with its secret:
+    Core exchanges it, reads the account and writes the connection."""
     flow = await owned_flow(flows, flow_id, user.id)
     refused = "GitHub authorization could not be verified. Connect again."
     if not flow.holds_secret(body.completion_secret) or flow.status != "delivered":
@@ -270,73 +281,10 @@ async def complete(
     try:
         credentials = await github.sign_in(body.code, flow.verifier)
     except (GitHubError, asyncio.CancelledError) as error:
-        await flows.advance(
-            checking,
-            expect=("checking",),
-            to="failed",
-            changes={"error": str(error) or INTERRUPTED},
-        )
+        await _settled(flows, checking, "failed", error=str(error) or INTERRUPTED)
         if isinstance(error, GitHubError):
             raise HTTPException(400, str(error)) from None
         raise
-    ready = await flows.advance(
-        checking,
-        expect=("checking",),
-        to="ready",
-        changes={
-            "encrypted_result": flows.seal(credentials),
-            "account_label": credentials["login"],
-        },
-    )
-    if ready is None:
-        # The flow expired or was cancelled while the code was exchanged.
-        raise HTTPException(410, INTERRUPTED)
-    return Response(status_code=204)
-
-
-@router.get("/flows/{flow_id}")
-async def flow_status(
-    flow_id: str,
-    user: Annotated[User, Depends(get_current_user)],
-    github: Annotated[GitHubConnections, Depends(service)],
-    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
-) -> dict:
-    flow = await owned_flow(flows, flow_id, user.id)
-    return {
-        "status": flow.status
-        if flow.status in {"checking", "ready", "failed"}
-        else "pending",
-        "login": flow.account_label or "",
-    }
-
-
-@router.delete("/flows/{flow_id}", status_code=204)
-async def cancel(
-    flow_id: str,
-    user: Annotated[User, Depends(get_current_user)],
-    github: Annotated[GitHubConnections, Depends(service)],
-    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
-) -> Response:
-    await flows.discard(await owned_flow(flows, flow_id, user.id))
-    return Response(status_code=204)
-
-
-@router.post("/flows/{flow_id}/confirm")
-async def confirm(
-    flow_id: str,
-    body: FlowSecret,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(service)],
-    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
-) -> Response:
-    flow = await owned_flow(flows, flow_id, user.id)
-    if not flow.holds_secret(body.completion_secret):
-        raise HTTPException(404, "Authorization not found.")
-    if flow.status != "ready" or flow.result is None:
-        raise HTTPException(409, "Finish GitHub authorization before confirming.")
-    credentials = dict(flow.result)
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"github-link:{require_tenant_id()}"},
@@ -351,10 +299,15 @@ async def confirm(
         )
     )
     if taken is not None:
+        linked = (
+            "This GitHub account is already linked to another Switch user in "
+            "this workspace. Remove that link first."
+        )
+        await _settled(flows, checking, "failed", error=linked)
         return JSONResponse(
             status_code=409,
             content={
-                "detail": "This GitHub account is already linked to another Switch user in this workspace. Remove that link first.",
+                "detail": linked,
                 "code": "account_linked_elsewhere",
                 "retryable": False,
             },
@@ -371,17 +324,52 @@ async def confirm(
             secret=ConnectionSecret(credentials),
         )
     except ServiceError as error:
-        if not error.retryable:
-            await flows.discard(flow)
+        await _settled(flows, checking, "failed", error=error.message)
         return service_refusal(error)
-    await flows.discard(flow)
+    await _settled(
+        flows,
+        checking,
+        "connected",
+        account_label=credentials["login"],
+        warning=warning,
+    )
     logger.info(
         "GitHub account linked: tenant=%s user=%s github_user=%s",
         require_tenant_id(),
         user.id,
         account_id,
     )
-    return JSONResponse({"warning": warning})
+    return JSONResponse({"warning": warning, "login": credentials["login"]})
+
+
+@router.get("/flows/{flow_id}")
+async def flow_status(
+    flow_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
+) -> dict:
+    flow = await owned_flow(flows, flow_id, user.id)
+    return {
+        "status": flow.status
+        if flow.status in {"checking", "connected", "failed"}
+        else "pending",
+        "login": flow.account_label or "",
+        "error": flow.error,
+        "warning": flow.warning,
+    }
+
+
+@router.delete("/flows/{flow_id}", status_code=204)
+async def drop(
+    flow_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
+) -> Response:
+    """Console is done with the flow: cancelled, or its outcome read."""
+    await flows.discard(await owned_flow(flows, flow_id, user.id))
+    return Response(status_code=204)
 
 
 @router.get("")

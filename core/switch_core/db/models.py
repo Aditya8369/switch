@@ -3987,13 +3987,17 @@ class SignInFlow(TenantScoped, Base):
     conditional update only, so of two requests racing for one step exactly
     one takes it.
 
-    Nothing secret is stored in the clear: the PKCE verifier and, once the code
-    is exchanged, the vendor's credentials are keyring-encrypted, and the
-    completion secret and browser nonce are kept as SHA-256 hashes, compared
-    against what Console and the browser present. `details` holds what the
-    flow asked the vendor for (its name, scopes and consent), none of it
-    secret. Rows expire after ten minutes, and expired ones are deleted as the
-    next flow in the workspace starts.
+    Nothing secret is stored in the clear: the PKCE verifier is
+    keyring-encrypted, and the completion secret and browser nonce are kept as
+    SHA-256 hashes, compared against what Console and the browser present.
+    The vendor's credentials never reach the row: the request that exchanges
+    the code writes the connection, and the flow then holds the outcome
+    (`account_label`, `warning` or `error`) for Console to read until it drops
+    the flow. `encrypted_result` held those credentials between the exchange
+    and a confirm step that is gone; it stays for a release that still writes
+    it. `details` holds what the flow asked the vendor for (its name, scopes
+    and consent), none of it secret. Rows expire after ten minutes, and
+    expired ones are deleted as the next flow in the workspace starts.
     """
 
     __tablename__ = "sign_in_flows"
@@ -4001,7 +4005,7 @@ class SignInFlow(TenantScoped, Base):
         CheckConstraint("kind IN ('github', 'service')", name="ck_sign_in_flows_kind"),
         CheckConstraint(
             "status IN ('pending', 'authorizing', 'returning', 'delivered', "
-            "'checking', 'ready', 'failed')",
+            "'checking', 'ready', 'connected', 'failed')",
             name="ck_sign_in_flows_status",
         ),
         CheckConstraint("mode IN ('loopback', 'core')", name="ck_sign_in_flows_mode"),
@@ -4026,6 +4030,7 @@ class SignInFlow(TenantScoped, Base):
     encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     account_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

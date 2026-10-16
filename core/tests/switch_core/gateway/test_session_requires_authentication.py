@@ -76,7 +76,8 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
 # than a route nobody counted. `_ROUTES_WITH_NO_TENANT_BOUND` is a strict subset.
 _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Browser handoff uses a short-lived flow, browser cookie and PKCE; saving
-    # credentials requires the initiating user to confirm via the authenticated API.
+    # credentials requires the initiating user to hand the code back through
+    # the authenticated API.
     ("GET", "/provider-connections/github/authorize"),
     ("GET", "/provider-connections/github/callback"),
     # The same handoff for every other service's sign-in (`connections/flows.py`).

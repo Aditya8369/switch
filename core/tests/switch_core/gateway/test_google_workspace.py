@@ -155,13 +155,7 @@ async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
         json={"completion_secret": secret, "code": code},
         cookies=cookies_for(user),
     )
-    assert completed.status_code == 204, completed.text
-    confirmed = await client.post(
-        f"{FLOWS}/{state}/confirm",
-        json={"completion_secret": secret},
-        cookies=cookies_for(user),
-    )
-    assert confirmed.status_code == 200, confirmed.text
+    assert completed.status_code == 200, completed.text
 
 
 async def _connection(

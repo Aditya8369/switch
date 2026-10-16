@@ -126,6 +126,16 @@ version of their own to them without also giving them a release of their own.
   the return cannot be verified or the consent was cancelled. What ties a
   sign-in to the browser and the Console that started it is unchanged.
 
+- **Signing in to a service connects it without a confirm step.** Once the
+  browser returns, the server exchanges the code, reads the account and keeps
+  the connection in one step, and Switch Console shows the result. It used to
+  hold the sign-in until the person confirmed the account in Console. The
+  account is chosen at the vendor, and Disconnect undoes a wrong one. The
+  flow's `complete` route now answers with the account and any warning, its
+  status reads `connected` or `failed` with the reason, and the `confirm`
+  route is gone, for GitHub's flow as well; a Switch Console from before this
+  release cannot finish a sign-in against this server, so update both
+  together. Migration `bf016e18bc16`, expand-only.
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
   or a host with percent-encoding or non-ASCII characters, is refused: browsers

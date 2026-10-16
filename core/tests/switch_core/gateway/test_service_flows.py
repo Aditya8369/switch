@@ -151,11 +151,9 @@ class Console:
             f"{FLOWS}/{self.state}", cookies=cookies_for(self.user)
         )
 
-    async def confirm(self) -> httpx.Response:
-        return await self.client.post(
-            f"{FLOWS}/{self.state}/confirm",
-            json={"completion_secret": self.secret},
-            cookies=cookies_for(self.user),
+    async def drop(self) -> httpx.Response:
+        return await self.client.delete(
+            f"{FLOWS}/{self.state}", cookies=cookies_for(self.user)
         )
 
 
@@ -174,6 +172,15 @@ async def _flow_ids(session_factory: async_sessionmaker[AsyncSession]) -> set[st
         return set((await session.execute(select(SignInFlow.id))).scalars())
 
 
+async def _flow_row(
+    session_factory: async_sessionmaker[AsyncSession], state: str
+) -> SignInFlow:
+    async with session_factory() as session:
+        row = await session.scalar(select(SignInFlow).where(SignInFlow.id == state))
+    assert row is not None
+    return row
+
+
 async def _connection(
     session_factory: async_sessionmaker[AsyncSession], user_id: str
 ) -> ServiceConnection | None:
@@ -186,12 +193,17 @@ async def _connection(
         )
 
 
-async def _loopback_ready(world: World, console: Console) -> None:
+async def _loopback_code(world: World, console: Console) -> str:
+    """Start, sign in at the vendor, and take the code as Console's listener does."""
     started = await console.start()
     assert started.status_code == 200, started.text
-    code = _listener_code(world.vendor.authorize(started.json()["url"]), console.state)
-    completed = await console.complete(code)
-    assert completed.status_code == 204, completed.text
+    return _listener_code(world.vendor.authorize(started.json()["url"]), console.state)
+
+
+async def _loopback_connect(world: World, console: Console) -> httpx.Response:
+    completed = await console.complete(await _loopback_code(world, console))
+    assert completed.status_code == 200, completed.text
+    return completed
 
 
 class TestLoopback:
@@ -221,18 +233,27 @@ class TestLoopback:
                 "status": "pending",
                 "account": None,
                 "error": None,
+                "warning": None,
             }
-            assert (await console.complete(code)).status_code == 204
+            assert await _connection(session_factory, ada.id) is None
+            completed = await console.complete(code)
+            assert completed.status_code == 200, completed.text
+            assert completed.json() == {
+                "warning": None,
+                "consent": "write",
+                "account": "ada@example.test",
+            }
+            # The outcome stays readable, without the token, until Console drops it.
             assert (await console.status()).json() == {
-                "status": "ready",
+                "status": "connected",
                 "account": "ada@example.test",
                 "error": None,
+                "warning": None,
             }
-            # Nothing is written before the person confirms.
-            assert await _connection(session_factory, ada.id) is None
-            confirmed = await console.confirm()
-            assert confirmed.status_code == 200, confirmed.text
-            assert confirmed.json() == {"warning": None, "consent": "write"}
+            flow = await _flow_row(session_factory, console.state)
+            assert flow.encrypted_result is None
+            assert (await console.drop()).status_code == 204
+            assert (await console.status()).status_code == 410
 
         connection = await _connection(session_factory, ada.id)
         assert connection is not None
@@ -255,7 +276,7 @@ class TestLoopback:
             code = _listener_code(
                 world.vendor.authorize(started.json()["url"]), console.state
             )
-            assert (await console.complete(code)).status_code == 204
+            assert (await console.complete(code)).status_code == 200
             replayed = await console.complete(code)
             assert replayed.status_code == 400
             assert len(world.vendor.token_requests) == 1
@@ -274,8 +295,6 @@ class TestLoopback:
             refused = await console.complete(code, secret=secrets.token_urlsafe(32))
             assert refused.status_code == 400
             assert world.vendor.token_requests == []
-            confirmed_early = await console.confirm()
-            assert confirmed_early.status_code == 409
 
     async def test_a_state_is_used_once(self, session_factory, tmp_path) -> None:
         world = _world(session_factory, tmp_path / "catalog")
@@ -351,8 +370,9 @@ class TestLoopback:
         ada = await add_member(session_factory, "ada")
         grace = await add_member(session_factory, "grace")
         async with world.harness.client() as client:
-            await _loopback_ready(world, Console(client, ada))
-            await _loopback_ready(world, Console(client, grace))
+            # Registration happens as the first sign-in starts.
+            await _loopback_code(world, Console(client, ada))
+            await _loopback_code(world, Console(client, grace))
         assert len(world.vendor.registrations) == 1
 
     async def test_an_account_linked_to_someone_else_is_refused(
@@ -362,14 +382,14 @@ class TestLoopback:
         ada = await add_member(session_factory, "ada")
         grace = await add_member(session_factory, "grace")
         async with world.harness.client() as client:
-            first = Console(client, ada)
-            await _loopback_ready(world, first)
-            assert (await first.confirm()).status_code == 200
+            await _loopback_connect(world, Console(client, ada))
             second = Console(client, grace)
-            await _loopback_ready(world, second)
-            refused = await second.confirm()
+            refused = await second.complete(await _loopback_code(world, second))
             assert refused.status_code == 409
             assert refused.json()["code"] == "account_linked_elsewhere"
+            # The flow reads failed with the reason, for Console to show.
+            assert (await second.status()).json()["status"] == "failed"
+            assert "already linked" in (await second.status()).json()["error"]
         assert await _connection(session_factory, grace.id) is None
 
     async def test_a_sign_in_granted_only_reading_connects_read_only(
@@ -381,9 +401,8 @@ class TestLoopback:
         world.vendor.mint = lambda scopes: mint(["read:items"])  # type: ignore[method-assign]
         async with world.harness.client() as client:
             console = Console(client, ada)
-            await _loopback_ready(world, console)
-            confirmed = await console.confirm()
-            assert confirmed.json()["consent"] == "read"
+            connected = await _loopback_connect(world, console)
+            assert connected.json()["consent"] == "read"
         connection = await _connection(session_factory, ada.id)
         assert connection is not None and connection.consent == "read"
 
@@ -404,8 +423,7 @@ class TestLongCodes:
                 world.vendor.authorize(started.json()["url"]), console.state
             )
             assert len(code) == 2177
-            assert (await console.complete(code)).status_code == 204
-            assert (await console.confirm()).status_code == 200
+            assert (await console.complete(code)).status_code == 200
 
     async def test_a_long_code_comes_back_through_core(
         self, session_factory, tmp_path
@@ -429,7 +447,7 @@ class TestLongCodes:
             returned = await client.get(f"{back.path}?{back.query}", cookies=cookie)
             assert returned.status_code == 303
             assert _listener_code(returned.headers["location"], console.state) == code
-            assert (await console.complete(code)).status_code == 204
+            assert (await console.complete(code)).status_code == 200
 
 
 class TestLoopbackPorts:
@@ -447,8 +465,7 @@ class TestLoopbackPorts:
                 f"http://127.0.0.1:43124{LOOPBACK_CALLBACK_PATH}"
             )
             code = parse_qs(back.query)["code"][0]
-            assert (await console.complete(code)).status_code == 204
-            assert (await console.confirm()).status_code == 200
+            assert (await console.complete(code)).status_code == 200
 
     async def test_refuses_a_port_the_vendor_would_not_take(
         self, session_factory, tmp_path
@@ -513,8 +530,7 @@ class TestCoreCallback:
             )
             assert again.status_code == 400
 
-            assert (await console.complete(code)).status_code == 204
-            assert (await console.confirm()).status_code == 200
+            assert (await console.complete(code)).status_code == 200
         connection = await _connection(session_factory, ada.id)
         assert connection is not None and connection.account_id == "acct-1"
         [exchange] = [
@@ -643,9 +659,9 @@ class TestWorkspaceSwitch:
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             console = Console(client, ada)
-            await _loopback_ready(world, console)
+            code = await _loopback_code(world, console)
             await _switch(session_factory, False, ada)
-            refused = await console.confirm()
+            refused = await console.complete(code)
         assert refused.status_code == 403
         assert refused.json() == WORKSPACE_REFUSAL
         assert await _connection(session_factory, ada.id) is None
@@ -654,7 +670,9 @@ class TestWorkspaceSwitch:
             "refresh_token"
         ]
         assert world.vendor.live_refresh == {}
-        assert await _flow_ids(session_factory) == set()
+        flow = await _flow_row(session_factory, console.state)
+        assert (flow.status, flow.encrypted_result) == ("failed", None)
+        assert flow.error == WORKSPACE_REFUSAL["detail"]
 
     async def test_a_sign_in_that_cannot_be_revoked_says_what_to_do(
         self, session_factory, tmp_path
@@ -663,9 +681,9 @@ class TestWorkspaceSwitch:
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             console = Console(client, ada)
-            await _loopback_ready(world, console)
+            code = await _loopback_code(world, console)
             await _switch(session_factory, False, ada)
-            refused = await console.confirm()
+            refused = await console.complete(code)
         assert refused.status_code == 403
         assert refused.json() == {
             **WORKSPACE_REFUSAL,

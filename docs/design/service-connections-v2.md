@@ -122,7 +122,7 @@ hour. A token already handed out stays valid at the vendor until it expires.
 ## Connecting
 
 Routes under `/gateway/service-connections/{service}/flows`: start, authorize,
-callback, complete, status, confirm and cancel.
+callback, complete, status and drop.
 Switch Console starts a flow with a one-time state, its listener's port and a
 completion secret. Core keeps the PKCE verifier and exchanges the code, so
 neither Console nor the browser holds a token. The browser comes back the first
@@ -137,11 +137,16 @@ way the catalog allows that this server can offer:
   or the consent was cancelled.
 
 Console's listener brings Console to the front as the code arrives, and
-posts it back with the completion secret; Core exchanges it and reads the
-account; the connection is written through `broker.connect()` only when
-Console confirms. The consent recorded is what the vendor granted: write
-where every write scope was granted, else read. Flows live in memory: ten
-minutes each, at most 256, one per person.
+posts it back with the completion secret; in that one step Core exchanges
+it, reads the account, refuses an account already linked to another person
+in the workspace, and writes the connection through `broker.connect()`.
+There is no confirm step: the person chose the account at the vendor. The
+flow then reads `connected` (with the account and any warning) or `failed`
+(with the reason), holding no token, until Console drops it or it expires.
+The consent recorded is what the vendor granted: write where every write
+scope was granted, else read. Flows are rows in `sign_in_flows`, so any
+process can take any step: ten minutes each, at most 256 per workspace, one
+per person.
 
 A dynamically registered client is the deployment's own, kept in
 `service_oauth_clients` (one row per service, encrypted with the keyring,
