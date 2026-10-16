@@ -20,7 +20,7 @@ waits for it and then finds the index, rather than landing after the delete
 and failing the index build.
 
 Revision ID: c4d8e2f6a913
-Revises: a7e3c1d9f204
+Revises: b3c7e1d9f2a5
 Create Date: 2026-10-13 00:00:00.000000
 
 """
@@ -31,7 +31,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c4d8e2f6a913"
-down_revision: str | None = "a7e3c1d9f204"
+down_revision: str | None = "b3c7e1d9f2a5"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
