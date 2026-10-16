@@ -69,9 +69,10 @@ the app first. Switch cannot tell which a client is, and works with either.
 
 ## Give Switch the client
 
-In the Switch dashboard, open **Connectors** (shown to the server's
-operator, beside Users, and there only with the server's `service_connections`
-flag on) and choose **Set up Google Workspace**. The dialog
+In Switch Console, open **Admin** in the sidebar and **Connector apps** under
+Server, or in the Switch dashboard open **Connectors** beside Users. Both are
+shown to the server's operator only, and only with the server's
+`service_connections` flag on. Choose **Set up Google Workspace**. The dialog
 shows the redirect URI to register, with a copy button; paste the client's
 **Client ID** and **Client secret** as Google Cloud labels them, and choose
 **Check and save**. Switch first asks Google whether the two belong together

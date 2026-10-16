@@ -1766,6 +1766,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The server's operator sets up connector apps in Console.** For the
+  operator, the Admin page has a Connector apps section under Server, below
+  the workspace's switches: the GitHub App and Google Workspace's OAuth
+  client as tiles, the
+  ones needing attention first, each with its state and the one thing to do
+  next. A tile opens the app's page, with its client, its secret's last four
+  characters or its key's fingerprint, who uses it and a check with the
+  vendor; updating a secret, switching to a different app and removing it are
+  in its menu. Setting one up walks through creating it at the vendor, with
+  the values to paste and copy buttons, then checks and saves it in one step,
+  marking the value the vendor refused. It is the dashboard's Connectors page,
+  which stays for now. Needs a server from this release.
 - **Console follows a server that keeps names away from avatar services.** On a
   server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
   DiceBear or ui-avatars.com images for that server's agents and shows their
