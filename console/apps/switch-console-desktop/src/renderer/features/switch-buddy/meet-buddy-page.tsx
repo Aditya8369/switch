@@ -129,7 +129,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         existing ? (
           <Button onClick={() => onCreated(existing)}>Open switch-buddy</Button>
         ) : (
-          <>
+          <div className="relative flex gap-2">
             <Button variant="outline" onClick={onSkip} disabled={busy}>
               Skip
             </Button>
@@ -151,7 +151,15 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             >
               {ready.length === 0 ? 'Set up AI provider' : 'Use another provider'}
             </Button>
-          </>
+            {/* Beside the buttons, not between them: the row stays where it is
+                while this computer is still being checked. */}
+            {computer.kind === 'starting' && (
+              <span className="absolute top-1/2 left-full ml-3 flex -translate-y-1/2 items-center gap-1.5 text-xs whitespace-nowrap text-foreground-muted">
+                <Spinner className="size-3" />
+                Checking AI providers…
+              </span>
+            )}
+          </div>
         )
       }
     >
@@ -165,21 +173,11 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         <Line>…and set up and manage your workflows, permissions and guardrails!</Line>
         <Line>Ready to go?</Line>
       </div>
-      {/* One line, always there: what is still being checked, or why it
-          failed, without the lines above moving when it changes. */}
-      <div className="flex min-h-5 items-center justify-center">
-        {computer.kind === 'starting' && (
-          <p className="flex items-center gap-2 text-xs text-foreground-muted">
-            <Spinner className="size-3" />
-            Checking which AI providers this computer has…
-          </p>
-        )}
-        {computer.kind === 'failed' && (
-          <p role="alert" className="text-center text-sm text-destructive">
-            {computer.error}
-          </p>
-        )}
-      </div>
+      {computer.kind === 'failed' && (
+        <p role="alert" className="text-center text-sm text-destructive">
+          {computer.error}
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-center text-sm text-destructive">
           {error}

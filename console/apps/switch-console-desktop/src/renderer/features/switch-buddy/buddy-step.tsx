@@ -1,11 +1,10 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { MeetBuddyPage } from './meet-buddy-page';
-import { useThisComputer } from './use-this-computer';
 
 /**
  * The first run's last step: meeting switch-buddy, on a server that offers it.
@@ -85,51 +84,11 @@ export function BuddyStep({
       </OnboardingSurface>
     );
   return (
-    <ThisComputerFirst serverId={serverId} workspaceId={workspaceId}>
-      <MeetBuddyPage
-        serverId={serverId}
-        workspaceId={workspaceId}
-        onCreated={onCreated}
-        onSkip={onSkip}
-      />
-    </ThisComputerFirst>
+    <MeetBuddyPage
+      serverId={serverId}
+      workspaceId={workspaceId}
+      onCreated={onCreated}
+      onSkip={onSkip}
+    />
   );
-}
-
-/** How long the page waits for this computer's first report before showing without it. */
-const FIRST_REPORT_WAIT_MS = 25_000;
-
-/**
- * Holds the Meet page back until this computer — enrolled now, in the
- * background — has reported which AI providers it has, so the page opens with
- * its "Start with …" buttons in place rather than adding them under the
- * reader's eyes. A computer slower than that gets the page without them, and
- * it fills in as the report arrives.
- */
-function ThisComputerFirst({
-  serverId,
-  workspaceId,
-  children,
-}: {
-  serverId: string;
-  workspaceId: string;
-  children: ReactNode;
-}) {
-  const exit = useWizardExit();
-  const { state } = useThisComputer(serverId, workspaceId);
-  const [waited, setWaited] = useState(false);
-  useEffect(() => {
-    const timer = setTimeout(() => setWaited(true), FIRST_REPORT_WAIT_MS);
-    return () => clearTimeout(timer);
-  }, []);
-  if (state.kind === 'starting' && !waited)
-    return (
-      <OnboardingSurface exit={exit} footer={null}>
-        <p className="flex items-center justify-center gap-2 text-sm text-foreground-muted">
-          <Spinner className="size-3.5" />
-          Checking which AI providers this computer has…
-        </p>
-      </OnboardingSurface>
-    );
-  return children;
 }

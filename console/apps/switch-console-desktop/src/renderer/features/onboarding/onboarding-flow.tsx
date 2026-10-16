@@ -89,11 +89,17 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
   };
 
   /** Leave them for the buddy's chat: its own once it exists, else the one waiting for a provider. */
-  const finishWithBuddy = (serverId: string, agent: { agentId: string; name: string } | null) => {
-    onboardingStore.reset();
-    void switchServersStore.setActive(serverId);
-    if (agent) void openBuddyChat(serverId, agent);
+  const finishWithBuddy = async (
+    serverId: string,
+    agent: { agentId: string; name: string } | null
+  ) => {
+    // The destination is chosen, and its chat found or made, while the flow
+    // is still on screen: ending the flow first would draw the app's home
+    // page for the moment that takes, then jump to the buddy.
+    await switchServersStore.setActive(serverId);
+    if (agent) await openBuddyChat(serverId, agent);
     else navigate('switchBuddy', { serverId });
+    onboardingStore.reset();
   };
 
   // The server as the list has it, not as the flow remembers it: it can be
@@ -186,7 +192,10 @@ function currentPage(
   cloud: CloudChoiceState,
   goTo: (page: OnboardingPage) => void,
   finish: (serverId: string | null) => void,
-  finishWithBuddy: (serverId: string, agent: { agentId: string; name: string } | null) => void
+  finishWithBuddy: (
+    serverId: string,
+    agent: { agentId: string; name: string } | null
+  ) => Promise<void>
 ) {
   switch (onboardingStore.page) {
     case 'welcome':
@@ -270,8 +279,8 @@ function currentPage(
         <BuddyStep
           serverId={server.id}
           workspaceId={workspaceId}
-          onCreated={(agent) => finishWithBuddy(server.id, agent)}
-          onSkip={() => finishWithBuddy(server.id, null)}
+          onCreated={(agent) => void finishWithBuddy(server.id, agent)}
+          onSkip={() => void finishWithBuddy(server.id, null)}
           onNotOffered={() => finish(server.id)}
         />
       );
