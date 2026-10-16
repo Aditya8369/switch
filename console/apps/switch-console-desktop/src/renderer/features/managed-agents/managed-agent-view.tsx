@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { MoreVertical, Play, Square, Trash2 } from 'lucide-react';
+import { MoreVertical, Power, PowerOff, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -201,13 +201,13 @@ function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
     <>
       {agent.desiredState === 'running' ? (
         <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('stopped')}>
-          <Square className="size-4" />
-          Stop
+          <PowerOff className="size-4" />
+          Turn off agent
         </DropdownMenuItem>
       ) : (
         <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('running')}>
-          <Play className="size-4" />
-          Start
+          <Power className="size-4" />
+          Turn on agent
         </DropdownMenuItem>
       )}
       <DropdownMenuSeparator />
