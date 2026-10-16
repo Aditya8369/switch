@@ -81,19 +81,20 @@ export function workspaceOffNotice(
 }
 
 /**
- * The profile's way to connect: connect, sign in again, or (GitHub) choose
- * repositories. None while the workspace has the service off, whose notice
- * says what to do instead. A reason the server gives does not take it away:
- * a service can often be connected where it cannot be granted, and the button
- * is disabled where it cannot.
+ * The profile's way to connect: connect, sign in again, (GitHub) choose
+ * repositories, or replace a connected key. None while the workspace has the
+ * service off, whose notice says what to do instead. A reason the server
+ * gives does not take it away: a service can often be connected where it
+ * cannot be granted, and the button is disabled where it cannot.
  */
 export function profileConnectAction(
   entry: ConnectionCatalogEntry
-): 'connect' | 'reconnect' | 'manage' | null {
+): 'connect' | 'reconnect' | 'manage' | 'replace' | null {
   if (entry.status === 'coming_soon' || entry.workspace_enabled === false) return null;
   if (entry.status === 'not_connected') return 'connect';
   if (entry.status === 'needs_reauthorization' || entry.status === 'error') return 'reconnect';
-  return entry.slug === 'github' ? 'manage' : null;
+  if (entry.slug === 'github') return 'manage';
+  return entry.auth_type === 'api_key' ? 'replace' : null;
 }
 
 /**

@@ -1,7 +1,8 @@
 /**
  * Connecting a service with a key: a form built from the catalog entry, the
  * keys typed into password inputs and cleared once sent, the server's refusal
- * shown as it said it, and a connected key shown by whose it is.
+ * shown as it said it, and a connected key shown by whose it is. Opened to
+ * replace a connected key, it opens on the form and ends on Done.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -97,7 +98,9 @@ afterEach(async () => {
 });
 
 async function render(
-  status: ConnectionCatalogEntry['status'] = 'not_connected'
+  status: ConnectionCatalogEntry['status'] = 'not_connected',
+  replacing = false,
+  onBack: () => void = () => {}
 ): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -111,14 +114,19 @@ async function render(
             calls={serverServiceCalls('server')}
             connection={connection}
             form={connection.key!}
-            onBack={() => {}}
+            replacing={replacing}
+            onBack={onBack}
             onConnected={() => {}}
           />
         </DialogContent>
       </Dialog>
     )
   );
-  await vi.waitFor(() => expect(dialog().textContent).toMatch(/Connect Datadog|Datadog connected/));
+  await vi.waitFor(() =>
+    expect(dialog().textContent).toMatch(
+      /Connect Datadog|Datadog connected|Replace the Datadog key/
+    )
+  );
   return dialog();
 }
 
@@ -254,4 +262,34 @@ it('shows a connected key service as connected, with whose key it is', async () 
   expect(step.textContent).toContain('Connected with Datadog key · datadoghq.eu');
   expect(button(/^disconnect$/i, step)).toBeDefined();
   expect(step.querySelector('[aria-label="Datadog key"]')).toBeNull();
+});
+
+it('opened to replace a key, opens on the form and ends on Done', async () => {
+  switchServers.connectServiceWithKey.mockResolvedValue({
+    warning: null,
+    external_identity: 'Datadog key · datadoghq.com',
+  });
+  const onBack = vi.fn();
+  const step = await render('connected', true, onBack);
+
+  expect(step.textContent).toMatch(/Replace the Datadog key/);
+  expect(step.querySelector('[aria-label="Datadog key"]')).not.toBeNull();
+  expect(button(/^disconnect$/i, step)).toBeUndefined();
+  await type(input(step, 'API key'), API_KEY);
+  await type(input(step, 'Application key'), APP_KEY);
+  await pick(step, 'Datadog site', 'datadoghq.com');
+  await vi.waitFor(() => expect(button(/^replace key$/i, step)?.disabled).toBe(false));
+  await act(async () => button(/^replace key$/i, step)!.click());
+
+  expect(switchServers.connectServiceWithKey).toHaveBeenCalledWith('server', 'datadog', {
+    api_key: API_KEY,
+    application_key: APP_KEY,
+    site: 'datadoghq.com',
+  });
+  await vi.waitFor(() => expect(dialog().textContent).toMatch(/Datadog connected/));
+  expect(dialog().textContent).toContain('Connected with Datadog key · datadoghq.com');
+  expect(dialog().innerHTML).not.toContain(API_KEY);
+  expect(button(/^replace key$/i, dialog())).toBeUndefined();
+  await act(async () => button(/^done$/i, dialog())!.click());
+  expect(onBack).toHaveBeenCalledOnce();
 });

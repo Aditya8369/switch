@@ -186,6 +186,7 @@ export function ConnectionsStep({
         calls={serverServiceCalls(serverId)}
         connection={opened}
         form={opened.key}
+        replacing={false}
         onBack={back}
       />
     );

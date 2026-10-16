@@ -13,7 +13,7 @@ export function useConnectService(serverId: string, workspaceId: string) {
   const showConnect = useShowModal('connectServiceModal');
   const reload = useReloadConnectors(workspaceId);
   return useCallback(
-    (connection: ConnectionCatalogEntry, startAt: 'connect' | 'grant') =>
+    (connection: ConnectionCatalogEntry, startAt: 'connect' | 'grant' | 'replace') =>
       showConnect({
         serverId,
         workspaceId,

@@ -250,12 +250,18 @@ describe('the profile', () => {
     );
   });
 
-  it('offers connecting, signing in again, or choosing repositories', () => {
+  it('offers connecting, signing in again, choosing repositories, or replacing a key', () => {
     expect(profileConnectAction(entry())).toBe('connect');
     expect(profileConnectAction(entry({ status: 'needs_reauthorization' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ status: 'error' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ status: 'connected' }))).toBeNull();
     expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBe('manage');
+    expect(profileConnectAction(entry({ status: 'connected', auth_type: 'api_key' }))).toBe(
+      'replace'
+    );
+    expect(profileConnectAction(entry({ status: 'not_connected', auth_type: 'api_key' }))).toBe(
+      'connect'
+    );
     expect(profileConnectAction(entry({ status: 'coming_soon' }))).toBeNull();
     // Connectable where it cannot be granted: the server's reason does not hide Connect.
     expect(

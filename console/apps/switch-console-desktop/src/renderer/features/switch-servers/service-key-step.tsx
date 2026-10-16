@@ -29,17 +29,23 @@ import type { ServiceCalls } from './service-calls';
  * names, the keys typed into password inputs and anything else picked from its
  * choices. Switch checks the key with the vendor before keeping it, and never
  * sends it back, so a key typed here is cleared once it is submitted.
+ *
+ * Opened `replacing` a connected key, it is that one action: it opens on the
+ * form, and once the new key is kept it is done. The server replaces the key
+ * in place, so every agent that had the service keeps it.
  */
 export function ServiceKeyStep({
   calls,
   connection,
   form,
+  replacing,
   onBack,
   onConnected,
 }: {
   calls: ServiceCalls;
   connection: ConnectionCatalogEntry;
   form: ServiceKeyForm;
+  replacing: boolean;
   onBack: () => void;
   /** Moves on once the key is connected, with the warning Switch gave. */
   onConnected?: (warning: string | null) => void;
@@ -48,13 +54,13 @@ export function ServiceKeyStep({
   const name = connection.name;
   const [connected, setConnected] = useState(connection.status === 'connected');
   const [identity, setIdentity] = useState(connection.external_identity);
-  const [replacing, setReplacing] = useState(false);
+  const [changingKey, setChangingKey] = useState(replacing);
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useCloseGuard(busy);
-  const editing = !connected || replacing;
+  const editing = !connected || changingKey;
   const complete = form.fields.every((field) => (values[field.name] ?? '').trim() !== '');
   const clearSecrets = () =>
     setValues((current) =>
@@ -77,7 +83,7 @@ export function ServiceKeyStep({
       setIdentity(result.external_identity);
       setWarning(result.warning);
       setConnected(true);
-      setReplacing(false);
+      setChangingKey(false);
       onConnected?.(result.warning);
     } catch (cause) {
       setError(failureText(cause, `Could not connect ${name}.`));
@@ -93,7 +99,7 @@ export function ServiceKeyStep({
       setWarning(result.warning);
       setConnected(false);
       setIdentity(null);
-      setReplacing(false);
+      setChangingKey(false);
     } catch (cause) {
       setError(failureText(cause, `Could not disconnect ${name}.`));
     } finally {
@@ -103,7 +109,13 @@ export function ServiceKeyStep({
   return (
     <>
       <DialogHeader showCloseButton={!busy}>
-        <DialogTitle>{connected ? `${name} connected` : `Connect ${name}`}</DialogTitle>
+        <DialogTitle>
+          {replacing && changingKey
+            ? `Replace the ${name} key`
+            : connected
+              ? `${name} connected`
+              : `Connect ${name}`}
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         <p className="text-sm text-foreground-muted">{connection.description}</p>
@@ -195,29 +207,49 @@ export function ServiceKeyStep({
           </p>
         )}
       </DialogContentArea>
-      <DialogFooter>
-        <Button variant="outline" onClick={onBack} disabled={busy}>
-          Back
-        </Button>
-        {connected && (
-          <Button variant="ghost" disabled={busy} onClick={() => void disconnect()}>
-            Disconnect
+      {replacing ? (
+        <DialogFooter>
+          {changingKey ? (
+            <>
+              <Button variant="outline" onClick={onBack} disabled={busy}>
+                Cancel
+              </Button>
+              <Button
+                disabled={busy || !complete || !connection.connectable}
+                onClick={() => void submit()}
+              >
+                Replace key
+              </Button>
+            </>
+          ) : (
+            <Button onClick={onBack}>Done</Button>
+          )}
+        </DialogFooter>
+      ) : (
+        <DialogFooter>
+          <Button variant="outline" onClick={onBack} disabled={busy}>
+            Back
           </Button>
-        )}
-        {connected && !replacing && (
-          <Button variant="outline" disabled={busy} onClick={() => setReplacing(true)}>
-            Replace key
-          </Button>
-        )}
-        {editing && (
-          <Button
-            disabled={busy || !complete || !connection.connectable}
-            onClick={() => void submit()}
-          >
-            Connect {name}
-          </Button>
-        )}
-      </DialogFooter>
+          {connected && (
+            <Button variant="ghost" disabled={busy} onClick={() => void disconnect()}>
+              Disconnect
+            </Button>
+          )}
+          {connected && !changingKey && (
+            <Button variant="outline" disabled={busy} onClick={() => setChangingKey(true)}>
+              Replace key
+            </Button>
+          )}
+          {editing && (
+            <Button
+              disabled={busy || !complete || !connection.connectable}
+              onClick={() => void submit()}
+            >
+              Connect {name}
+            </Button>
+          )}
+        </DialogFooter>
+      )}
     </>
   );
 }

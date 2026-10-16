@@ -27,6 +27,7 @@ const ACTION_LABEL = {
   connect: 'Connect to Switch',
   reconnect: 'Reconnect',
   manage: 'Manage repositories',
+  replace: 'Replace key',
 } as const;
 
 /**
@@ -107,9 +108,9 @@ export function ConnectorProfile({
         <div className="flex shrink-0 gap-2">
           {action && (
             <Button
-              variant={action === 'manage' ? 'outline' : 'default'}
+              variant={action === 'manage' || action === 'replace' ? 'outline' : 'default'}
               disabled={!connection.connectable}
-              onClick={() => connect(connection, 'connect')}
+              onClick={() => connect(connection, action === 'replace' ? 'replace' : 'connect')}
             >
               {ACTION_LABEL[action]}
             </Button>

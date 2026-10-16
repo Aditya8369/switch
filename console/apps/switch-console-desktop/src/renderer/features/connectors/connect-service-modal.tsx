@@ -24,7 +24,9 @@ import {
  * form, or the generic sign-in, as the catalog entry calls for. A service a
  * grant simply switches on is turned on for the person's agents as it is
  * connected: on the signed-in screen for a sign-in, and on a second screen
- * after a key. `startAt: 'grant'` opens straight on that second screen.
+ * after a key. `startAt: 'grant'` opens straight on that second screen, and
+ * `startAt: 'replace'` on the form that replaces a connected key, which keeps
+ * every agent's access and so is followed by no checklist.
  */
 export function ConnectServiceModal({
   serverId,
@@ -37,11 +39,11 @@ export function ConnectServiceModal({
   serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
-  startAt: 'connect' | 'grant';
+  startAt: 'connect' | 'grant' | 'replace';
   /** Runs as soon as the service is connected, before the dialog closes. */
   onConnected: () => void;
 } & BaseModalProps) {
-  const [step, setStep] = useState(startAt);
+  const [step, setStep] = useState<'connect' | 'grant' | 'replace'>(startAt);
   const calls = workspaceServiceCalls(workspaceId);
   const [warning, setWarning] = useState<string | null>(null);
   const keyConnected = (result: string | null) => {
@@ -51,6 +53,17 @@ export function ConnectServiceModal({
     setStep('grant');
   };
 
+  if (startAt === 'replace' && connection.key)
+    return (
+      <ServiceKeyStep
+        calls={calls}
+        connection={connection}
+        form={connection.key}
+        replacing
+        onBack={onClose}
+        onConnected={() => onConnected()}
+      />
+    );
   if (step === 'grant')
     return (
       <GrantAgentsStep
@@ -68,6 +81,7 @@ export function ConnectServiceModal({
         calls={calls}
         connection={connection}
         form={connection.key}
+        replacing={false}
         onBack={onClose}
         onConnected={keyConnected}
       />
