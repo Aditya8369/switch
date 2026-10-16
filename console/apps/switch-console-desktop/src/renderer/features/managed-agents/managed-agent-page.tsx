@@ -27,6 +27,7 @@ import { ServiceGrantsRow } from '@renderer/features/locations/components/settin
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -103,6 +104,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   const edit = editOf(agent, schema, saved, draft);
   const [error, setError] = useState<string | null>(null);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
+  const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
 
   const setValue = <K extends keyof Edits['values']>(key: K, value: Draft[K]) =>
     setEdits((current) => ({ ...current, values: { ...current.values, [key]: value } }));
@@ -223,9 +225,11 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
             }
             actions={
               <>
-                <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                  <Button disabled>New Session</Button>
-                </WithReason>
+                {!chatsOn && (
+                  <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
+                    <Button disabled>New Session</Button>
+                  </WithReason>
+                )}
                 <Button
                   variant="outline"
                   onClick={() =>
