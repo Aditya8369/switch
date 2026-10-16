@@ -7,6 +7,12 @@ import {
 } from '@renderer/features/chats/stores/chats-store';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
 
+vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
+  switchRoomsStore: {
+    refreshRoomState: vi.fn(async () => {}),
+  },
+}));
+
 function summary(roomId: string, seq: number): ChatSummary {
   return {
     roomId,

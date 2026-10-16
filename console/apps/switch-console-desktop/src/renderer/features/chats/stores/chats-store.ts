@@ -1,4 +1,5 @@
 import { makeAutoObservable, reaction, runInAction } from 'mobx';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import {
   chatMessageChannel,
@@ -157,12 +158,14 @@ export class ChatsStore {
   async archive(serverId: string, roomId: string): Promise<void> {
     await this.api.archive(serverId, roomId);
     this.remove(roomId, 'access');
+    await switchRoomsStore.refreshRoomState();
   }
 
   /** Deleted with its messages for everyone; throws, leaving the chat listed, if the server refuses. */
   async delete(serverId: string, roomId: string): Promise<void> {
     await this.api.delete(serverId, roomId);
     this.remove(roomId, 'access');
+    await switchRoomsStore.refreshRoomState();
   }
 
   message(serverId: string, message: ChatMessage): void {
