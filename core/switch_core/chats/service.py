@@ -964,6 +964,8 @@ class ChatService:
                 )
                 await session.commit()
         self._memberships_changed(tenant_id, [user.id])
+        if len(agents) == 1:
+            self._start_session(agents[0].id, room.id)
         return room
 
     async def stage_upload(
@@ -1249,9 +1251,9 @@ class ChatService:
     async def warm(
         self, tenant_id: str, user: User, room_id: str, *, agent_id: str
     ) -> None:
-        """Ask the controller of the user's own agent to start its session for
-        this chat before the first message. A hint: nothing waits for it, and
-        an agent no controller hosts is not warmed."""
+        """Ask the agent's controller again to start its session for a chat
+        that already exists, as creating it did. Anyone a message from would
+        start the session may ask: it grants nothing that message does not."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
@@ -1260,22 +1262,23 @@ class ChatService:
                 )
             agent = await self._agent_store.get(session, agent_id)
             assert agent is not None
-            if agent.owner_id != user.id:
-                raise ChatError(
-                    403, "NOT_AGENT_OWNER", "Only the agent's owner can warm it."
-                )
             decision = await self._addressing.permitted(
                 session, agent=agent, room_id=room.id, sender=client.transport_user_id
             )
             if not decision.allowed:
                 raise ChatError(403, "AGENT_NOT_ALLOWED", decision.refusal)
+        self._start_session(agent_id, room.id)
+
+    def _start_session(self, agent_id: str, room_id: str) -> None:
+        """A hint to a controller-hosted agent: nothing waits for it. An agent
+        no controller hosts is started by the Console that runs it."""
         if not self._controllers.is_bound(agent_id):
             return
-        if not self._controllers.relay_warm(agent_id, room.id):
+        if not self._controllers.relay_warm(agent_id, room_id):
             logger.warning(
-                "Could not warm agent %s for room %s: its controller is not connected or it is stopped",
+                "Could not start agent %s's session for room %s: its controller is not connected or it is stopped",
                 agent_id,
-                room.id,
+                room_id,
             )
 
     async def _posted(

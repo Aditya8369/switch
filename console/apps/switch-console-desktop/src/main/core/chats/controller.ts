@@ -85,19 +85,23 @@ const activityDeps: ActivityDeps = {
 };
 
 /**
- * Asks the host of the person's agent to start the session a message to the
- * room would start, ahead of the message: a local or SSH host directly, any
- * other through core, which tells the agent's controller. A failure is
- * logged, never thrown, so it cannot get in the way of sending.
+ * Asks the agent's host to start the session a message to the room would
+ * start, ahead of the message: a local or SSH host directly, any other
+ * through core, which tells the agent's controller — unless `throughCore` is
+ * false because core already did when it created the chat. A failure is
+ * logged, never thrown, so it cannot get in the way of the chat.
  */
-async function warmChat(params: { serverId: string; agentId: string; roomId: string }) {
+async function warmChat(
+  params: { serverId: string; agentId: string; roomId: string },
+  throughCore: boolean
+) {
   const { serverId, agentId, roomId } = params;
   try {
     const local = (await activityDeps.localAgents(serverId)).find(
       (agent) => agent.switchAgentId === agentId
     );
     if (!local) {
-      await onServer(serverId, (server) => warmChatAgent(server, roomId, agentId));
+      if (throughCore) await onServer(serverId, (server) => warmChatAgent(server, roomId, agentId));
       return;
     }
     await (local.ssh
@@ -140,12 +144,20 @@ export const chatsController = createRPCController({
     return { userId: me.id, tenantId: workspace.tenantId };
   },
   list: (serverId: string): Promise<ChatSummary[]> => onServer(serverId, listChats),
-  create: (params: {
+  create: async (params: {
     serverId: string;
     agentIds: string[];
     name: string | null;
     requestId: string;
-  }): Promise<ChatSummary> => onServer(params.serverId, (server) => createChat(server, params)),
+  }): Promise<ChatSummary> => {
+    const chat = await onServer(params.serverId, (server) => createChat(server, params));
+    if (params.agentIds.length === 1)
+      void warmChat(
+        { serverId: params.serverId, agentId: params.agentIds[0], roomId: chat.roomId },
+        false
+      );
+    return chat;
+  },
   messages: (params: {
     serverId: string;
     roomId: string;
@@ -204,9 +216,9 @@ export const chatsController = createRPCController({
     agentId: string;
     roomId: string;
   }): Promise<ChatActivityTarget> => resolveChatActivity(activityDeps, params),
-  /** Start the agent's session for the chat while its user types, if the agent is theirs. */
+  /** Start the agent's session for an existing chat reopened empty; creating a chat starts it already. */
   warm: (params: { serverId: string; agentId: string; roomId: string }): Promise<void> =>
-    warmChat(params),
+    warmChat(params, true),
   /** The room's turn steps and approval requests; changes follow on the activity channels. */
   roomActivity: (serverId: string, roomId: string): Promise<RoomActivity> =>
     onServer(serverId, (server) => fetchRoomActivity(server, roomId)),
