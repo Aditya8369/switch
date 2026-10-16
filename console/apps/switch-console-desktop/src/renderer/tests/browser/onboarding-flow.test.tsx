@@ -205,11 +205,16 @@ describe('the first-run flow', () => {
     expect(listHosts).not.toHaveBeenCalled();
   });
 
-  it('does not mention Switch Cloud when the build names none', async () => {
+  it('shows Switch Cloud as coming soon, and not choosable, when the build names none', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
 
-    expect(el.textContent).not.toContain('Switch Cloud');
+    expect(el.textContent).toContain('Switch Cloud');
+    expect(el.textContent).toContain('Coming soon');
+    const card = [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      b.textContent?.includes('Switch Cloud')
+    );
+    expect(card?.disabled).toBe(true);
   });
 
   it('goes back from the question to the welcome', async () => {

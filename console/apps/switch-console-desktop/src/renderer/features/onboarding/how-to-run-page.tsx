@@ -96,9 +96,7 @@ export function HowToRunPage({
           selected={chosen === 'cloud'}
           onSelect={() => setPicked('cloud')}
         />
-        {(cloud.kind === 'open' || cloud.kind === 'failed') && (
-          <p className="text-center text-sm text-foreground-muted">or run your own server</p>
-        )}
+        <p className="text-center text-sm text-foreground-muted">or run your own server</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <SmallCard
             icon={<Laptop className="size-5" />}
@@ -131,14 +129,26 @@ function CloudCard({
   selected: boolean;
   onSelect: () => void;
 }) {
-  if (cloud.kind === 'reading' || cloud.kind === 'closed') return null;
-  const unavailable = cloud.kind === 'failed';
+  // Always on the page, so the question looks the same in every build: a
+  // build that has not been told where the Cloud is says it is coming, greyed
+  // out, rather than leaving a gap; one still reading its configuration shows
+  // the card without a choice yet.
+  const unavailable = cloud.kind !== 'open';
+  const badge =
+    cloud.kind === 'failed'
+      ? 'Unavailable'
+      : cloud.kind === 'open'
+        ? 'Recommended'
+        : cloud.kind === 'closed'
+          ? 'Coming soon'
+          : null;
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
-      disabled={unavailable || cloud.connecting}
+      disabled={unavailable || (cloud.kind === 'open' && cloud.connecting)}
+      aria-disabled={unavailable}
       onClick={onSelect}
       className={cn(
         'flex w-full items-start gap-4 rounded-xl border bg-background/80 p-4 text-left',
@@ -152,14 +162,20 @@ function CloudCard({
       <span className="min-w-0 flex-1 space-y-1">
         <span className="flex items-center gap-2">
           <span className="text-base font-medium text-foreground">Switch Cloud</span>
-          <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-foreground-muted">
-            {unavailable ? 'Unavailable' : 'Recommended'}
-          </span>
+          {badge && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-foreground-muted">
+              {badge}
+            </span>
+          )}
         </span>
-        {unavailable ? (
+        {cloud.kind === 'failed' ? (
           <span className="block text-sm text-foreground-muted">
             {cloud.headline}
             {cloud.detail ? ` ${cloud.detail}` : ''}
+          </span>
+        ) : cloud.kind === 'closed' ? (
+          <span className="block text-sm text-foreground-muted">
+            We’ll run the server for you. Not open yet: run your own server below for now.
           </span>
         ) : (
           <span className="block text-sm text-foreground-muted">
