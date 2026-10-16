@@ -2339,19 +2339,10 @@ export interface ConnectorApp {
   stale_connections: number;
 }
 
-/** A service whose client Core registers for itself: nothing to set up. */
-export interface RegisteredConnectorApp {
-  slug: string;
-  name: string;
-  kind: "registered";
-  client_id: string | null;
-  registered_at: string | null;
-}
-
+/** The server's connector apps; a service that needs no app of the operator's is not listed. */
 export interface ConnectorApps {
   public_url: string | null;
   apps: ConnectorApp[];
-  registered: RegisteredConnectorApp[];
 }
 
 export interface ConnectorAppCheck {

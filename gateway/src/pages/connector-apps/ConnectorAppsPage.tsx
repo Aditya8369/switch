@@ -7,7 +7,6 @@ import {
   cardOrder,
   ONLY_THE_OPERATOR,
   PUBLIC_URL_BANNER,
-  REGISTERED_NOTE,
   sentBackTo,
 } from "./connectorApps";
 
@@ -72,11 +71,6 @@ function ConnectorAppsList() {
             }}
           />
         ))}
-        {data.registered.length > 0 && (
-          <Typography variant="body2" color="text.secondary">
-            {REGISTERED_NOTE(data.registered.map((r) => r.name))}
-          </Typography>
-        )}
         <Snackbar
           open={toast !== null}
           autoHideDuration={4000}

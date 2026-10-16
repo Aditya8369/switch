@@ -60,9 +60,6 @@ function listOf(...apps: ConnectorApp[]): ConnectorApps {
   return {
     public_url: "https://switch.example.test",
     apps,
-    registered: [
-      { slug: "atlassian", name: "Atlassian", kind: "registered", client_id: null, registered_at: null },
-    ],
   };
 }
 
@@ -102,7 +99,6 @@ describe("ConnectorAppsPage", () => {
     expect(card("github").getByText(/Secret ends in cd34 · Key SHA256:example/)).toBeTruthy();
     expect(card("github").getByText("Used by 12 people in 3 workspaces")).toBeTruthy();
     expect(card("google-workspace").getByRole("button", { name: "Set up Google Workspace" })).toBeTruthy();
-    expect(screen.getByText(/Atlassian sets itself up the first time someone connects/)).toBeTruthy();
     expect(screen.queryByText(PUBLIC_URL_BANNER)).toBeNull();
     expect(screen.getByText(/People are sent back to https:\/\/switch\.example\.test\./)).toBeTruthy();
   });

@@ -375,6 +375,3 @@ export const PUBLIC_URL_BANNER =
 
 export const ONLY_THE_OPERATOR =
   "Only the person who runs this Switch server can set up connectors.";
-
-export const REGISTERED_NOTE = (names: string[]): string =>
-  `${names.join(" and ")} ${names.length === 1 ? "sets itself" : "set themselves"} up the first time someone connects. Nothing to do here.`;
