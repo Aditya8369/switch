@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -54,6 +53,8 @@ from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.process_lease import ProcessLease
 from switch_core.management.service import ManagementService, ManagementSettings
+from switch_core.management.signals import ControllerSignals
+from switch_core.signals import SignalBus
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +135,12 @@ def build_management(
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
-    process_id: str,
+    signal_bus: SignalBus,
 ) -> Management:
+    process_id = signal_bus.process_id
     controllers = AgentControllerStore()
+    definitions = AgentDefinitionStore()
+    operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
     ledger = ControllerConnectionLedger(
@@ -154,10 +158,19 @@ def build_management(
             third_party_avatars=third_party_avatars,
             controller_release=controller_release,
         ),
-        notifier=ControllerNotifier(),
+        signals=ControllerSignals(
+            notifier=ControllerNotifier(),
+            presence=presence,
+            bus=signal_bus,
+            session_factory=session_factory,
+            controllers=controllers,
+            definitions=definitions,
+            operations=operations,
+            clock=clock,
+        ),
         controllers=controllers,
-        definitions=AgentDefinitionStore(),
-        operations=AgentControllerOperationStore(),
+        definitions=definitions,
+        operations=operations,
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
         processes=processes,
@@ -193,6 +206,7 @@ def create_management(
     config: SwitchConfig,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
+    signal_bus: SignalBus,
 ) -> Management | None:
     if not config.agent_management_enabled:
         return None
@@ -217,5 +231,5 @@ def create_management(
             max_entries=config.agent_auth_cache_max_entries,
         ),
         clock=utc_now,
-        process_id=str(uuid.uuid4()),
+        signal_bus=signal_bus,
     )

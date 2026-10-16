@@ -1,4 +1,5 @@
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, or_, select, update
@@ -15,6 +16,15 @@ from switch_core.db.models import (
     require_tenant_id,
     room_agents,
 )
+
+
+@dataclass(frozen=True)
+class Membership:
+    """A client's membership of one room, as `client_rooms` records it."""
+
+    room_id: str
+    transport_room_id: str
+    joined_at: datetime
 
 
 class RoomStore:
@@ -470,19 +480,39 @@ class RoomStore:
         )
         return list(result.scalars().all())
 
+    async def memberships_of(
+        self, session: AsyncSession, client_id: str
+    ) -> list[Membership]:
+        """Every room the client is a member of, with both its ids and when
+        the client joined, in one query."""
+        result = await session.execute(
+            select(ClientRoom.room_id, Room.transport_room_id, ClientRoom.joined_at)
+            .join(Room, Room.id == ClientRoom.room_id)
+            .where(ClientRoom.client_id == client_id)
+        )
+        return [
+            Membership(
+                room_id=room_id,
+                transport_room_id=transport_room_id,
+                joined_at=joined_at,
+            )
+            for room_id, transport_room_id, joined_at in result.all()
+        ]
+
     async def member_room_ids(
         self, session: AsyncSession, client_id: str, room_ids: list[str]
-    ) -> set[str]:
-        """Which of `room_ids` the client is still a member of, in one query."""
+    ) -> dict[str, datetime]:
+        """Which of `room_ids` the client is still a member of, each with when
+        it joined, in one query."""
         if not room_ids:
-            return set()
+            return {}
         result = await session.execute(
-            select(ClientRoom.room_id).where(
+            select(ClientRoom.room_id, ClientRoom.joined_at).where(
                 ClientRoom.client_id == client_id,
                 ClientRoom.room_id.in_(room_ids),
             )
         )
-        return set(result.scalars().all())
+        return {room_id: joined_at for room_id, joined_at in result.all()}
 
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(

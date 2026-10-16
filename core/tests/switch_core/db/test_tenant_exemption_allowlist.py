@@ -167,6 +167,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # table here would be the one check that passes in development and raises
     # under the restricted runtime role in production.
     "switch_core.observability.health",
+    # ── The signal sender, which calls `pg_notify` and reads no table. A
+    # signal is for every process regardless of tenant, so there is no tenant
+    # to bind.
+    "switch_core.signals",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
     # came off this list with the runtime role: the transport learned its own
     # tenant from its client row and the middleware learned a credential's

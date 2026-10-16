@@ -58,6 +58,9 @@ class FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         self.started.append(client.id)
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
 
 class NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:

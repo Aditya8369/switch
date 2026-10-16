@@ -67,6 +67,7 @@ from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
+from switch_core.signals import SignalBus
 from tests.db_buffer import db_buffer_on
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
@@ -123,6 +124,9 @@ class _FakeClientLifecycle:
             return client
 
     def start_client(self, client: Client) -> None:
+        return None
+
+    def announce(self, tenant_id: str) -> None:
         return None
 
     def get_by_agent_id(self, agent_id: str) -> None:
@@ -192,6 +196,10 @@ class Harness:
         )
 
 
+def _no_listening_engine() -> Any:
+    raise AssertionError("the harness's signal bus is never started")
+
+
 def build_harness(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -218,7 +226,11 @@ def build_harness(
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
         clock=clock,
-        process_id=str(uuid.uuid4()),
+        # Never started: one process, so every nudge is delivered locally and
+        # what it would publish to other processes goes nowhere.
+        signal_bus=SignalBus(
+            session_factory, _no_listening_engine, process_id=str(uuid.uuid4())
+        ),
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:

@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import time
+import uuid
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -95,6 +96,7 @@ from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.clients.client_signals import ClientSignals
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
 from switch_core.connections.adapters.github import GitHubApp
@@ -184,6 +186,7 @@ from switch_core.session_activity.maintenance import (
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
+from switch_core.signals import SignalBus
 from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
@@ -191,6 +194,7 @@ from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
 from switch_core.version import switch_core_version
@@ -509,10 +513,20 @@ async def run(config: SwitchConfig) -> None:
     session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
+    # Signals between switch-core processes (see `signals.py`): the same
+    # arrangement again, carrying "who should look" rather than a room's rows.
+    signal_bus = SignalBus(
+        session_factory,
+        lambda: create_unpooled_engine(config),
+        process_id=str(uuid.uuid4()),
+    )
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
+    # Membership changes made in other processes reach the clients here over
+    # the signal bus (`transport/membership_signals.py`).
     invites = InviteBus()
+    MembershipSignals(invites=invites, bus=signal_bus)
     ephemeral = EphemeralBus()
 
     # ── Stores ───────────────────────────────────────────────────────────────
@@ -693,6 +707,9 @@ async def run(config: SwitchConfig) -> None:
         config=config,
         tenants_isolated=tenants_isolated,
     )
+    # Clients registered or deleted in another process are started or stopped
+    # here too (`clients/client_signals.py`).
+    ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
     collab_lifecycle = CollaborationBridgeLifecycleService(
@@ -752,7 +769,9 @@ async def run(config: SwitchConfig) -> None:
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
-    management = create_management(config, session_factory, connections.controllers)
+    management = create_management(
+        config, session_factory, connections.controllers, signal_bus
+    )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
     agent_bridge_app, protocol = create_agent_bridge_app(
@@ -1086,6 +1105,7 @@ async def run(config: SwitchConfig) -> None:
             await message_listener.start()
             await session_activity_listener.start()
             await agent_event_listener.start()
+            await signal_bus.start()
             try:
                 yield
             finally:
@@ -1103,6 +1123,7 @@ async def run(config: SwitchConfig) -> None:
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
+                await signal_bus.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
