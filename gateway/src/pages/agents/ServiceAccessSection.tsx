@@ -283,7 +283,6 @@ export function onOffGrantNote(
     : note;
 }
 
-/** A service whose agents use the owner's own token: on or off, at the connection's level. */
 /** The operator's way from a service that is not set up to where it is set up. */
 function SetUpLink() {
   return (
@@ -293,6 +292,7 @@ function SetUpLink() {
   );
 }
 
+/** A service whose agents use the owner's own token: on or off, at the connection's level. */
 function OnOffGrant({
   service,
   grant,
