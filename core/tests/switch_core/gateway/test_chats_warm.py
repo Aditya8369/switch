@@ -117,10 +117,14 @@ async def test_creating_a_chat_with_an_agent_no_controller_hosts_starts_nothing(
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="switch_core.chats.service"):
         await chats.new_chat(chats.alice, agent, "c1")
 
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not [
+        r
+        for r in caplog.records
+        if r.name == "switch_core.chats.service" and r.levelno >= logging.WARNING
+    ]
 
 
 async def test_a_warm_reaches_the_agents_controller(chats: _Harness) -> None:

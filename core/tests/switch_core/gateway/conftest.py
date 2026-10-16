@@ -22,7 +22,6 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.chats.service import ChatError, ChatService
 from switch_core.chats.signals import ChatSignals
-from switch_core.clients.client_factory import ClientFactory
 from switch_core.db.models import (
     Agent,
     Client,
@@ -44,20 +43,13 @@ from switch_core.gateway.chats import (
     chat_error_response,
     router,
 )
-from switch_core.messages.notify import MessageListener
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import Change
 from switch_core.signals import SignalBus
-from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
-from switch_core.transport.room_cache import (
-    DELIVERY_PAGE,
-    RoomCacheLimits,
-    RoomDeliveryCache,
-)
 from tests.conftest import TEST_KEYRING
 from tests.routing import router_on
 from tests.switch_core.gateway.agent_route_harness import add_agent
@@ -125,7 +117,6 @@ class _Harness(SimpleNamespace):
     factory: async_sessionmaker[AsyncSession]
     service: ChatService
     room_service: RoomService
-    router: Any  # MessageRouter
     listener: _FakeListener
     activity: _FakeActivityListener
     lifecycle: _FakeLifecycle
@@ -164,8 +155,6 @@ class _Harness(SimpleNamespace):
     async def new_chat(self, user: User, agent: Agent, request_id: str) -> str:
         response = await self.create_chat(user, agent, request_id)
         assert response.status_code == 200, response.text
-        # Wait for async greeting to post (direct chats greet on join)
-        await self.router.idle()
         return str(response.json()["chat"]["roomId"])
 
     async def send(
@@ -227,46 +216,17 @@ def _chat_service(
     listener: _FakeListener,
     activity: _FakeActivityListener,
     connections: AgentConnectionRegistry,
-) -> tuple[ChatService, RoomService, Any]:
+) -> tuple[ChatService, RoomService]:
     """A chat service and the room service it works through, built as one
     switch-core process builds them."""
     room_store = RoomStore()
-    message_store = MessageStore()
-    client_store = ClientStore()
-    message_router = router_on(session_factory, connections=connections)
-    invites = InviteBus()
-    # Wire up transports so agents can post greetings and replies
-    ClientFactory(
-        client_store=client_store,
-        session_factory=session_factory,
-        config=SimpleNamespace(),  # type: ignore[arg-type]
-        room_store=room_store,
-        message_store=message_store,
-        usage_store=UsageStore(),
-        media_store=MediaStore(),
-        listener=MessageListener(lambda: None),  # type: ignore[arg-type, return-value]
-        invites=invites,
-        ephemeral=EphemeralBus(),
-        room_cache=RoomDeliveryCache(
-            session_factory=session_factory,
-            message_store=message_store,
-            limits=RoomCacheLimits(
-                max_bytes=64 * 1024 * 1024,
-                max_rooms=1000,
-                max_rows_per_room=1000,
-                max_age_seconds=300.0,
-            ),
-            page=DELIVERY_PAGE,
-        ),
-        message_observer=MagicMock(),  # type: ignore[arg-type]
-        router=message_router,
-    )
+    message_router = router_on(session_factory)
     provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
-        client_store=client_store,
+        client_store=ClientStore(),
         router=message_router,
-        invites=invites,
+        invites=InviteBus(),
     )
     room_service = RoomService(
         provisioning=provisioning,
@@ -288,7 +248,7 @@ def _chat_service(
         room_store=room_store,
         agent_store=AgentStore(),
         user_store=UserStore(),
-        message_store=message_store,
+        message_store=_MESSAGE_STORE,
         router=message_router,
         media_store=MediaStore(),
         usage_store=UsageStore(),
@@ -298,7 +258,7 @@ def _chat_service(
         connections=connections,
     )
     room_service.on_room_agents_changed(service.sync_room)
-    return service, room_service, message_router
+    return service, room_service
 
 
 @pytest.fixture
@@ -316,7 +276,7 @@ async def chats(
     listener = _FakeListener()
     activity = _FakeActivityListener()
     connections = AgentConnectionRegistry()
-    service, room_service, message_router = _chat_service(
+    service, room_service = _chat_service(
         session_factory,
         lifecycle=lifecycle,
         listener=listener,
@@ -344,7 +304,6 @@ async def chats(
             factory=session_factory,
             service=service,
             room_service=room_service,
-            router=message_router,
             listener=listener,
             activity=activity,
             lifecycle=lifecycle,
@@ -413,7 +372,7 @@ async def two_processes(
     bus on the real `NOTIFY` channel: people's chats (`ChatSignals`) and its
     agent connections (`SharedConnections`)."""
     connections = AgentConnectionRegistry()
-    service, _, _ = _chat_service(
+    service, _ = _chat_service(
         chats.factory,
         lifecycle=chats.lifecycle,
         listener=_FakeListener(),
