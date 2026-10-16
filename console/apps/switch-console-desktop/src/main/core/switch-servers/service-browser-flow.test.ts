@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { focusMainWindow } from '@main/app/window';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
@@ -17,6 +18,7 @@ import {
 } from './service-browser-flow';
 
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
+vi.mock('@main/app/window', () => ({ focusMainWindow: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   cancelServiceConnection: vi.fn(),
   completeServiceConnection: vi.fn(),
@@ -82,10 +84,12 @@ it('takes back only this Console’s state, and hands the code to Core with its 
       .status
   ).toBe(400);
   expect(completeServiceConnection).not.toHaveBeenCalled();
+  expect(focusMainWindow).not.toHaveBeenCalled();
   const response = await fetch(url + `?state=${id}&code=SYNTHETIC`);
   expect(response.status).toBe(200);
   expect(response.headers.get('referrer-policy')).toBe('no-referrer');
-  expect(await response.text()).toContain('Return to Switch Console');
+  expect(await response.text()).toContain('Signed in to Example. Switch Console has the next step');
+  expect(focusMainWindow).toHaveBeenCalledOnce();
   expect(completeServiceConnection).toHaveBeenCalledExactlyOnceWith(
     server,
     'example',

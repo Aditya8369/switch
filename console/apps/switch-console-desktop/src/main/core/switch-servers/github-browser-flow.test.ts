@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { focusMainWindow } from '@main/app/window';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelGitHubConnection,
@@ -14,6 +15,7 @@ import {
 } from './github-browser-flow';
 
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
+vi.mock('@main/app/window', () => ({ focusMainWindow: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   cancelGitHubConnection: vi.fn(),
   completeGitHubConnection: vi.fn(),
@@ -46,10 +48,12 @@ it('accepts only this Console state and keeps its secret out of the browser URL'
   expect(open.mock.calls[0]![0]).not.toContain(input.completion_secret);
   expect((await fetch(url + '?state=unknown&code=SYNTHETIC')).status).toBe(400);
   expect(completeGitHubConnection).not.toHaveBeenCalled();
+  expect(focusMainWindow).not.toHaveBeenCalled();
   const response = await fetch(url + `?state=${id}&code=SYNTHETIC`);
   expect(response.status).toBe(200);
   expect(response.headers.get('referrer-policy')).toBe('no-referrer');
-  expect(await response.text()).toContain('Return to Switch Console');
+  expect(await response.text()).toContain('Signed in to GitHub. Switch Console has the next step');
+  expect(focusMainWindow).toHaveBeenCalledOnce();
   expect(completeGitHubConnection).toHaveBeenCalledExactlyOnceWith(
     server,
     id,

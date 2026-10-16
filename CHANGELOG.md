@@ -1757,6 +1757,13 @@ version of their own to them without also giving them a release of their own.
 - **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
   `telemetry.flintai.dev`, an older name for the same relay that is being
   retired. Only where it is sent changes; what is sent, and the opt-out, do not.
+- **A sign-in comes back to Console on its own.** When the browser returns
+  from a service's sign-in, Console comes to the front with the next step
+  showing, and the browser's page says the sign-in is done and the tab can be
+  closed. It used to stay behind the browser, with a page telling the person
+  to return to it and confirm. Services whose sign-in returns through the
+  server (Google Workspace, GitHub) also no longer stop on the server's
+  "Continue in Switch Console" page, with a server from the same release.
 - **Connector tools ask in approval-required and auto-accept-edits mode.**
   Calls to a granted service's tools (Jira and Confluence through Atlassian,
   Datadog, Google Workspace) used to run without asking in every mode. They now
