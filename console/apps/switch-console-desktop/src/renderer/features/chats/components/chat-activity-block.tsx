@@ -185,6 +185,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   head,
   endReason,
   serverId,
+  className,
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
@@ -194,6 +195,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   /** Why the turn ended, from the host's notice in the room; null when it posted none. */
   endReason: string | null;
   serverId: string;
+  className?: string;
 }) {
   const running = turn.status === 'queued' || turn.status === 'running';
   const reasoning = activity.reasoning.get(turn.turnId) ?? null;
@@ -204,7 +206,13 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const requests = turn.requests;
   if (!turnShown(activity, turn)) return null;
   return (
-    <AgentRow agent={agent} serverId={serverId} head={head} data-turn-id={turn.turnId}>
+    <AgentRow
+      agent={agent}
+      serverId={serverId}
+      head={head}
+      data-turn-id={turn.turnId}
+      className={className}
+    >
       {label && (
         <Reasoning
           label={label.label}

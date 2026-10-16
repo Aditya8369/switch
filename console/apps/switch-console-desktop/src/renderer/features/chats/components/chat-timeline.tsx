@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { Fragment, type ReactNode } from 'react';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
+import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
 import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
 import {
@@ -38,9 +39,9 @@ function dayLabel(date: Date): string {
   return format(date, 'd MMM yyyy, HH:mm');
 }
 
-function Separator({ children }: { children: ReactNode }) {
+function Separator({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className="flex items-center gap-3 text-xs text-foreground-passive">
+    <div className={cn('flex items-center gap-3 text-xs text-foreground-passive', className)}>
       <span className="h-px flex-1 bg-border" />
       {children}
       <span className="h-px flex-1 bg-border" />
@@ -172,10 +173,18 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     blockAgent = agentId;
     return head;
   };
+  let isFirstElement = true;
+  const spacing = (isNewBlock: boolean = true): string => {
+    if (isFirstElement) {
+      isFirstElement = false;
+      return '';
+    }
+    return isNewBlock ? 'mt-5' : 'mt-1.5';
+  };
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col">
       {timeline.hasMore && (
-        <div className="flex justify-center">
+        <div className={cn('flex justify-center', spacing())}>
           <Button
             size="sm"
             variant="ghost"
@@ -194,7 +203,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const sentAt = new Date(message.sentAt);
         const separator =
           previous === null || sentAt.getTime() - previous.getTime() > GROUP_GAP_MS ? (
-            <Separator>{dayLabel(sentAt)}</Separator>
+            <Separator className={spacing()}>{dayLabel(sentAt)}</Separator>
           ) : null;
         previous = sentAt;
         if (separator) blockAgent = null;
@@ -214,6 +223,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             {notice ? (
               <AgentRow
                 id={messageAnchorId(message.messageId)}
+                className={spacing(head)}
                 agent={agentLabel}
                 serverId={serverId}
                 head={head}
@@ -232,6 +242,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             ) : ended ? (
               <AgentRow
                 id={messageAnchorId(message.messageId)}
+                className={spacing(head)}
                 agent={agentLabel}
                 serverId={serverId}
                 head={head}
@@ -254,7 +265,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             ) : message.sender.kind === 'human' && mine ? (
               <div
                 id={messageAnchorId(message.messageId)}
-                className="group/row flex flex-col items-end gap-1"
+                className={cn('group/row flex flex-col items-end gap-1', spacing())}
               >
                 {chip && <ThreadChipButton chip={chip} />}
                 <div className="flex max-w-[85%] items-start gap-1">
@@ -274,7 +285,10 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 </span>
               </div>
             ) : message.sender.kind === 'human' ? (
-              <div id={messageAnchorId(message.messageId)} className="group/row flex gap-3">
+              <div
+                id={messageAnchorId(message.messageId)}
+                className={cn('group/row flex gap-3', spacing())}
+              >
                 <PersonAvatar name={message.sender.name} />
                 <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
                   {chip && <ThreadChipButton chip={chip} />}
@@ -303,7 +317,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             ) : message.sender.kind === 'agent' ? (
               <AgentRow
                 id={messageAnchorId(message.messageId)}
-                className="group/row"
+                className={cn('group/row', spacing(head))}
                 agent={agentLabel}
                 serverId={serverId}
                 head={head}
@@ -324,13 +338,14 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             ) : (
               <p
                 id={messageAnchorId(message.messageId)}
-                className="text-center text-xs text-foreground-muted"
+                className={cn('text-center text-xs text-foreground-muted', spacing())}
               >
                 {message.body}
               </p>
             )}
             {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
               const turnAgent = agentOf(activity.agentId);
+              const head = turnShown(activity, turn) && startsBlock(activity.agentId);
               return (
                 <ChatActivityBlock
                   serverId={serverId}
@@ -338,11 +353,12 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   activity={activity}
                   turn={turn}
                   endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
-                  head={turnShown(activity, turn) && startsBlock(activity.agentId)}
+                  head={head}
                   agent={{
                     name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
                     iconUrl: turnAgent?.iconUrl ?? null,
                   }}
+                  className={spacing(head)}
                 />
               );
             })}
@@ -355,6 +371,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         );
         if (!requests.length) return null;
         const agent = agentOf(activity.agentId);
+        const head = startsBlock(activity.agentId);
         return (
           <AgentRow
             key={`requests:${activity.agentId}`}
@@ -363,14 +380,21 @@ export const ChatTimelineView = observer(function ChatTimelineView({
               iconUrl: agent?.iconUrl ?? null,
             }}
             serverId={serverId}
-            head={startsBlock(activity.agentId)}
+            head={head}
+            className={spacing(head)}
           >
             <ChatRequests activity={activity} requests={requests} />
           </AgentRow>
         );
       })}
       {timeline.pending.map((send) => (
-        <PendingBubble key={send.requestId} timeline={timeline} send={send} find={find} />
+        <PendingBubble
+          key={send.requestId}
+          timeline={timeline}
+          send={send}
+          find={find}
+          className={spacing()}
+        />
       ))}
     </div>
   );
@@ -380,16 +404,21 @@ const PendingBubble = observer(function PendingBubble({
   timeline,
   send,
   find,
+  className,
 }: {
   timeline: ChatTimeline;
   send: PendingSend;
   find: (messageId: string) => ChatMessage | undefined;
+  className?: string;
 }) {
   const chip = send.threadRootId
     ? threadChip({ threadRootId: send.threadRootId, messageId: send.requestId }, find)
     : null;
   return (
-    <div className="flex flex-col items-end gap-1" aria-busy={send.state === 'sending'}>
+    <div
+      className={cn('flex flex-col items-end gap-1', className)}
+      aria-busy={send.state === 'sending'}
+    >
       {chip && <ThreadChipButton chip={chip} />}
       <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap opacity-70">
         {send.body}
