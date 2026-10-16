@@ -457,12 +457,10 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
-    // SDK 0.3.260 otherwise inserts --permission-mode default before spawning the CLI.
-    const options: Options & { resolvePermissionModeInCli: boolean } = {
-      resolvePermissionModeInCli: true,
+    const options: Options = {
       cwd: input.cwd,
       env: input.env,
-      ...(permissionMode ? { permissionMode } : {}),
+      permissionMode,
       strictMcpConfig: false,
       // The connector plugin Switch used to ship would add a second Switch
       // server with its own connection; kept off for installs that still have it.

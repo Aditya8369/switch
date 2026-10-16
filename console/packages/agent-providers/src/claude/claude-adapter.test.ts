@@ -284,9 +284,9 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(warning.message).toContain('bundled with the Agent SDK');
   });
 
-  it('maps each runtime mode onto a permission mode', async () => {
+  it('starts the SDK in the permission mode each runtime mode names', async () => {
     for (const [runtimeMode, permissionMode] of [
-      ['approval-required', undefined],
+      ['approval-required', 'default'],
       ['auto-accept-edits', 'acceptEdits'],
       ['full-access', 'bypassPermissions'],
     ] as const) {
@@ -295,6 +295,14 @@ describe('ClaudeAdapter session lifecycle', () => {
       await adapter.startSession(startInput({ runtimeMode }));
       expect(sdk.options().permissionMode).toBe(permissionMode);
     }
+  });
+
+  it('never leaves approval-required to the person’s own default mode', async () => {
+    // Unset, the CLI reads `defaultMode` from the person's settings; `auto`
+    // there settles connector calls before the callback can ask.
+    const { sdk } = await startSession('approval-required');
+    expect(sdk.options()).toHaveProperty('permissionMode', 'default');
+    expect(sdk.options().allowDangerouslySkipPermissions).toBeUndefined();
   });
 
   it('drops the SDK’s shadowed-callback warning and leaves other warnings alone', async () => {
@@ -951,8 +959,6 @@ describe('ClaudeAdapter approvals', () => {
 
   it('leaves native permission rules and hooks in control when bypass is off', async () => {
     const { sdk } = await startSession();
-    expect(sdk.options()).not.toHaveProperty('permissionMode');
-    expect(sdk.options()).toHaveProperty('resolvePermissionModeInCli', true);
     expect(sdk.options().settingSources).toBeUndefined();
     expect(sdk.options().hooks).toBeUndefined();
     expect(sdk.options().canUseTool).toBeTypeOf('function');

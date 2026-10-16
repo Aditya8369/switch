@@ -1,4 +1,8 @@
-import type { McpServerConfig, SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  McpServerConfig,
+  PermissionMode,
+  SDKResultMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { McpServerSpec, RuntimeMode } from '../adapter';
 import type { ItemType, RequestType, TurnOutcome, UserInputQuestion } from '../events';
 
@@ -9,11 +13,17 @@ const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
 
 const MCP_PREFIX = 'mcp__';
 
+/**
+ * Every mode names its permission mode, so the CLI never falls back to the
+ * `defaultMode` in the person's own Claude Code settings: with `auto` there,
+ * the CLI settles tool calls before `canUseTool` is asked, and connector tools
+ * would run without the approval this mode promises.
+ */
 export const PERMISSION_MODE_BY_RUNTIME_MODE = {
-  'approval-required': undefined,
+  'approval-required': 'default',
   'auto-accept-edits': 'acceptEdits',
   'full-access': 'bypassPermissions',
-} as const satisfies Record<RuntimeMode, string | undefined>;
+} as const satisfies Record<RuntimeMode, PermissionMode>;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

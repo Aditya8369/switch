@@ -1749,6 +1749,12 @@ version of their own to them without also giving them a release of their own.
   comes with a notice saying why. Codex cards name the server and tool and can
   be approved for the rest of the session. A session started before the update
   keeps allowing them until it restarts.
+- **A Console session in "approval required" no longer inherits your own
+  Claude Code default mode.** Console now starts a Claude Code session in that
+  mode with Claude Code's `default` permission mode. It used to leave the mode
+  unset, so a `defaultMode` such as `auto` in your own Claude Code settings
+  applied, and tools, connector tools among them, could run without the
+  approval card the mode promises.
 - **A session says which services it lost or gained.** When a running session
   restarts because its agent's services changed, it shows a notice naming
   them, for example "Datadog was removed from this agent's tools: it was
