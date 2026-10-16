@@ -258,7 +258,7 @@ async function openAtlassian(page: HTMLElement): Promise<void> {
 async function disconnect(page: HTMLElement): Promise<void> {
   await act(async () => button(/^Disconnect$/, page)!.click());
   const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
-  await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian'));
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian.'));
   await act(async () => button(/^Disconnect$/, dialog()!)!.click());
   await vi.waitFor(() => expect(dialog()).toBeNull());
 }

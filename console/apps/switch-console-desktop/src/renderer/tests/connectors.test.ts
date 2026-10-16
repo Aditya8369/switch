@@ -463,13 +463,30 @@ describe('the sign-in flow', () => {
 });
 
 describe('the disconnect dialog', () => {
-  it('names the agents that lose the service', () => {
-    expect(disconnectCopy(entry(), ['M1']).lines[0]).toBe(
-      'M1 loses Example: disconnecting removes its grant.'
+  it('leads with how many agents lose the service, then names them', () => {
+    expect(disconnectCopy(entry({ name: 'Atlassian' }), ['m1-cc']).lines[0]).toBe(
+      'm1-cc loses Atlassian.'
     );
     expect(disconnectCopy(entry(), ['M1', 'M3']).lines[0]).toBe(
-      'M1 and M3 lose Example: disconnecting removes their grants.'
+      '2 agents lose Example: M1 and M3. Disconnecting removes their access.'
     );
+    expect(
+      disconnectCopy(entry({ name: 'Atlassian' }), ['m1-cc', 'm3-oc', 'm4', 'test']).lines[0]
+    ).toBe(
+      '4 agents lose Atlassian: m1-cc, m3-oc, m4 and test. Disconnecting removes their access.'
+    );
+  });
+
+  it('names at most four agents, and counts the rest', () => {
+    expect(disconnectCopy(entry(), ['A', 'B', 'C', 'D', 'E']).lines[0]).toBe(
+      '5 agents lose Example: A, B, C, D and 1 more. Disconnecting removes their access.'
+    );
+    expect(disconnectCopy(entry(), ['A', 'B', 'C', 'D', 'E', 'F', 'G']).lines[0]).toBe(
+      '7 agents lose Example: A, B, C, D and 3 more. Disconnecting removes their access.'
+    );
+  });
+
+  it('says nobody loses it when no agent uses it', () => {
     expect(disconnectCopy(entry(), []).lines[0]).toBe('None of your agents use Example.');
     expect(disconnectCopy(entry(), []).title).toBe('Disconnect Example?');
   });

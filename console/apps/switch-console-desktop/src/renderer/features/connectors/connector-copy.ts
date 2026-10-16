@@ -2,12 +2,15 @@ import type {
   ConnectionCatalogEntry,
   WorkspaceService,
 } from '@shared/core/switch-servers/connection-catalog';
-import { listOf } from './grant-agents';
+
+/** The most agents the disconnect dialog names before counting the rest. */
+const NAMED_AGENTS = 4;
 
 /**
- * What disconnecting says before it happens: which of the person's agents lose
- * the service (or, where that cannot be known, that every one does), and, for
- * a key, that Switch can only forget it, not revoke it.
+ * What disconnecting says before it happens: how many of the person's agents
+ * lose the service and which (the first four, then how many more), or, where
+ * that cannot be known, that every one does; and, for a key, that Switch can
+ * only forget it, not revoke it.
  */
 export function disconnectCopy(
   entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type'>,
@@ -19,7 +22,9 @@ export function disconnectCopy(
       ? `Disconnecting removes every agent's access to ${name}.`
       : grantedAgents.length === 0
         ? `None of your agents use ${name}.`
-        : `${listOf(grantedAgents)} ${grantedAgents.length === 1 ? 'loses' : 'lose'} ${name}: disconnecting removes ${grantedAgents.length === 1 ? 'its grant' : 'their grants'}.`,
+        : grantedAgents.length === 1
+          ? `${grantedAgents[0]} loses ${name}.`
+          : `${grantedAgents.length} agents lose ${name}: ${namedAgents(grantedAgents)}. Disconnecting removes their access.`,
   ];
   if (entry.auth_type === 'api_key') {
     lines.push('Switch removes the key it keeps.');
@@ -28,6 +33,13 @@ export function disconnectCopy(
     lines.push(`Switch removes the sign-in it keeps for ${name}.`);
   }
   return { title: `Disconnect ${name}?`, lines };
+}
+
+function namedAgents(names: string[]): string {
+  const named = names.slice(0, NAMED_AGENTS);
+  const rest = names.length - named.length;
+  const last = rest > 0 ? `${rest} more` : named.pop()!;
+  return `${named.join(', ')} and ${last}`;
 }
 
 /**
