@@ -96,11 +96,20 @@ export function profileConnectAction(
   return entry.slug === 'github' ? 'manage' : null;
 }
 
-/** The profile header's line about the connection; null when there is none. */
+/**
+ * The profile header's line about the connection; null when there is none.
+ * A key's line names no access level: Switch can't read what a key allows.
+ */
 export function connectedAsLine(entry: ConnectionCatalogEntry): string | null {
   if (entry.status === 'not_connected' || entry.status === 'coming_soon') return null;
   const access =
-    entry.consent === 'write' ? 'Read and write' : entry.consent === 'read' ? 'Read' : null;
+    entry.auth_type === 'api_key'
+      ? null
+      : entry.consent === 'write'
+        ? 'Read and write'
+        : entry.consent === 'read'
+          ? 'Read'
+          : null;
   const who =
     entry.auth_type === 'api_key'
       ? entry.external_identity
@@ -110,6 +119,12 @@ export function connectedAsLine(entry: ConnectionCatalogEntry): string | null {
         ? `Connected as ${entry.external_identity}`
         : 'Connected';
   return access ? `${who} · ${access}` : who;
+}
+
+/** What agents can do with a key, for the profile's side column; null for a sign-in. */
+export function keyAccessText(entry: ConnectionCatalogEntry): string | null {
+  if (entry.auth_type !== 'api_key') return null;
+  return `Whatever the key allows at ${entry.name}. Switch can't read a key's scopes.`;
 }
 
 /** How the service is connected, for the profile's side column. */

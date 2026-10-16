@@ -17,6 +17,7 @@ import {
   connectedAsLine,
   connectorsInTab,
   connectorsPageAccess,
+  keyAccessText,
   profileConnectAction,
   signInLabel,
   tokenLifetimeLabel,
@@ -218,6 +219,21 @@ describe('the profile', () => {
         })
       )
     ).toBe('Connected with Key · example.test');
+  });
+
+  it('claims no access level for a key, and says what agents can do with one', () => {
+    const key = entry({
+      status: 'connected',
+      auth_type: 'api_key',
+      external_identity: 'Key · example.test',
+      consent: 'write',
+    });
+    expect(connectedAsLine(key)).toBe('Connected with Key · example.test');
+    expect(connectedAsLine({ ...key, external_identity: null })).toBe('Connected with your key');
+    expect(keyAccessText(key)).toBe(
+      "Whatever the key allows at Example. Switch can't read a key's scopes."
+    );
+    expect(keyAccessText(entry({ status: 'connected', consent: 'write' }))).toBeNull();
   });
 
   it('names the sign-in type and how long access lasts', () => {

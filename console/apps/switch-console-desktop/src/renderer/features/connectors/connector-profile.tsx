@@ -13,6 +13,7 @@ import { TONE_BADGE, connectorCardState } from './connector-card-state';
 import {
   connectedAsLine,
   isYours,
+  keyAccessText,
   profileConnectAction,
   signInLabel,
   tokenLifetimeLabel,
@@ -59,6 +60,7 @@ export function ConnectorProfile({
   // Whatever the server or workspace says, a connection the person has can be disconnected.
   const hasConnection = isYours(connection);
   const connectedAs = connectedAsLine(connection);
+  const keyAccess = keyAccessText(connection);
   const action = profileConnectAction(connection);
   const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
 
@@ -179,6 +181,7 @@ export function ConnectorProfile({
             </span>
           </Fact>
           <Fact label="Sign-in">{signInLabel(connection)}</Fact>
+          {keyAccess && <Fact label="What agents can do">{keyAccess}</Fact>}
           <Fact label="Agent access lasts">{tokenLifetimeLabel(connection)}</Fact>
           {connection.key?.help_url && (
             <Fact label="More info">
