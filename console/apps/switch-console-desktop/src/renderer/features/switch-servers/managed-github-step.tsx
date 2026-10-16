@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { cn } from '@renderer/utils/utils';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 
 const SSO_HIDDEN =
@@ -156,7 +157,7 @@ export function ManagedGitHubStep({
   const connected = connection?.status === 'connected';
   return (
     <>
-      <DialogHeader showCloseButton={!busy && !flowId}>
+      <DialogHeader showCloseButton={!flowId}>
         <DialogTitle>{connected && !flowId ? 'GitHub connected' : 'Connect GitHub'}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-5 pt-0">
@@ -267,11 +268,13 @@ export function ManagedGitHubStep({
             </div>
           </>
         )}
-        {busy && (
-          <p className="flex items-center gap-2 text-sm">
-            <Spinner /> Checking GitHub…
-          </p>
-        )}
+        <p
+          role="status"
+          aria-hidden={!busy}
+          className={cn('flex items-center gap-2 text-sm', !busy && 'invisible')}
+        >
+          <Spinner /> Checking GitHub…
+        </p>
         {warning && (
           <p role="status" className="rounded-md border p-3 text-sm text-foreground-muted">
             {warning}
