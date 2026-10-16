@@ -470,6 +470,29 @@ class AgentRecipient:
         """
         return self.agent
 
+    async def still_member(self) -> bool:
+        """Whether the agent is a member of the room now, read when the work
+        a row left it (`Delivery.after`, `greet`) is about to run.
+
+        The row was decided from the members read before it was written, and
+        a removal takes no lock of the room's, so the agent can be taken out
+        of the room after that read: before the row commits, or after it and
+        before this work's turn comes. Either way it keeps no own event for
+        the row (`EventBuffer.store` reads the membership again, and the
+        removal deletes what was stored). This asks the same question of the
+        work, so an agent that has left says nothing in the room as itself (a
+        refusal, an offline notice, a greeting, a command's answer), relays
+        nothing to its controller and wakes no machine.
+
+        In a session of its own, closed before the work posts anything.
+        """
+        room_id = self._meta.room_id
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            members = await self._room_store.member_room_ids(
+                session, self.client_id, [room_id]
+            )
+        return room_id in members
+
     # ── Messages ──────────────────────────────────────────────────────────────
 
     async def decide_message(

@@ -15,14 +15,14 @@ once:
 That row, and the lease of the process it names (`switch_core/process_lease.py`), are
 what a machine's state is read from (`placement.controller_state`).
 
-Which write wins, across processes: a connecting comes from the process
-holding the live socket, and replaces whatever the row holds. A closing is
-only written while the row still names that connection held by this process,
-so a process closing a connection the controller has since replaced, or
-reattached through another process, leaves the newer one standing. (Clocks
-are not compared: two processes' clocks need not agree.) A closing also keeps
-where the connection's stream resumes each agent, for a socket that
-reattaches through another process.
+Which write wins, across processes: each is written only while the row
+still names its connection, a connecting while that is the connection the
+controller opened last and this process holds it, a closing while this
+process holds its socket. So a write about a connection the controller has
+since replaced, or reattached through another process, leaves the newer one
+standing however late it lands. (Clocks are not compared: two processes'
+clocks need not agree.) A closing also keeps where the connection's stream
+resumes each agent, for a socket that reattaches through another process.
 
 Each transition that took effect is announced (`announce`), so every other
 process reads the row again and knows which process holds the socket now.
@@ -161,7 +161,7 @@ class ControllerConnectionLedger:
     async def _write_one(self, session: AsyncSession, transition: _Transition) -> bool:
         """Write one transition. Returns whether it took effect."""
         if transition.disconnect_reason is None:
-            found = await self._controllers.record_connected(
+            written = await self._controllers.record_connected(
                 session,
                 transition.tenant_id,
                 transition.controller_id,
@@ -169,12 +169,14 @@ class ControllerConnectionLedger:
                 process_id=self._process_id,
                 connected_at=transition.at,
             )
-            if not found:
-                logger.warning(
-                    "Controller %s connected, but has no row to record it on",
+            if not written:
+                logger.info(
+                    "Controller %s connection %s attached, but its row names a "
+                    "newer connection or another process; left as it is",
                     transition.controller_id,
+                    transition.connection_id,
                 )
-            return found
+            return written
         written = await self._controllers.record_disconnected(
             session,
             transition.tenant_id,

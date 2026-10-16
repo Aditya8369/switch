@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -279,15 +279,25 @@ class AgentControllerStore:
         connected_at: datetime,
     ) -> bool:
         """Record that the controller's socket attached to this connection,
-        held by this process. It replaces whatever the row held: the process
-        holding the live socket is the authority. Returns whether the
-        controller's row exists. `updated_at` is left alone: connecting is
-        not an edit."""
+        held by this process. Written only while the row names this
+        connection as the one the controller opened last (`record_opened`),
+        held by this process, so an attach to an earlier connection whose
+        write lands late leaves the newer one standing. A row naming no
+        opened connection was never opened through a process that records
+        opens, and is written as it always was. Returns whether the row was
+        written. `updated_at` is left alone: connecting is not an edit."""
         result = await session.execute(
             update(AgentController)
             .where(
                 AgentController.tenant_id == tenant_id,
                 AgentController.id == controller_id,
+                or_(
+                    AgentController.open_connection_id.is_(None),
+                    and_(
+                        AgentController.open_connection_id == connection_id,
+                        AgentController.open_process_id == process_id,
+                    ),
+                ),
             )
             .values(
                 connection_id=connection_id,

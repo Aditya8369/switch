@@ -429,6 +429,10 @@ async def attach_stream(
                 session, principal, connection_id, generation
             )
             state = await management.connection_state(session, principal)
+        # Attached once nothing more is awaited, and refused if the connection
+        # stopped being the controller's current one while the reads above
+        # waited.
+        token = presence.attach_stream(conn)
     except ControllerConnectionError as exc:
         nudges.close()
         raise _connection_refusal(exc) from exc
@@ -441,7 +445,6 @@ async def attach_stream(
         "generation": conn.generation,
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
     }
-    token = presence.attach_stream(conn)
     return controller_event_stream(
         conn=conn,
         stream_token=token,

@@ -98,8 +98,9 @@ class ClientLifecycleService:
         # client before its row goes) or whose task crashed on a bug.
         # `reconcile_tenant` leaves them stopped, as a crash always has, until
         # something starts them on purpose; otherwise a re-check between a
-        # deletion's stop and its commit would start the client again.
-        # Keyed by client id, to the client's tenant.
+        # deletion's stop and its commit would start the client again. A
+        # deletion that does not commit lets go of its client
+        # (`deletion_failed`). Keyed by client id, to the client's tenant.
         self._left_stopped: dict[str, str] = {}
         self._signals: ClientSignals | None = None
 
@@ -486,10 +487,25 @@ class ClientLifecycleService:
 
         Stopping the running client is the half that cannot join a
         transaction, so callers do that first. A rollback then leaves a
-        stopped client whose row survives, which the next start repairs — the
-        opposite order leaves an orphan row that nothing repairs.
+        stopped client whose row survives, which `deletion_failed` or the
+        next start repairs; the opposite order leaves an orphan row that
+        nothing repairs.
         """
         await self._client_store.delete(session, client_id)
+
+    def deletion_failed(self, client_id: str) -> None:
+        """Let a client stopped for a deletion that did not commit run again.
+
+        Its row is still there, so the client still exists, but `stop` left
+        it in `_left_stopped`, where every re-check leaves it, so it would
+        stay stopped here until the process restarts. Announced rather than
+        started here: the re-read that follows starts the client if its row
+        is there, and nothing if the deletion committed after all and failed
+        only on the way back.
+        """
+        tenant_id = self._left_stopped.pop(client_id, None)
+        if tenant_id is not None:
+            self.announce(tenant_id)
 
     def get(self, client_id: str) -> Actor[ClientConfig] | None:
         return self._clients.get(client_id)
