@@ -23,6 +23,7 @@ def _fake_self(
     *,
     is_direct: bool = False,
     agent_greetings_enabled: bool = True,
+    agent_greeting: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     async def _is_direct_room(_transport_room_id: str) -> bool:
         return is_direct
@@ -34,6 +35,7 @@ def _fake_self(
             bridge_id="bridge-1",
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type="channel_private",
+            agent_greeting=agent_greeting,
         )
 
     return SimpleNamespace(
@@ -93,4 +95,39 @@ async def test_direct_greeting_sent_when_enabled() -> None:
         _EVENT,
     )
     assert len(send_message.calls) == 1
+    assert send_message.calls[0]["body"].startswith("Hi! I'm cc-bug-fixing")
+
+
+@pytest.mark.asyncio
+async def test_a_greeting_written_for_the_agent_replaces_its_line() -> None:
+    send_message = _Recorder()
+    await AgentConsumer.on_self_join(
+        _fake_self(
+            send_message,
+            is_direct=True,
+            agent_greeting={
+                "agent_id": "agent-1",
+                "body": "Welcome, I'm here to help.",
+            },
+        ),
+        _ROOM,
+        _EVENT,
+    )
+    assert [call["body"] for call in send_message.calls] == [
+        "Welcome, I'm here to help."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_greeting_written_for_another_agent_is_not_said() -> None:
+    send_message = _Recorder()
+    await AgentConsumer.on_self_join(
+        _fake_self(
+            send_message,
+            is_direct=True,
+            agent_greeting={"agent_id": "someone-else", "body": "Not mine."},
+        ),
+        _ROOM,
+        _EVENT,
+    )
     assert send_message.calls[0]["body"].startswith("Hi! I'm cc-bug-fixing")

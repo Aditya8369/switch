@@ -108,7 +108,7 @@ export async function listChats(server: SwitchServer): Promise<ChatSummary[]> {
  */
 export async function createChat(
   server: SwitchServer,
-  input: { agentIds: string[]; name: string | null; requestId: string }
+  input: { agentIds: string[]; name: string | null; requestId: string; greeting: string | null }
 ): Promise<ChatSummary> {
   const body: Record<string, string | string[]> = {
     ...(input.agentIds.length === 1
@@ -117,6 +117,8 @@ export async function createChat(
     requestId: input.requestId,
   };
   if (input.name) body.name = input.name;
+  // What its one agent says as it joins, in place of its usual line.
+  if (input.greeting !== null) body.greeting = input.greeting;
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }
 
@@ -177,20 +179,6 @@ export async function sendChatControl(
 /** Ask core to have the agent's controller start its session for the room; a hint, accepted at once. */
 export async function warmChatAgent(server: SwitchServer, roomId: string, agentId: string) {
   await call(server, `${room(roomId)}/warm`, { method: 'POST', body: { agentId } });
-}
-
-/**
- * Have the signed-in person's own agent open their empty direct chat with
- * `body`, posted as the agent. Refused as `AGENT_NOT_READY` while the agent's
- * client is still starting, and `CHAT_NOT_EMPTY` once the chat has messages.
- */
-export async function greetChat(
-  server: SwitchServer,
-  roomId: string,
-  agentId: string,
-  body: string
-): Promise<void> {
-  await call(server, `${room(roomId)}/greeting`, { method: 'POST', body: { agentId, body } });
 }
 
 /** Answer an agent's approval request as the signed-in person. */

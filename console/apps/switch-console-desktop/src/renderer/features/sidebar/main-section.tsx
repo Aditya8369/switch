@@ -44,7 +44,9 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
   const agents = useManagedAgents(switchServersStore.activeServerId);
   const flags = useFeatureFlags(switchServersStore.activeServerId);
   const rooms = useListedRoomsInActiveScope();
-  const count = tab === 'agents' ? (agents.data?.length ?? 0) : rooms.length;
+  // No count until the agents are read: a 0 that turns into the real number
+  // a moment later reads as the list changing.
+  const count = tab === 'agents' ? (agents.data?.length ?? null) : rooms.length;
 
   return (
     <section aria-label={tab === 'agents' ? 'Agents' : 'Rooms'} className="flex flex-col">

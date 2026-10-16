@@ -13,10 +13,12 @@ export function BuddyWelcome({
   agentName: string;
 }) {
   return (
-    <div className="flex gap-3 py-2" data-testid="buddy-welcome">
-      <BuddyAvatar size={28} shape="round" className="mt-0.5" />
-      <div className="min-w-0 space-y-3 text-sm text-foreground">
-        <p className="font-semibold">{agentName}</p>
+    <div className="flex flex-col gap-1 py-2" data-testid="buddy-welcome">
+      <div className="flex items-center gap-3">
+        <BuddyAvatar size={28} shape="round" />
+        <span className="text-sm font-semibold text-foreground">{agentName}</span>
+      </div>
+      <div className="min-w-0 space-y-3 pl-10 text-sm text-foreground">
         <p>
           Hi{firstName ? ` ${firstName}` : ''}, I’m <strong>{agentName}</strong>, your assistant for
           everything Switch. 👋

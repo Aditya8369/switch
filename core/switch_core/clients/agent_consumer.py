@@ -450,7 +450,10 @@ class AgentConsumer(Consumer[AgentActor]):
                 room.room_id,
             )
             return
-        if is_direct:
+        written = meta.agent_greeting if meta is not None else None
+        if written is not None and written.get("agent_id") == self.agent.id:
+            greeting = written["body"]
+        elif is_direct:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
@@ -1016,6 +1019,7 @@ class AgentConsumer(Consumer[AgentActor]):
             bridge_id=room.bridge_id,
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type=room.channel_type,
+            agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
         )
         self._room_meta[transport_room_id] = meta
         return meta

@@ -98,6 +98,9 @@ class CreateChatRequest(CamelModel):
     agent_ids: list[str] | None = None
     name: str | None = None
     request_id: str
+    # What the agent says as it joins, instead of its usual line; older
+    # clients send none.
+    greeting: str | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -257,6 +260,7 @@ async def create_chat(
         agent_ids=req.chosen_agents(),
         name=req.name,
         request_id=req.request_id,
+        greeting=req.greeting,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(
@@ -397,23 +401,6 @@ async def send_control(
         command=req.command,
     )
     return ControlAccepted(command_id=command_id)
-
-
-class GreetRequest(CamelModel):
-    agent_id: str
-    body: str
-
-
-@router.post("/{room_id}/greeting", status_code=204)
-async def greet(
-    room_id: str, req: GreetRequest, user: CurrentUser, service: Service
-) -> Response:
-    """Have the caller's own agent open the caller's empty direct chat with
-    `body`, posted as the agent."""
-    await service.greet(
-        require_tenant_id(), user, room_id, agent_id=req.agent_id, body=req.body
-    )
-    return Response(status_code=204)
 
 
 class WarmRequest(CamelModel):

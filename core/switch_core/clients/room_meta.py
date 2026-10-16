@@ -12,3 +12,6 @@ class RoomMeta(BaseModel):
     # rooms and when no bridge resolves.
     agent_greetings_enabled: bool = True
     channel_type: str | None = None
+    # `{agent_id, body}`: what that agent says as it joins, in place of its
+    # usual greeting (a Switch Console chat's opening message).
+    agent_greeting: dict[str, str] | None = None

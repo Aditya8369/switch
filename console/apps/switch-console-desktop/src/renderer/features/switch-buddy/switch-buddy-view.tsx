@@ -36,6 +36,7 @@ const SwitchBuddyTitlebar = observer(function SwitchBuddyTitlebar() {
                 key: 'agent',
                 icon: <BuddyAvatar size={16} shape="round" />,
                 label: expectedBuddyName(user),
+                maxWidthClassName: 'max-w-40',
               },
             ]}
           />

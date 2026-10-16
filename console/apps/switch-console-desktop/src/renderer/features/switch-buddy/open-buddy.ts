@@ -29,44 +29,19 @@ async function buddyChat(
   );
   const existing = direct.find((chat) => chat.name === BUDDY_CHAT_NAME) ?? direct[0];
   if (existing) return existing;
+  const user = switchServersStore.statusFor(serverId)?.user ?? null;
   const chat = await rpc.chats.create({
     serverId,
     agentIds: [agentId],
     name: BUDDY_CHAT_NAME,
     requestId: crypto.randomUUID(),
+    // Said by the buddy as it joins the chat, in place of its usual line.
+    greeting: buddyWelcomeMessage({ firstName: firstNameOf(user?.name), agentName: agent.name }),
   });
   chatsStore.add(serverId, chat);
   // Named here, so its first message does not rename it.
   chatTitler.created(chat, true);
-  void greet(serverId, agent, chat.roomId);
   return chat;
-}
-
-/**
- * The buddy opens its new chat with its welcome, posted as the buddy. It may
- * still be starting; main waits for it. A welcome that could not be posted is
- * said, not dropped: the chat works without it.
- */
-async function greet(
-  serverId: string,
-  agent: { agentId: string; name: string },
-  roomId: string
-): Promise<void> {
-  const user = switchServersStore.statusFor(serverId)?.user ?? null;
-  try {
-    await rpc.chats.greet({
-      serverId,
-      agentId: agent.agentId,
-      roomId,
-      body: buddyWelcomeMessage({ firstName: firstNameOf(user?.name), agentName: agent.name }),
-    });
-  } catch (cause) {
-    toast({
-      title: `${agent.name} could not post its welcome`,
-      description: failureText(cause, 'Switch did not answer.'),
-      variant: 'destructive',
-    });
-  }
 }
 
 /**
