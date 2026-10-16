@@ -76,9 +76,13 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
   );
 });
 
-/** The profile in front of the catalog, and whether it opened because the service was just connected. */
-type Opened = { slug: string; justConnected: { warning: string | null } | null };
-
+/**
+ * The catalog, or one connector's profile in front of it. Which is open is a
+ * view param, so the sidebar's Connectors entry and the history arrows move
+ * between the two as they do between a room and Your Rooms. Whether the
+ * profile opened because the service was just connected is this page's own
+ * business, kept here and dropped as soon as the person moves on.
+ */
 function Connectors({
   serverId,
   workspaceId,
@@ -92,7 +96,16 @@ function Connectors({
   const workspaceServices = useWorkspaceServices(workspaceId, administers);
   const [tab, setTab] = useState<ConnectorsTab>('yours');
   const [query, setQuery] = useState('');
-  const [open, setOpen] = useState<Opened | null>(null);
+  const { navigate } = useNavigate();
+  const open = useParams('connectors').params.connector ?? null;
+  const [justConnected, setJustConnected] = useState<{
+    slug: string;
+    warning: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (justConnected && justConnected.slug !== open) setJustConnected(null);
+  }, [open, justConnected]);
+  const openProfile = (slug: string) => navigate('connectors', { serverId, connector: slug });
   const connect = useConnectService(serverId, workspaceId);
 
   // An admin's switches, where the server has them: a server without them
@@ -106,13 +119,13 @@ function Connectors({
   ] as const satisfies readonly { value: ConnectorsTab; label: string }[];
   const shownTab = tab === 'workspace' && !switchesShown ? 'yours' : tab;
 
-  const opened = open && catalog.data?.find((entry) => entry.slug === open.slug);
+  const opened = open === null ? null : catalog.data?.find((entry) => entry.slug === open);
   // The profile replaces the whole page, title included: it is a place of its
   // own, reached from the catalog, with the way back at its top. Same column
   // as `ServerPage`, so moving between the two does not shift the content.
   // A failed re-read keeps the last data, so the profile says so rather than
   // showing what may no longer be true as if it were.
-  if (opened && open)
+  if (opened)
     return (
       <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
@@ -126,8 +139,10 @@ function Connectors({
               workspaceId={workspaceId}
               connection={opened}
               administers={administers}
-              justConnected={open.justConnected}
-              onBack={() => setOpen(null)}
+              justConnected={
+                justConnected?.slug === opened.slug ? { warning: justConnected.warning } : null
+              }
+              onBack={() => navigate('connectors', { serverId })}
             />
           </div>
         </div>
@@ -166,10 +181,12 @@ function Connectors({
           entries={connectorsInTab(catalog.data, shownTab, query)}
           tab={shownTab}
           query={query}
-          onOpen={(slug) => setOpen({ slug, justConnected: null })}
+          onOpen={openProfile}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {
-              if (offersAddAgent(entry)) setOpen({ slug: entry.slug, justConnected: { warning } });
+              if (!offersAddAgent(entry)) return;
+              openProfile(entry.slug);
+              setJustConnected({ slug: entry.slug, warning });
             })
           }
         />
@@ -307,7 +324,14 @@ function ConnectorCard({
 }
 
 export const connectorsView = {
-  WrapView: ({ children }: { children: React.ReactNode; serverId: string }) => <>{children}</>,
+  WrapView: ({
+    children,
+  }: {
+    children: React.ReactNode;
+    serverId: string;
+    /** The connector whose profile is open in front of the catalog. */
+    connector?: string;
+  }) => <>{children}</>,
   TitlebarSlot: ConnectorsTitlebar,
   MainPanel: ConnectorsPanel,
   canActivate: (params: unknown): GuardResult => {
@@ -318,4 +342,4 @@ export const connectorsView = {
     if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
     return { ok: true };
   },
-} satisfies ViewDefinition<{ serverId: string }>;
+} satisfies ViewDefinition<{ serverId: string; connector?: string }>;
