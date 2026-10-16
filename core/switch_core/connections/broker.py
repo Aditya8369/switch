@@ -1741,11 +1741,17 @@ class ServiceBroker:
             entry = self._catalog.get(service)
             name = service if entry is None else entry.definition.name
             adapter = self._adapters.get(service)
+            if adapter is None:
+                logger.warning(
+                    "%s sign-in not revoked: the service is not set up on this server",
+                    service,
+                )
+                warnings.append(
+                    f"{name} is not set up on this server, so Switch could not "
+                    f"revoke the sign-in. Revoke it at {name}."
+                )
+                continue
             try:
-                if adapter is None:
-                    raise ServiceUnavailableError(
-                        f"{name} is not available on this server."
-                    )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(secret)
             except ConnectionNotRevocable as error:

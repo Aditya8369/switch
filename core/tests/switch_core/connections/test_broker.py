@@ -1557,6 +1557,35 @@ class TestReplacedClient:
         token = await _issue(broker, session_factory, world.agent.id)
         assert token.resources == RESOURCES
 
+    async def test_a_disconnect_after_the_app_is_removed_says_why_nothing_was_revoked(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        broker.replace_adapter("github", None)
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, world.owner.id, "github")
+        assert warning == (
+            "GitHub is not set up on this server, so Switch could not revoke "
+            "the sign-in. Revoke it at GitHub."
+        )
+        assert vendor.connections_revoked == []
+        assert await _connection(session_factory, world.owner.id) is None
+
+    async def test_a_vendor_that_answers_badly_keeps_the_general_warning(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+
+        async def refused(secret: object) -> None:
+            raise ServiceAdapterError("GitHub answered 500.")
+
+        vendor.revoke_connection = refused  # type: ignore[method-assign]
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, world.owner.id, "github")
+        assert warning == (
+            "GitHub could not revoke the sign-in. Revoke it in your GitHub settings."
+        )
+
     async def test_an_unrecorded_client_keeps_todays_behaviour(
         self, broker, session_factory, vendor
     ) -> None:
