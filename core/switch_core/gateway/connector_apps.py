@@ -11,8 +11,9 @@ loads at boot and serves GitHub's own sign-in.
 Where an app comes from, and why configuration wins over a saved one, is
 `connections/app_credentials.py`. A save is checked with the vendor first
 (`connections/app_checks.py`) and stored only if the vendor accepts it; it
-takes effect at once. No response carries a secret: a client secret shows
-its last four characters, a private key its fingerprint.
+takes effect at once, in every process (`connections/app_signals.py`). No
+response carries a secret: a client secret shows its last four characters,
+a private key its fingerprint.
 """
 
 from __future__ import annotations
@@ -492,6 +493,7 @@ async def save_connector_app(
     )
     await session.commit()
     await apps.apply(service, broker=broker, state=request.app.state)
+    apps.announce(service)
     logger.warning(
         "The operator saved %s's app: user=%s fields=%s",
         spec.name,
@@ -560,6 +562,7 @@ async def import_connector_app(
     )
     await session.commit()
     await apps.reload(service)
+    apps.announce(service)
     return await _entry(session, session_factory, apps, spec)
 
 
@@ -630,6 +633,7 @@ async def remove_connector_app(
     )
     await session.commit()
     await apps.apply(service, broker=broker, state=request.app.state)
+    apps.announce(service)
     logger.warning("The operator removed %s's app: user=%s", spec.name, admin.id)
     people, workspaces = (await _usage(session_factory, service)).through(
         removed.client_id

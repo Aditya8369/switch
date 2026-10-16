@@ -102,6 +102,7 @@ from switch_core.clients.client_signals import ClientSignals
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
 from switch_core.connections.app_credentials import ConnectorApps
+from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
 from switch_core.connections.loader import CATALOG
@@ -1289,6 +1290,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # A connector app the operator saves or removes, put to work in every process.
+    ConnectorAppSignals(
+        apps=connector_apps,
+        broker=service_broker,
+        state=gateway_app.state,
+        bus=signal_bus,
+    )
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
 

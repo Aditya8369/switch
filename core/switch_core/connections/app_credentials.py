@@ -22,10 +22,12 @@ then be https; a configured one keeps the `origin` its file names.
 
 A change takes effect without a restart (`ConnectorApps.apply`): the
 service's adapter is rebuilt and swapped into the broker, and for GitHub the
-App on the gateway's state is swapped too, its sign-ins under way carried
-over. Within this process only: Core runs as one replica, as sign-in flows,
-held in memory, already require. Several replicas would need each to notice
-a change, for instance by a revision column read every half minute.
+App on the gateway's state is swapped too; a sign-in under way is a row, so
+it outlives the swap. The process that saved the change applies it at once
+and announces it, and every other process applies it on hearing so
+(`connections/app_signals.py`). Each process remembers which saved row it
+resolved every app from, so one that missed the announcement finds the row
+changed on its next re-check.
 """
 
 from __future__ import annotations
@@ -60,6 +62,9 @@ from switch_core.providers.github import GitHubConnections
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
+    from switch_core.connections.app_signals import ConnectorAppSignals
     from switch_core.connections.broker import ServiceBroker
 
 logger = logging.getLogger(__name__)
@@ -220,6 +225,10 @@ def install_github_app(state: State, app: GitHubApp | None) -> None:
     state.github_connections = None if app is None else app.connections
 
 
+def _changed_at(row: ServiceAppCredential | None) -> datetime | None:
+    return None if row is None else row.updated_at
+
+
 class ConnectorApps:
     """Every connector's app, as this process uses it."""
 
@@ -244,6 +253,10 @@ class ConnectorApps:
         self._registration = registration
         self._configured: dict[str, _Configured | None] = {}
         self._effective: dict[str, EffectiveCredentials] = {}
+        # When each service's saved row was last changed, as this process
+        # resolved it; None where there was no row.
+        self._resolved_at: dict[str, datetime | None] = {}
+        self._signals: ConnectorAppSignals | None = None
 
     @property
     def store(self) -> ServiceAppCredentialStore:
@@ -279,6 +292,7 @@ class ConnectorApps:
                     " and ".join(effective.configuration_variables),
                 )
             self._effective[service] = effective
+            self._resolved_at[service] = _changed_at(rows.get(service))
 
     async def reload(self, service: str) -> EffectiveCredentials:
         """Resolve one service's app again, after its row changed."""
@@ -287,7 +301,31 @@ class ConnectorApps:
             row = await self._store.get(session, service)
         effective = self._resolve(spec, row)
         self._effective[service] = effective
+        self._resolved_at[service] = _changed_at(row)
         return effective
+
+    def use_signals(self, signals: ConnectorAppSignals) -> None:
+        """Announce each change made here, so every other process applies
+        it too (`app_signals.py`)."""
+        self._signals = signals
+
+    def announce(self, service: str) -> None:
+        """Tell every other process that `service`'s saved app changed, once
+        the change has committed and been applied here."""
+        if self._signals is not None:
+            self._signals.changed(service)
+
+    async def changed_since_resolved(self) -> list[str]:
+        """The services whose saved row changed, appeared or went since this
+        process last resolved them: what a missed announcement leaves behind.
+        A read, never a write."""
+        async with self._session_factory() as session:
+            rows = await self._store.list_all(session)
+        return [
+            service
+            for service in self.specs
+            if _changed_at(rows.get(service)) != self._resolved_at.get(service)
+        ]
 
     async def apply(
         self, service: str, *, broker: ServiceBroker, state: State

@@ -63,8 +63,9 @@ version of their own to them without also giving them a release of their own.
   the `service_connections` flag on, like the rest of service connections;
   without it the page says what to turn on. A connection made under an app since removed
   can still be disconnected; the disconnect then says Switch could not revoke
-  the sign-in and where to revoke it. See `docs/old/github-app-setup.md` and
-  `docs/old/google-workspace-setup.md`.
+  the sign-in and where to revoke it. A change reaches every switch-core
+  replica within seconds, and one that missed it within half a minute. See
+  `docs/old/github-app-setup.md` and `docs/old/google-workspace-setup.md`.
 - **A connection knows the app it signed in through.** A connection made
   through an app the operator has since replaced shows as needing
   reconnection, and an agent asking for its token is told to reconnect

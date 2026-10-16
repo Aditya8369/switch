@@ -112,9 +112,9 @@ restart switch-core. It is the same App, so nobody reconnects. Copying is
 refused while the file's `origin` differs from `GATEWAY_PUBLIC_URL`, since a
 saved App is called back at `GATEWAY_PUBLIC_URL`.
 
-## One replica
+## Several replicas
 
-Sign-ins in progress are held in the switch-core process, and a change made
-on the Connectors page takes effect in that process, so run switch-core
-as one replica. Keep query strings out of every access log in front of the
-callback: its URL carries a single-use OAuth code.
+Sign-ins in progress are kept in the database, and a change to the App
+reaches every switch-core replica within seconds; one that misses the news
+finds it within half a minute. Keep query strings out of every access log
+in front of the callback: its URL carries a single-use OAuth code.
