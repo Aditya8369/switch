@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
-import { BUDDY_DISPLAY_NAME, isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
+import { expectedBuddyName, isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
@@ -87,21 +87,22 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
  * switch-buddy before it exists — skipped in onboarding, or never set up —
  * so its chat, and the way to give it a provider, can always be found.
  */
-function PendingBuddyRow({ serverId }: { serverId: string }) {
+const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { serverId: string }) {
   const active = useCurrentViewId() === 'switchBuddy';
+  const name = expectedBuddyName(switchServersStore.statusFor(serverId)?.user ?? null);
   return (
     <SidebarMenuRow
       isActive={active}
-      title="switch-buddy — connect an AI provider to start it"
+      title={`${name} — connect an AI provider to start it`}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => appState.navigation.navigate('switchBuddy', { serverId })}
       className="h-[30px] py-0 text-[13px]"
     >
       <BuddyAvatar size={17} shape="round" />
-      <span className="min-w-0 flex-1 truncate">{BUDDY_DISPLAY_NAME}</span>
+      <span className="min-w-0 flex-1 truncate">{name}</span>
     </SidebarMenuRow>
   );
-}
+});
 
 /** One row per room: its messaging app and its name. Nothing is nested under it. */
 const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummary[] }) {

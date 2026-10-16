@@ -1,11 +1,14 @@
 import { focusComposerWhenOpened } from '@renderer/features/chats/components/chat-composer';
 import { chatsStore, chatTitler } from '@renderer/features/chats/stores/chats';
 import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
+import { firstNameOf } from './buddy-identity';
+import { buddyWelcomeMessage } from './buddy-welcome-message';
 
 /** What the buddy's first chat is called, as on the board; it keeps it. */
 export const BUDDY_CHAT_NAME = 'Welcome';
@@ -16,9 +19,13 @@ export const BUDDY_CHAT_NAME = 'Welcome';
  * replaying onboarding, a second Start — lands in the same chat rather than
  * adding one each time.
  */
-async function buddyChat(serverId: string, agentId: string): Promise<ChatSummary> {
+async function buddyChat(
+  serverId: string,
+  agent: { agentId: string; name: string }
+): Promise<ChatSummary> {
+  const agentId = agent.agentId;
   const direct = (await rpc.chats.list(serverId)).filter(
-    (chat) => chat.channelType === 'direct' && chat.agents.some((agent) => agent.id === agentId)
+    (chat) => chat.channelType === 'direct' && chat.agents.some((member) => member.id === agentId)
   );
   const existing = direct.find((chat) => chat.name === BUDDY_CHAT_NAME) ?? direct[0];
   if (existing) return existing;
@@ -31,7 +38,35 @@ async function buddyChat(serverId: string, agentId: string): Promise<ChatSummary
   chatsStore.add(serverId, chat);
   // Named here, so its first message does not rename it.
   chatTitler.created(chat, true);
+  void greet(serverId, agent, chat.roomId);
   return chat;
+}
+
+/**
+ * The buddy opens its new chat with its welcome, posted as the buddy. It may
+ * still be starting; main waits for it. A welcome that could not be posted is
+ * said, not dropped: the chat works without it.
+ */
+async function greet(
+  serverId: string,
+  agent: { agentId: string; name: string },
+  roomId: string
+): Promise<void> {
+  const user = switchServersStore.statusFor(serverId)?.user ?? null;
+  try {
+    await rpc.chats.greet({
+      serverId,
+      agentId: agent.agentId,
+      roomId,
+      body: buddyWelcomeMessage({ firstName: firstNameOf(user?.name), agentName: agent.name }),
+    });
+  } catch (cause) {
+    toast({
+      title: `${agent.name} could not post its welcome`,
+      description: failureText(cause, 'Switch did not answer.'),
+      variant: 'destructive',
+    });
+  }
 }
 
 /**
@@ -44,7 +79,7 @@ export async function openBuddyChat(
 ): Promise<void> {
   let roomId: string | null = null;
   try {
-    roomId = (await buddyChat(serverId, agent.agentId)).roomId;
+    roomId = (await buddyChat(serverId, agent)).roomId;
     focusComposerWhenOpened(roomId);
   } catch (cause) {
     toast({

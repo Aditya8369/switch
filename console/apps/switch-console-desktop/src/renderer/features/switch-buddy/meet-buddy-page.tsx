@@ -165,17 +165,21 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         <Line>…and set up and manage your workflows, permissions and guardrails!</Line>
         <Line>Ready to go?</Line>
       </div>
-      {computer.kind === 'starting' && (
-        <p className="flex items-center justify-center gap-2 text-xs text-foreground-muted">
-          <Spinner className="size-3" />
-          Checking which AI providers this computer has…
-        </p>
-      )}
-      {computer.kind === 'failed' && (
-        <p role="alert" className="text-center text-sm text-destructive">
-          {computer.error}
-        </p>
-      )}
+      {/* One line, always there: what is still being checked, or why it
+          failed, without the lines above moving when it changes. */}
+      <div className="flex min-h-5 items-center justify-center">
+        {computer.kind === 'starting' && (
+          <p className="flex items-center gap-2 text-xs text-foreground-muted">
+            <Spinner className="size-3" />
+            Checking which AI providers this computer has…
+          </p>
+        )}
+        {computer.kind === 'failed' && (
+          <p role="alert" className="text-center text-sm text-destructive">
+            {computer.error}
+          </p>
+        )}
+      </div>
       {error && (
         <p role="alert" className="text-center text-sm text-destructive">
           {error}

@@ -9,8 +9,6 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
-import { BuddyChatIntro } from '@renderer/features/switch-buddy/buddy-chat-intro';
-import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
@@ -136,12 +134,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
       <div className="relative min-w-0 flex-1">
         {roomId ? (
           <>
-            <ChatPanel
-              key={`${serverId}:${roomId}`}
-              serverId={serverId}
-              roomId={roomId}
-              intro={isBuddy(agent) ? <BuddyChatIntro agent={agent} /> : null}
-            />
+            <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />
             <div
               aria-hidden
               className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"

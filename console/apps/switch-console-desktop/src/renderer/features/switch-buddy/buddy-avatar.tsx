@@ -2,8 +2,8 @@ import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import { cn } from '@renderer/utils/utils';
 
 /**
- * switch-buddy's face, the same picture the agent itself carries: round, like
- * every agent's avatar in lists and chats, or as a rounded tile where it is
+ * switch-buddy's face, the same picture the agent itself carries: bare, as
+ * every agent's avatar is in lists and chats, or on a soft tile where it is
  * introduced.
  */
 export function BuddyAvatar({
@@ -15,18 +15,25 @@ export function BuddyAvatar({
   shape: 'round' | 'tile';
   className?: string;
 }) {
-  return (
+  const image = (
     <img
       src={buddyAvatar}
       alt=""
-      width={size}
-      height={size}
+      width={shape === 'tile' ? size * 0.8 : size}
+      height={shape === 'tile' ? size * 0.8 : size}
+      className={cn('shrink-0 object-contain', shape === 'round' && className)}
+    />
+  );
+  if (shape === 'round') return image;
+  return (
+    <span
       className={cn(
-        'shrink-0 object-cover',
-        shape === 'round' ? 'rounded-full' : 'rounded-[22%]',
+        'inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary',
         className
       )}
       style={{ width: size, height: size }}
-    />
+    >
+      {image}
+    </span>
   );
 }

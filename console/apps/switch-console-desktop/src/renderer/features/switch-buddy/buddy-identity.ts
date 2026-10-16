@@ -1,10 +1,11 @@
+import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 /** The template every person's buddy is created from, served by the server. */
 export const BUDDY_TEMPLATE_ID = 'official:switch-buddy';
 
-/** What people see the buddy called, whoever's it is. */
-export const BUDDY_DISPLAY_NAME = 'switch-buddy';
+/** What the buddy is, whoever's it is: each one is shown by its own name, switch-buddy-<person>. */
+export const BUDDY_KIND = 'switch-buddy';
 
 const NAME_PREFIX = 'switch-buddy';
 
@@ -35,12 +36,26 @@ export function buddyAgentName(
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-/** Whether one of the person's own managed agents is their buddy. */
-export function isBuddy(agent: Pick<ManagedAgentView, 'name' | 'displayName'>): boolean {
-  return agent.displayName === BUDDY_DISPLAY_NAME && agent.name.startsWith(NAME_PREFIX);
+/**
+ * Whether one of the person's own managed agents is their buddy: named as
+ * buddies are, and wearing the picture the buddy template gives it.
+ */
+export function isBuddy(agent: Pick<ManagedAgentView, 'name' | 'iconUrl'>): boolean {
+  return agent.iconUrl === BUDDY_ICON_URL && agent.name.startsWith(NAME_PREFIX);
 }
 
 /** The first name to greet someone by: the first word of their name. */
 export function firstNameOf(name: string | null | undefined): string | null {
   return name?.trim().split(/\s+/)[0] || null;
+}
+
+/**
+ * The name the person's buddy will have, for showing it before it exists: the
+ * one it is created under unless someone else in the workspace holds it, when
+ * a number is added then.
+ */
+export function expectedBuddyName(
+  user: { name: string | null; email: string | null } | null
+): string {
+  return buddyAgentName({ name: user?.name ?? null, email: user?.email ?? null }, new Set());
 }

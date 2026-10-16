@@ -44,6 +44,8 @@ import {
   sendChatMessage,
   setChatHidden,
   uploadChatAttachment,
+  ChatApiError,
+  greetChat,
   warmChatAgent,
 } from './gateway';
 
@@ -90,6 +92,42 @@ const activityDeps: ActivityDeps = {
  * other through core, which tells the agent's controller. A failure is
  * logged, never thrown, so it cannot get in the way of sending.
  */
+/** How long a greeting waits for a new agent's client to start, and how often it asks. */
+const GREETING_WAIT_MS = 60_000;
+const GREETING_RETRY_MS = 2_000;
+
+/**
+ * Has the person's agent post `body` as the first message of their new direct
+ * chat with it. An agent created a moment ago may not be taking messages yet,
+ * so a refusal saying so is asked again, for up to a minute; a chat that
+ * already has messages is left as it is.
+ */
+async function greet(params: {
+  serverId: string;
+  agentId: string;
+  roomId: string;
+  body: string;
+}): Promise<'posted' | 'already_started'> {
+  const deadline = Date.now() + GREETING_WAIT_MS;
+  for (;;) {
+    try {
+      await onServer(params.serverId, (server) =>
+        greetChat(server, params.roomId, params.agentId, params.body)
+      );
+      return 'posted';
+    } catch (error) {
+      if (error instanceof ChatApiError && error.apiCode === 'CHAT_NOT_EMPTY')
+        return 'already_started';
+      if (
+        !(error instanceof ChatApiError && error.apiCode === 'AGENT_NOT_READY') ||
+        Date.now() >= deadline
+      )
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, GREETING_RETRY_MS));
+    }
+  }
+}
+
 async function warmChat(params: { serverId: string; agentId: string; roomId: string }) {
   const { serverId, agentId, roomId } = params;
   try {
@@ -207,6 +245,14 @@ export const chatsController = createRPCController({
   /** Start the agent's session for the chat while its user types, if the agent is theirs. */
   warm: (params: { serverId: string; agentId: string; roomId: string }): Promise<void> =>
     warmChat(params),
+
+  /** Has the person's own agent open their new direct chat with `body`, posted as the agent. */
+  greet: (params: {
+    serverId: string;
+    agentId: string;
+    roomId: string;
+    body: string;
+  }): Promise<'posted' | 'already_started'> => greet(params),
   /** The room's turn steps and approval requests; changes follow on the activity channels. */
   roomActivity: (serverId: string, roomId: string): Promise<RoomActivity> =>
     onServer(serverId, (server) => fetchRoomActivity(server, roomId)),

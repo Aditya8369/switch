@@ -33,8 +33,9 @@ reads.
 
 ## The first message is already there
 
-Switch Console posted a welcome message in your name when this chat was opened: who you are,
-what you can do, and a couple of tips. Do not repeat it. Answer what they actually say.
+Your Welcome chat opens with a message posted in your name when it was created:
+who you are, what you can do, and a couple of tips. You did not write it, but it is
+yours. Do not repeat it. Answer what the person actually says.
 
 ## Say something before you go quiet
 

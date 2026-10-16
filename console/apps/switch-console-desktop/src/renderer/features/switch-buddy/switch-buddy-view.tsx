@@ -12,7 +12,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BuddyAvatar } from './buddy-avatar';
-import { BUDDY_DISPLAY_NAME, firstNameOf, isBuddy } from './buddy-identity';
+import { expectedBuddyName, firstNameOf, isBuddy } from './buddy-identity';
 import { BuddyWelcome } from './buddy-welcome';
 import { BUDDY_CHAT_NAME, openBuddyChat } from './open-buddy';
 
@@ -21,28 +21,37 @@ type SwitchBuddyParams = { serverId: string };
 const TABS = [{ value: 'chats', label: 'Chats' }] as const;
 
 /** The agent page's title bar, for an agent that has only its Chats tab so far. */
-const SwitchBuddyTitlebar = () => (
-  <Titlebar
-    className="border-b border-border"
-    leftClassName="w-[300px] shrink-0 self-stretch border-r border-border"
-    leftSlot={
-      <div className="flex min-w-0 items-center gap-3">
-        <TitlebarBreadcrumb
-          crumbs={[
-            {
-              key: 'agent',
-              icon: <BuddyAvatar size={16} shape="round" />,
-              label: BUDDY_DISPLAY_NAME,
-            },
-          ]}
-        />
-        <SegmentedControl value="chats" onChange={() => {}} options={TABS} ariaLabel="Agent view" />
-      </div>
-    }
-    rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4"
-    rightSlot={<span className="truncate text-sm font-medium">{BUDDY_CHAT_NAME}</span>}
-  />
-);
+const SwitchBuddyTitlebar = observer(function SwitchBuddyTitlebar() {
+  const { params } = useParams('switchBuddy');
+  const user = switchServersStore.statusFor(params.serverId)?.user ?? null;
+  return (
+    <Titlebar
+      className="border-b border-border"
+      leftClassName="w-[300px] shrink-0 self-stretch border-r border-border"
+      leftSlot={
+        <div className="flex min-w-0 items-center gap-3">
+          <TitlebarBreadcrumb
+            crumbs={[
+              {
+                key: 'agent',
+                icon: <BuddyAvatar size={16} shape="round" />,
+                label: expectedBuddyName(user),
+              },
+            ]}
+          />
+          <SegmentedControl
+            value="chats"
+            onChange={() => {}}
+            options={TABS}
+            ariaLabel="Agent view"
+          />
+        </div>
+      }
+      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4"
+      rightSlot={<span className="truncate text-sm font-medium">{BUDDY_CHAT_NAME}</span>}
+    />
+  );
+});
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -99,7 +108,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
       <div className="flex min-w-0 flex-1 flex-col bg-background text-foreground">
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-[860px] px-5 py-6">
-            <BuddyWelcome firstName={firstNameOf(user?.name)} agentName={null} />
+            <BuddyWelcome firstName={firstNameOf(user?.name)} agentName={expectedBuddyName(user)} />
           </div>
         </div>
         <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
@@ -109,7 +118,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
             disabled={workspaceId === null}
             className="w-full rounded-full border border-border bg-background px-5 py-3 text-left text-sm text-foreground shadow-sm hover:bg-[var(--sel-soft)] disabled:opacity-60"
           >
-            Connect an AI provider to chat with switch-buddy
+            Connect an AI provider to chat with {expectedBuddyName(user)}
           </button>
           {workspaceId === null && (
             <p className="mt-2 text-xs text-foreground-muted">

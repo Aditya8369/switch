@@ -179,6 +179,20 @@ export async function warmChatAgent(server: SwitchServer, roomId: string, agentI
   await call(server, `${room(roomId)}/warm`, { method: 'POST', body: { agentId } });
 }
 
+/**
+ * Have the signed-in person's own agent open their empty direct chat with
+ * `body`, posted as the agent. Refused as `AGENT_NOT_READY` while the agent's
+ * client is still starting, and `CHAT_NOT_EMPTY` once the chat has messages.
+ */
+export async function greetChat(
+  server: SwitchServer,
+  roomId: string,
+  agentId: string,
+  body: string
+): Promise<void> {
+  await call(server, `${room(roomId)}/greeting`, { method: 'POST', body: { agentId, body } });
+}
+
 /** Answer an agent's approval request as the signed-in person. */
 export async function answerChatApproval(
   server: SwitchServer,
