@@ -252,7 +252,9 @@ async function openAtlassian(page: HTMLElement): Promise<void> {
   await vi.waitFor(() => expect(button(/^Atlassian/, grid(page)!)).toBeDefined());
   await act(async () => button(/^Atlassian/, grid(page)!)!.click());
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Atlassian'));
-  await vi.waitFor(() => expect(page.textContent).toContain('M1'));
+  await vi.waitFor(() =>
+    expect(page.querySelector('ul[aria-label="Used by"]')?.textContent).toBe('M1')
+  );
 }
 
 async function disconnect(page: HTMLElement): Promise<void> {
@@ -277,6 +279,7 @@ it('offers Connect on the profile after a disconnect, made in the workspace show
   expect(button(/^Disconnect$/, page)).toBeUndefined();
   expect(page.textContent).not.toContain('Connected as ada');
   expect(page.textContent).toContain('None of your agents use it.');
+  expect(page.querySelector('ul[aria-label="Used by"]')).toBeNull();
 });
 
 it('says on the profile when re-reading the catalog fails, with Retry', async () => {

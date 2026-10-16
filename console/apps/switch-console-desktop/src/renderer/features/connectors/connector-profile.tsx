@@ -165,9 +165,13 @@ export function ConnectorProfile({
             <p className="text-sm text-foreground-muted">None of your agents use it.</p>
           )}
           {usedBy.length > 0 && (
-            <ul className="space-y-1 text-sm">
+            <ul aria-label="Used by" className="flex flex-wrap gap-2">
               {usedBy.map((agent) => (
-                <li key={agent.agent_id}>{agent.name}</li>
+                <li key={agent.agent_id}>
+                  <Badge variant="outline" className="h-6 px-2.5 text-xs">
+                    {agent.name}
+                  </Badge>
+                </li>
               ))}
             </ul>
           )}
