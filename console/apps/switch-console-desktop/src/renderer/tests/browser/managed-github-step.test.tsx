@@ -37,7 +37,7 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(onBack: () => void): Promise<void> {
+async function render(onBack: () => void, onDone?: () => void): Promise<void> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -45,7 +45,7 @@ async function render(onBack: () => void): Promise<void> {
     root!.render(
       <Dialog open>
         <DialogContent>
-          <ManagedGitHubStep serverId="server" onBack={onBack} />
+          <ManagedGitHubStep serverId="server" onBack={onBack} onDone={onDone} />
         </DialogContent>
       </Dialog>
     )
@@ -74,6 +74,41 @@ it('offers to connect GitHub, and a way back', async () => {
   expect(button(/continue to agent/i, dialog())).toBeUndefined();
 
   await act(async () => button(/^back$/i, dialog())!.click());
+  expect(onBack).toHaveBeenCalledOnce();
+});
+
+it("on a connector's page, a connected step offers Done and nothing else", async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'connected',
+    login: 'example-user',
+    install_url: 'https://github.com/apps/example/installations/new',
+    installations: [{ id: 7, account: 'example-user', repositories: [{ id: 1, name: 'a/b' }] }],
+  });
+  const onDone = vi.fn();
+  await render(() => {}, onDone);
+
+  await vi.waitFor(() => expect(button(/^done$/i, dialog())).toBeDefined());
+  expect(dialog().textContent).toContain('Connected as example-user');
+  expect(dialog().textContent).toContain('a/b');
+  expect(button(/^back$/i, dialog())).toBeUndefined();
+  expect(button(/^disconnect$/i, dialog())).toBeUndefined();
+  expect(dialog().textContent).not.toContain('Disconnecting removes credentials');
+
+  await act(async () => button(/^done$/i, dialog())!.click());
+  expect(onDone).toHaveBeenCalledOnce();
+});
+
+it("on a connector's page, Cancel stands in for Back before connecting", async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'not_connected',
+    install_url: 'https://github.com/apps/example/installations/new',
+  });
+  const onBack = vi.fn();
+  await render(onBack, () => {});
+
+  await vi.waitFor(() => expect(button(/^connect github\s*$/i, dialog())).toBeDefined());
+  expect(button(/^back$/i, dialog())).toBeUndefined();
+  await act(async () => button(/^cancel$/i, dialog())!.click());
   expect(onBack).toHaveBeenCalledOnce();
 });
 

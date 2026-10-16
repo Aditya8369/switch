@@ -89,11 +89,10 @@ export function workspaceOffNotice(
  */
 export function profileConnectAction(
   entry: ConnectionCatalogEntry
-): 'connect' | 'reconnect' | 'manage' | 'replace' | null {
+): 'connect' | 'reconnect' | 'replace' | null {
   if (entry.status === 'coming_soon' || entry.workspace_enabled === false) return null;
   if (entry.status === 'not_connected') return 'connect';
   if (entry.status === 'needs_reauthorization' || entry.status === 'error') return 'reconnect';
-  if (entry.slug === 'github') return 'manage';
   return entry.auth_type === 'api_key' ? 'replace' : null;
 }
 

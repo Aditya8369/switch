@@ -12,6 +12,8 @@ const agentsKey = (workspaceId: string, service: string) => [
   service,
 ];
 const workspaceServicesKey = (workspaceId: string) => ['workspace-services', workspaceId];
+/** The person's GitHub connection and what it reaches, shared with the agent settings' Service access row. */
+export const githubKey = (workspaceId: string) => ['workspace-github', workspaceId];
 
 export function useConnectorCatalog(workspaceId: string) {
   return useQuery({
@@ -26,6 +28,21 @@ export function useConnectionAgents(workspaceId: string, service: string) {
     queryKey: agentsKey(workspaceId, service),
     queryFn: () => rpc.workspaces.getConnectionAgents({ workspaceId, service }),
     retry: false,
+  });
+}
+
+/**
+ * The person's GitHub connection: who they are and the repositories each
+ * installation reaches. Re-read as the window regains focus, since those are
+ * chosen on GitHub, in the browser.
+ */
+export function useGitHubConnection(workspaceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: githubKey(workspaceId),
+    queryFn: () => rpc.workspaces.getGitHubConnection(workspaceId),
+    enabled,
+    retry: false,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -52,7 +69,7 @@ export function useReloadConnectors(workspaceId: string): () => Promise<void> {
         catalogKey(workspaceId),
         ['connection-agents', workspaceId],
         workspaceServicesKey(workspaceId),
-        ['workspace-github', workspaceId],
+        githubKey(workspaceId),
         ['agent-service-grants', workspaceId],
       ].map((queryKey) => queryClient.invalidateQueries({ queryKey }))
     );

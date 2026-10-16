@@ -19,13 +19,13 @@ import {
   workspaceOffNotice,
 } from './connectors-catalog';
 import { useReloadConnectors } from './connectors-queries';
+import { GitHubAccessSection } from './github-access-section';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
 const ACTION_LABEL = {
   connect: 'Connect to Switch',
   reconnect: 'Reconnect',
-  manage: 'Manage repositories',
   replace: 'Replace key',
 } as const;
 
@@ -116,7 +116,7 @@ export function ConnectorProfile({
           <div className="flex shrink-0 gap-2">
             {action && (
               <Button
-                variant={action === 'manage' || action === 'replace' ? 'outline' : 'default'}
+                variant={action === 'replace' ? 'outline' : 'default'}
                 disabled={!connection.connectable}
                 onClick={() =>
                   connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
@@ -165,6 +165,10 @@ export function ConnectorProfile({
           <Fact label="Agent access lasts">{tokenLifetimeLabel(connection)}</Fact>
         </div>
       </section>
+
+      {connection.slug === 'github' && state.kind === 'connected' && (
+        <GitHubAccessSection serverId={serverId} workspaceId={workspaceId} />
+      )}
 
       <ConnectorAgentsSection
         serverId={serverId}

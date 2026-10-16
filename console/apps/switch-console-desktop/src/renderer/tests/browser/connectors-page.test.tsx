@@ -18,6 +18,11 @@ const workspaces = vi.hoisted(() => ({
   getConnectionAgents: vi.fn(),
   getWorkspaceServices: vi.fn(),
   disconnectService: vi.fn(),
+  getGitHubConnection: vi.fn(),
+  setServiceGrant: vi.fn(),
+}));
+const switchServers = vi.hoisted(() => ({
+  openGitHubInstallation: vi.fn(),
 }));
 const modalHost = vi.hoisted(() => ({
   show: (_id: string, _args: unknown): void => {
@@ -38,7 +43,7 @@ const featureFlags = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { workspaces, featureFlags },
+  rpc: { workspaces, featureFlags, switchServers },
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
@@ -162,6 +167,7 @@ let root: Root | null = null;
 beforeEach(() => {
   navigation.reset();
   for (const mock of Object.values(workspaces)) mock.mockReset();
+  switchServers.openGitHubInstallation.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
   workspaces.getWorkspaceServices.mockResolvedValue(null);
 });
@@ -329,6 +335,88 @@ it('says on the profile when re-reading the catalog fails, with Retry', async ()
   await act(async () => button(/^retry$/i, page)!.click());
   await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
   expect(page.querySelector('[role="alert"]')).toBeNull();
+});
+
+it("shows GitHub's repositories on its profile, and adds an agent with them", async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      status: 'connected',
+      external_identity: 'ada',
+      pass_through: false,
+    }),
+  ]);
+  workspaces.getGitHubConnection.mockResolvedValue({
+    status: 'connected',
+    login: 'ada',
+    install_url: 'https://github.com/apps/example/installations/new',
+    installations: [
+      {
+        id: 7,
+        account: 'ada',
+        repositories: [
+          { id: 1, name: 'ada/one' },
+          { id: 2, name: 'ada/two' },
+        ],
+      },
+    ],
+  });
+  workspaces.getConnectionAgents.mockResolvedValue([
+    { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
+  ]);
+  workspaces.setServiceGrant.mockResolvedValue(null);
+  const page = await render();
+
+  await vi.waitFor(() => expect(button(/^GitHub/, grid(page)!)).toBeDefined());
+  await act(async () => button(/^GitHub/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('GitHub'));
+  const repositories = () => page.querySelector('section[aria-label="Repositories"]')!;
+  await vi.waitFor(() => expect(repositories().textContent).toContain('2 repositories'));
+  // The account card opens to its list; the names are not on the page before that.
+  expect(repositories().textContent).not.toContain('ada/one');
+  await act(async () =>
+    repositories()
+      .querySelector<HTMLButtonElement>('button[aria-label="Show the repositories under ada"]')!
+      .click()
+  );
+  await vi.waitFor(() => expect(repositories().textContent).toContain('ada/one'));
+  expect(button(/^Choose repositories/, page)).toBeUndefined();
+  await act(async () => button(/^Change repositories/, repositories())!.click());
+  expect(switchServers.openGitHubInstallation).toHaveBeenCalledWith('server');
+
+  // Adding an agent: nothing is chosen yet, so no agent can be added.
+  await act(async () => button(/^Add agent$/, page)!.click());
+  await vi.waitFor(() => expect(page.textContent).toContain('No repositories chosen yet'));
+  await vi.waitFor(() => expect(button(/M1/, page)).toBeDefined());
+  expect(button(/M1/, page)!.disabled).toBe(true);
+
+  // Add all, then drop one: the chips are the choice.
+  await act(async () => button(/^Choose repositories$/, page)!.click());
+  await vi.waitFor(() => expect(button(/^Add all$/, page)).toBeDefined());
+  await act(async () => button(/^Add all$/, page)!.click());
+  const chips = () => page.querySelector('[aria-label="Chosen repositories"]');
+  await vi.waitFor(() => expect(chips()?.textContent).toContain('ada/two'));
+  expect(page.textContent).toContain('2 of 2 chosen');
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Remove ada/one"]')!.click()
+  );
+  await vi.waitFor(() => expect(chips()?.textContent).not.toContain('ada/one'));
+  await act(async () => button(/^Done$/, page)!.click());
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('Agents you add get read access to 1 repository.')
+  );
+  expect(button(/^Change$/, page)).toBeDefined();
+
+  await vi.waitFor(() => expect(button(/M1/, page)!.disabled).toBe(false));
+  await act(async () => button(/M1/, page)!.click());
+  expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    agentId: 'm1',
+    service: 'github',
+    access: 'read',
+    resources: { installation_id: 7, repository_ids: [2] },
+  });
 });
 
 it('shows a connection the workspace has switched off as off, not as connected', async () => {

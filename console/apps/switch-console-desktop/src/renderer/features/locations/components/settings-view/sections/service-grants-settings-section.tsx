@@ -1,20 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import {
+  type GitHubGrantChoice,
+  connectedGitHub,
+  emptyGitHubGrant,
+  githubGrantResources,
+} from '@renderer/features/connectors/github-grant';
+import { GitHubGrantPicker } from '@renderer/features/connectors/github-grant-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Switch } from '@renderer/lib/ui/switch';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
@@ -31,11 +29,6 @@ import {
 } from './service-grants';
 
 type Access = 'read' | 'write';
-
-const ACCESS_OPTIONS = [
-  { value: 'read', label: 'Read' },
-  { value: 'write', label: 'Read and push' },
-] as const;
 
 /**
  * What the agent may use of its owner's service connections: its grants, who
@@ -347,14 +340,17 @@ function GitHubGrantForm({
   onCancel: (() => void) | null;
   onSave: (access: Access, resources: Record<string, unknown>) => void;
 }) {
-  const [access, setAccess] = useState<Access>(current?.access ?? 'read');
-  const [installationId, setInstallationId] = useState<number | null>(
-    typeof current?.resources.installation_id === 'number'
-      ? current.resources.installation_id
-      : null
-  );
-  const [selected, setSelected] = useState<number[]>(
-    current ? grantedRepositoryIds(current.resources) : []
+  const [choice, setChoice] = useState<GitHubGrantChoice>(() =>
+    current
+      ? {
+          access: current.access ?? 'read',
+          installationId:
+            typeof current.resources.installation_id === 'number'
+              ? current.resources.installation_id
+              : null,
+          repositoryIds: grantedRepositoryIds(current.resources),
+        }
+      : emptyGitHubGrant(github.data)
   );
 
   if (github.isError)
@@ -371,61 +367,20 @@ function GitHubGrantForm({
       </p>
     );
 
-  const installations = github.data.installations;
-  const installation = installations.find((candidate) => candidate.id === installationId);
-  const toggle = (id: number) =>
-    setSelected((now) => (now.includes(id) ? now.filter((other) => other !== id) : [...now, id]));
+  const reach = connectedGitHub(github.data);
+  const resources = githubGrantResources(choice);
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
       <span className="text-sm font-medium">
         {current ? 'Change the GitHub grant' : 'Grant GitHub'}
       </span>
-      <Select
-        value={installationId === null ? null : String(installationId)}
-        onValueChange={(value) => {
-          setInstallationId(value ? Number(value) : null);
-          setSelected([]);
-        }}
-      >
-        <SelectTrigger aria-label="GitHub account" className="w-full">
-          <SelectValue placeholder="Choose a GitHub account">{installation?.account}</SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {installations.map((candidate) => (
-            <SelectItem key={candidate.id} value={String(candidate.id)}>
-              {candidate.account}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {installation && (
-        <div role="group" aria-label="Repositories" className="max-h-48 space-y-1 overflow-auto">
-          {installation.repositories.map((repository) => (
-            <label key={repository.id} className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={selected.includes(repository.id)}
-                onCheckedChange={() => toggle(repository.id)}
-              />
-              {repository.name}
-            </label>
-          ))}
-        </div>
-      )}
-      <SegmentedControl
-        ariaLabel="Access"
-        value={access}
-        onChange={setAccess}
-        options={ACCESS_OPTIONS}
-      />
+      {reach && <GitHubGrantPicker github={reach} value={choice} onChange={setChoice} />}
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={busy || !installation || selected.length === 0}
-          onClick={() =>
-            installation &&
-            onSave(access, { installation_id: installation.id, repository_ids: selected })
-          }
+          disabled={busy || resources === null}
+          onClick={() => resources && onSave(choice.access, resources)}
         >
           {current ? 'Save' : 'Grant'}
         </Button>

@@ -23,6 +23,19 @@ import {
   workspaceOffNotice,
 } from '@renderer/features/connectors/connectors-catalog';
 import {
+  repositoriesActionLabel,
+  repositoriesSummary,
+} from '@renderer/features/connectors/github-access';
+import {
+  emptyGitHubGrant,
+  githubChoiceSummary,
+  githubGrantResources,
+  withEveryRepository,
+  withInstallation,
+  withRepository,
+  withoutRepository,
+} from '@renderer/features/connectors/github-grant';
+import {
   OPEN_AGENT_NOTE,
   addableAgents,
   agentsSummary,
@@ -246,12 +259,12 @@ describe('the profile', () => {
     );
   });
 
-  it('offers connecting, signing in again, choosing repositories, or replacing a key', () => {
+  it('offers connecting, signing in again, or replacing a key', () => {
     expect(profileConnectAction(entry())).toBe('connect');
     expect(profileConnectAction(entry({ status: 'needs_reauthorization' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ status: 'error' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ status: 'connected' }))).toBeNull();
-    expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBe('manage');
+    expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBeNull();
     expect(profileConnectAction(entry({ status: 'connected', auth_type: 'api_key' }))).toBe(
       'replace'
     );
@@ -293,10 +306,110 @@ describe('the agents on a connector page', () => {
     { agent_id: 'm3', name: 'M3', granted: true, addressing_open: true },
   ];
 
-  it('can be added from the page only for a service a grant simply switches on, never GitHub', () => {
+  it('can be added from the page for a service a grant switches on, and for GitHub', () => {
     expect(offersAddAgent(entry({ pass_through: true }))).toBe(true);
     expect(offersAddAgent(entry({ pass_through: false }))).toBe(false);
-    expect(offersAddAgent(entry({ slug: 'github', pass_through: true }))).toBe(false);
+    expect(offersAddAgent(entry({ slug: 'github', pass_through: false }))).toBe(true);
+  });
+
+  it('starts a GitHub choice at the first account with nothing chosen, read only', () => {
+    expect(emptyGitHubGrant(undefined)).toEqual({
+      installationId: null,
+      repositoryIds: [],
+      access: 'read',
+    });
+    const github = {
+      status: 'connected' as const,
+      login: 'ada',
+      install_url: 'https://example.test',
+      installations: [
+        {
+          id: 7,
+          account: 'ada',
+          repositories: [
+            { id: 1, name: 'ada/one' },
+            { id: 2, name: 'ada/two' },
+          ],
+        },
+        { id: 8, account: 'org', repositories: [{ id: 3, name: 'org/three' }] },
+      ],
+    };
+    const empty = emptyGitHubGrant(github);
+    expect(empty).toEqual({ installationId: 7, repositoryIds: [], access: 'read' });
+    // Nothing to send until a repository is chosen.
+    expect(githubGrantResources(empty)).toBeNull();
+    expect(githubChoiceSummary(github, empty)).toBeNull();
+
+    const one = withRepository(empty, 2);
+    expect(withRepository(one, 2)).toBe(one);
+    expect(githubGrantResources(one)).toEqual({ installation_id: 7, repository_ids: [2] });
+    const all = withEveryRepository(github, one);
+    expect(all.repositoryIds).toEqual([2, 1]);
+    expect(withoutRepository(all, 2).repositoryIds).toEqual([1]);
+    // Another account starts over: its repositories are different ones.
+    expect(withInstallation(all, 8)).toEqual({
+      installationId: 8,
+      repositoryIds: [],
+      access: 'read',
+    });
+  });
+
+  it('says a GitHub choice in a sentence, naming the account only among several', () => {
+    const one = {
+      status: 'connected' as const,
+      login: 'ada',
+      install_url: 'https://example.test',
+      installations: [
+        {
+          id: 7,
+          account: 'ada',
+          repositories: [
+            { id: 1, name: 'ada/one' },
+            { id: 2, name: 'ada/two' },
+          ],
+        },
+      ],
+    };
+    const two = {
+      ...one,
+      installations: [...one.installations, { id: 8, account: 'org', repositories: [] }],
+    };
+    expect(
+      githubChoiceSummary(one, { installationId: 7, repositoryIds: [1], access: 'read' })
+    ).toBe('read access to 1 repository');
+    expect(
+      githubChoiceSummary(one, { installationId: 7, repositoryIds: [1, 2], access: 'write' })
+    ).toBe('read and push access to 2 repositories');
+    expect(
+      githubChoiceSummary(two, { installationId: 7, repositoryIds: [1], access: 'read' })
+    ).toBe('read access to 1 repository under ada');
+  });
+
+  it('counts repositories across accounts and offers choosing, then changing, them', () => {
+    const none = {
+      status: 'connected' as const,
+      login: 'ada',
+      install_url: 'https://example.test',
+      installations: [{ id: 7, account: 'ada', repositories: [] }],
+    };
+    expect(repositoriesSummary(none)).toBe('0 repositories');
+    expect(repositoriesActionLabel(none)).toBe('Choose repositories');
+    const some = {
+      ...none,
+      installations: [
+        { id: 7, account: 'ada', repositories: [{ id: 1, name: 'ada/one' }] },
+        {
+          id: 8,
+          account: 'org',
+          repositories: [
+            { id: 2, name: 'org/two' },
+            { id: 3, name: 'org/three' },
+          ],
+        },
+      ],
+    };
+    expect(repositoriesSummary(some)).toBe('3 repositories across 2 accounts');
+    expect(repositoriesActionLabel(some)).toBe('Change repositories');
   });
 
   it('counts the agents using it beside the heading', () => {

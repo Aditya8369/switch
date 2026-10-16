@@ -11,8 +11,9 @@ import { offersAddAgent } from './grant-agents';
  * form, or the generic sign-in, as the catalog entry calls for. A service the
  * person then adds agents to from its page closes the dialog as soon as it is
  * connected, so the page, with its Add agent search open, is what they see
- * next. `startAt: 'replace'` opens on the form that replaces a connected key,
- * which keeps every agent's access.
+ * next. GitHub's stays open once connected, showing the repositories reached,
+ * until Done; the page behind is already current. `startAt: 'replace'` opens
+ * on the form that replaces a connected key, which keeps every agent's access.
  */
 export function ConnectServiceModal({
   serverId,
@@ -47,7 +48,14 @@ export function ConnectServiceModal({
       />
     );
   if (connection.slug === 'github')
-    return <ManagedGitHubStep serverId={serverId} onBack={onClose} />;
+    return (
+      <ManagedGitHubStep
+        serverId={serverId}
+        onBack={onClose}
+        onDone={onClose}
+        onConnected={onConnected}
+      />
+    );
   if (connection.key)
     return (
       <ServiceKeyStep

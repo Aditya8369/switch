@@ -30,6 +30,8 @@ export function ManagedGitHubStep({
   onBack,
   onSkip,
   onContinue,
+  onConnected,
+  onDone,
 }: {
   serverId: string;
   onBack: () => void;
@@ -37,6 +39,13 @@ export function ManagedGitHubStep({
   onSkip?: () => void;
   /** Offers Continue to agent once repositories are accessible. */
   onContinue?: () => void;
+  /** Runs as the sign-in connects, with the warning Switch gave. */
+  onConnected?: (warning: string | null) => void;
+  /**
+   * Offers Done once connected, in place of Back and Disconnect, and Cancel
+   * before: for a page that has those of its own, as a connector's does.
+   */
+  onDone?: () => void;
 }) {
   const [connection, setConnection] = useState<GitHubConnection | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
@@ -74,6 +83,7 @@ export function ManagedGitHubStep({
           setFlowId(null);
           setWarning(result.warning);
           await load();
+          onConnected?.(result.warning);
         } else timer = setTimeout(() => void poll(), 2000);
       } catch (cause) {
         if (alive) {
@@ -87,7 +97,7 @@ export function ManagedGitHubStep({
       alive = false;
       clearTimeout(timer);
     };
-  }, [serverId, flowId, load]);
+  }, [serverId, flowId, load, onConnected]);
   useEffect(() => {
     if (!watching) return;
     let alive = true;
@@ -210,10 +220,12 @@ export function ManagedGitHubStep({
                 <Spinner /> Choose repositories in GitHub. Access will update here automatically.
               </p>
             )}
-            <p className="text-xs text-foreground-muted">
-              Disconnecting removes credentials saved by Switch. You can also revoke authorization
-              or uninstall the app in GitHub settings. No cloud agent has been started.
-            </p>
+            {!onDone && (
+              <p className="text-xs text-foreground-muted">
+                Disconnecting removes credentials saved by Switch. You can also revoke authorization
+                or uninstall the app in GitHub settings. No cloud agent has been started.
+              </p>
+            )}
           </>
         ) : (
           <>
@@ -290,12 +302,16 @@ export function ManagedGitHubStep({
           >
             Cancel
           </Button>
+        ) : onDone && connected && !error ? (
+          <Button onClick={onDone} disabled={busy}>
+            Done
+          </Button>
         ) : (
           <>
             <Button variant="outline" onClick={onBack} disabled={busy}>
-              Back
+              {onDone ? 'Cancel' : 'Back'}
             </Button>
-            {connected && (
+            {connected && !onDone && (
               <Button
                 variant="ghost"
                 disabled={busy}

@@ -169,21 +169,23 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
   });
   const el = await render();
 
-  await vi.waitFor(() => expect(el.querySelector('[aria-label="GitHub account"]')).not.toBeNull());
-  await act(async () => el.querySelector<HTMLElement>('[aria-label="GitHub account"]')!.click());
-  await vi.waitFor(() =>
-    expect(document.querySelectorAll('[role="option"]').length).toBeGreaterThan(0)
+  // One account: nothing to choose there. Nothing is chosen until a repository is.
+  const search = () => el.querySelector<HTMLInputElement>('input[aria-label="Add repository"]');
+  await vi.waitFor(() => expect(search()).not.toBeNull());
+  expect(el.querySelector('[aria-label="GitHub account"]')).toBeNull();
+  expect(el.textContent).toContain('No repository chosen.');
+  expect(button(el, 'Grant')?.disabled).toBe(true);
+  await act(async () => {
+    const input = search()!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, 'docs');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await vi.waitFor(() => expect(el.textContent).toContain('example-org/docs'));
+  const docs = [...el.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) =>
+    option.textContent?.includes('docs')
   );
-  const account = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-    (option) => option.textContent?.trim() === 'example-org'
-  );
-  await act(async () => account!.click());
-  await vi.waitFor(() => expect(el.textContent).toContain('docs'));
-
-  const docs = [...el.querySelectorAll('label')].find((label) =>
-    label.textContent?.includes('docs')
-  );
-  await act(async () => docs!.querySelector<HTMLElement>('[role="checkbox"], button')!.click());
+  await act(async () => docs!.click());
   expect(button(el, 'Grant')?.disabled).toBe(false);
   await act(async () => button(el, 'Grant')!.click());
 

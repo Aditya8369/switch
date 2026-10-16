@@ -1783,6 +1783,22 @@ version of their own to them without also giving them a release of their own.
   that it would act as you. A cross on a card, shown on hover, turns the
   service off for that agent again, so one agent's access can be taken away
   without disconnecting from every agent.
+- **GitHub is connected, and handed to agents, from its page like any other
+  connector.** Its page has a Repositories section: one card per account the
+  App is installed on, with its count, opening to a directory of names in
+  columns that is searched rather than scrolled once it is long, re-read as
+  the window regains focus. The section's "Choose repositories", "Change
+  repositories" once there are some, goes straight to GitHub. The connect
+  dialog ends with Done once GitHub is connected, the page behind already
+  current; it no longer offers Back or Disconnect, which the page has. "Add
+  agent" is offered for GitHub too: what every added agent gets is chosen
+  above the search, and the page says so while nothing is chosen, since no
+  agent can be added until something is. "Choose repositories" opens the
+  choice in place: the account where there are several, the repositories as
+  chips, added one by one from a search or all at once and removed with a
+  cross, and whether the agent may push. An agent's own choice is changed on
+  its Connections tab, whose form is the same choice in place of the account
+  dropdown and checkbox list.
 - **Connector tools ask in approval-required and auto-accept-edits mode.**
   Calls to a granted service's tools (Jira and Confluence through Atlassian,
   Datadog, Google Workspace) used to run without asking in every mode. They now

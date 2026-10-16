@@ -7,12 +7,18 @@ import type {
 export const OPEN_AGENT_NOTE = 'Others can address it; it would act as you.';
 
 /**
- * Whether the person adds agents to `entry` from its page. Only for a service
- * a grant simply switches on: GitHub's grant names repositories, which the
- * agent's settings choose.
+ * Whether the person adds agents to `entry` from its page: a service a grant
+ * simply switches on, and GitHub, whose grant names repositories chosen above
+ * the agents. A minted service other than GitHub is granted from the agent's
+ * settings.
  */
 export function offersAddAgent(entry: ConnectionCatalogEntry): boolean {
-  return entry.pass_through && entry.slug !== 'github';
+  return entry.pass_through || entry.slug === 'github';
+}
+
+/** What the Add agent search says an added agent gets, for a service with no choice to make. */
+export function addAgentIntro(entry: ConnectionCatalogEntry): string {
+  return `An agent you add acts as you at ${entry.name}, with what your connection allows.`;
 }
 
 /** The count beside the heading: how many of the person's agents use the service. */
