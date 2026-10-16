@@ -3,52 +3,53 @@ import type {
   ConnectionCatalogEntry,
 } from '@shared/core/switch-servers/connection-catalog';
 
-export const OPEN_GROUP_NOTE =
-  'Others can address these agents; they would act as you. Tick one to turn it on anyway.';
-export const ALREADY_ON_NOTE = 'Already on.';
+/** Said of an agent others can address: whoever addresses it would have it act as its owner. */
+export const OPEN_AGENT_NOTE = 'Others can address it; it would act as you.';
 
-export type ChecklistRow = {
+export type AgentRow = {
   agentId: string;
   name: string;
-  /** Ticked when the list opens. */
-  ticked: boolean;
-  /** Already granted: shown ticked, and not asked for again. */
-  granted: boolean;
+  /** Others can address it, so it is offered rather than picked to begin with. */
+  open: boolean;
 };
 
 /**
- * Whether connecting `entry` is followed by the checklist that turns it on for
+ * Whether connecting `entry` is followed by the picker that turns it on for
  * the person's agents. Only for a service a grant simply switches on: GitHub's
  * grant names repositories, which the agent's settings choose.
  */
-export function offersChecklist(entry: ConnectionCatalogEntry): boolean {
+export function offersPicker(entry: ConnectionCatalogEntry): boolean {
   return entry.pass_through && entry.slug !== 'github';
 }
 
 /**
- * The checklist, in two groups. First the agents it starts ticked: those only
- * their owner can address, and those that already have the service. Then the
- * agents others can address, unticked under {@link OPEN_GROUP_NOTE}, since
- * whoever addresses one would have it act as the owner.
+ * The person's agents, as the picker starts: `picked` are the agents only
+ * their owner can address, added before the person touches anything;
+ * `offered` are the agents others can address, found through the search and
+ * added by hand under {@link OPEN_AGENT_NOTE}; `on` already have the service
+ * and are only named.
  */
-export function checklistGroups(agents: ConnectionAgent[]): {
-  ticked: ChecklistRow[];
-  open: ChecklistRow[];
+export function pickerGroups(agents: ConnectionAgent[]): {
+  picked: AgentRow[];
+  offered: AgentRow[];
+  on: AgentRow[];
 } {
-  const row = (agent: ConnectionAgent, ticked: boolean): ChecklistRow => ({
+  const row = (agent: ConnectionAgent): AgentRow => ({
     agentId: agent.agent_id,
     name: agent.name,
-    ticked,
-    granted: agent.granted,
+    open: agent.addressing_open,
   });
+  const off = agents.filter((agent) => !agent.granted);
   return {
-    ticked: agents
-      .filter((agent) => agent.granted || !agent.addressing_open)
-      .map((agent) => row(agent, true)),
-    open: agents
-      .filter((agent) => !agent.granted && agent.addressing_open)
-      .map((agent) => row(agent, false)),
+    picked: off.filter((agent) => !agent.addressing_open).map(row),
+    offered: off.filter((agent) => agent.addressing_open).map(row),
+    on: agents.filter((agent) => agent.granted).map(row),
   };
+}
+
+/** The line under the search box naming the agents that already have the service. */
+export function alreadyOnText(serviceName: string, names: string[]): string {
+  return `${serviceName} is already on for ${listOf(names)}.`;
 }
 
 /** The one button after signing in: connect, and turn it on for the agents ticked. */
@@ -57,7 +58,7 @@ export function connectButtonLabel(ticked: number): string {
   return `Connect and turn on for ${ticked} ${ticked === 1 ? 'agent' : 'agents'}`;
 }
 
-/** What the checklist says when the person has no agents in the workspace. */
+/** What the picker says when the person has no agents in the workspace. */
 export function noAgentsText(serviceName: string): string {
   return `You have no agents in this workspace yet. Once you add one, turn ${serviceName} on for it from its settings.`;
 }

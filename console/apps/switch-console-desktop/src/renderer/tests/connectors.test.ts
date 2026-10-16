@@ -24,15 +24,16 @@ import {
   workspaceOffNotice,
 } from '@renderer/features/connectors/connectors-catalog';
 import {
-  OPEN_GROUP_NOTE,
+  OPEN_AGENT_NOTE,
   agentsUnlistedText,
-  checklistGroups,
+  alreadyOnText,
   connectButtonLabel,
   grantEach,
   grantFailureText,
   grantSuccessText,
   noAgentsText,
-  offersChecklist,
+  offersPicker,
+  pickerGroups,
 } from '@renderer/features/connectors/grant-agents';
 import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
@@ -290,33 +291,30 @@ describe('the profile', () => {
   });
 });
 
-describe('the checklist after connecting', () => {
+describe('the agent picker after connecting', () => {
   it('follows only a service a grant simply switches on, never GitHub', () => {
-    expect(offersChecklist(entry({ pass_through: true }))).toBe(true);
-    expect(offersChecklist(entry({ pass_through: false }))).toBe(false);
-    expect(offersChecklist(entry({ slug: 'github', pass_through: true }))).toBe(false);
+    expect(offersPicker(entry({ pass_through: true }))).toBe(true);
+    expect(offersPicker(entry({ pass_through: false }))).toBe(false);
+    expect(offersPicker(entry({ slug: 'github', pass_through: true }))).toBe(false);
   });
 
-  it('groups the agents it ticks first, then the open ones under one line', () => {
+  it('starts with the agents only their owner can address, offers the open ones, names the rest', () => {
     expect(
-      checklistGroups([
+      pickerGroups([
         { agent_id: 'm2', name: 'M2', granted: false, addressing_open: true },
         { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
         { agent_id: 'm3', name: 'M3', granted: true, addressing_open: true },
       ])
     ).toEqual({
-      ticked: [
-        { agentId: 'm1', name: 'M1', ticked: true, granted: false },
-        { agentId: 'm3', name: 'M3', ticked: true, granted: true },
-      ],
-      open: [{ agentId: 'm2', name: 'M2', ticked: false, granted: false }],
+      picked: [{ agentId: 'm1', name: 'M1', open: false }],
+      offered: [{ agentId: 'm2', name: 'M2', open: true }],
+      on: [{ agentId: 'm3', name: 'M3', open: true }],
     });
-    expect(OPEN_GROUP_NOTE).toBe(
-      'Others can address these agents; they would act as you. Tick one to turn it on anyway.'
-    );
+    expect(OPEN_AGENT_NOTE).toBe('Others can address it; it would act as you.');
+    expect(alreadyOnText('Example', ['M3', 'M4'])).toBe('Example is already on for M3 and M4.');
   });
 
-  it('labels the one button by how many agents are ticked', () => {
+  it('labels the one button by how many agents are picked', () => {
     expect(connectButtonLabel(0)).toBe('Connect');
     expect(connectButtonLabel(1)).toBe('Connect and turn on for 1 agent');
     expect(connectButtonLabel(3)).toBe('Connect and turn on for 3 agents');
@@ -329,7 +327,7 @@ describe('the checklist after connecting', () => {
   });
 
   it('says so when the person has no agents yet', () => {
-    expect(checklistGroups([])).toEqual({ ticked: [], open: [] });
+    expect(pickerGroups([])).toEqual({ picked: [], offered: [], on: [] });
     expect(noAgentsText('Example')).toBe(
       'You have no agents in this workspace yet. Once you add one, turn Example on for it from its settings.'
     );

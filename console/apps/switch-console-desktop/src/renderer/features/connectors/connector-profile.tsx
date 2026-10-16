@@ -20,7 +20,7 @@ import {
   workspaceOffNotice,
 } from './connectors-catalog';
 import { useConnectionAgents, useReloadConnectors } from './connectors-queries';
-import { agentsUnlistedText, offersChecklist } from './grant-agents';
+import { agentsUnlistedText, offersPicker } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
 const ACTION_LABEL = {
@@ -146,7 +146,7 @@ export function ConnectorProfile({
         <section className="min-w-0 space-y-2">
           <div className="flex items-center gap-2">
             <h2 className="flex-1 text-lg font-semibold text-foreground">Used by</h2>
-            {state.kind === 'connected' && offersChecklist(connection) && (
+            {state.kind === 'connected' && offersPicker(connection) && (
               <Button size="sm" variant="outline" onClick={() => connect(connection, 'grant')}>
                 Turn on for agents
               </Button>

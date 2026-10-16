@@ -1,54 +1,60 @@
 import { useEffect, useState } from 'react';
+import {
+  AgentPickerRow,
+  ChosenAgentTile,
+  agentProviderLabelFor,
+} from '@renderer/lib/components/agent-picker';
+import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { useConnectionAgents } from './connectors-queries';
 import {
-  ALREADY_ON_NOTE,
-  type ChecklistRow,
+  type AgentRow,
   type GrantOutcome,
-  OPEN_GROUP_NOTE,
+  OPEN_AGENT_NOTE,
   agentsUnlistedText,
-  checklistGroups,
+  alreadyOnText,
   grantEach,
   grantFailureText,
   grantSuccessText,
   noAgentsText,
+  pickerGroups,
 } from './grant-agents';
 
-export type AgentChecklistState = ReturnType<typeof useAgentChecklist>;
+export type AgentPickerState = ReturnType<typeof useAgentPicker>;
 
 /**
- * The person's agents for `connection`, which of them are ticked, and turning
- * the service on for the ticked ones that do not have it yet.
+ * The person's agents for `connection`, which of them are picked, and turning
+ * the service on for the picked ones.
  */
-export function useAgentChecklist(workspaceId: string, connection: ConnectionCatalogEntry) {
+export function useAgentPicker(workspaceId: string, connection: ConnectionCatalogEntry) {
   const agents = useConnectionAgents(workspaceId, connection.slug);
-  const groups = agents.data ? checklistGroups(agents.data) : null;
-  const rows = groups ? [...groups.ticked, ...groups.open] : [];
-  const [ticked, setTicked] = useState<Set<string> | null>(null);
+  const groups = agents.data ? pickerGroups(agents.data) : null;
+  const [picked, setPicked] = useState<AgentRow[] | null>(null);
   useEffect(() => {
-    if (agents.data && ticked === null)
-      setTicked(new Set(checklistGroups(agents.data).ticked.map((row) => row.agentId)));
-  }, [agents.data, ticked]);
-  const toGrant = rows.filter((row) => !row.granted && ticked?.has(row.agentId));
-  const toggle = (agentId: string, on: boolean) =>
-    setTicked((now) => {
-      const next = new Set(now);
-      if (on) next.add(agentId);
-      else next.delete(agentId);
-      return next;
-    });
+    if (agents.data && picked === null) setPicked(pickerGroups(agents.data).picked);
+  }, [agents.data, picked]);
+  const toGrant = picked ?? [];
+  const candidates = groups
+    ? [...groups.picked, ...groups.offered].filter(
+        (row) => !toGrant.some((chosen) => chosen.agentId === row.agentId)
+      )
+    : [];
+  const pick = (row: AgentRow) => setPicked((now) => [...(now ?? []), row]);
+  const unpick = (agentId: string) =>
+    setPicked((now) => (now ?? []).filter((row) => row.agentId !== agentId));
   const grant = async (): Promise<GrantOutcome> => {
     const outcome = await grantEach(
       toGrant,
@@ -65,82 +71,99 @@ export function useAgentChecklist(workspaceId: string, connection: ConnectionCat
     await agents.refetch();
     return outcome;
   };
-  return { agents, groups, ticked, toggle, toGrant, grant };
+  return { agents, groups, toGrant, candidates, pick, unpick, grant };
 }
 
 /**
- * The checklist itself: the agents it starts ticked, then those others can
- * address under one line saying why they are not, or why there is no list.
+ * The picker itself, shaped like adding agents to a room: the agents picked
+ * so far as tiles, a search box that adds one more, and under it the agents
+ * that already have the service. An agent others can address is offered with
+ * a note saying it would act as its owner, and keeps that note on its tile.
  */
-export function AgentChecklist({
+export function AgentPicker({
   name,
-  checklist,
+  serverId,
+  workspaceId,
+  picker,
   disabled,
 }: {
   name: string;
-  checklist: AgentChecklistState;
+  serverId: string;
+  workspaceId: string;
+  picker: AgentPickerState;
   disabled: boolean;
 }) {
-  const { agents, groups } = checklist;
+  const { agents, groups, toGrant, candidates } = picker;
+  const remote = useWorkspaceAgents(workspaceId);
+  const iconFor = (agentId: string) =>
+    remote.data?.find((agent) => agent.id === agentId)?.iconUrl ?? null;
+  const subtitleFor = (row: AgentRow) =>
+    row.open ? OPEN_AGENT_NOTE : agentProviderLabelFor(row.agentId, workspaceId);
+  const nothingToAdd = candidates.length === 0 && toGrant.length === 0;
+  if (agents.isPending)
+    return (
+      <p className="flex items-center gap-2 text-sm">
+        <Spinner /> Loading your agents…
+      </p>
+    );
+  if (agents.isError)
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {failureText(agents.error, 'Could not load your agents.')}
+      </p>
+    );
+  if (agents.data === null)
+    return <p className="text-sm text-foreground-muted">{agentsUnlistedText(name)}</p>;
+  if (!groups || agents.data.length === 0)
+    return <p className="text-sm text-foreground-muted">{noAgentsText(name)}</p>;
   return (
-    <>
-      {agents.isPending && (
-        <p className="flex items-center gap-2 text-sm">
-          <Spinner /> Loading your agents…
-        </p>
-      )}
-      {agents.isError && (
-        <p role="alert" className="text-sm text-destructive">
-          {failureText(agents.error, 'Could not load your agents.')}
-        </p>
-      )}
-      {agents.data === null && (
-        <p className="text-sm text-foreground-muted">{agentsUnlistedText(name)}</p>
-      )}
-      {groups && groups.ticked.length + groups.open.length === 0 && (
-        <p className="text-sm text-foreground-muted">{noAgentsText(name)}</p>
-      )}
-      {groups && groups.ticked.length + groups.open.length > 0 && (
-        <div role="group" aria-label="Your agents" className="max-h-72 space-y-2 overflow-auto">
-          {groups.ticked.map((row) => (
-            <ChecklistItem key={row.agentId} row={row} checklist={checklist} disabled={disabled} />
-          ))}
-          {groups.open.length > 0 && (
-            <p className="pt-1 text-xs text-foreground-muted">{OPEN_GROUP_NOTE}</p>
-          )}
-          {groups.open.map((row) => (
-            <ChecklistItem key={row.agentId} row={row} checklist={checklist} disabled={disabled} />
+    <Field>
+      <div className="flex items-center justify-between gap-3">
+        <FieldLabel>Agents</FieldLabel>
+        {toGrant.length > 0 && (
+          <span className="text-sm text-foreground-muted">{toGrant.length} selected</span>
+        )}
+      </div>
+      {toGrant.length > 0 && (
+        <div className="grid grid-cols-3 gap-2.5">
+          {toGrant.map((row) => (
+            <ChosenAgentTile
+              key={row.agentId}
+              agent={{ id: row.agentId, name: row.name, iconUrl: iconFor(row.agentId) }}
+              serverId={serverId}
+              subtitle={subtitleFor(row)}
+              subtitleTone={row.open ? 'warning' : 'muted'}
+              onRemove={() => {
+                if (!disabled) picker.unpick(row.agentId);
+              }}
+            />
           ))}
         </div>
       )}
-    </>
-  );
-}
-
-function ChecklistItem({
-  row,
-  checklist,
-  disabled,
-}: {
-  row: ChecklistRow;
-  checklist: AgentChecklistState;
-  disabled: boolean;
-}) {
-  return (
-    <label className="flex items-start gap-2 text-sm">
-      <Checkbox
-        className="mt-0.5"
-        checked={row.granted || (checklist.ticked?.has(row.agentId) ?? false)}
-        disabled={row.granted || disabled}
-        onCheckedChange={(on) => checklist.toggle(row.agentId, on)}
-      />
-      <span>
-        <span className="block">{row.name}</span>
-        {row.granted && (
-          <span className="block text-xs text-foreground-muted">{ALREADY_ON_NOTE}</span>
+      <PickerCombobox
+        items={candidates.map((row) => ({ ...row, id: row.agentId }))}
+        onPick={(item) => picker.pick({ agentId: item.agentId, name: item.name, open: item.open })}
+        searchText={(item) => item.name}
+        renderItem={(item) => (
+          <AgentPickerRow
+            agent={{ id: item.agentId, name: item.name, iconUrl: iconFor(item.agentId) }}
+            serverId={serverId}
+            subtitle={subtitleFor(item)}
+          />
         )}
-      </span>
-    </label>
+        disabled={disabled || nothingToAdd}
+        placeholder="Search agents to add..."
+        emptyText="No agents found"
+      />
+      {groups.on.length > 0 && (
+        <p className="text-xs text-foreground-muted">
+          {alreadyOnText(
+            name,
+            groups.on.map((row) => row.name)
+          )}
+        </p>
+      )}
+    </Field>
   );
 }
 
@@ -178,16 +201,18 @@ function WarningNote({ warning }: { warning: string | null }) {
 
 /**
  * After connecting a service a grant simply switches on: which of the
- * person's agents get it. Agents only their owner can address start ticked;
- * one others can address starts unticked, since it would act as its owner for
- * whoever addresses it.
+ * person's agents get it. Agents only their owner can address start picked;
+ * one others can address is found through the search, since it would act as
+ * its owner for whoever addresses it.
  */
 export function GrantAgentsStep({
+  serverId,
   workspaceId,
   connection,
   warning,
   onDone,
 }: {
+  serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   /** What connecting left to say, shown above the list. */
@@ -195,19 +220,19 @@ export function GrantAgentsStep({
   onDone: () => void;
 }) {
   const name = connection.name;
-  const checklist = useAgentChecklist(workspaceId, connection);
+  const picker = useAgentPicker(workspaceId, connection);
   const [saving, setSaving] = useState(false);
   const [outcome, setOutcome] = useState<GrantOutcome | null>(null);
   useCloseGuard(saving);
   const save = async () => {
     setSaving(true);
     try {
-      setOutcome(await checklist.grant());
+      setOutcome(await picker.grant());
     } finally {
       setSaving(false);
     }
   };
-  const count = checklist.toGrant.length;
+  const count = picker.toGrant.length;
 
   return (
     <>
@@ -216,14 +241,25 @@ export function GrantAgentsStep({
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         <WarningNote warning={warning} />
-        <p className="text-sm text-foreground-muted">
-          An agent you turn {name} on for acts as you there, with what your connection allows.
-        </p>
-        <AgentChecklist name={name} checklist={checklist} disabled={saving || outcome !== null} />
-        {outcome && <GrantOutcomeLines name={name} outcome={outcome} />}
+        {outcome ? (
+          <GrantOutcomeLines name={name} outcome={outcome} />
+        ) : (
+          <>
+            <p className="text-sm text-foreground-muted">
+              An agent you turn {name} on for acts as you there, with what your connection allows.
+            </p>
+            <AgentPicker
+              name={name}
+              serverId={serverId}
+              workspaceId={workspaceId}
+              picker={picker}
+              disabled={saving}
+            />
+          </>
+        )}
       </DialogContentArea>
       <DialogFooter>
-        {outcome || checklist.agents.data === null ? (
+        {outcome || picker.agents.data === null ? (
           <Button onClick={onDone}>Done</Button>
         ) : (
           <>

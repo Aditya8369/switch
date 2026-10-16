@@ -11,13 +11,8 @@ import {
 import { ServiceKeyStep } from '@renderer/features/switch-servers/service-key-step';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import { type GrantOutcome, connectButtonLabel, offersChecklist } from './grant-agents';
-import {
-  AgentChecklist,
-  ConnectedStep,
-  GrantAgentsStep,
-  useAgentChecklist,
-} from './grant-agents-step';
+import { type GrantOutcome, connectButtonLabel, offersPicker } from './grant-agents';
+import { AgentPicker, ConnectedStep, GrantAgentsStep, useAgentPicker } from './grant-agents-step';
 
 /**
  * Connecting one service from its Connectors profile: GitHub's own step, a key
@@ -26,7 +21,7 @@ import {
  * connected: on the signed-in screen for a sign-in, and on a second screen
  * after a key. `startAt: 'grant'` opens straight on that second screen, and
  * `startAt: 'replace'` on the form that replaces a connected key, which keeps
- * every agent's access and so is followed by no checklist.
+ * every agent's access and so is followed by no picker.
  */
 export function ConnectServiceModal({
   serverId,
@@ -48,7 +43,7 @@ export function ConnectServiceModal({
   const [warning, setWarning] = useState<string | null>(null);
   const keyConnected = (result: string | null) => {
     onConnected();
-    if (!offersChecklist(connection)) return;
+    if (!offersPicker(connection)) return;
     setWarning(result);
     setStep('grant');
   };
@@ -67,6 +62,7 @@ export function ConnectServiceModal({
   if (step === 'grant')
     return (
       <GrantAgentsStep
+        serverId={serverId}
         workspaceId={workspaceId}
         connection={connection}
         warning={warning}
@@ -86,10 +82,11 @@ export function ConnectServiceModal({
         onConnected={keyConnected}
       />
     );
-  if (offersChecklist(connection))
+  if (offersPicker(connection))
     return (
       <SignInAndTurnOn
         calls={calls}
+        serverId={serverId}
         workspaceId={workspaceId}
         connection={connection}
         onConnected={onConnected}
@@ -107,24 +104,26 @@ export function ConnectServiceModal({
 }
 
 /**
- * One screen once the browser has signed in: the account, the checklist, and
+ * One screen once the browser has signed in: the account, the picker, and
  * one button that confirms the account with Switch and then turns the service
- * on for each agent ticked. A refused confirm turns nothing on.
+ * on for each agent picked. A refused confirm turns nothing on.
  */
 function SignInAndTurnOn({
   calls,
+  serverId,
   workspaceId,
   connection,
   onConnected,
   onDone,
 }: {
   calls: ServiceCalls;
+  serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   onConnected: () => void;
   onDone: () => void;
 }) {
-  const checklist = useAgentChecklist(workspaceId, connection);
+  const picker = useAgentPicker(workspaceId, connection);
   const [done, setDone] = useState<{ warning: string | null; outcome: GrantOutcome } | null>(null);
   if (done)
     return (
@@ -146,13 +145,19 @@ function SignInAndTurnOn({
             An agent you turn {connection.name} on for acts as you there, with what your connection
             allows.
           </p>
-          <AgentChecklist name={connection.name} checklist={checklist} disabled={busy} />
+          <AgentPicker
+            name={connection.name}
+            serverId={serverId}
+            workspaceId={workspaceId}
+            picker={picker}
+            disabled={busy}
+          />
         </>
       )}
-      confirmLabel={() => connectButtonLabel(checklist.toGrant.length)}
+      confirmLabel={() => connectButtonLabel(picker.toGrant.length)}
       onConnected={async (warning) => {
         onConnected();
-        setDone({ warning, outcome: await checklist.grant() });
+        setDone({ warning, outcome: await picker.grant() });
       }}
     />
   );
