@@ -45,6 +45,8 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
       passwordLoginEnabled: true,
       oidcEnabled: false,
       oidcProviderLabel: null,
+      oidcLoginOptions: [],
+      oidcBrowserHandoff: false,
     }),
     authConfigCheckFailed: () => false,
     authConfigChecking: () => false,
