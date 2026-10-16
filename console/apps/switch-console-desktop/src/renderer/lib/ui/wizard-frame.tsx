@@ -110,7 +110,7 @@ export function WizardFrame({
  * A soft wash of colour behind the first-run pages, low enough in alpha to
  * read on the light and the dark theme alike.
  */
-const BACKDROP =
+export const ONBOARDING_BACKDROP =
   'radial-gradient(60% 45% at 50% 48%, rgba(120, 180, 185, 0.12), transparent 70%), ' +
   'radial-gradient(70% 55% at 10% 100%, rgba(255, 160, 110, 0.22), transparent 70%), ' +
   'radial-gradient(60% 50% at 90% 100%, rgba(255, 190, 150, 0.14), transparent 70%)';
@@ -134,7 +134,7 @@ export function OnboardingSurface({
   return (
     <div
       className="relative flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]"
-      style={{ backgroundImage: BACKDROP }}
+      style={{ backgroundImage: ONBOARDING_BACKDROP }}
     >
       {exit && (
         <div className="flex justify-end px-3 pt-3 [-webkit-app-region:no-drag]">

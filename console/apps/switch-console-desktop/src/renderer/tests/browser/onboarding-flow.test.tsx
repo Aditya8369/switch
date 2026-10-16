@@ -84,6 +84,14 @@ vi.mock('@renderer/features/switch-servers/local-server-store', () => ({
 }));
 
 vi.mock('@renderer/lib/telemetry/report', () => ({ report: vi.fn() }));
+vi.mock('@renderer/features/settings/use-app-settings-key', () => ({
+  useAppSettingsKey: () => ({
+    value: { enabled: true, askedAt: 1 },
+    update: () => {},
+    isLoading: false,
+    isSaving: false,
+  }),
+}));
 
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';

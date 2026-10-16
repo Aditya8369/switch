@@ -1,5 +1,6 @@
 import { MessagesSquare, ShieldCheck, Users } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { UsageDataNotice } from '@renderer/features/telemetry/usage-data-line';
 import { SwitchConsoleAppIcon } from '@renderer/lib/switch-console-app-icon';
 import { Button } from '@renderer/lib/ui/button';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
@@ -40,6 +41,7 @@ export function WelcomePage({
             Built-in, customisable guardrails keep your data safe and your agents well-behaved.
           </Point>
         </ul>
+        <UsageDataNotice />
       </div>
     </OnboardingSurface>
   );

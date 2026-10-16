@@ -84,8 +84,8 @@ export type RendererTelemetryEvents = {
       | 'created'
       | 'create_failed'
       | 'opened_existing'
-      | 'banner_opened'
-      | 'banner_dismissed';
+      | 'intro_opened'
+      | 'intro_dismissed';
     provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */

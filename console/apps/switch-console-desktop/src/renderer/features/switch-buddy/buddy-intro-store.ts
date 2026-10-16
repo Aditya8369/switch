@@ -1,34 +1,36 @@
 import { makeAutoObservable } from 'mobx';
 
+/** Where the answer to the switch-buddy pop-up is kept, per workspace, on this computer. */
+const ANSWERED_KEY = (workspaceId: string) => `switchBuddy.introAnswered.${workspaceId}`;
+
 /**
- * Meeting switch-buddy after the first run: the server whose banner was
- * pressed, while its full-window Meet switch-buddy page is up. The page is the
- * first run's own, drawn over the app for someone who set Switch up before
- * the buddy existed.
+ * The pop-up that introduces switch-buddy to someone who has none: whether it
+ * has been answered in a workspace, and whether the person chose Skip at Meet
+ * switch-buddy since the app started, which keeps it away until the next
+ * launch rather than asking again straight away.
  */
 class BuddyIntroStore {
-  serverId: string | null = null;
-  /**
-   * The person chose Skip at Meet switch-buddy since the app started: the
-   * banner leaves them alone until the next launch rather than asking again
-   * straight away.
-   */
   skippedThisSession = false;
+  /** Workspaces answered in this session, so the pop-up closes on the answer. */
+  private answeredNow = new Set<string>();
 
   constructor() {
     makeAutoObservable(this);
   }
 
-  open(serverId: string): void {
-    this.serverId = serverId;
-  }
-
-  close(): void {
-    this.serverId = null;
-  }
-
   skipped(): void {
     this.skippedThisSession = true;
+  }
+
+  isAnswered(workspaceId: string): boolean {
+    return (
+      this.answeredNow.has(workspaceId) || localStorage.getItem(ANSWERED_KEY(workspaceId)) !== null
+    );
+  }
+
+  answered(workspaceId: string): void {
+    localStorage.setItem(ANSWERED_KEY(workspaceId), new Date().toISOString());
+    this.answeredNow.add(workspaceId);
   }
 }
 
