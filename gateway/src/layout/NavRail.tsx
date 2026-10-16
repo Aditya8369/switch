@@ -25,6 +25,7 @@ import {
   Stack,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import { memo, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
@@ -70,12 +71,35 @@ const TARGET = 44;
 // The logo sits slightly inside the nav button footprint: it is a solid mark
 // against thin-stroke icons, so matching the container would read as heavier.
 const LOGO = 28;
+// The label line under an icon, with the gap above it.
+const LABEL = 16;
+const ITEM_GAP = 12;
+// The logo, its divider, the rail's padding and the account button.
+const CHROME = 170;
 
-function RailItem({ item, active }: { item: NavItem; active: boolean }) {
-  return (
+/** The rail's height with every item labelled. */
+function labelledHeight(items: number): number {
+  return CHROME + items * (TARGET + LABEL) + (items - 1) * ITEM_GAP;
+}
+
+/**
+ * One destination. On a window too short for every label, the label moves
+ * into a tooltip so the icons still fit above the account button.
+ */
+function RailItem({
+  item,
+  active,
+  compact,
+}: {
+  item: NavItem;
+  active: boolean;
+  compact: boolean;
+}) {
+  const link = (
     <Box
       component={NavLink}
       to={item.path}
+      aria-label={compact ? item.label : undefined}
       aria-current={active ? "page" : undefined}
       sx={{
         display: "flex",
@@ -110,12 +134,20 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
       >
         <item.icon sx={{ fontSize: 22, strokeWidth: 1.5 }} />
       </Box>
-      <Typography
-        sx={{ fontSize: "0.75rem", lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
-      >
-        {item.label}
-      </Typography>
+      {!compact && (
+        <Typography
+          sx={{ fontSize: "0.75rem", lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
+        >
+          {item.label}
+        </Typography>
+      )}
     </Box>
+  );
+  if (!compact) return link;
+  return (
+    <Tooltip title={item.label} placement="right">
+      {link}
+    </Tooltip>
   );
 }
 
@@ -159,6 +191,7 @@ export default memo(function NavRail() {
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
   ];
+  const compact = useMediaQuery(`(max-height: ${labelledHeight(items.length)}px)`);
   const current = session?.tenant ?? null;
   const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
@@ -169,6 +202,7 @@ export default memo(function NavRail() {
       sx={{
         width: "var(--nav-rail-width)",
         flexShrink: 0,
+        minHeight: 0,
         alignItems: "center",
         py: 2,
         color: "text.primary",
@@ -215,17 +249,32 @@ export default memo(function NavRail() {
 
       <Divider sx={{ my: 2, width: 29 }} />
 
-      <Stack sx={{ width: "100%", alignItems: "center", gap: 2 }}>
+      <Stack
+        sx={{
+          width: "100%",
+          alignItems: "center",
+          gap: `${ITEM_GAP}px`,
+          // On a window shorter still, the items scroll and the account
+          // button stays put; the rail is too narrow for a scrollbar.
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+          scrollbarWidth: "none",
+          "&::-webkit-scrollbar": { display: "none" },
+        }}
+      >
         {items.map((item) => (
           <RailItem
             key={item.path}
             item={item}
             active={location.pathname.startsWith(item.path)}
+            compact={compact}
           />
         ))}
       </Stack>
 
-      <Stack sx={{ mt: "auto", width: "100%", alignItems: "center", gap: 2, pt: 2 }}>
+      <Stack sx={{ width: "100%", alignItems: "center", gap: 2, pt: 2 }}>
         <Box
           component="button"
           onClick={(e: MouseEvent<HTMLElement>) => setAnchor(e.currentTarget)}
