@@ -118,6 +118,13 @@ version of their own to them without also giving them a release of their own.
 - **Documentation links point at `docs.switchagents.ai`.** Links in the docs
   and the synced `docs/official` pages used `docs.flintai.dev`, the older name
   for the same site. Old links still redirect.
+- **A sign-in that returns through the server goes straight back to Switch
+  Console.** Google Workspace and GitHub send the browser back to the server
+  rather than to the computer it left from. The server used to stop there on
+  a page naming the Switch account and asking the person to continue; it now
+  sends the browser on to Switch Console at once. The page remains only when
+  the return cannot be verified or the consent was cancelled. What ties a
+  sign-in to the browser and the Console that started it is unchanged.
 
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,

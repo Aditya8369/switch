@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 from html import escape
 from typing import Annotated, cast
-from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -75,8 +74,7 @@ def _page(name: str, message: str, status: int) -> HTMLResponse:
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": (
-                "default-src 'none'; frame-ancestors 'none'; form-action 'self'; "
-                "base-uri 'none'"
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
             ),
         },
     )
@@ -192,49 +190,10 @@ async def callback(
     request: Request,
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
 ) -> Response:
-    """Back from the vendor: the person says this is their Switch account."""
+    """Back from the vendor: the browser takes the code on to Switch Console,
+    on the computer it left from."""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
-    try:
-        flow = await flows.flow(state)
-        if flow.service != service:
-            raise FlowError(INTERRUPTED)
-        await flows.returning(flow, code, request.cookies.get(_cookie(state), ""))
-    except FlowError:
-        return _page("Connections", INTERRUPTED, 400)
-    response = _page(
-        flow.name,
-        f"Linking {escape(flow.name)} to <strong>{escape(flow.owner_label)}</strong>. "
-        "Continue only if this is your Switch account. Use the same computer where "
-        "you started the connection."
-        f'<form method="post" action="{_cookie_path(service)}">'
-        f'<input type="hidden" name="state" value="{escape(state, quote=True)}">'
-        f'<input type="hidden" name="code" value="{escape(code, quote=True)}">'
-        '<button type="submit">Continue in Switch Console</button></form>',
-        200,
-    )
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; frame-ancestors 'none'; "
-        f"form-action 'self' http://127.0.0.1:{flow.port}; base-uri 'none'"
-    )
-    return response
-
-
-@router.post("/callback")
-async def relay(
-    service: str,
-    request: Request,
-    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
-) -> Response:
-    """The person continued: their browser takes the code to Switch Console."""
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > 2 * MAX_CODE_LENGTH:
-            return _page("Connections", "Invalid sign-in response.", 400)
-    value = parse_qs(body.decode("utf-8", errors="replace"))
-    state = value.get("state", [""])[0]
-    code = value.get("code", [""])[0]
     try:
         flow = await flows.flow(state)
         if flow.service != service:

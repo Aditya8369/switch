@@ -142,13 +142,9 @@ async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
     back = urlsplit(world.google.authorize(left.headers["location"]))
     assert f"{back.scheme}://{back.netloc}{back.path}" == f"{PUBLIC}{FLOWS}/callback"
     code = parse_qs(back.query)["code"][0]
-    page = await client.get(f"{back.path}?{back.query}", cookies=cookie)
-    assert page.status_code == 200
-    relayed = await client.post(
-        f"{FLOWS}/callback", data={"state": state, "code": code}, cookies=cookie
-    )
-    assert relayed.status_code == 303
-    listener = urlsplit(relayed.headers["location"])
+    returned = await client.get(f"{back.path}?{back.query}", cookies=cookie)
+    assert returned.status_code == 303
+    listener = urlsplit(returned.headers["location"])
     assert (listener.netloc, listener.path) == (
         f"127.0.0.1:{PORT}",
         LOOPBACK_CALLBACK_PATH,

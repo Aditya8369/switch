@@ -164,17 +164,9 @@ async def authorize(client):
 
 
 async def relay(client, flow_id):
+    """The browser comes back from GitHub and is sent on to Console's listener."""
     response = await client.get(
         BASE + "/callback", params={"state": flow_id, "code": "SYNTHETIC-CODE"}
-    )
-    assert response.status_code == 200
-    assert "Linking GitHub" in response.text
-    assert (
-        "form-action 'self' http://127.0.0.1:12345"
-        in response.headers["content-security-policy"]
-    )
-    response = await client.post(
-        BASE + "/callback", data={"state": flow_id, "code": "SYNTHETIC-CODE"}
     )
     assert response.status_code == 303
     location = urlsplit(response.headers["location"])
@@ -314,7 +306,7 @@ async def test_a_sign_in_started_on_one_process_completes_on_another(
     github_app,
 ):
     """Every request of the sign-in lands on the other process from the one
-    before: start, the browser's three steps, completion, status and confirm."""
+    before: start, the browser's two steps, completion, status and confirm."""
     _, github, identity, factory = github_app
     first = _process(github, identity, factory, False)
     second = _process(github, identity, factory, False)
@@ -437,14 +429,15 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
         assert rows[0].user_id == "github-user"
 
 
-async def test_continue_page_reload_and_cancelled_consent(github_app):
+async def test_callback_is_taken_once_and_a_cancelled_consent_fails(github_app):
     client, github, _, _ = github_app
     flow_id = await authorize(client)
-    for _ in range(2):
-        response = await client.get(
-            BASE + "/callback", params={"state": flow_id, "code": "SYNTHETIC-CODE"}
-        )
-        assert response.status_code == 200
+    await relay(client, flow_id)
+    response = await client.get(
+        BASE + "/callback", params={"state": flow_id, "code": "SYNTHETIC-CODE"}
+    )
+    assert response.status_code == 400
+    flow_id = await authorize(client)
     response = await client.get(
         BASE + "/callback", params={"state": flow_id, "error": "access_denied"}
     )

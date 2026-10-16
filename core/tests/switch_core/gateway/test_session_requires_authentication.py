@@ -79,11 +79,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # credentials requires the initiating user to confirm via the authenticated API.
     ("GET", "/provider-connections/github/authorize"),
     ("GET", "/provider-connections/github/callback"),
-    ("POST", "/provider-connections/github/callback"),
     # The same handoff for every other service's sign-in (`connections/flows.py`).
     ("GET", "/service-connections/{service}/flows/authorize"),
     ("GET", "/service-connections/{service}/flows/callback"),
-    ("POST", "/service-connections/{service}/flows/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
     ("GET", "/auth/oidc/login"),

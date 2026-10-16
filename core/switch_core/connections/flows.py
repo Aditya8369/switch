@@ -7,10 +7,9 @@ token. The browser comes back one of two ways, as the catalog allows and this
 server can offer:
 
 - **loopback**: the vendor redirects straight to Console's listener.
-- **core**: the vendor redirects to Core's callback, which asks the person to
-  continue (showing whose Switch account the sign-in will join), then relays
-  the code to Console's listener. A cookie set when the browser left through
-  Core ties the return to that browser.
+- **core**: the vendor redirects to Core's callback, which sends the browser
+  straight on to Console's listener with the code. A cookie set when the
+  browser left through Core ties the return to that browser.
 
 Either way Console posts the code back with its completion secret, Core
 exchanges it and reads the account, and Console confirms; only then is the
@@ -68,8 +67,8 @@ class FlowError(Exception):
 class ServiceFlow:
     """A service sign-in as its row stands.
 
-    Status runs pending → authorizing → (core: returning → delivered) →
-    checking → ready | failed.
+    Status runs pending → authorizing → (core: delivered) → checking →
+    ready | failed.
     """
 
     stored: StoredFlow
@@ -97,10 +96,6 @@ class ServiceFlow:
     @property
     def port(self) -> int:
         return self.stored.port
-
-    @property
-    def owner_label(self) -> str:
-        return self.stored.owner_label
 
     @property
     def error(self) -> str | None:
@@ -256,11 +251,12 @@ class ServiceFlows:
             raise
         return url, nonce
 
-    async def returning(self, flow: ServiceFlow, code: str, nonce: str) -> None:
-        """The browser is back at Core's callback, in core mode."""
+    async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
+        """The browser is back at Core's callback, in core mode: where it
+        takes the code on to Console's listener. Once per flow."""
         if (
             flow.mode != "core"
-            or flow.status not in ("authorizing", "returning")
+            or flow.status != "authorizing"
             or len(code) > MAX_CODE_LENGTH
             or not flow.stored.holds_nonce(nonce)
         ):
@@ -269,29 +265,13 @@ class ServiceFlows:
             error = f"{flow.name} sign-in was cancelled."
             await self._flows.advance(
                 flow.stored,
-                expect=("authorizing", "returning"),
+                expect=("authorizing",),
                 to="failed",
                 changes={"error": error},
             )
             raise FlowError(error)
         taken = await self._flows.advance(
-            flow.stored, expect=("authorizing", "returning"), to="returning", changes={}
-        )
-        if taken is None:
-            raise FlowError("The sign-in could not be verified.")
-
-    async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
-        """The person continued: where their browser takes the code to Console."""
-        if (
-            flow.mode != "core"
-            or flow.status != "returning"
-            or not code
-            or len(code) > MAX_CODE_LENGTH
-            or not flow.stored.holds_nonce(nonce)
-        ):
-            raise FlowError("The sign-in could not be verified.")
-        taken = await self._flows.advance(
-            flow.stored, expect=("returning",), to="delivered", changes={}
+            flow.stored, expect=("authorizing",), to="delivered", changes={}
         )
         if taken is None:
             raise FlowError("The sign-in could not be verified.")

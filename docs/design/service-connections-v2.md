@@ -122,7 +122,7 @@ hour. A token already handed out stays valid at the vendor until it expires.
 ## Connecting
 
 Routes under `/gateway/service-connections/{service}/flows`: start, authorize,
-callback (GET, then the POST relay), complete, status, confirm and cancel.
+callback, complete, status, confirm and cancel.
 Switch Console starts a flow with a one-time state, its listener's port and a
 completion secret. Core keeps the PKCE verifier and exchanges the code, so
 neither Console nor the browser holds a token. The browser comes back the first
@@ -130,14 +130,16 @@ way the catalog allows that this server can offer:
 
 - **loopback**: straight to Console's listener on 127.0.0.1. With
   `loopback_ports`, only on one of them; Console listens on the first free one.
-- **core**: to Core's callback (needs `GATEWAY_PUBLIC_URL`), which shows whose
-  Switch account the sign-in will join and relays the code to Console's
-  listener. A cookie set as the browser left through Core ties it to that
-  browser.
+- **core**: to Core's callback (needs `GATEWAY_PUBLIC_URL`), which sends the
+  browser straight on to Console's listener with the code. A cookie set as the
+  browser left through Core ties it to that browser, and the callback takes a
+  flow's code once; a page is shown only when the return cannot be verified
+  or the consent was cancelled.
 
-Console posts the code back with its completion secret; Core exchanges it and
-reads the account; the connection is written through `broker.connect()` only
-when Console confirms. The consent recorded is what the vendor granted: write
+Console's listener brings Console to the front as the code arrives, and
+posts it back with the completion secret; Core exchanges it and reads the
+account; the connection is written through `broker.connect()` only when
+Console confirms. The consent recorded is what the vendor granted: write
 where every write scope was granted, else read. Flows live in memory: ten
 minutes each, at most 256, one per person.
 

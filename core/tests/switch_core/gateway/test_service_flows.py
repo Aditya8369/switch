@@ -407,7 +407,7 @@ class TestLongCodes:
             assert (await console.complete(code)).status_code == 204
             assert (await console.confirm()).status_code == 200
 
-    async def test_a_long_code_is_relayed_through_core(
+    async def test_a_long_code_comes_back_through_core(
         self, session_factory, tmp_path
     ) -> None:
         world = _world(
@@ -426,15 +426,9 @@ class TestLongCodes:
             }
             back = urlsplit(world.vendor.authorize(left.headers["location"]))
             code = parse_qs(back.query)["code"][0]
-            assert (
-                await client.get(f"{back.path}?{back.query}", cookies=cookie)
-            ).status_code == 200
-            relayed = await client.post(
-                f"{FLOWS}/callback",
-                data={"state": console.state, "code": code},
-                cookies=cookie,
-            )
-            assert relayed.status_code == 303
+            returned = await client.get(f"{back.path}?{back.query}", cookies=cookie)
+            assert returned.status_code == 303
+            assert _listener_code(returned.headers["location"], console.state) == code
             assert (await console.complete(code)).status_code == 204
 
 
@@ -469,7 +463,7 @@ class TestLoopbackPorts:
 
 
 class TestCoreCallback:
-    async def test_returns_through_core_then_relays_the_code_to_console(
+    async def test_returns_through_core_straight_to_console(
         self, session_factory, tmp_path
     ) -> None:
         world = _world(
@@ -504,22 +498,20 @@ class TestCoreCallback:
             code = query["code"][0]
             path = f"{back.path}?{back.query}"
 
+            # Only the browser that left through Core may bring the code back,
+            # and it is sent straight on to Console's listener, once.
             stranger = await client.get(path)
             assert stranger.status_code == 400
-            page = await client.get(
+            returned = await client.get(
                 path, cookies={f"switch_service_{console.state}": cookie}
             )
-            assert page.status_code == 200
-            assert "ada (ada@example.invalid)" in page.text
-            assert f"http://127.0.0.1:{PORT}" in page.headers["content-security-policy"]
-
-            relayed = await client.post(
-                f"{FLOWS}/callback",
-                data={"state": console.state, "code": code},
-                cookies={f"switch_service_{console.state}": cookie},
+            assert returned.status_code == 303
+            assert _listener_code(returned.headers["location"], console.state) == code
+            assert "max-age=0" in returned.headers["set-cookie"].lower()
+            again = await client.get(
+                path, cookies={f"switch_service_{console.state}": cookie}
             )
-            assert relayed.status_code == 303
-            assert _listener_code(relayed.headers["location"], console.state) == code
+            assert again.status_code == 400
 
             assert (await console.complete(code)).status_code == 204
             assert (await console.confirm()).status_code == 200
@@ -532,9 +524,7 @@ class TestCoreCallback:
         ]
         assert exchange["redirect_uri"] == f"{PUBLIC}{FLOWS}/callback"
 
-    async def test_a_code_cannot_skip_core_and_the_person(
-        self, session_factory, tmp_path
-    ) -> None:
+    async def test_a_code_cannot_skip_core(self, session_factory, tmp_path) -> None:
         world = _world(
             session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
         )

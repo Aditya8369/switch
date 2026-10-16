@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import secrets
-from html import escape
 from typing import Annotated, cast
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -98,7 +97,7 @@ def page(message: str, status: int) -> HTMLResponse:
         headers={
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
+            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         },
     )
 
@@ -206,12 +205,14 @@ async def callback(
     github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
+    """Back from GitHub: the browser takes the code on to Switch Console, on
+    the computer it left from. Once per flow."""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
     try:
         flow = await browser_flow(flows, state)
         if (
-            flow.status not in {"authorizing", "returning"}
+            flow.status != "authorizing"
             or len(code) > 512
             or not flow.holds_nonce(request.cookies.get("switch_github_" + state, ""))
         ):
@@ -219,61 +220,15 @@ async def callback(
         if not code:
             await flows.advance(
                 flow,
-                expect=("authorizing", "returning"),
+                expect=("authorizing",),
                 to="failed",
                 changes={"error": "GitHub authorization was cancelled."},
             )
             raise GitHubError("GitHub authorization was cancelled.")
         if (
             await flows.advance(
-                flow, expect=("authorizing", "returning"), to="returning", changes={}
+                flow, expect=("authorizing",), to="delivered", changes={}
             )
-            is None
-        ):
-            raise GitHubError("Authorization could not be verified.")
-        response = page(
-            f"Linking GitHub to <strong>{escape(flow.owner_label)}</strong>. "
-            "Continue only if this is your Switch account. Use the same computer where you started the connection."
-            '<form method="post" action="/gateway/provider-connections/github/callback">'
-            f'<input type="hidden" name="state" value="{escape(state, quote=True)}">'
-            f'<input type="hidden" name="code" value="{escape(code, quote=True)}">'
-            '<button type="submit">Continue in Switch Console</button></form>',
-            200,
-        )
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; frame-ancestors 'none'; "
-            f"form-action 'self' http://127.0.0.1:{flow.port}; base-uri 'none'"
-        )
-        return response
-    except GitHubError:
-        return page(INTERRUPTED, 400)
-
-
-@router.post("/callback")
-async def relay(
-    request: Request,
-    github: Annotated[GitHubConnections, Depends(service)],
-    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
-) -> Response:
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > 2048:
-            return page("Invalid authorization response.", 400)
-    value = parse_qs(body.decode("utf-8", errors="replace"))
-    state = value.get("state", [""])[0]
-    code = value.get("code", [""])[0]
-    try:
-        flow = await browser_flow(flows, state)
-        if (
-            not code
-            or len(code) > 512
-            or flow.status != "returning"
-            or not flow.holds_nonce(request.cookies.get("switch_github_" + state, ""))
-        ):
-            raise GitHubError("Authorization could not be verified.")
-        if (
-            await flows.advance(flow, expect=("returning",), to="delivered", changes={})
             is None
         ):
             raise GitHubError("Authorization could not be verified.")
