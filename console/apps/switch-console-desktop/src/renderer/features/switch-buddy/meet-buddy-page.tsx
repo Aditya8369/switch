@@ -1,5 +1,5 @@
 import { observer } from 'mobx-react-lite';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -20,6 +20,12 @@ import { useThisComputer } from './use-this-computer';
 
 /** How many providers the page offers to start with outright; the rest are a click further. */
 const START_BUTTONS = 2;
+
+/**
+ * How long the page waits for every provider's check before offering what is
+ * ready anyway: a provider whose check never comes back must not hold the rest.
+ */
+const CHECK_PATIENCE_MS = 45_000;
 
 /** The order the "Start with …" buttons go in: the most used first. */
 const PREFERRED = ['claude', 'codex'];
@@ -59,15 +65,31 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   const exit = useWizardExit();
   const [settingUp, setSettingUp] = useState(false);
   const { state: computer } = useThisComputer(serverId, workspaceId);
+  const providers = useMemo(
+    () => buddyProviders(agentProviders(), computer.kind === 'ready' ? computer.machine : null),
+    [computer]
+  );
+  const [outOfPatience, setOutOfPatience] = useState(false);
+  const machineReady = computer.kind === 'ready';
+  useEffect(() => {
+    if (!machineReady) return;
+    const timer = setTimeout(() => setOutOfPatience(true), CHECK_PATIENCE_MS);
+    return () => clearTimeout(timer);
+  }, [machineReady]);
+  // The Start buttons appear once, with every check back, rather than one at
+  // a time as each returns: the row would change under the eye, and whichever
+  // answered first would hold the main button until the preferred one came.
+  const checked =
+    machineReady && (outOfPatience || providers.every((provider) => provider.state !== 'checking'));
   const ready = useMemo(
     () =>
-      startOrder(
-        buddyProviders(
-          agentProviders(),
-          computer.kind === 'ready' ? computer.machine : null
-        ).filter((provider) => provider.state === 'ready')
-      ).slice(0, START_BUTTONS),
-    [computer]
+      checked
+        ? startOrder(providers.filter((provider) => provider.state === 'ready')).slice(
+            0,
+            START_BUTTONS
+          )
+        : [],
+    [checked, providers]
   );
   const existing = useManagedAgents(serverId).data?.find(isBuddy) ?? null;
   const [starting, setStarting] = useState<string | null>(null);
@@ -176,7 +198,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             </Button>
             {/* Beside the buttons, not between them: the row stays where it is
                 while this computer is still being checked. */}
-            {computer.kind === 'starting' && (
+            {computer.kind !== 'failed' && !checked && (
               <span className="absolute top-1/2 left-full ml-3 flex -translate-y-1/2 items-center gap-1.5 text-xs whitespace-nowrap text-foreground-muted">
                 <Spinner className="size-3" />
                 Checking AI providers…
