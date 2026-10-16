@@ -28,8 +28,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { cn } from '@renderer/utils/utils';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentChats, openAgentChat } from './agent-chats';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
@@ -37,6 +35,7 @@ import { agentTabStore } from './agent-tab-store';
 import { agentTabs, shownAgentTab } from './agent-tabs';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
+import { TabbedAgentTitlebar } from './tabbed-agent-titlebar';
 import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
 
 type ManagedAgentParams = {
@@ -105,24 +104,11 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       />
     );
   return (
-    <Titlebar
-      className="border-b border-border"
-      leftClassName={cn(
-        'w-[300px] shrink-0 self-stretch',
-        tab === 'chats' && 'border-r border-border'
-      )}
-      leftSlot={
-        <div className="flex min-w-0 items-center gap-3">
-          {breadcrumb}
-          <SegmentedControl
-            value={tab}
-            onChange={(next) => agentTabStore.setTab(params.agentId, next)}
-            options={tabs}
-            ariaLabel="Agent view"
-          />
-        </div>
-      }
-      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4"
+    <TabbedAgentTitlebar
+      breadcrumb={breadcrumb}
+      tab={tab}
+      tabs={tabs}
+      onTab={(next) => agentTabStore.setTab(params.agentId, next)}
       rightSlot={
         <>
           <span className="truncate text-sm font-medium">{chat?.name}</span>

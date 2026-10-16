@@ -194,16 +194,20 @@ export const LocationTitlebar = observer(function LocationTitlebar() {
 
   return (
     <Titlebar
+      leftClassName="min-w-0"
       leftSlot={
-        <div className="flex items-center gap-2">
-          <AgentCrumb agent={agent} />
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="min-w-0 truncate">
+            <AgentCrumb agent={agent} />
+          </div>
           {agent?.ownerName && (
-            <span className="text-xs text-foreground-tertiary-passive">
+            <span className="shrink-0 text-xs text-foreground-tertiary-passive">
               loaded · by {agent.ownerName}
             </span>
           )}
           {agent && tabs && (
             <SegmentedControl
+              className="shrink-0"
               value={tab}
               onChange={(next) => localAgentTabStore.setTab(agent.id, next)}
               options={tabs}
