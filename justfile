@@ -113,13 +113,15 @@ local-cloud-user email name password:
 # Each run is someone who has never used Switch: a new Console data folder, so
 # the first-run pages start from the welcome page, and a new address to create
 # the account with. Needs GATEWAY_SIGNUP_ENABLED=true in .env, and
-# GATEWAY_SIGNUP_MODE=open for the account to start with no workspace.
+# GATEWAY_SIGNUP_MODE=open for the account to start with no workspace. Set
+# LOCAL_CLOUD_URL when the local Cloud is not on http://localhost:8000.
 # Start Switch Console as a brand-new person against `just local-cloud`
 local-cloud-fresh:
     #!/usr/bin/env bash
     set -euo pipefail
-    auth="$(curl -fsS http://localhost:8000/gateway/auth/config)" || {
-      echo "✋ Nothing answers at http://localhost:8000. Start it with 'just local-cloud'." >&2
+    url="${LOCAL_CLOUD_URL:-http://localhost:8000}"
+    auth="$(curl -fsS "$url/gateway/auth/config")" || {
+      echo "✋ Nothing answers at $url. Start it with 'just local-cloud'." >&2
       exit 1
     }
     if [ "$(jq -r .signup_enabled <<<"$auth")" != "true" ]; then
@@ -139,7 +141,7 @@ local-cloud-fresh:
     # starts with nothing, and the name before the @ is what greets you.
     echo "Create an account on the sign-in page as: ${name}@run-${run}.test (any password)"
     echo "Console data: switchdash-fresh-${run}, under the system's app-data folder"
-    cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR="switchdash-fresh-${run}" pnpm dev
+    cd console && SWITCH_CLOUD_URL="$url" SWITCH_CONSOLE_USER_DATA_DIR="switchdash-fresh-${run}" pnpm dev
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
