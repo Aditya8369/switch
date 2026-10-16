@@ -47,10 +47,10 @@ import RemoveDialog from "./RemoveDialog";
 import SetupDialog, { type SetupMode } from "./SetupDialog";
 import UpdateSecretDialog from "./UpdateSecretDialog";
 
-const CHIP_COLOR: Record<CardState, "success" | "default" | "info" | "warning"> = {
+const CHIP_COLOR: Record<CardState, "success" | "default" | "warning"> = {
   ready: "success",
   not_set_up: "default",
-  configured: "info",
+  configured: "success",
   attention: "warning",
 };
 

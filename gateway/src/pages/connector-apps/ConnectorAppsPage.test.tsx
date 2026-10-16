@@ -235,8 +235,14 @@ describe("ConnectorAppsPage", () => {
       },
     });
     render(<ConnectorAppsPage />);
-    expect(await screen.findByText("Set by server config")).toBeTruthy();
-    expect(screen.getByText("Using GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH.")).toBeTruthy();
+    const chip = (await screen.findByText("Set on the server")).closest(".MuiChip-root")!;
+    expect(chip.className).toContain("MuiChip-colorSuccess");
+    expect(chip.className).toContain("MuiChip-filled");
+    expect(
+      screen.getByText(
+        "From GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH. Change it there, or remove it to manage it here.",
+      ),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Manage it here instead" }));
     expect(screen.getAllByLabelText("To do")).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "Copy into Switch" }));
@@ -244,7 +250,8 @@ describe("ConnectorAppsPage", () => {
     expect(screen.getAllByLabelText("To do")).toHaveLength(2);
     expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
     expect(
-      await screen.findByText(/Saved here, waiting for restart: remove GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH/),
+      await screen.findByText(/A copy is saved here, same client\. Remove the variable and restart Switch to use the copy\./),
     ).toBeTruthy();
+    expect(screen.queryByText(/waiting for restart/)).toBeNull();
   });
 });

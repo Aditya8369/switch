@@ -115,7 +115,7 @@ export function stateLabel(state: CardState): string {
     case "not_set_up":
       return "Not set up";
     case "configured":
-      return "Set by server config";
+      return "Set on the server";
     case "attention":
       return "Needs attention";
   }
@@ -195,9 +195,11 @@ export function menuLabel(app: ConnectorApp, action: MenuAction): string {
 export function configuredSentence(app: ConnectorApp): string {
   if (app.deprecated)
     return "Using HOSTED_GITHUB_CONFIG_PATH, which names no private key, so GitHub can be connected but not granted. Set up the GitHub App here instead, after unsetting it.";
+  const one = app.configuration_variables.length === 1;
+  const from = `From ${variables(app)}. Change ${one ? "it" : "them"} there, or remove ${one ? "it" : "them"} to manage it here.`;
   if (waitingForRestart(app))
-    return `Saved here, waiting for restart: remove ${variables(app)} and restart Switch.`;
-  return `Using ${variables(app)}.`;
+    return `${from} A copy is saved here, same client. Remove the ${one ? "variable" : "variables"} and restart Switch to use the copy.`;
+  return from;
 }
 
 export function secretFields(app: Pick<ConnectorApp, "kind">): SecretField[] {

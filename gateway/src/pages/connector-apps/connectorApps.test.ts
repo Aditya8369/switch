@@ -5,6 +5,7 @@ import {
   audienceText,
   cardOrder,
   cardState,
+  configuredSentence,
   menuActions,
   menuLabel,
   moveChecklist,
@@ -48,7 +49,7 @@ describe("card state", () => {
     expect(["ready", "not_set_up", "configured", "attention"].map((s) => stateLabel(s as never))).toEqual([
       "Ready",
       "Not set up",
-      "Set by server config",
+      "Set on the server",
       "Needs attention",
     ]);
   });
@@ -94,6 +95,33 @@ describe("card state", () => {
     expect(attention(waiting, null)).toBeNull();
     expect(cardState(waiting, null)).toBe("configured");
     expect(primaryAction(waiting, null)).toBeNull();
+  });
+});
+
+describe("set on the server", () => {
+  it("names the variable, and how to change it or move off it", () => {
+    expect(configuredSentence(CONFIGURED)).toBe(
+      "From GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH. Change it there, or remove it to manage it here.",
+    );
+    expect(configuredSentence({ ...GITHUB, source: "configuration", saved_client_id: null })).toBe(
+      "From GITHUB_APP_CONFIG_PATH and GITHUB_APP_PRIVATE_KEY_PATH. Change them there, or remove them to manage it here.",
+    );
+  });
+
+  it("says a copy saved here under the same client is used once the variable goes", () => {
+    const copied = app({ source: "configuration", saved_ignored: true });
+    expect(configuredSentence(copied)).toBe(
+      "From GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH. Change it there, or remove it to manage it here. A copy is saved here, same client. Remove the variable and restart Switch to use the copy.",
+    );
+    expect(configuredSentence(copied)).not.toMatch(/waiting for restart/);
+  });
+
+  it("leaves a copy of another client to the attention sentence", () => {
+    const other = app({ source: "configuration", saved_ignored: true, saved_client_id: "other" });
+    expect(configuredSentence(other)).toBe(
+      "From GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH. Change it there, or remove it to manage it here.",
+    );
+    expect(attention(other, null)?.cause).toBe("saved_ignored");
   });
 });
 
