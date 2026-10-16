@@ -80,6 +80,8 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'created',
       'create_failed',
       'opened_existing',
+      'banner_opened',
+      'banner_dismissed',
     ]),
     provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity', 'none']),
   }),

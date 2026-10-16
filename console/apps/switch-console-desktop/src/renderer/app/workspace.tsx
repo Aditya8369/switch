@@ -3,6 +3,9 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
+import { BuddyBanner } from '@renderer/features/switch-buddy/buddy-banner';
+import { BuddyIntroFlow } from '@renderer/features/switch-buddy/buddy-intro-flow';
+import { buddyIntroStore } from '@renderer/features/switch-buddy/buddy-intro-store';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { FrozenBanner, frozenServer } from '@renderer/features/switch-servers/frozen-workspace';
 import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
@@ -117,6 +120,9 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
       return <OnboardingFlow />;
     case 'workspace': {
       if (!flagsReady) return null;
+      // Meeting switch-buddy from its banner takes the window, as in the first run.
+      if (buddyIntroStore.serverId !== null)
+        return <BuddyIntroFlow serverId={buddyIntroStore.serverId} />;
       // A workspace whose server can't answer stays where it was, under a
       // banner, rather than filling with errors from every call that fails.
       const frozen = frozenServer(currentViewId);
@@ -125,7 +131,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
           leftSidebar={<LeftSidebar />}
           mainContent={mainContent}
           persistentLayer={<RoomEmbedLayer />}
-          banner={frozen && <FrozenBanner server={frozen} />}
+          banner={frozen ? <FrozenBanner server={frozen} /> : <BuddyBanner />}
           contentClassName={frozen ? FROZEN : undefined}
         />
       );
