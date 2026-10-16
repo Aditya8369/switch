@@ -6,6 +6,7 @@ import { showModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@renderer/lib/ui/dropdown-menu';
 import type { ChatSummary } from '@shared/core/chats/chats';
+import { chatRemovalNavigation } from '../chat-removal';
 import { chatsStore } from '../stores/chats';
 
 export type ChatAction = {
@@ -27,10 +28,13 @@ async function attempt(run: () => Promise<void>, failure: string): Promise<void>
 /** Leave the chat view if it shows this room, and close it on an agent's page. */
 function leaveIfOpen(roomId: string): void {
   const navigation = appState.navigation;
-  if (navigation.currentViewId === 'chat' && navigation.viewParamsStore.chat?.roomId === roomId)
-    navigation.navigate('home');
-  if (navigation.viewParamsStore.managedAgent?.roomId === roomId)
-    navigation.updateViewParams('managedAgent', { roomId: undefined });
+  const { leaveChatView, clearAgentChat } = chatRemovalNavigation(roomId, {
+    currentViewId: navigation.currentViewId,
+    chatRoomId: navigation.viewParamsStore.chat?.roomId,
+    agentRoomId: navigation.viewParamsStore.managedAgent?.roomId,
+  });
+  if (leaveChatView) navigation.navigate('home');
+  if (clearAgentChat) navigation.updateViewParams('managedAgent', { roomId: undefined });
 }
 
 /**
