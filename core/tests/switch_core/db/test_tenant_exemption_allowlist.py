@@ -168,7 +168,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.bridges.agent.server_connectors.lifecycle",
-    "switch_core.clients.agent_consumer",
+    "switch_core.delivery.recipient",
     "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",

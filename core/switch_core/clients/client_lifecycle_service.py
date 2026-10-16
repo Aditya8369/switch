@@ -53,7 +53,8 @@ CLIENT_RETRY_CAP_SECONDS = 60.0
 
 @runtime_checkable
 class _PreloadsAgent(Protocol):
-    """A consumer that can start from an agent row read for it in bulk."""
+    """An agent's actor, which can connect with an agent row read for it in
+    bulk rather than reading its own."""
 
     def preload_agent(self, agent: Agent) -> None: ...
 
@@ -274,13 +275,12 @@ class ClientLifecycleService:
 
         logger.info("Starting %d clients", len(records))
         for record in records:
-            self._register(record)
+            actor = self._register(record)
             # Before the task first runs: `_register` only schedules it, and
             # nothing here yields until the loop is done.
-            consumer = self._consumers.get(record.id)
             agent = agents.get(record.id)
-            if agent is not None and isinstance(consumer, _PreloadsAgent):
-                consumer.preload_agent(agent)
+            if agent is not None and isinstance(actor, _PreloadsAgent):
+                actor.preload_agent(agent)
 
     async def reconcile_all(self) -> None:
         """`reconcile_tenant` for every tenant."""
@@ -297,8 +297,8 @@ class ClientLifecycleService:
         here is started, and a copy whose row is gone is stopped.
 
         An agent's client row commits before its agent row, so one without an
-        agent row yet is left alone: its consumer would find no agent and
-        crash. The registration's own signal comes after both have committed.
+        agent row yet is left alone: its actor would find no agent and crash.
+        The registration's own signal comes after both have committed.
         Collaboration clients (bridges and the people they speak for) are the
         bridges' to start and stop, and a client that crashed stays stopped.
         """
@@ -352,10 +352,9 @@ class ClientLifecycleService:
                 record.display_name,
                 record.transport_user_id,
             )
-            self._register(record)
-            consumer = self._consumers.get(record.id)
-            if agent is not None and isinstance(consumer, _PreloadsAgent):
-                consumer.preload_agent(agent)
+            actor = self._register(record)
+            if agent is not None and isinstance(actor, _PreloadsAgent):
+                actor.preload_agent(agent)
 
     async def _agents_by_client_id(self, records: list[Client]) -> dict[str, Agent]:
         """The agent row behind each client, one query per tenant.
@@ -522,7 +521,9 @@ class ClientLifecycleService:
         """Consumers believed to be running right now: the read loops.
 
         A crashed consumer removes itself and its actor, so this falling is the
-        only signal. Actors with no consumer have no loop to crash.
+        only signal. Actors with no consumer have no loop to crash, and that
+        includes every agent's: what is for an agent is decided as each row is
+        written, so nothing reads a room for it.
         """
         return len(self._consumers)
 

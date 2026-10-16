@@ -53,7 +53,6 @@ from switch_core.bridges.agent.protocol.presence import (
     rooms_occupied,
 )
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE, event_frames
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -66,12 +65,22 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import LEASE_TTL, ProcessLease
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import TEST_KEYRING
 from tests.db_buffer import db_buffer_on, seed_agent, seed_room
+from tests.routing import (
+    add_member,
+    make_agent,
+    make_person,
+    make_room,
+    own_events,
+    process_on,
+    said_by,
+)
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -185,16 +194,16 @@ class _NoHeartbeatRows:
         return set()
 
 
-def _consumer_on(process: Process) -> Any:
-    """Enough of the agent's consumer, on this process, to ask whether the
-    agent is available."""
-    consumer = SimpleNamespace(
+def _recipient_on(process: Process) -> Any:
+    """Enough of the agent's recipient, the router's side of the agent on this
+    process, to ask whether the agent is available."""
+    recipient = SimpleNamespace(
         agent=SimpleNamespace(id=AGENT),
         _connections=process.registry,
         _agent_session_store=_NoHeartbeatRows(),
     )
-    consumer._is_available = AgentConsumer._is_available.__get__(consumer)
-    return consumer
+    recipient._is_available = AgentRecipient._is_available.__get__(recipient)
+    return recipient
 
 
 async def _eventually(check: Callable[[], bool]) -> None:
@@ -208,6 +217,7 @@ async def _eventually(check: Callable[[], bool]) -> None:
 async def _open(
     process: Process,
     *,
+    agent_id: str = AGENT,
     connection_id: str = CONN,
     scope: str = "single",
     expected_generation: int | None = None,
@@ -215,10 +225,10 @@ async def _open(
 ) -> AgentConnection:
     """Open a connection as the stream and socket handlers do."""
     with tenant_scope(TENANT_ZERO_ID):
-        async with process.registry.slots(AGENT):
-            async with process.registry.recorded(AGENT):
+        async with process.registry.slots(agent_id):
+            async with process.registry.recorded(agent_id):
                 return process.registry.open(
-                    agent_id=AGENT,
+                    agent_id=agent_id,
                     connection_id=connection_id,
                     scope=scope,  # type: ignore[arg-type]
                     delivery_filter="addressed",
@@ -272,23 +282,24 @@ class TestPresence:
         # reports the connections it holds.
         assert b.registry.live_agents_by_transport() == {}
 
-    async def test_the_other_processs_consumer_owes_no_offline_reply(
+    async def test_a_router_on_the_other_process_owes_no_offline_reply(
         self, processes: tuple[Process, Process]
     ) -> None:
-        """Every process runs the agent's consumer. The one that does not hold
-        the connection must still find the agent available, or it answers an
-        addressed message with "not online" while the agent is answering it."""
+        """The process that writes an addressed message decides whether the
+        agent is available, and need not be the one holding its connection.
+        It must still find the agent available, or it answers the message
+        with "not online" while the agent is answering it."""
         a, b = processes
         conn = await _open(a, scope="all")
         await _subscribe(a, ROOM, conn.stream_generation)
         await _eventually(lambda: b.registry.claimant_of(AGENT, ROOM) is not None)
 
         for model in ("always_on", "auto_session", "session_addressable"):
-            consumer = _consumer_on(b)
+            recipient = _recipient_on(b)
             agent = SimpleNamespace(
                 id=AGENT, integration_profile={"connection_model": model}
             )
-            assert await consumer._is_available(object(), agent, ROOM), model
+            assert await recipient._is_available(object(), agent, ROOM), model
 
     async def test_a_lapse_on_one_process_is_seen_by_the_other(
         self, processes: tuple[Process, Process]
@@ -348,6 +359,75 @@ class TestPresence:
         await _eventually(lambda: ROOM in rooms_occupied(AGENT, b.registry))
 
         assert b.registry.session_room(AGENT, "session-1") == ROOM
+
+
+class TestRoutedAnywhere:
+    """A row is decided by the process that writes it, which need not be the
+    one holding the connection of the agent the row is for."""
+
+    async def test_a_message_written_through_the_other_process_finds_the_agent_online(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        writer = process_on(session_factory, connections=b.registry)
+        room = await make_room(session_factory)
+        alice = await make_person(session_factory, "alice")
+        helper, helper_client = await make_agent(session_factory, "helper")
+        await add_member(session_factory, room, alice)
+        await add_member(session_factory, room, helper_client, agent=helper)
+        await _open(a, agent_id=helper.id, connection_id="conn-helper", scope="all")
+        await _eventually(lambda: b.registry.is_live(helper.id))
+
+        await writer.say(room, "@helper can you look at this", sender=alice)
+        await writer.idle()
+
+        assert len(await own_events(session_factory, helper.id)) == 1
+        # No "not online" notice from the writer, which holds no connection.
+        assert await said_by(session_factory, room, helper_client) == []
+
+    async def test_a_removal_written_through_the_other_process_releases_the_claim(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """The process that removes the agent from a room takes the room off
+        the connection claiming it, through the recorded claims, and the
+        process holding that connection is told."""
+        a, b = processes
+        writer = process_on(session_factory, connections=b.registry)
+        room = await make_room(session_factory)
+        helper, helper_client = await make_agent(session_factory, "helper")
+        await add_member(session_factory, room, helper_client, agent=helper)
+        conn = await _open(a, agent_id=helper.id, connection_id="conn-helper")
+        await connection_subscribe(
+            helper.id,
+            ConnectionSubscribeRequest(
+                connection_id="conn-helper",
+                room_id=room.id,
+                generation=conn.stream_generation,
+            ),
+            agent=SimpleNamespace(  # type: ignore[arg-type]
+                id=helper.id, tenant_id=TENANT_ZERO_ID, metadata_=None
+            ),
+            protocol=a.protocol,
+        )
+        assert conn.rooms == {room.id}
+
+        await writer.provisioning.kick_user(
+            room.transport_room_id, helper_client.transport_user_id
+        )
+
+        await _eventually(lambda: room.id not in conn.rooms)
+        async with session_factory() as session:
+            claimant = await session.scalar(
+                select(AgentConnectionRoom.connection_id).where(
+                    AgentConnectionRoom.agent_id == helper.id,
+                    AgentConnectionRoom.room_id == room.id,
+                )
+            )
+        assert claimant is None
 
 
 class TestServedAnywhere:

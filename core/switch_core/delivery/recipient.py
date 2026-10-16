@@ -1,13 +1,31 @@
+"""One agent in a room, as the router decides a room row for it.
+
+The router (`delivery/router.py`) builds an `AgentRecipient` for every agent
+member of a room each time a row is written to that room, and asks it two
+things. While the row's transaction is open: is this row one of the agent's
+own events, and what event does the agent receive for it (`decide_*`)? Once
+the transaction has committed: what does the agent have left to say in the
+room, that it cannot say itself (`Delivery.after`, `greet`,
+`handle_command`)? That second part is the replies Switch posts on the
+agent's behalf: a refusal when the sender may not address it, a notice when
+it is offline, a greeting when it arrives, a command's answer.
+
+The rules are the ones the agent's consumer used to apply when each room row
+was delivered to it, moved here unchanged. What changed is when they run and
+how often: once per row, on the process that wrote it, rather than once per
+row on every process that ran a consumer for the agent.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
@@ -16,8 +34,6 @@ from switch_core.bridges.agent.commands import (
     _addressed_by_name_or_role,
     dispatch_command,
 )
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
     message_event,
@@ -29,7 +45,6 @@ from switch_core.bridges.agent.protocol.presence import (
 )
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
-    AttachmentRef,
     CommandPayload,
     TaskAcceptPayload,
     TaskCancelPayload,
@@ -38,14 +53,12 @@ from switch_core.bridges.agent.protocol.types import (
     TaskUpdatePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
-from switch_core.clients.actor import AgentActor
 from switch_core.clients.admin_messages import (
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
-from switch_core.clients.consumer import Consumer
 from switch_core.clients.mentions import (
     NAME_CHAR as _NAME_CHAR,
 )
@@ -58,16 +71,7 @@ from switch_core.clients.mentions import (
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.agent_session_store import AgentSessionStore
-from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.budget_store import BudgetStore
-from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.db.stores.document_store import DocumentStore
-from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_machine_store import owner_stopped
-from switch_core.db.stores.reference_store import ReferenceStore
-from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -77,6 +81,7 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
+    SwitchEvent,
     TaskAccept,
     TaskCancel,
     TaskDelegate,
@@ -88,8 +93,9 @@ from switch_core.gateway.known_agents import known_agent_for
 from switch_core.observability.catalogue import OBSERVER_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.observability.throttle import WarningThrottle
-from switch_core.tenant_context import tenant_scope
 from switch_core.transport import (
+    InboundCustomEvent,
+    InboundEvent,
     InboundMedia,
     InboundMembership,
     InboundMessage,
@@ -97,44 +103,108 @@ from switch_core.transport import (
 )
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.bridges.agent.protocol.agent_connections import (
+        AgentConnectionRegistry,
+    )
+    from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+    from switch_core.clients.actor import AgentActor
+    from switch_core.db.models import Client
+    from switch_core.db.stores.agent_session_store import AgentSessionStore
+    from switch_core.db.stores.agent_store import AgentStore
+    from switch_core.db.stores.document_store import DocumentStore
+    from switch_core.db.stores.external_user_store import ExternalUserStore
+    from switch_core.db.stores.reference_store import ReferenceStore
+    from switch_core.db.stores.room_role_store import RoomRoleStore
+    from switch_core.db.stores.room_store import RoomStore
     from switch_core.telemetry.messages import MessageTelemetry
 
 logger = logging.getLogger(__name__)
 
-# One for the process rather than one per consumer: every agent has a
-# consumer, and a telemetry bug breaks the report for all of them.
+# One for the process rather than one per recipient: a recipient lives for one
+# row, and a telemetry bug breaks the report for every agent.
 _report_failures = WarningThrottle(60.0)
 
-# How long to hold an incomplete multi-attachment group before delivering the
-# parts that did arrive, flagged as incomplete. Groups normally complete in
-# milliseconds (one sender, back-to-back events); this is a safety net so a
-# broken batch surfaces rather than being buffered indefinitely.
-ATTACHMENT_GROUP_TIMEOUT_SECONDS = 5.0
+
+@dataclass(frozen=True)
+class RoomMember:
+    """An agent member of a room, as the router read it for one row.
+
+    `alias` is the name the agent goes under in this room, if it has one, and
+    `listening` whether it is set to receive `room_join` events here. Both come
+    from the agent's `room_agents` row, read with the membership itself.
+    `joined_at` is when the membership was written, on the database's clock.
+    """
+
+    agent: Agent
+    client_id: str
+    transport_user_id: str
+    display_name: str
+    alias: str | None
+    listening: bool
+    joined_at: datetime
 
 
-@dataclass
-class _PendingAttachmentGroup:
-    """Parts of a multi-attachment message seen so far, keyed by group index."""
+class OwnEvent(NamedTuple):
+    """One of an agent's own events, and the room row it comes from: its
+    place in the room (`room_seq`) and the key the row is known by
+    (`message_key`, the attachment group's id for a multi-file post)."""
 
-    total: int
-    parts: dict[int, AttachmentRef] = field(default_factory=dict)
-    body: str = ""
-    # The highest `messages.seq` among the parts received so far. The combined
-    # message is written to the agent's own events with this as its `room_seq`,
-    # the row of the part that completed the group.
-    through_seq: int = 0
-    # Whether any part of the group addressed this agent. Addressing is read off
-    # the message text, and the text rides on part 0 alone — every other part's
-    # body is its bare filename. Answering from whichever part completes the
-    # group would therefore say "not addressed" for any group not finishing on
-    # part 0, which is every group a bridge sends in order.
-    addressed: bool = False
-    # The index-0 event, kept so a group that has to be flushed incomplete is
-    # still anchored on its canonical first part (message_id / timestamp /
-    # sender) rather than on whichever part happened to arrive last.
-    first_event: InboundMedia | None = None
+    event: AgentEvent
+    room_seq: int
+    message_key: str | None
+
+
+@dataclass(frozen=True)
+class Delivery:
+    """What was decided about one room row for one agent.
+
+    `own_event` builds the agent's own event from the row once the row is
+    written and has its place in the room, and is None when the row is not
+    one of the agent's own events. `after` is what is left to do once the
+    row has committed (a refusal or an offline notice to post, a report to
+    make), and is None when there is nothing. Both take the row as written.
+
+    `named` says whether a rule named the agent (its name, its alias here, a
+    role it holds, a direct room), before its addressing policy and budget
+    were applied: the router asks whether a message named anybody at all.
+    """
+
+    own_event: Callable[[InboundEvent], OwnEvent] | None
+    after: Callable[[InboundEvent], Awaitable[None]] | None
+    named: bool = False
+
+
+NOTHING = Delivery(own_event=None, after=None)
+
+
+@dataclass(frozen=True)
+class RecipientServices:
+    """What every recipient reads and writes through. One per process."""
+
+    session_factory: async_sessionmaker[AsyncSession]
+    event_buffer: EventBuffer
+    agent_store: AgentStore
+    room_store: RoomStore
+    document_store: DocumentStore
+    reference_store: ReferenceStore
+    agent_session_store: AgentSessionStore
+    room_role_store: RoomRoleStore
+    external_user_store: ExternalUserStore
+    connections: AgentConnectionRegistry
+    frontend_base_url: str | None
+    message_telemetry: MessageTelemetry
+
+
+class ClientNames(Protocol):
+    """Who a member of a room is, by the id they post under: the one read an
+    arrival's own event needs, which the router makes once for every agent in
+    the room."""
+
+    async def get_by_transport_user_id(
+        self, session: AsyncSession, transport_user_id: str
+    ) -> Client | None: ...
 
 
 _UNAVAILABLE_MESSAGES = {
@@ -323,250 +393,118 @@ def _role_elsewhere_message(other_room_name: str) -> str:
     return _elsewhere_message([other_room_name], holds_role_here=True)
 
 
-class AgentConsumer(Consumer[AgentActor]):
-    """Reads the rooms an agent is in, and decides what reaches the agent.
+class AgentRecipient:
+    """One agent member of a room, deciding one room row.
 
-    One per agent. Applies addressing, queues what should wake the agent in
-    its event buffer for the SSE stream, and posts the replies an agent cannot
-    give itself (greetings, offline and refusal notices) through its actor.
+    Built by the router for a single row and dropped with it. `decide_*` run
+    inside the transaction that writes the row, read through the session they
+    are handed, and post nothing: what they decide is returned as a
+    `Delivery`. Everything that posts runs after the commit, through `actor`,
+    the agent's own identity.
+
+    The reads that every agent in the room would otherwise repeat (the agent
+    rows, aliases, role leases, the sender, budgets) go through `addressing`,
+    `budget_guard` and `clients`, which the router answers from reads it made
+    once for the whole room.
     """
 
     def __init__(
         self,
         *,
+        services: RecipientServices,
+        member: RoomMember,
+        tenant_id: str,
+        meta: RoomMeta,
+        transport_room_id: str,
         actor: AgentActor,
-        event_buffer: EventBuffer,
-        agent_store: AgentStore,
-        room_store: RoomStore,
-        bridge_store: CollaborationBridgeStore,
-        document_store: DocumentStore,
-        reference_store: ReferenceStore,
-        agent_session_store: AgentSessionStore,
-        room_role_store: RoomRoleStore,
-        external_user_store: ExternalUserStore,
-        connections: AgentConnectionRegistry,
-        frontend_base_url: str | None,
-        message_telemetry: MessageTelemetry,
+        addressing: AddressingResolver,
+        budget_guard: BudgetGuard,
+        clients: ClientNames,
+        cloud_waking_notices: set[tuple[str, int]],
     ) -> None:
-        super().__init__(actor=actor)
-        self._event_buffer = event_buffer
-        self._agent_store = agent_store
-        self._preloaded_agent: Agent | None = None
-        self._room_store = room_store
-        self._bridge_store = bridge_store
-        self._document_store = document_store
-        self._reference_store = reference_store
-        self._agent_session_store = agent_session_store
-        self._room_role_store = room_role_store
-        self._external_user_store = external_user_store
-        self._cloud_waking_notices: set[tuple[str, int]] = set()
-        self._connections = connections
-        self._message_telemetry = message_telemetry
+        self.actor = actor
+        self.tenant_id = tenant_id
+        self.client_id = member.client_id
+        self.transport_user_id = member.transport_user_id
+        self.session_factory = services.session_factory
+        self._member = member
+        self._meta = meta
+        self._room = RoomRef(room_id=transport_room_id)
+        self._event_buffer = services.event_buffer
+        self._agent_store = services.agent_store
+        self._room_store = services.room_store
+        self._document_store = services.document_store
+        self._reference_store = services.reference_store
+        self._agent_session_store = services.agent_session_store
+        self._room_role_store = services.room_role_store
+        self._external_user_store = services.external_user_store
+        self._connections = services.connections
+        self._message_telemetry = services.message_telemetry
         self._frontend_base_url = (
-            frontend_base_url.rstrip("/") if frontend_base_url else None
+            services.frontend_base_url.rstrip("/")
+            if services.frontend_base_url
+            else None
         )
-        # Addressing is decided from stores, not from this client, so the same
-        # rules can decide for a message read out of the log.
-        self._addressing = AddressingResolver(
-            room_store=room_store,
-            room_role_store=room_role_store,
-            client_store=self.client_store,
-            agent_store=agent_store,
-            external_user_store=external_user_store,
-            live_connection_ids=connections.live_connection_ids,
-        )
-        self._budget_guard = BudgetGuard(BudgetStore())
-        self._room_meta: dict[str, RoomMeta | None] = {}
-        # In-flight multi-attachment groups, by group id, with their safety-net
-        # timers. Both are cleared when a group completes or times out, so a
-        # never-completed group cannot leak.
-        self._attachment_groups: dict[str, _PendingAttachmentGroup] = {}
-        self._attachment_group_timers: dict[str, asyncio.TimerHandle] = {}
+        self._addressing = addressing
+        self._budget_guard = budget_guard
+        self._clients = clients
+        # The "machine is waking" notices this process has posted for the
+        # agent, by room and machine start, so the messages that follow the
+        # first one wait with it instead of each saying so again.
+        self._cloud_waking_notices = cloud_waking_notices
 
     @property
     def agent(self) -> Agent:
-        return self.actor.agent
+        """The agent's row, read for this row's routing."""
+        return self._member.agent
 
     async def _fresh_agent(self, session: AsyncSession) -> Agent:
-        """Re-read the agent row and refresh the cached snapshot.
+        """The agent's row as it stands now.
 
-        `self.agent` is loaded once in `start()`. An operator can edit the
-        agent's `integration_profile` (e.g. flip `connection_model` to/from
-        `auto_session`) via the gateway while this client runs, so any branch
-        on `connection_model` must read fresh rather than trust the boot-time
-        snapshot.
-
-        Reads through the caller's session: one inbound message asks several
-        questions of this row, and each one opening a session of its own is
-        several pool slots taken to answer a single event.
+        An operator can edit the agent (its `integration_profile`, its
+        addressing policy) through the gateway at any time, so every branch on
+        it reads the row rather than a copy kept from earlier. The router read
+        it for this row, in the transaction writing the row, which is as fresh
+        as it gets, so nothing is read again here.
         """
-        fresh = await self._agent_store.get(session, self.agent.id)
-        if fresh is not None:
-            self.actor.set_agent(fresh)
         return self.agent
 
-    async def start(self) -> None:
-        """Resolve the agent this client is, then run.
+    async def still_member(self) -> bool:
+        """Whether the agent is a member of the room now, read when the work
+        a row left it (`Delivery.after`, `greet`) is about to run.
 
-        This runs at the top of the client's own task, which binds nothing, so
-        the tenant is carried rather than inherited: it comes from the
-        `clients` row this client was built from. A *guessed* tenant would
-        turn "this client is an agent" into "no agent found for client" and
-        fail the client at boot over a row that exists, which is why nothing
-        here falls back to whatever is ambient.
+        The row was decided from the members read before it was written, and
+        a removal takes no lock of the room's, so the agent can be taken out
+        of the room after that read: before the row commits, or after it and
+        before this work's turn comes. Either way it keeps no own event for
+        the row (`EventBuffer.store` reads the membership again, and the
+        removal deletes what was stored). This asks the same question of the
+        work, so an agent that has left says nothing in the room as itself (a
+        refusal, an offline notice, a greeting, a command's answer), relays
+        nothing to its controller and wakes no machine.
+
+        In a session of its own, closed before the work posts anything.
         """
-        agent = self._preloaded_agent
-        self._preloaded_agent = None
-        if agent is None:
-            async with tenant_session(self.session_factory, self.tenant_id) as session:
-                agent = await self._agent_store.get_by_client_id(
-                    session, self.client_id
-                )
-        if agent is None:
-            raise RuntimeError(f"No agent found for client: {self.client_id}")
-        self.actor.set_agent(agent)
-        await super().start()
-
-    def preload_agent(self, agent: Agent) -> None:
-        """Hand `start` the agent row read in bulk at boot, so it needs no
-        query of its own. Used once: a restart reads it fresh."""
-        self._preloaded_agent = agent
-
-    # ── Event hooks ───────────────────────────────────────────────────────────
-
-    async def on_self_join(self, room: RoomRef, event: InboundMembership) -> None:
-        is_direct = await self._is_direct_room(room.room_id)
-        name = self.agent.name
-        # The per-agent self-join greeting can be switched off per bridge
-        # — e.g. on Mattermost, whose native "X joined the
-        # channel" notice makes it redundant.
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is not None:
-            self._connections.controllers.room_joined(self.agent.id, meta.room_id)
-        if meta is not None and not meta.agent_greetings_enabled:
-            logger.info(
-                "Suppressing self-join greeting for %s in %s "
-                "(agent greetings disabled on the room's bridge)",
-                name,
-                room.room_id,
+        room_id = self._meta.room_id
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            members = await self._room_store.member_room_ids(
+                session, self.client_id, [room_id]
             )
-            return
-        if is_direct:
-            greeting = f"Hi! I'm {name} — how can I help?"
-        else:
-            greeting = random.choice(AGENT_GREETINGS).format(name=name)
-        await self.actor.send_message(
-            room.room_id, greeting, format="markdown", metered=False
-        )
+        return room_id in members
 
-    async def on_invite(self, room: RoomRef, event: InboundMembership) -> None:
-        """Join, and tell the agent's controller, if this process holds it.
+    # ── Messages ──────────────────────────────────────────────────────────────
 
-        `on_self_join` tells it too, but only the process whose copy of the
-        agent heard its own arrival runs that. A copy that learned of the
-        membership from another process (`PostgresTransport._reconcile_membership`)
-        starts reading after the arrival, and a controller streaming from this
-        process would otherwise never hear the agent is in the room.
+    async def decide_message(
+        self, session: AsyncSession, event: InboundMessage
+    ) -> Delivery:
+        """Whether a message is one of the agent's own events.
+
+        It is when a rule names the agent and its addressing policy and budget
+        let the sender through. A sender the policy refuses, or an agent over
+        its budget, gets a refusal posted once the message has committed, and
+        the message stays the room's conversation.
         """
-        await super().on_invite(room, event)
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is not None:
-            self._connections.controllers.room_joined(self.agent.id, meta.room_id)
-
-    async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
-        """Forget the room's events, everywhere this agent could still read them.
-
-        Dropping the subscription only stops what has not been read yet. What
-        has is in the event buffer for the whole retention window, and is
-        served from there to a long poll, to the notification stream, and to an
-        SSE reader resuming from an old cursor — the last of which has no
-        membership of its own to apply.
-        """
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        await self._event_buffer.drop_room(self.tenant_id, self.agent.id, meta.room_id)
-        # Recorded, so a claim held through another process goes too: every
-        # process runs this consumer today, but the claim is one row.
-        with tenant_scope(self.tenant_id):
-            async with (
-                self._connections.slots(self.agent.id),
-                self._connections.recorded(self.agent.id),
-            ):
-                self._connections.release_room_everywhere(self.agent.id, meta.room_id)
-        self._connections.controllers.room_left(self.agent.id, meta.room_id)
-
-    async def _member_name(
-        self, session: AsyncSession, event: InboundMembership
-    ) -> str:
-        """What to call the member who just arrived.
-
-        The name Switch knows them by, not the one on the membership event: a
-        profile is set from whatever the source platform calls someone, so
-        taking it makes the same person read one way when they arrive and
-        another way when they speak — and the log, which records the Switch
-        name, disagree with what was delivered live.
-        """
-        client = await self.client_store.get_by_transport_user_id(
-            session, event.state_key
-        )
-        if client is not None:
-            return client.display_name
-        fallback = event.display_name or event.state_key.split(":")[0].lstrip("@")
-        logger.warning(
-            "No Switch client owns %s; naming the arrival %r from the membership event",
-            event.state_key,
-            fallback,
-        )
-        return fallback
-
-    async def on_member_event(self, room: RoomRef, event: InboundMembership) -> None:
-        # Only forward genuine joins. A membership-preserving update (e.g. a
-        # display-name or avatar change) re-fires m.room.member with
-        # membership == "join" and prev_membership == "join" — exclude those, and
-        # all leave/ban/knock transitions. The base handler already routes this
-        # agent's own join to on_self_join and drops backfilled/self events, so
-        # this fires once per other-member join (humans and agents alike).
-        if event.membership != "join" or event.prev_membership == "join":
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        # `listening` tells each connector whether THIS receiving agent is
-        # configured to react to join events in this room. The event is always
-        # delivered; the connector decides whether to surface it.
-        async with self.session_factory() as session:
-            listening = await self._room_store.get_receives_join_events(
-                session, meta.room_id, self.agent.id
-            )
-            if not listening:
-                # The agent does not listen for joins in this room, so the join
-                # is not written to its own events. A reader that wants the
-                # whole conversation still sees it, read from `messages`.
-                return
-            member_name = await self._member_name(session, event)
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            room_join_event(
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                member=event.state_key,
-                member_name=member_name,
-                timestamp=event.timestamp,
-                listening=listening,
-            ),
-            room_seq=event.seq,
-            message_key=event.event_id,
-        )
-
-    async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-
+        meta = self._meta
         thread_id = event.thread_root_id
         if platform_replies_in_channel(event.content):
             # A threaded kickoff that wants its work in the channel: the agent
@@ -576,33 +514,16 @@ class AgentConsumer(Consumer[AgentActor]):
         else:
             reply_thread_root = thread_id if thread_id is not None else event.event_id
 
-        # Every database read this message needs happens in one session, and
-        # nothing is posted to the room while it is open. A busy room fans one
-        # inbound event out to every agent client in it at once, so a client
-        # that took a slot per question would multiply a single message into
-        # dozens of concurrent checkouts.
-        is_addressed = False
-        agent_live = False
+        named = False
+        addressed = False
         refusal: str | None = None
-        unavailable: str | None = None
         if self._addressed_without_lookup(event, meta) is not False:
-            async with self.session_factory() as session:
-                is_addressed = await self._compute_addressed(session, event, meta)
-                if is_addressed:
-                    agent = await self._fresh_agent(session)
-                    gate = await self._gate_addressed(session, agent, event, meta)
-                    is_addressed = gate.addressed
-                    refusal = gate.refusal
-                    if is_addressed and not self._triggered_by_auto_reply(event):
-                        agent_live = await self._is_available(
-                            session, agent, meta.room_id
-                        )
-                        if not agent_live:
-                            unavailable = await self._reply_when_unavailable_here(
-                                session, agent, meta, self._sender_handle(event)
-                            )
-
-        text = event.body
+            named = await self._compute_addressed(session, event, meta)
+            if named:
+                agent = await self._fresh_agent(session)
+                gate = await self._gate_addressed(session, agent, event, meta)
+                addressed = gate.addressed
+                refusal = gate.refusal
 
         sender_name = event.sender_name
         if not sender_name:
@@ -612,27 +533,82 @@ class AgentConsumer(Consumer[AgentActor]):
                 sender_name,
             )
 
-        agent_event = message_event(
-            room_id=meta.room_id,
-            bridge_id=meta.bridge_id,
-            channel_type=meta.channel_type,
-            event=event,
-            addressed=is_addressed,
-            sender_name=sender_name,
-            body=text,
-            thread_id=thread_id,
+        def own_event(row: InboundEvent) -> OwnEvent:
+            assert isinstance(row, InboundMessage)
+            agent_event = message_event(
+                room_id=meta.room_id,
+                bridge_id=meta.bridge_id,
+                channel_type=meta.channel_type,
+                event=row,
+                addressed=True,
+                sender_name=sender_name,
+                body=row.body,
+                thread_id=thread_id,
+            )
+            # Serialising runs once per agent per message, so only when it
+            # will be seen.
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Enqueuing event %s", agent_event.model_dump_json(indent=2)
+                )
+            return OwnEvent(agent_event, room_seq=row.seq, message_key=row.event_id)
+
+        async def after(row: InboundEvent) -> None:
+            assert isinstance(row, InboundMessage)
+            await self._after_message(
+                row,
+                addressed=addressed,
+                refusal=refusal,
+                thread_id=thread_id,
+                reply_thread_root=reply_thread_root,
+            )
+
+        return Delivery(
+            own_event=own_event if addressed else None,
+            after=after if addressed or refusal is not None else None,
+            named=named,
         )
 
-        if is_addressed:
+    async def _after_message(
+        self,
+        event: InboundMessage,
+        *,
+        addressed: bool,
+        refusal: str | None,
+        thread_id: str | None,
+        reply_thread_root: str | None,
+    ) -> None:
+        """What a message leaves the agent to say once it has committed.
+
+        Whether the agent can take the message is read now, in a session of
+        its own that is closed before anything is posted: posting is a write
+        of its own, and holding a connection across it is how a pool slot
+        ends up idle in a transaction.
+        """
+        meta = self._meta
+        agent_live = False
+        unavailable: str | None = None
+        if addressed and not self._triggered_by_auto_reply(event):
+            async with self.session_factory() as session:
+                agent = await self._fresh_agent(session)
+                agent_live = await self._is_available(session, agent, meta.room_id)
+                if not agent_live:
+                    unavailable = await self._reply_when_unavailable_here(
+                        session, agent, meta, self._sender_handle(event)
+                    )
+
+        if addressed:
             self._report_addressed(
                 meta, event, agent_live=agent_live, has_attachment=False
             )
 
         if refusal is not None:
-            await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
+            await self._post_auto_reply(
+                self._room.room_id, event, refusal, reply_thread_root
+            )
         if unavailable is not None:
             await self._post_auto_reply(
-                room.room_id,
+                self._room.room_id,
                 event,
                 unavailable,
                 # Where this lands depends on whether an answer follows it.
@@ -640,7 +616,7 @@ class AgentConsumer(Consumer[AgentActor]):
                 # "Starting a session" is a preamble: the real answer arrives
                 # after it, in the room the question was asked in. Threading it
                 # off the trigger buries the notice away from the answer it
-                # introduces, so it goes where the question was — `thread_id`,
+                # introduces, so it goes where the question was: `thread_id`,
                 # which is None for a message at the root (CHOO-2173).
                 #
                 # Everything else here is the whole reply and nothing follows
@@ -652,247 +628,292 @@ class AgentConsumer(Consumer[AgentActor]):
                 else reply_thread_root,
             )
 
-        if not is_addressed:
-            # An unaddressed message is not written to the agent's own events.
-            # A reader that wants the whole conversation reads it from
-            # `messages`.
-            return
-        # Serialising runs once per agent per message, so only when it will be seen.
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            agent_event,
-            room_seq=event.seq,
-            message_key=event.event_id,
-        )
+    # ── Files ─────────────────────────────────────────────────────────────────
 
-    async def on_media(self, room: RoomRef, event: InboundMedia) -> None:
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        is_addressed = await self._addressed(event, meta)
+    async def addressed_by(self, session: AsyncSession, event: InboundMessage) -> bool:
+        """Whether a rule names the agent in this row, before its policy and
+        budget are applied. Reads only when the text alone cannot say."""
+        decided = self._addressed_without_lookup(event, self._meta)
+        if decided is not None:
+            return decided
+        return await self._compute_addressed(session, event, self._meta)
 
-        content = event.content
-        attachment = attachment_ref(event)
+    async def decide_post(
+        self,
+        session: AsyncSession,
+        files: list[InboundMedia],
+        *,
+        named: bool,
+        lead: InboundMedia,
+        complete: bool,
+        message_key: str,
+    ) -> Delivery:
+        """Whether a post of one or more files is one of the agent's own
+        events, delivered as one message carrying every file.
 
-        sender_name = event.sender_name
+        `files` are the post's rows, in the order they were written; a file
+        still being written is given as it will be stored, and replaced by
+        the stored row when the event is built. `named` is whether any of them
+        named the agent: the text and its mentions ride on the first file
+        alone, so asking only the file that completed the post would say
+        "not addressed" for every post not finishing on its first file.
+
+        The message is anchored on the first file (index 0) when it arrived,
+        so its id and time are the ones the sender was given, whichever file
+        completed it. `lead` is the file the rest is taken from when the first
+        is missing, and whose thread and sender name the message carries: the
+        file that completed the post, or for a post given up on, the first of
+        its files written. A post given up on (`complete` False) says in its
+        body how many files arrived.
+        """
+        meta = self._meta
+        anchor = _first_file(files) or lead
+        gate = _GateOutcome(addressed=False, refusal=None)
+        if named:
+            agent = await self._fresh_agent(session)
+            gate = await self._gate_addressed(session, agent, anchor, meta)
+
+        sender_name = lead.sender_name
         if not sender_name:
-            sender_name = event.sender
+            sender_name = lead.sender
             logger.error(
                 "Media received without sender name, using the sender id: %s",
                 sender_name,
             )
+        thread_id = lead.thread_root_id
+        group = parse_attachment_group(lead.content)
+        total = group[2] if group is not None else 1
 
-        # Mirror on_message: surface the thread this media belongs to (if any).
-        thread_id = event.thread_root_id
+        def written(row: InboundEvent) -> list[InboundMedia]:
+            return [
+                row
+                if isinstance(row, InboundMedia) and row.event_id == part.event_id
+                else part
+                for part in files
+            ]
 
-        # Several files posted as one message arrive as separate media events
-        # sharing a group marker (a media event carries one file). Hold
-        # them until the group is complete, then emit ONE payload carrying all
-        # of them, so the agent sees one message with N attachments.
-        group = parse_attachment_group(content)
-        if group is None:
-            await self._emit_media(
-                room,
-                event,
-                meta,
-                is_addressed,
-                sender_name,
-                thread_id,
-                [attachment],
-                event.body,
-                room_seq=event.seq,
-                message_key=event.event_id,
-            )
-            return
-
-        group_id, index, total = group
-        pending = self._attachment_groups.setdefault(
-            group_id, _PendingAttachmentGroup(total=total)
-        )
-        pending.parts[index] = attachment
-        pending.addressed = pending.addressed or is_addressed
-        pending.through_seq = max(pending.through_seq, event.seq)
-        if index == 0:
-            pending.body = event.body
-            pending.first_event = event
-        if len(pending.parts) < total:
-            self._schedule_attachment_group_flush(
-                group_id, room, event, meta, sender_name, thread_id
-            )
-            return
-
-        self._cancel_attachment_group_flush(group_id)
-        self._attachment_groups.pop(group_id, None)
-        # Anchor the coalesced message on part 0, not on whichever part
-        # happened to complete the group, so message_id / timestamp are stable.
-        await self._emit_media(
-            room,
-            pending.first_event or event,
-            meta,
-            pending.addressed,
-            sender_name,
-            thread_id,
-            [pending.parts[i] for i in sorted(pending.parts)],
-            pending.body or event.body,
-            room_seq=pending.through_seq,
-            message_key=group_id,
-        )
-
-    def _schedule_attachment_group_flush(
-        self,
-        group_id: str,
-        room: RoomRef,
-        event: InboundMedia,
-        meta: RoomMeta,
-        sender_name: str,
-        thread_id: str | None,
-    ) -> None:
-        """Arm the safety-net timer for an incomplete attachment group.
-
-        The group should normally complete within milliseconds — every event is
-        sent back-to-back by one sender. The timer exists so a group that never
-        completes (a failed send mid-batch, a dropped event) surfaces what did
-        arrive, clearly flagged, instead of being buffered forever.
-
-        Armed once per group, NOT re-armed per part: the deadline bounds the
-        whole group, so a batch dribbling in just under the timeout can't hold
-        the buffer open indefinitely.
-        """
-        if group_id in self._attachment_group_timers:
-            return
-        self._attachment_group_timers[group_id] = asyncio.get_running_loop().call_later(
-            ATTACHMENT_GROUP_TIMEOUT_SECONDS,
-            lambda: asyncio.create_task(
-                self._flush_incomplete_attachment_group(
-                    group_id, room, event, meta, sender_name, thread_id
+        def own_event(row: InboundEvent) -> OwnEvent:
+            parts = written(row)
+            first = _first_file(parts)
+            anchored = first or next(p for p in parts if p.event_id == lead.event_id)
+            body = (first.body if first is not None else "") or anchored.body
+            if not complete:
+                present = len({file_index(part) for part in parts})
+                notice = (
+                    f"[incomplete attachment group: {present} of {total} files arrived]"
                 )
-            ),
+                body = f"{body}\n{notice}" if body else notice
+            agent_event = message_event(
+                room_id=meta.room_id,
+                bridge_id=meta.bridge_id,
+                channel_type=meta.channel_type,
+                event=anchored,
+                addressed=True,
+                sender_name=sender_name,
+                body=body,
+                thread_id=thread_id,
+                attachments=[
+                    attachment_ref(part) for part in sorted(parts, key=file_index)
+                ],
+            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Enqueuing media event %s", agent_event.model_dump_json(indent=2)
+                )
+            return OwnEvent(
+                agent_event,
+                room_seq=max(part.seq for part in parts),
+                message_key=message_key,
+            )
+
+        async def after(row: InboundEvent) -> None:
+            parts = written(row)
+            anchored = _first_file(parts) or next(
+                p for p in parts if p.event_id == lead.event_id
+            )
+            await self._after_post(anchored, gate=gate, thread_id=thread_id)
+
+        return Delivery(
+            own_event=own_event if gate.addressed else None,
+            after=after if named else None,
+            named=named,
         )
 
-    def _cancel_attachment_group_flush(self, group_id: str) -> None:
-        timer = self._attachment_group_timers.pop(group_id, None)
-        if timer is not None:
-            timer.cancel()
-
-    async def _flush_incomplete_attachment_group(
-        self,
-        group_id: str,
-        room: RoomRef,
-        event: InboundMedia,
-        meta: RoomMeta,
-        sender_name: str,
-        thread_id: str | None,
+    async def _after_post(
+        self, anchor: InboundMedia, *, gate: _GateOutcome, thread_id: str | None
     ) -> None:
-        self._attachment_group_timers.pop(group_id, None)
-        pending = self._attachment_groups.pop(group_id, None)
-        if pending is None:
-            return
-        received = len(pending.parts)
-        logger.error(
-            "Attachment group %s incomplete: %d of %d parts arrived within %ss; "
-            "delivering what arrived",
-            group_id,
-            received,
-            pending.total,
-            ATTACHMENT_GROUP_TIMEOUT_SECONDS,
-        )
-        body = pending.body or event.body
-        notice = (
-            f"[incomplete attachment group: {received} of {pending.total} "
-            f"files arrived]"
-        )
-        # Anchor on part 0 when we have it, so the payload's message_id matches
-        # the completed-group case and replies thread off the canonical event.
-        anchor = pending.first_event or event
-        await self._emit_media(
-            room,
-            anchor,
-            meta,
-            pending.addressed,
-            sender_name,
-            thread_id,
-            [pending.parts[i] for i in sorted(pending.parts)],
-            f"{body}\n{notice}" if body else notice,
-            room_seq=pending.through_seq,
-            message_key=group_id,
-        )
-
-    async def _emit_media(
-        self,
-        room: RoomRef,
-        event: InboundMedia,
-        meta: RoomMeta,
-        is_addressed: bool,
-        sender_name: str,
-        thread_id: str | None,
-        attachments: list[AttachmentRef],
-        body: str,
-        *,
-        room_seq: int,
-        message_key: str,
-    ) -> None:
-        reply_thread_root = thread_id if thread_id is not None else event.event_id
+        """What a post leaves the agent to say once it has committed: a
+        refusal, and the report that it was asked something."""
+        meta = self._meta
+        reply_thread_root = thread_id if thread_id is not None else anchor.event_id
         agent_live = False
-        if is_addressed:
+        # Only the report reads this here (a post gets no offline notice), so
+        # it is not worth a query while reporting is off.
+        if (
+            gate.addressed
+            and self._message_telemetry.enabled
+            and not self._triggered_by_auto_reply(anchor)
+        ):
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
-                gate = await self._gate_addressed(session, agent, event, meta)
-                # Only telemetry reads this here — the media path posts no
-                # unavailable notice — so it is not worth a query while off.
-                if (
-                    gate.addressed
-                    and self._message_telemetry.enabled
-                    and not self._triggered_by_auto_reply(event)
-                ):
-                    agent_live = await self._is_available(session, agent, meta.room_id)
-            is_addressed = gate.addressed
-            if gate.refusal is not None:
-                await self._post_auto_reply(
-                    room.room_id, event, gate.refusal, reply_thread_root
-                )
-        agent_event = message_event(
-            room_id=meta.room_id,
-            bridge_id=meta.bridge_id,
-            channel_type=meta.channel_type,
-            event=event,
-            addressed=is_addressed,
-            sender_name=sender_name,
-            body=body,
-            thread_id=thread_id,
-            attachments=attachments,
-        )
-
-        if is_addressed:
+                agent_live = await self._is_available(session, agent, meta.room_id)
+        if gate.refusal is not None:
+            await self._post_auto_reply(
+                self._room.room_id, anchor, gate.refusal, reply_thread_root
+            )
+        if gate.addressed:
             self._report_addressed(
-                meta, event, agent_live=agent_live, has_attachment=True
+                meta, anchor, agent_live=agent_live, has_attachment=True
             )
 
-        if not is_addressed:
-            return
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Enqueuing media event %s", agent_event.model_dump_json(indent=2)
+    # ── Arrivals ──────────────────────────────────────────────────────────────
+
+    async def decide_arrival(
+        self, session: AsyncSession, event: InboundMembership
+    ) -> Delivery:
+        """Whether someone else's arrival in the room is one of the agent's
+        own events: it is when the agent listens for joins in this room.
+
+        Only a genuine join counts. A membership-preserving update (a display
+        name or avatar change) re-fires the membership with `prev_membership`
+        "join", and leaving is never written as a row.
+        """
+        if event.membership != "join" or event.prev_membership == "join":
+            return NOTHING
+        if not self._member.listening:
+            # The agent does not listen for joins in this room, so the join
+            # is not written to its own events. A reader that wants the whole
+            # conversation still sees it, read from `messages`.
+            return NOTHING
+        meta = self._meta
+        member_name = await self._member_name(session, event)
+
+        def own_event(row: InboundEvent) -> OwnEvent:
+            assert isinstance(row, InboundMembership)
+            return OwnEvent(
+                room_join_event(
+                    room_id=meta.room_id,
+                    bridge_id=meta.bridge_id,
+                    channel_type=meta.channel_type,
+                    member=row.state_key,
+                    member_name=member_name,
+                    timestamp=row.timestamp,
+                    listening=True,
+                ),
+                room_seq=row.seq,
+                message_key=row.event_id,
             )
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            agent_event,
-            room_seq=room_seq,
-            message_key=message_key,
+
+        return Delivery(own_event=own_event, after=None)
+
+    async def _member_name(
+        self, session: AsyncSession, event: InboundMembership
+    ) -> str:
+        """What to call the member who just arrived.
+
+        The name Switch knows them by, not the one on the membership event: a
+        profile is set from whatever the source platform calls someone, so
+        taking it makes the same person read one way when they arrive and
+        another way when they speak, and the log, which records the Switch
+        name, disagree with what was delivered live.
+        """
+        client = await self._clients.get_by_transport_user_id(session, event.state_key)
+        if client is not None:
+            return client.display_name
+        fallback = event.display_name or event.state_key.split(":")[0].lstrip("@")
+        logger.warning(
+            "No Switch client owns %s; naming the arrival %r from the membership event",
+            event.state_key,
+            fallback,
+        )
+        return fallback
+
+    async def greet(self) -> None:
+        """Say hello in a room the agent has just arrived in.
+
+        The per-agent greeting can be switched off per bridge: on Mattermost,
+        for one, whose native "X joined the channel" notice makes it
+        redundant.
+        """
+        meta = self._meta
+        name = self.agent.name
+        if not meta.agent_greetings_enabled:
+            logger.info(
+                "Suppressing self-join greeting for %s in %s "
+                "(agent greetings disabled on the room's bridge)",
+                name,
+                self._room.room_id,
+            )
+            return
+        if meta.channel_type == "direct":
+            greeting = f"Hi! I'm {name} — how can I help?"
+        else:
+            greeting = random.choice(AGENT_GREETINGS).format(name=name)
+        await self.actor.send_message(
+            self._room.room_id, greeting, format="markdown", metered=False
         )
 
-    async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
+    # ── Commands ──────────────────────────────────────────────────────────────
 
-        # Admin-owned commands (room/info/alias) are handled by the admin
-        # client, which is in every room; agents ignore them entirely.
+    async def decide_command(self, event: CommandEvent) -> Delivery:
+        """What a room command does for the agent, decided as its row is
+        written.
+
+        A session control (`!reset`, `!compact`, `!interrupt`) is queued for
+        the agent as an own event, stored with the command's row so the agent
+        gets it before anything written after it; what it says in the room
+        is said once it has committed. Every other command queues nothing and
+        is run by its handler once it has committed (`handle_command`).
+        """
+        cmd = COMMANDS_BY_NAME.get(event.command)
+        if cmd is None or cmd.admin_owned:
+            return NOTHING
+        if cmd.decide is None:
+
+            async def run(row: InboundEvent) -> None:
+                assert isinstance(row, InboundCustomEvent)
+                await self.handle_command(command_event(row))
+
+            return Delivery(own_event=None, after=run)
+        meta = self._meta
+        if not await cmd.addressed(self, event.args, meta.room_id):
+            return NOTHING
+        refusal = await self._command_refusal(self._room, event, meta)
+        if refusal is not None:
+            return Delivery(own_event=None, after=lambda _row: refusal())
+        decision = await cmd.decide(self, self._room, event)
+        answer = decision.answer
+        queued = decision.queued
+        own_event: Callable[[InboundEvent], OwnEvent] | None = None
+        if queued is not None:
+
+            def own_event(row: InboundEvent) -> OwnEvent:
+                return OwnEvent(
+                    AgentEvent(
+                        type="command",
+                        room_id=meta.room_id,
+                        bridge_id=meta.bridge_id,
+                        channel_type=meta.channel_type,
+                        payload=queued,
+                    ),
+                    room_seq=row.seq,
+                    message_key=row.event_id,
+                )
+
+        async def after(_row: InboundEvent) -> None:
+            if answer is not None:
+                await answer()
+
+        return Delivery(own_event=own_event, after=after)
+
+    async def handle_command(self, event: CommandEvent) -> None:
+        """Run a room command for the agent, once the command has committed.
+
+        Admin-owned commands (room, info, alias) are the admin client's, which
+        is in every room; agents ignore them entirely.
+        """
+        room = self._room
+        meta = self._meta
         cmd = COMMANDS_BY_NAME.get(event.command)
         if cmd is not None and cmd.admin_owned:
             return
@@ -950,8 +971,8 @@ class AgentConsumer(Consumer[AgentActor]):
     ) -> bool:
         """Apply the addressing policy to a command aimed at this agent.
 
-        Commands drive the agent as surely as a message does — `!reset` wipes
-        its context, `!interrupt` stops it mid-task — so a sender who may not
+        Commands drive the agent as surely as a message does: `!reset` wipes
+        its context, `!interrupt` stops it mid-task. So a sender who may not
         address the agent may not command it either.
 
         A refusal is posted only when the command named this agent. A room-wide
@@ -960,23 +981,37 @@ class AgentConsumer(Consumer[AgentActor]):
         would flood a room holding several restricted agents; those are declined
         quietly, with a warning in the log.
         """
+        refusal = await self._command_refusal(room, event, meta)
+        if refusal is None:
+            return True
+        await refusal()
+        return False
+
+    async def _command_refusal(
+        self, room: RoomRef, event: CommandEvent, meta: RoomMeta
+    ) -> Callable[[], Awaitable[None]] | None:
+        """None when the sender may command this agent, and otherwise how the
+        command is declined (`_gate_command`)."""
         async with self.session_factory() as session:
             agent = await self._fresh_agent(session)
             decision = await self._addressing_allowed(
                 session, agent, event.user_id, meta.room_id
             )
             if decision.allowed:
-                return True
+                return None
             targets_me = await self._command_targets_me_explicitly(
                 session, event.args, meta.room_id
             )
-        if targets_me:
-            await self.reply_command(
-                room.room_id,
-                decision.refusal,
-                thread_root_id=event.thread_id,
-            )
-        else:
+        refusal = decision.refusal
+
+        async def decline() -> None:
+            if targets_me:
+                await self.reply_command(
+                    room.room_id,
+                    refusal,
+                    thread_root_id=event.thread_id,
+                )
+                return
             logger.warning(
                 "Command %s from %s declined for %s in room %s: sender may not "
                 "address this agent",
@@ -985,9 +1020,8 @@ class AgentConsumer(Consumer[AgentActor]):
                 self.agent.name,
                 meta.room_id,
             )
-        return False
 
-    # ── Command handling ──────────────────────────────────────────────────────
+        return decline
 
     async def _handle_command(self, room: RoomRef, event: CommandEvent) -> bool:
         is_direct = await self._is_direct_room(room.room_id)
@@ -1012,35 +1046,110 @@ class AgentConsumer(Consumer[AgentActor]):
         )
 
     async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
-        if transport_room_id in self._room_meta:
-            return self._room_meta[transport_room_id]
-
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            room = await self._room_store.get_by_transport_room_id(
-                session, transport_room_id
+        """The room this recipient decides for, which the router read with the
+        row. A command handler asks by the room's transport id."""
+        if transport_room_id != self._room.room_id:
+            logger.error(
+                "Agent %s was asked about room %s while deciding a row in %s",
+                self.agent.name,
+                transport_room_id,
+                self._room.room_id,
             )
-            if room is None:
-                logger.error(
-                    "Room not found for transport room id: %s", transport_room_id
-                )
-                self._room_meta[transport_room_id] = None
-                return None
+            return None
+        return self._meta
 
-            agent_greetings_enabled = True
-            if room.bridge_id is not None:
-                bridge = await self._bridge_store.get(session, room.bridge_id)
-                if bridge is not None:
-                    agent_greetings_enabled = bridge.agent_greetings_enabled
+    # ── Tasks ─────────────────────────────────────────────────────────────────
 
-        meta = RoomMeta(
-            room_id=room.id,
-            name=room.name,
-            bridge_id=room.bridge_id,
-            agent_greetings_enabled=agent_greetings_enabled,
-            channel_type=room.channel_type,
+    def decide_task(self, event: SwitchEvent) -> Delivery:
+        """Whether a task event is one of the agent's own events: it is for
+        the agent doing the task when it is delegated or cancelled, and for
+        the agent that asked when it is accepted, updated or finalised."""
+        meta = self._meta
+        me = self.agent.id
+        payload: (
+            TaskDelegatePayload
+            | TaskAcceptPayload
+            | TaskUpdatePayload
+            | TaskFinalisePayload
+            | TaskCancelPayload
         )
-        self._room_meta[transport_room_id] = meta
-        return meta
+        if isinstance(event, TaskDelegate):
+            if event.performer_agent_id != me:
+                return NOTHING
+            kind = "task_delegate"
+            payload = TaskDelegatePayload(
+                task_id=event.task_id,
+                requester_agent_id=event.requester_agent_id,
+                performer_agent_id=event.performer_agent_id,
+                summary=event.summary,
+                description=event.description,
+            )
+        elif isinstance(event, TaskAccept):
+            if event.requester_agent_id != me:
+                return NOTHING
+            kind = "task_accept"
+            payload = TaskAcceptPayload(
+                task_id=event.task_id,
+                requester_agent_id=event.requester_agent_id,
+                performer_agent_id=event.performer_agent_id,
+            )
+        elif isinstance(event, TaskUpdate):
+            if event.requester_agent_id != me:
+                return NOTHING
+            kind = "task_update"
+            payload = TaskUpdatePayload(
+                task_id=event.task_id,
+                requester_agent_id=event.requester_agent_id,
+                performer_agent_id=event.performer_agent_id,
+                update=event.update,
+            )
+        elif isinstance(event, TaskFinalise):
+            if event.requester_agent_id != me:
+                return NOTHING
+            kind = "task_finalise"
+            payload = TaskFinalisePayload(
+                task_id=event.task_id,
+                requester_agent_id=event.requester_agent_id,
+                performer_agent_id=event.performer_agent_id,
+                outcome=event.outcome,
+            )
+        elif isinstance(event, TaskCancel):
+            if event.performer_agent_id != me:
+                return NOTHING
+            kind = "task_cancel"
+            payload = TaskCancelPayload(
+                task_id=event.task_id,
+                requester_agent_id=event.requester_agent_id,
+                performer_agent_id=event.performer_agent_id,
+                reason=event.reason,
+            )
+        else:
+            return NOTHING
+
+        def own_event(row: InboundEvent) -> OwnEvent:
+            return OwnEvent(
+                AgentEvent(
+                    type=kind,
+                    room_id=meta.room_id,
+                    bridge_id=meta.bridge_id,
+                    channel_type=meta.channel_type,
+                    payload=payload,
+                ),
+                room_seq=row.seq,
+                message_key=row.event_id,
+            )
+
+        async def working_on_it(_row: InboundEvent) -> None:
+            await self.actor.send_message(
+                self._room.room_id, "Working on it.", format="markdown", metered=False
+            )
+
+        return Delivery(
+            own_event=own_event,
+            after=working_on_it if isinstance(event, TaskDelegate) else None,
+        )
+
+    # ── Offline and refusal notices ───────────────────────────────────────────
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
@@ -1049,17 +1158,18 @@ class AgentConsumer(Consumer[AgentActor]):
         None when there is nothing to post.
 
         If the agent has live session(s) connected to OTHER rooms, name them so
-        the asker knows where to find it — a session hops rooms while keeping
+        the asker knows where to find it: a session hops rooms while keeping
         its heartbeat (and any role lease) alive, so the agent is reachable
         there even though it has no session in the room it was addressed from.
         When the agent also holds a role in *this* room, the wording notes that
         the role-assuming session has stepped away. A live session in a
-        genuinely different room wins — the asker is pointed there. Sessions in
-        rooms that show the SAME name as this one are NOT offered (pointing the
-        asker to a room they appear to already be in is confusing and useless).
+        genuinely different room wins, and the asker is pointed there. Sessions
+        in rooms that show the SAME name as this one are NOT offered (pointing
+        the asker to a room they appear to already be in is confusing and
+        useless).
 
         session_passive agents have no heartbeat, so the elsewhere/role logic
-        never applies — they fall through to the generic reply, whose wording
+        never applies: they fall through to the generic reply, whose wording
         already covers pulling from an existing session or starting a new one.
         For a session_addressable agent with a session bound to THIS room but
         not live here (and no live session in a distinct room), the reply says
@@ -1079,7 +1189,7 @@ class AgentConsumer(Consumer[AgentActor]):
             )
 
         # auto_session: if a connector is actively watching (global heartbeat),
-        # it will spin a session up to handle this — promise that rather than
+        # it will spin a session up to handle this, so promise that rather than
         # the "elsewhere"/offline wording. With no watcher, fall through to the
         # generic offline reply below.
         # A live connection that declared itself spawn-capable and covers this
@@ -1095,7 +1205,7 @@ class AgentConsumer(Consumer[AgentActor]):
             # The heartbeat arm only: a client still running the
             # /watch/heartbeat loop declares no capability, and that loop meant
             # willingness. A connection declares its own, which the check above
-            # has already asked — reading a connection as willing because it
+            # has already asked; reading a connection as willing because it
             # exists promises a session over a session worker that will never
             # spawn one, or over a controller with auto-start switched off.
             watching = await self._agent_session_store.get_live_agent_ids(
@@ -1164,7 +1274,7 @@ class AgentConsumer(Consumer[AgentActor]):
 
         Never the terminal command or "open Switch Console": a managed agent
         is started by its controller, so the reply names what stands in the
-        way — the owner stopped it, or its machine was removed or is offline.
+        way: the owner stopped it, or its machine was removed or is offline.
         None while it is connected: the message is delivered, and any notice
         that a session is starting is the agent's own to post.
         """
@@ -1221,8 +1331,8 @@ class AgentConsumer(Consumer[AgentActor]):
 
         Resolved from who owns the agent and which account that person has
         claimed on this bridge, rather than from a handle configured on the
-        agent. A handle only means anything on one platform — the same person
-        is one name on Slack and another on Telegram — so a single stored
+        agent. A handle only means anything on one platform (the same person
+        is one name on Slack and another on Telegram), so a single stored
         string was at best right in one room and inert everywhere else.
 
         None when the agent has no owner, the room has no bridge, or the owner
@@ -1258,10 +1368,9 @@ class AgentConsumer(Consumer[AgentActor]):
         has no known-agent spec or the spec returns None; `connected_not_live`
         selects the "bound here but not live" fallback.
 
-        `agent` is the freshly-read row supplied by the caller (via
-        `_fresh_agent`), so option edits made through the gateway (e.g.
-        `PATCH /agents/{id}/options`, `connection_model`) take effect without
-        restarting this client — `self.agent` alone is a boot-time snapshot.
+        `agent` is the row read for this routing, so option edits made through
+        the gateway (e.g. `PATCH /agents/{id}/options`, `connection_model`)
+        take effect on the next message.
         """
         connection_model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
@@ -1332,7 +1441,7 @@ class AgentConsumer(Consumer[AgentActor]):
             [self.agent.id], room_id, self._connections
         ):
             # A session in the room, or a claimed room slot no session of this
-            # agent accounts for — not mere coverage: an `all`-scope watcher
+            # agent accounts for. Not mere coverage: an `all`-scope watcher
             # covering this room is not a session that can answer.
             return True
 
@@ -1345,146 +1454,6 @@ class AgentConsumer(Consumer[AgentActor]):
     async def _is_direct_room(self, transport_room_id: str) -> bool:
         meta = await self._resolve_room_meta(transport_room_id)
         return meta is not None and meta.channel_type == "direct"
-
-    # ── Task event forwarding ────────────────────────────────────────────────
-
-    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
-        if event.performer_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        agent_event = (
-            None
-            if meta is None
-            else AgentEvent(
-                type="task_delegate",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskDelegatePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    summary=event.summary,
-                    description=event.description,
-                ),
-            )
-        )
-        await self.actor.send_message(
-            room.room_id, "Working on it.", format="markdown", metered=False
-        )
-        if meta is None or agent_event is None:
-            return
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            agent_event,
-            room_seq=event.room_seq,
-            message_key=event.source_event_id,
-        )
-
-    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_accept",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskAcceptPayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                ),
-            ),
-            room_seq=event.room_seq,
-            message_key=event.source_event_id,
-        )
-
-    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_update",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskUpdatePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    update=event.update,
-                ),
-            ),
-            room_seq=event.room_seq,
-            message_key=event.source_event_id,
-        )
-
-    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_finalise",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskFinalisePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    outcome=event.outcome,
-                ),
-            ),
-            room_seq=event.room_seq,
-            message_key=event.source_event_id,
-        )
-
-    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
-        if event.performer_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        await self._event_buffer.enqueue(
-            self.tenant_id,
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_cancel",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskCancelPayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    reason=event.reason,
-                ),
-            ),
-            room_seq=event.room_seq,
-            message_key=event.source_event_id,
-        )
 
     # ── Mention detection ─────────────────────────────────────────────────────
 
@@ -1504,9 +1473,8 @@ class AgentConsumer(Consumer[AgentActor]):
         """The addressing answer that needs no database read, or None when the
         room's aliases and role leases have to be consulted.
 
-        Callers use it to decide whether to take a pool slot at all: most room
-        chatter carries no `@` and is answered here, and a room fans every
-        message out to all of its agent clients at once.
+        Most room chatter carries no `@` and is answered here, without asking
+        the reads the router makes for the whole room.
         """
         return self._addressing.addressed_without_lookup(
             agent=self.agent,
@@ -1514,14 +1482,6 @@ class AgentConsumer(Consumer[AgentActor]):
             channel_type=meta.channel_type,
             message=self._as_incoming(event),
         )
-
-    async def _addressed(self, event: InboundMessage, meta: RoomMeta) -> bool:
-        """`_compute_addressed`, in a session of its own when it needs one."""
-        decided = self._addressed_without_lookup(event, meta)
-        if decided is not None:
-            return decided
-        async with self.session_factory() as session:
-            return await self._compute_addressed(session, event, meta)
 
     async def _compute_addressed(
         self, session: AsyncSession, event: InboundMessage, meta: RoomMeta
@@ -1546,9 +1506,9 @@ class AgentConsumer(Consumer[AgentActor]):
         """Whether `sender_user_id` may address this agent in `room_id`, per the
         agent's scoped addressing policy.
 
-        `agent` is the freshly-read row rather than the cached snapshot: the
-        policy is the thing being enforced, and enforcing a stale copy of it is
-        the one way this check can be wrong in the dangerous direction.
+        `agent` is the row read for this routing rather than an older copy:
+        the policy is the thing being enforced, and enforcing a stale copy of
+        it is the one way this check can be wrong in the dangerous direction.
         `content` is the event's content when there is one: a platform message
         says there whose authority it carries.
         """
@@ -1570,10 +1530,11 @@ class AgentConsumer(Consumer[AgentActor]):
         """Apply the scoped addressing policy to a message that tags this agent.
 
         When the sender is not permitted by the agent's policy, or the agent
-        has reached a budget covering it, the message is demoted to unaddressed room chatter and the caller is handed a refusal
-        to post (once, guarded by AUTO_REPLY_FLAG so two agents can't
-        ping-pong). Zero cost for the common case: only messages that already
-        tag this agent are ever checked, and open policies short-circuit.
+        has reached a budget covering it, the message is demoted to unaddressed
+        room chatter and the caller is handed a refusal to post (once, guarded
+        by AUTO_REPLY_FLAG so two agents can't ping-pong). Zero cost for the
+        common case: only messages that already tag this agent are ever
+        checked, and open policies short-circuit.
         """
         decision = await self._addressing_allowed(
             session, agent, event.sender, meta.room_id, event.content
@@ -1611,14 +1572,15 @@ class AgentConsumer(Consumer[AgentActor]):
         not the agent could take it, so an offline or stopped agent is still
         asked. `agent_live` is the agent having a live session for the room.
         Not an auto-reply: Switch's notice that another agent is offline or
-        refused is not someone asking this one for something. Not the files of a multi-file post delivered without
-        its first part, which happens when a group times out incomplete and
-        the rest arrives later: the post is counted with its first part, as
-        the transport counts it, so it is one request however it is split.
+        refused is not someone asking this one for something. Not the files of
+        a multi-file post delivered without its first part, which happens when
+        a post is decided incomplete and the rest arrives later: the post is
+        counted with its first part, as the transport counts it, so it is one
+        request however it is split.
 
         Guarded like the transport's observer call, and counted the same way:
-        this runs on the delivery path, ahead of the enqueue, and a telemetry
-        bug must not cost the agent the message.
+        this runs after the message has committed, and a telemetry bug must
+        not cost the agent the replies that follow it.
         """
         if self._triggered_by_auto_reply(event):
             return
@@ -1723,3 +1685,32 @@ class AgentConsumer(Consumer[AgentActor]):
             re.IGNORECASE,
         )
         return pattern.sub("", text).strip()
+
+
+def file_index(part: InboundMedia) -> int:
+    """A file's place in its post: its group index, or 0 for a lone file."""
+    group = parse_attachment_group(part.content)
+    return group[1] if group is not None else 0
+
+
+def _first_file(parts: list[InboundMedia]) -> InboundMedia | None:
+    """The file a post is anchored on, index 0, when it is among `parts`."""
+    return next((part for part in parts if file_index(part) == 0), None)
+
+
+def command_event(row: InboundCustomEvent) -> CommandEvent:
+    """A command as the row it was written in reads, with the ids the row
+    alone knows filled in.
+
+    Command results reply into the command's thread. When the command was
+    typed inside an existing thread the bridge relates it to that thread's
+    root; that root is used so the result stays in the thread. Otherwise the
+    command itself roots the thread and its own event id is used. The command
+    keeps its own id as well, so two commands in one thread are distinct.
+    """
+    command = CommandEvent(**row.content)
+    command.message_id = row.event_id
+    command.thread_id = row.thread_root_id or row.event_id
+    command.room_seq = row.seq
+    command.source_event_id = row.event_id
+    return command

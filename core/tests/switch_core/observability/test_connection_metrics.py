@@ -38,6 +38,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.observability.bootstrap import RuntimeProbes, _state_readings
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.transport.room_cache import RoomCacheStats
+from tests.db_buffer import QuietRooms
 
 AGENT_ID = "agent-1"
 
@@ -252,7 +253,7 @@ class _EmptyBuffer(EventBuffer):
     """
 
     def __init__(self) -> None:
-        super().__init__(object(), sequence_base=0)  # type: ignore[arg-type]
+        super().__init__(object(), sequence_base=0, rooms=QuietRooms())  # type: ignore[arg-type]
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
         return self.sequence_floor - 1

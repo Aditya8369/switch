@@ -21,9 +21,9 @@ from types import SimpleNamespace
 import pytest
 
 from switch_core.clients.admin_messages import ADMIN_MARKER, admin_extra_content
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import InboundMessage
 
 
@@ -82,7 +82,7 @@ async def _addressed(
         agent_user_id=resolver.transport_user_id,
         room_id=meta.room_id,
         channel_type=meta.channel_type,
-        message=AgentConsumer._as_incoming(event),
+        message=AgentRecipient._as_incoming(event),
     )
 
 

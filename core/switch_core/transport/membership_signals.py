@@ -14,6 +14,12 @@ A removed member has to stop receiving the room on every process, so a missed
 signal must not be the end of it. A re-read that fails is kept and tried
 again, every client running here is re-read when the signal connection comes
 back, and again on each periodic re-check.
+
+An agent reads no room, so it has no copy here to wake. What an agent's
+membership changes in this process is what is held in its memory: the room
+claims of the agent's connections held here, and the rooms of a controller
+streaming it from here. Every change is handed to the router for that
+(`MessageRouter.membership_changed`), and retried the same way when it fails.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from switch_core.db.membership_notify_ddl import MEMBERSHIP_CHANGED_SIGNAL
 
 if TYPE_CHECKING:
+    from switch_core.delivery.router import MessageRouter
     from switch_core.signals import SignalBus
     from switch_core.transport.invites import InviteBus
 
@@ -31,19 +38,27 @@ logger = logging.getLogger(__name__)
 
 
 class MembershipSignals:
-    def __init__(self, *, invites: InviteBus, bus: SignalBus) -> None:
+    def __init__(
+        self, *, invites: InviteBus, bus: SignalBus, router: MessageRouter
+    ) -> None:
         self._invites = invites
         self._owed = bus.pending_work("memberships", invites.reconcile)
+        self._agents_owed = bus.pending_work(
+            "agent memberships", router.membership_changed
+        )
         bus.handle(MEMBERSHIP_CHANGED_SIGNAL, self._on_changed)
         bus.on_resync(self.reconcile_all)
         bus.on_recheck(self.reconcile_all)
 
     def _on_changed(self, signal: dict[str, Any]) -> None:
         client_id = signal["client_id"]
-        # Most memberships belong to clients this process does not run
-        # (people's actors read nothing), and those have nothing to re-read.
         if self._invites.is_listening(client_id):
             self._owed.add(client_id)
+            return
+        # Not a client that reads rooms here: an agent, whose connections and
+        # controller this process may hold, or a person's actor, which the
+        # router finds is no agent and leaves alone.
+        self._agents_owed.add((signal["tenant_id"], client_id, signal["room_id"]))
 
     async def reconcile_all(self) -> None:
         """Re-read every client running here, one after another so a

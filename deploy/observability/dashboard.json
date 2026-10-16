@@ -288,7 +288,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Delivery and message-observer failures per second",
+        "title": "Delivery, routing and message-observer failures per second",
         "show_legend": true,
         "requests": [
           {
@@ -296,6 +296,13 @@
             "display_type": "bars",
             "style": {
               "palette": "warm"
+            }
+          },
+          {
+            "q": "sum:switch.messages.routing_failures{$env,$service} by {stage}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "purple"
             }
           },
           {

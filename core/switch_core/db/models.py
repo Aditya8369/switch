@@ -621,6 +621,8 @@ class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
     __table_args__ = (
         Index("ix_client_rooms_tenant_id", "tenant_id"),
+        # The router reads a room's members on every row it writes there.
+        Index("ix_client_rooms_room_id", "room_id"),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],
@@ -2415,13 +2417,14 @@ class AgentEventRow(TenantScoped, Base):
     """One of an agent's own events: an event meant for that agent, not one it
     sent.
 
-    The agent's consumer (`AgentConsumer`) writes a row when a room row it is
-    handed turns out to be for the agent: a message addressed to it, a join it
-    is set to listen for, a task event it is part of, or a command sent to it.
-    Whether a row is for the agent depends on the room's state at the moment
-    it is delivered, so the consumer records the decision here instead of
-    leaving it to be worked out again at read time. The rest of a room's
-    conversation is not copied here; a reader that wants it reads `messages`.
+    The router (`delivery/router.py`) writes a row, in the transaction that
+    writes the room row, when that room row is for the agent: a message
+    addressed to it, a join it is set to listen for, or a task event it is part
+    of. A room command's handler writes one for a command it passes on to the
+    agent. Whether a row is for the agent depends on the room's state at the
+    moment it is written, so the decision is recorded here instead of being
+    worked out again at read time. The rest of a room's conversation is not
+    copied here; a reader that wants it reads `messages`.
 
     `seq` numbers the own events of one agent. The numbers are contiguous
     and never reused (`AgentEventHead` hands them out). `payload` is the event
@@ -2437,12 +2440,12 @@ class AgentEventRow(TenantScoped, Base):
     it has already received from here.
 
     `message_key`, `room_id`, `room_seq` and `type` together name the source of
-    an event,
-    and an agent has at most one event per source (`uq_agent_events_source`).
-    `EventBuffer.enqueue` hands back the number of the event already stored
-    instead of storing a second copy. A file of a multi-file message that
-    arrives after the message was delivered has a later `room_seq`, so it is
-    stored as an event of its own.
+    an event, and an agent has at most one event per source
+    (`uq_agent_events_source`). The router stores nothing for a source already
+    stored, and `EventBuffer.enqueue` hands back the number of the event
+    already stored instead of storing a second copy. A file of a multi-file
+    message that arrives after the message was delivered has a later
+    `room_seq`, so it is stored as an event of its own.
 
     The retention loop in `main.py` deletes rows older than
     `agent_event_retention_seconds`. It never deletes from `messages`.
@@ -2459,9 +2462,10 @@ class AgentEventRow(TenantScoped, Base):
             "room_id",
             "room_seq",
         ),
-        # One decision of the consumer is stored once. The same room row, read
-        # by the consumer of a second process or written again after a commit
-        # whose acknowledgement was lost, finds this row already there.
+        # One decision is stored once. The same room row decided again (by an
+        # agent consumer of an older release during a rolling deploy) or an
+        # event written again after a commit whose acknowledgement was lost
+        # finds this row already there.
         Index(
             "uq_agent_events_source",
             "agent_id",
@@ -2553,6 +2557,54 @@ class AgentEventDrop(TenantScoped, Base):
     agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
     room_id: Mapped[str] = mapped_column(Text, primary_key=True)
     dropped_through: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class PendingAttachmentGroup(TenantScoped, Base):
+    """A multi-file post whose files have not all been written yet.
+
+    Several files posted as one message are written as one row each in
+    `messages`, sharing a group id (`attachments.py`). Whether the post is for
+    an agent, and the one own event it becomes, can only be decided once the
+    files are rows, so the router (`delivery/router.py`) records the group
+    here when a file arrives that does not complete it. The file that does
+    complete it is written in a transaction that also deletes this row and
+    stores the post's own events.
+
+    A group whose files stop arriving is decided with the files that did,
+    once `deadline` has passed (`MessageRouter.flush_due_groups`). Every
+    switch-core process runs that sweep, and each claims a row with `FOR
+    UPDATE SKIP LOCKED` and decides it in the transaction that deletes it, so
+    one process decides each group whichever processes are running.
+    `deadline` is set from the database's clock when the group's first file
+    is written and never moved, so the wait bounds the whole group rather
+    than the gap between two files.
+
+    `from_seq` is the room row this group's files are counted from: the
+    first file written since the group was last decided. A file that arrives
+    after its group was decided incomplete starts a new row here, from
+    itself, rather than completing a post that has already gone out.
+
+    A reader of a room's conversation holds a group back while it has a row
+    here, so the post is delivered as one message once it is decided.
+    """
+
+    __tablename__ = "pending_attachment_groups"
+    __table_args__ = (
+        # The sweep's question: which of a tenant's groups are due.
+        Index("ix_pending_attachment_groups_deadline", "tenant_id", "deadline"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_pending_attachment_groups_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    group_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AgentRoomRead(TenantScoped, Base):

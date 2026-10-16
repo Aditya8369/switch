@@ -460,6 +460,11 @@ class ControllerPresence:
     def rooms(self, agent_id: str) -> set[str]:
         return set(self._rooms.get(agent_id, ()))
 
+    def rooms_kept(self) -> dict[str, set[str]]:
+        """The rooms this process keeps for each agent a controller streamed
+        from here, the ones `room_joined` and `room_left` change."""
+        return {agent_id: set(rooms) for agent_id, rooms in self._rooms.items()}
+
     def live_in_room(self, agent_id: str, room_id: str) -> bool:
         return self.is_live(agent_id) and room_id in self._rooms.get(agent_id, ())
 

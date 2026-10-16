@@ -93,7 +93,6 @@ from switch_core.bridges.collaboration.webhooks import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
@@ -167,6 +166,8 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.delivery.recipient import RecipientServices
+from switch_core.delivery.router import GROUP_SWEEP_SECONDS, MessageRouter
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
@@ -252,6 +253,43 @@ async def _agent_event_retention_loop(
                     await buffer.expire(tenant_id)
             except Exception:
                 logger.exception("Agent event retention pass failed")
+
+
+async def _attachment_group_sweep_loop(
+    session_factory: async_sessionmaker[AsyncSession], router: MessageRouter
+) -> None:
+    """Decide the multi-file posts whose files stopped arriving, in every
+    tenant. The process that wrote a post's first file sets a timer for it;
+    this is what decides a post whose writer is gone, and every process runs
+    it, since a post is claimed by whoever gets to it first."""
+    with no_tenant():
+        while True:
+            await asyncio.sleep(GROUP_SWEEP_SECONDS)
+            try:
+                tenants = await all_tenant_ids(session_factory)
+            except Exception:
+                logger.exception("Attachment group sweep failed")
+                continue
+            # One tenant at a time, each on its own: a tenant whose sweep
+            # fails leaves the tenants after it to be swept all the same.
+            for tenant_id in tenants:
+                try:
+                    await router.flush_due_groups(tenant_id)
+                except Exception:
+                    logger.exception(
+                        "Attachment group sweep failed for tenant %s", tenant_id
+                    )
+
+
+async def _recheck_agent_rooms(
+    session_factory: async_sessionmaker[AsyncSession], router: MessageRouter
+) -> None:
+    """Check the room claims and managed agents this process holds against
+    the agents' memberships, in every tenant, for a membership signal that
+    never arrived (`MessageRouter.recheck_agent_rooms`)."""
+    with no_tenant():
+        for tenant_id in await all_tenant_ids(session_factory):
+            await router.recheck_agent_rooms(tenant_id)
 
 
 async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
@@ -570,7 +608,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Membership changes made in other processes reach the clients here over
     # the signal bus (`transport/membership_signals.py`).
     invites = InviteBus()
-    MembershipSignals(invites=invites, bus=signal_bus)
     ephemeral = EphemeralBus()
 
     # ── Stores ───────────────────────────────────────────────────────────────
@@ -621,6 +658,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     event_buffer = EventBuffer(
         session_factory,
         sequence_base=event_boot << 32,
+        rooms=message_listener,
         retention_seconds=config.agent_event_retention_seconds,
     )
     # Listens for the `NOTIFY` that each insert into `agent_events` sends, and
@@ -681,29 +719,57 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         # stopped the boot: the move reads them, once per tenant.
         await move_github_connections(session_factory, config.keyring, tenant_ids)
 
-    # ── Provisioning ─────────────────────────────────────────────────────────
-    provisioning: Provisioning = PostgresProvisioning(
-        session_factory=session_factory,
-        room_store=room_store,
-        client_store=client_store,
-        message_store=message_store,
-        invites=invites,
-    )
-
     # One connection registry for the process. Created here rather than inside
-    # the agent bridge because the room clients are wired first and read
-    # presence from it — an agent is reachable if it has a live connection OR a
-    # fresh heartbeat row (CHOO-1857 stage B).
+    # the agent bridge because the router is wired first and reads presence
+    # from it: an agent is reachable if it has a live connection OR a fresh
+    # heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
     # The agent connections this process holds, recorded for the others under
     # this process's lease, and a copy of theirs kept in `connections`
-    # (`connection_rows.py`).
+    # (`connection_rows.py`), so the router's presence questions are answered
+    # for every process.
     shared_connections = SharedConnections(
         registry=connections,
         session_factory=session_factory,
         store=AgentConnectionStore(),
         bus=signal_bus,
         lease=process_lease,
+    )
+
+    # ── Message router ───────────────────────────────────────────────────────
+    # Every row written to a room goes through it, which decides in the same
+    # transaction which agents the row is for (`delivery/router.py`).
+    router = MessageRouter(
+        services=RecipientServices(
+            session_factory=session_factory,
+            event_buffer=event_buffer,
+            agent_store=agent_store,
+            room_store=room_store,
+            document_store=document_store,
+            reference_store=reference_store,
+            agent_session_store=agent_session_store,
+            room_role_store=room_role_store,
+            external_user_store=external_user_store,
+            connections=connections,
+            frontend_base_url=config.frontend_base_url,
+            message_telemetry=message_telemetry,
+        ),
+        message_store=message_store,
+        client_store=client_store,
+        budget_store=budget_store,
+    )
+
+    MembershipSignals(invites=invites, bus=signal_bus, router=router)
+    signal_bus.on_resync(lambda: _recheck_agent_rooms(session_factory, router))
+    signal_bus.on_recheck(lambda: _recheck_agent_rooms(session_factory, router))
+
+    # ── Provisioning ─────────────────────────────────────────────────────────
+    provisioning: Provisioning = PostgresProvisioning(
+        session_factory=session_factory,
+        room_store=room_store,
+        client_store=client_store,
+        router=router,
+        invites=invites,
     )
 
     # One shared read per room for every client in this process.
@@ -732,26 +798,12 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         ephemeral=ephemeral,
         room_cache=room_cache,
         message_observer=message_telemetry,
+        router=router,
     )
-    client_factory.register(
-        "agent",
-        AgentActor,
-        AgentConsumer,
-        event_buffer=event_buffer,
-        agent_store=agent_store,
-        room_store=room_store,
-        bridge_store=bridge_store,
-        document_store=document_store,
-        reference_store=reference_store,
-        agent_session_store=agent_session_store,
-        room_role_store=room_role_store,
-        external_user_store=external_user_store,
-        connections=connections,
-        frontend_base_url=config.frontend_base_url,
-        message_telemetry=message_telemetry,
-    )
-    # Members that only write: a person on another platform, and a bridge's own
+    # Members that only write: an agent, whose rows are decided as they are
+    # written (the router), a person on another platform, and a bridge's own
     # identity (its reader, the WorkspaceConsumer, is built by the bridge).
+    client_factory.register("agent", AgentActor)
     client_factory.register("user", HumanActor)
     client_factory.register("bridge", Actor)
 
@@ -967,6 +1019,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         agent_store=agent_store,
         user_store=user_store,
         message_store=message_store,
+        router=router,
         media_store=media_store,
         usage_store=usage_store,
         id_server_name=config.id_server_name,
@@ -1158,6 +1211,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             retention_task = asyncio.create_task(
                 _agent_event_retention_loop(session_factory, event_buffer)
             )
+            attachment_group_task = asyncio.create_task(
+                _attachment_group_sweep_loop(session_factory, router)
+            )
             session_activity_task = asyncio.create_task(
                 session_activity_maintenance_loop(session_factory)
             )
@@ -1190,6 +1246,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             finally:
                 sweep_task.cancel()
                 retention_task.cancel()
+                attachment_group_task.cancel()
+                router.close()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()

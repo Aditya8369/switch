@@ -26,6 +26,7 @@ from switch_core.provisioning.postgres import (
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.invites import InviteBus
 from tests.conftest import RLSHarness
+from tests.routing import router_on
 
 
 async def _client(session: AsyncSession, name: str = "someone") -> Client:
@@ -68,7 +69,7 @@ def _provisioning(
         session_factory=session_factory,
         room_store=RoomStore(),
         client_store=ClientStore(),
-        message_store=MessageStore(),
+        router=router_on(session_factory),
         invites=invites or InviteBus(),
     )
 

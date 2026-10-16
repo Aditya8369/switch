@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -22,6 +22,9 @@ from switch_core.transport.observer import ParticipantMessageObserver
 from switch_core.transport.postgres import PostgresTransport
 from switch_core.transport.room_cache import RoomDeliveryCache
 
+if TYPE_CHECKING:
+    from switch_core.delivery.router import MessageRouter
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +44,7 @@ class ClientFactory:
         ephemeral: EphemeralBus,
         room_cache: RoomDeliveryCache,
         message_observer: ParticipantMessageObserver,
+        router: MessageRouter,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
@@ -55,6 +59,10 @@ class ClientFactory:
         # One for the process, so every member of a room shares it.
         self._room_cache = room_cache
         self._message_observer = message_observer
+        # Every transport writes through it, and it posts agents' replies
+        # through transports built here, so it is handed how to build one.
+        self._router = router
+        router.use_transports(self.transport_for)
         self._registry: dict[
             str,
             tuple[
@@ -131,4 +139,5 @@ class ClientFactory:
             ephemeral=self._ephemeral,
             room_cache=self._room_cache,
             message_observer=self._message_observer,
+            router=self._router,
         )
