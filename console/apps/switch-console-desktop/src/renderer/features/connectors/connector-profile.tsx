@@ -95,48 +95,50 @@ export function ConnectorProfile({
   };
 
   return (
-    <div>
-      <Button variant="ghost" size="sm" className="-ml-2" onClick={onBack}>
-        <ArrowLeft className="size-4" />
-        Connectors
-      </Button>
-      <header className="mt-4 flex items-start gap-4">
-        <ConnectionIcon slug={connection.slug} name={connection.name} size="xl" />
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">
-              {connection.name}
-            </h1>
-            {state.kind !== 'connect' && state.kind !== 'connected' && (
-              <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
+    <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-4">
+        <Button variant="ghost" size="sm" className="-ml-2 w-fit" onClick={onBack}>
+          <ArrowLeft className="size-4" />
+          Connectors
+        </Button>
+        <header className="flex items-start gap-4">
+          <ConnectionIcon slug={connection.slug} name={connection.name} size="xl" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">
+                {connection.name}
+              </h1>
+              {state.kind !== 'connect' && state.kind !== 'connected' && (
+                <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
+              )}
+            </div>
+            <p className="text-sm text-foreground-muted">{connection.description}</p>
+            {connectedAs && <p className="text-sm">{connectedAs}</p>}
+            {state.detail && <p className="text-sm text-foreground-muted">{state.detail}</p>}
+          </div>
+          <div className="flex shrink-0 gap-2">
+            {action && (
+              <Button
+                variant={action === 'manage' || action === 'replace' ? 'outline' : 'default'}
+                disabled={!connection.connectable}
+                onClick={() =>
+                  connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
+                }
+              >
+                {ACTION_LABEL[action]}
+              </Button>
+            )}
+            {hasConnection && (
+              <Button variant="outline" onClick={() => showDisconnect({ workspaceId, connection })}>
+                Disconnect
+              </Button>
             )}
           </div>
-          <p className="text-sm text-foreground-muted">{connection.description}</p>
-          {connectedAs && <p className="text-sm">{connectedAs}</p>}
-          {state.detail && <p className="text-sm text-foreground-muted">{state.detail}</p>}
-        </div>
-        <div className="flex shrink-0 gap-2">
-          {action && (
-            <Button
-              variant={action === 'manage' || action === 'replace' ? 'outline' : 'default'}
-              disabled={!connection.connectable}
-              onClick={() =>
-                connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
-              }
-            >
-              {ACTION_LABEL[action]}
-            </Button>
-          )}
-          {hasConnection && (
-            <Button variant="outline" onClick={() => showDisconnect({ workspaceId, connection })}>
-              Disconnect
-            </Button>
-          )}
-        </div>
-      </header>
+        </header>
+      </div>
 
       {offNotice && (
-        <div className="mt-4 flex items-center gap-3 rounded-lg border border-border p-3">
+        <div className="flex items-center gap-3 rounded-lg border border-border p-3">
           <p className="flex-1 text-sm">{offNotice.text}</p>
           {offNotice.canEnable && (
             <Button size="sm" disabled={enabling} onClick={() => void enable()}>
@@ -149,22 +151,14 @@ export function ConnectorProfile({
         </div>
       )}
       {error && (
-        <p role="alert" className="mt-4 text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       )}
 
-      <div className="mt-6 grid grid-cols-[minmax(0,1fr)_240px] gap-8 border-t border-border pt-6">
-        <ConnectorAgentsSection
-          serverId={serverId}
-          workspaceId={workspaceId}
-          connection={connection}
-          connected={state.kind === 'connected'}
-          adding={adding}
-          onAddingChange={setAdding}
-          notice={notice}
-        />
-        <aside className="space-y-6">
+      <section className="flex flex-col gap-4">
+        <h2 className="text-sm font-semibold text-foreground">Details</h2>
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-6">
           <Fact label="Category">
             <span className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-sm">
               {connection.category}
@@ -189,8 +183,18 @@ export function ConnectorProfile({
               </button>
             </Fact>
           )}
-        </aside>
-      </div>
+        </div>
+      </section>
+
+      <ConnectorAgentsSection
+        serverId={serverId}
+        workspaceId={workspaceId}
+        connection={connection}
+        connected={state.kind === 'connected'}
+        adding={adding}
+        onAddingChange={setAdding}
+        notice={notice}
+      />
     </div>
   );
 }

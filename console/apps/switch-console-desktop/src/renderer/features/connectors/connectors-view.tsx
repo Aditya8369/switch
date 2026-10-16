@@ -116,7 +116,7 @@ function Connectors({
     return (
       <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-          <div className="mx-auto w-full space-y-4 p-6" style={{ maxWidth: 880 }}>
+          <div className="mx-auto w-full space-y-4 px-10 py-8" style={{ maxWidth: 880 }}>
             {catalog.isError && (
               <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
             )}

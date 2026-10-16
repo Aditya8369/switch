@@ -135,7 +135,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
             <div
               key={agent.agent_id}
               role="listitem"
-              className="group relative flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] py-3 pr-10 pl-3.5"
+              className="group relative flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] py-3 pr-9 pl-3.5"
             >
               <span className="flex size-7 shrink-0 items-center justify-center">
                 <AgentAvatar
@@ -157,7 +157,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
                 title={`Turn ${name} off for ${agent.name}`}
                 disabled={removingId !== null}
                 onClick={() => void remove(agent)}
-                className="absolute top-1/2 right-2 flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100 disabled:cursor-wait"
+                className="absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100 disabled:cursor-wait"
               >
                 {removingId === agent.agent_id ? <Spinner /> : <X className="size-3.5" />}
               </button>
