@@ -33,7 +33,7 @@ import {
  * The agents using the connector, drawn as a room's participants are: a
  * heading with the count, a card per agent, and an "Add agent" that opens a
  * search of the person's other agents under the cards. Adding one turns the
- * service on for it there and then.
+ * service on for it there and then; the cross on a card turns it off again.
  */
 export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
   serverId,
@@ -61,6 +61,32 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
     remote.data?.find((agent) => agent.id === agentId)?.iconUrl ?? null;
   const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
   const canAdd = connected && offersAddAgent(connection) && agents.data != null;
+  const reload = useReloadConnectors(workspaceId);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<{ error: string | null; warning: string | null }>({
+    error: null,
+    warning: null,
+  });
+  async function remove(agent: ConnectionAgent) {
+    setRemovingId(agent.agent_id);
+    setRemoval({ error: null, warning: null });
+    try {
+      const warning = await rpc.workspaces.removeServiceGrant({
+        workspaceId,
+        agentId: agent.agent_id,
+        service: connection.slug,
+      });
+      setRemoval({ error: null, warning });
+      await reload();
+    } catch (cause) {
+      setRemoval({
+        error: failureText(cause, `Could not turn ${name} off for ${agent.name}.`),
+        warning: null,
+      });
+    } finally {
+      setRemovingId(null);
+    }
+  }
 
   return (
     <section className="flex flex-col gap-3">
@@ -109,7 +135,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
             <div
               key={agent.agent_id}
               role="listitem"
-              className="flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] px-3.5 py-3"
+              className="group relative flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] py-3 pr-10 pl-3.5"
             >
               <span className="flex size-7 shrink-0 items-center justify-center">
                 <AgentAvatar
@@ -125,9 +151,29 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
                   {agentProviderLabelFor(agent.agent_id, workspaceId)}
                 </span>
               </div>
+              <button
+                type="button"
+                aria-label={`Turn ${name} off for ${agent.name}`}
+                title={`Turn ${name} off for ${agent.name}`}
+                disabled={removingId !== null}
+                onClick={() => void remove(agent)}
+                className="absolute top-1/2 right-2 flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100 disabled:cursor-wait"
+              >
+                {removingId === agent.agent_id ? <Spinner /> : <X className="size-3.5" />}
+              </button>
             </div>
           ))}
         </div>
+      )}
+      {removal.error && (
+        <p role="alert" className="text-xs text-destructive">
+          Not turned off — {removal.error}
+        </p>
+      )}
+      {removal.warning && (
+        <p role="status" className="text-xs text-foreground-muted">
+          {removal.warning}
+        </p>
       )}
 
       {canAdd && adding && agents.data && (
@@ -140,9 +186,11 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
           notice={notice}
         />
       )}
-      <p className="text-xs text-foreground-muted">
-        Turn it on or off for one agent from that agent&apos;s settings.
-      </p>
+      {!offersAddAgent(connection) && (
+        <p className="text-xs text-foreground-muted">
+          Turn it on for an agent from that agent&apos;s settings.
+        </p>
+      )}
     </section>
   );
 });

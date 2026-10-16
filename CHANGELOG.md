@@ -1771,7 +1771,9 @@ version of their own to them without also giving them a release of their own.
   cards, and choosing one turns the service on for it at once. Connecting a
   service now lands on its page with that search open, instead of a checklist
   in the connect dialog. An agent others can address is offered with a note
-  that it would act as you.
+  that it would act as you. A cross on a card, shown on hover, turns the
+  service off for that agent again, so one agent's access can be taken away
+  without disconnecting from every agent.
 - **Connector tools ask in approval-required and auto-accept-edits mode.**
   Calls to a granted service's tools (Jira and Confluence through Atlassian,
   Datadog, Google Workspace) used to run without asking in every mode. They now
