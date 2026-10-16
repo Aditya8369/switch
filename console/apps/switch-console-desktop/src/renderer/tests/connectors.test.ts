@@ -75,10 +75,12 @@ describe('the state a connector card shows', () => {
     expect(connectorCardState(entry({ workspace_enabled: false }))).toMatchObject({
       kind: 'workspace_off',
       label: 'Off in this workspace',
+      detail: 'A workspace admin has switched it off.',
     });
     expect(connectorCardState(entry({ status: 'needs_reauthorization' }))).toMatchObject({
       kind: 'reconnect',
       label: 'Reconnect needed',
+      detail: 'Switch can no longer use your Example connection. Connect again.',
       tone: 'problem',
     });
     expect(connectorCardState(entry({ status: 'error' }))).toMatchObject({
@@ -160,25 +162,38 @@ describe('the Yours and Discover tabs', () => {
 });
 
 describe("a card's own control", () => {
+  const quick = (overrides: Partial<ConnectionCatalogEntry>) => {
+    const item = entry(overrides);
+    return cardQuickAction(item, connectorCardState(item));
+  };
+
   it('connects where the profile would offer Connect', () => {
-    expect(cardQuickAction(entry())).toBe('connect');
+    expect(quick({})).toBe('connect');
     // Connectable where it cannot be granted: still offered, as on the profile.
-    expect(cardQuickAction(entry({ unavailable_reason: 'Not fully set up.' }))).toBe('connect');
+    expect(quick({ unavailable_reason: 'Not fully set up.' })).toBe('connect');
   });
 
-  it('only marks a connection, never offering to disconnect it', () => {
-    expect(cardQuickAction(entry({ status: 'connected' }))).toBe('connected');
-    expect(cardQuickAction(entry({ status: 'connected', workspace_enabled: false }))).toBe(
-      'connected'
+  it('marks a connection only when the card shows it connected, never offering to disconnect', () => {
+    expect(quick({ status: 'connected' })).toBe('connected');
+    expect(quick({ status: 'connected', workspace_enabled: null })).toBe('connected');
+  });
+
+  it('shows the state, not the mark, for a connection that cannot be used', () => {
+    expect(quick({ status: 'connected', workspace_enabled: false })).toBeNull();
+    expect(quick({ status: 'connected', unavailable_reason: 'Not set up on this server.' })).toBe(
+      null
+    );
+    expect(quick({ status: 'connected', unavailable_reason: 'Gone.', connectable: false })).toBe(
+      null
     );
   });
 
   it('offers nothing it would be refused, or that needs the profile', () => {
-    expect(cardQuickAction(entry({ connectable: false }))).toBeNull();
-    expect(cardQuickAction(entry({ workspace_enabled: false }))).toBeNull();
-    expect(cardQuickAction(entry({ status: 'coming_soon' }))).toBeNull();
-    expect(cardQuickAction(entry({ status: 'needs_reauthorization' }))).toBeNull();
-    expect(cardQuickAction(entry({ status: 'error' }))).toBeNull();
+    expect(quick({ connectable: false })).toBeNull();
+    expect(quick({ workspace_enabled: false })).toBeNull();
+    expect(quick({ status: 'coming_soon' })).toBeNull();
+    expect(quick({ status: 'needs_reauthorization' })).toBeNull();
+    expect(quick({ status: 'error' })).toBeNull();
   });
 });
 

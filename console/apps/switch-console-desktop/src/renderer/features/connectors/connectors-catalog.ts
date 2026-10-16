@@ -4,6 +4,7 @@ import {
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { ConnectorCardState } from './connector-card-state';
 
 export type ConnectorsTab = 'yours' | 'discover' | 'workspace';
 
@@ -37,11 +38,16 @@ export function connectorsInTab(
 /**
  * The card's own control, beside the part that opens the profile: a way to
  * connect where the profile would offer Connect, and a mark (not a button)
- * once connected. Disconnecting stays on the profile, so the grid can never
- * remove anyone's access by a stray click.
+ * only when the card's one state is connected. A connection the server or
+ * the workspace has made unusable shows that state instead, and is still
+ * there to disconnect on the profile. Disconnecting stays on the profile, so
+ * the grid can never remove anyone's access by a stray click.
  */
-export function cardQuickAction(entry: ConnectionCatalogEntry): 'connect' | 'connected' | null {
-  if (entry.status === 'connected') return 'connected';
+export function cardQuickAction(
+  entry: ConnectionCatalogEntry,
+  state: ConnectorCardState
+): 'connect' | 'connected' | null {
+  if (state.kind === 'connected') return 'connected';
   return profileConnectAction(entry) === 'connect' && entry.connectable ? 'connect' : null;
 }
 

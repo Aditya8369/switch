@@ -188,7 +188,7 @@ it("shows the workspace's catalog, what the person has on Yours and everything o
   expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
 });
 
-it('marks a service the server cannot use, without offering to connect it', async () => {
+it('marks a service the server cannot use with its reason, without offering to connect it', async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
@@ -196,6 +196,9 @@ it('marks a service the server cannot use, without offering to connect it', asyn
 
   await vi.waitFor(() => expect(button(/^GitHub/, grid(page)!)).toBeDefined());
   expect(button(/^GitHub/, grid(page)!)!.textContent).toMatch(/Unavailable/);
+  expect(button(/^GitHub/, grid(page)!)!.textContent).toContain(
+    'GitHub is not set up on this server.'
+  );
   expect(page.querySelector('button[aria-label="Connect GitHub"]')).toBeNull();
 });
 
@@ -294,4 +297,18 @@ it('says on the profile when re-reading the catalog fails, with Retry', async ()
   await act(async () => button(/^retry$/i, page)!.click());
   await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
   expect(page.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('shows a connection the workspace has switched off as off, not as connected', async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    entry({ slug: 'atlassian', name: 'Atlassian', status: 'connected', workspace_enabled: false }),
+  ]);
+  const page = await render();
+
+  await vi.waitFor(() => expect(button(/^Atlassian/, grid(page)!)).toBeDefined());
+  expect(page.querySelector('[aria-label="Atlassian connected"]')).toBeNull();
+  expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain('Off in this workspace');
+  expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain(
+    'A workspace admin has switched it off.'
+  );
 });

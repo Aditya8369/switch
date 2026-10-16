@@ -223,9 +223,9 @@ function ConnectorGrid({
 }
 
 /**
- * One catalog card. The whole card opens the profile; the control at its top
- * right connects in one click, or marks a connection that is already there.
- * Disconnecting is only on the profile.
+ * One catalog card, showing one state with its reason. The whole card opens
+ * the profile; the control at its top right connects in one click, or marks
+ * a connection that is there and usable. Disconnecting is only on the profile.
  */
 function ConnectorCard({
   entry,
@@ -237,7 +237,7 @@ function ConnectorCard({
   onConnect: () => void;
 }) {
   const state = connectorCardState(entry);
-  const quick = cardQuickAction(entry);
+  const quick = cardQuickAction(entry, state);
   const comingSoon = state.kind === 'coming_soon';
   return (
     <div
@@ -266,6 +266,9 @@ function ConnectorCard({
             <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
           )}
         </span>
+        {state.detail && (
+          <span className="mt-1 block text-xs text-foreground-muted">{state.detail}</span>
+        )}
       </button>
       {quick === 'connect' && (
         <Button
