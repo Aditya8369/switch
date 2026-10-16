@@ -8,10 +8,12 @@ import {
 import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
 
 /**
- * Each server's flags as this window last learned them. Read by the hook's
- * first render, so a component drawn after the flags are known is drawn with
- * them, rather than with every flag off and then again — the flicker of a
- * sidebar or a page laid out for the wrong flags.
+ * Each server's flags as this window learned them: read before the window is
+ * first drawn (`preloadFeatureFlags`), then kept up to date by the main
+ * process's change events. Read by the hook's first render, so a component
+ * drawn after the flags are known is drawn with them, rather than with every
+ * flag off and then again — the flicker of a sidebar or a page laid out for
+ * the wrong flags.
  */
 const known = new Map<string, FeatureFlags>();
 
@@ -55,8 +57,7 @@ export function useFeatureFlags(serverId: string | null | undefined): FeatureFla
       if (state.serverId === serverId) setFlags(remember(serverId, state.flags));
     });
     void rpc.featureFlags.get(serverId).then((res) => {
-      if (current && res?.success && res.data.fetchedAt !== null)
-        setFlags(remember(serverId, res.data.flags));
+      if (current && res?.success && res.data.fetchedAt !== null) setFlags(res.data.flags);
     });
     return () => {
       current = false;
