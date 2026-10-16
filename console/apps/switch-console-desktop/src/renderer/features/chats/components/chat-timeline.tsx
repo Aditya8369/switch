@@ -2,7 +2,6 @@ import { format, isToday, isYesterday } from 'date-fns';
 import { CornerUpLeft, Loader2, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, type ReactNode } from 'react';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
@@ -20,7 +19,13 @@ import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
 import { FailedIcon, WorkLogRow } from '../ui/work-log';
-import { ChatActivityBlock, ChatRequests, turnEndLabel } from './chat-activity-block';
+import {
+  AgentRow,
+  ChatActivityBlock,
+  ChatRequests,
+  turnEndLabel,
+  turnShown,
+} from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
 
 /** Messages more than this far apart start a new dated group. */
@@ -160,6 +165,13 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     )
   );
   let previous: Date | null = null;
+  /** The agent whose block the last row belongs to; its next row shows no avatar or name. */
+  let blockAgent: string | null = null;
+  const startsBlock = (agentId: string | null) => {
+    const head = agentId === null || agentId !== blockAgent;
+    blockAgent = agentId;
+    return head;
+  };
   return (
     <div className="flex flex-col gap-5">
       {timeline.hasMore && (
@@ -185,59 +197,60 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             <Separator>{dayLabel(sentAt)}</Separator>
           ) : null;
         previous = sentAt;
+        if (separator) blockAgent = null;
         const chip = threadChip(message, find);
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
         const mine = message.sender.userId !== null && message.sender.userId === myUserId;
+        const agentLabel = {
+          name: agent ? chatAgentLabel(agent) : message.sender.name,
+          iconUrl: agent?.iconUrl ?? null,
+        };
+        const agentRow = notice || ended !== null || message.sender.kind === 'agent';
+        const head = startsBlock(agentRow ? message.sender.agentId : null);
         return (
           <Fragment key={message.messageId}>
             {separator}
             {notice ? (
-              <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
-                <AgentAvatar
-                  name={agent ? chatAgentLabel(agent) : message.sender.name}
-                  iconUrl={agent?.iconUrl ?? null}
-                  serverId={serverId}
-                  size={28}
-                  className="mt-0.5"
+              <AgentRow
+                id={messageAnchorId(message.messageId)}
+                agent={agentLabel}
+                serverId={serverId}
+                head={head}
+                role="status"
+              >
+                <WorkLogRow
+                  icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
+                  label={
+                    agents.length > 1
+                      ? `${message.sender.name} is starting a session…`
+                      : 'Starting a session…'
+                  }
+                  active
                 />
-                <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-                  <WorkLogRow
-                    icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
-                    label={
-                      agents.length > 1
-                        ? `${message.sender.name} is starting a session…`
-                        : 'Starting a session…'
-                    }
-                    active
-                  />
-                </div>
-              </div>
+              </AgentRow>
             ) : ended ? (
-              <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
-                <AgentAvatar
-                  name={agent ? chatAgentLabel(agent) : message.sender.name}
-                  iconUrl={agent?.iconUrl ?? null}
-                  serverId={serverId}
-                  size={28}
-                  className="mt-0.5"
+              <AgentRow
+                id={messageAnchorId(message.messageId)}
+                agent={agentLabel}
+                serverId={serverId}
+                head={head}
+                role="status"
+              >
+                <WorkLogRow
+                  icon={<FailedIcon />}
+                  label={turnEndLabel(
+                    ended.outcome === 'interrupted'
+                      ? 'Stopped'
+                      : ended.outcome === 'failed'
+                        ? 'The turn ended with an error'
+                        : 'Finished without replying',
+                    ended.reason
+                  )}
+                  title={ended.reason ?? undefined}
+                  tone={ended.outcome === 'completed' ? 'passive' : 'failed'}
                 />
-                <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-                  <WorkLogRow
-                    icon={<FailedIcon />}
-                    label={turnEndLabel(
-                      ended.outcome === 'interrupted'
-                        ? 'Stopped'
-                        : ended.outcome === 'failed'
-                          ? 'The turn ended with an error'
-                          : 'Finished without replying',
-                      ended.reason
-                    )}
-                    title={ended.reason ?? undefined}
-                    tone={ended.outcome === 'completed' ? 'passive' : 'failed'}
-                  />
-                </div>
-              </div>
+              </AgentRow>
             ) : message.sender.kind === 'human' && mine ? (
               <div
                 id={messageAnchorId(message.messageId)}
@@ -288,21 +301,16 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <ReplyButton onReply={() => onReply(message)} />
               </div>
             ) : message.sender.kind === 'agent' ? (
-              <div id={messageAnchorId(message.messageId)} className="group/row flex gap-3">
-                <AgentAvatar
-                  name={agent ? chatAgentLabel(agent) : message.sender.name}
-                  iconUrl={agent?.iconUrl ?? null}
-                  serverId={serverId}
-                  size={28}
-                  className="mt-0.5"
-                />
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <AgentRow
+                id={messageAnchorId(message.messageId)}
+                className="group/row"
+                agent={agentLabel}
+                serverId={serverId}
+                head={head}
+                trailing={<ReplyButton onReply={() => onReply(message)} />}
+              >
+                <div className="flex flex-col gap-1">
                   {chip && <ThreadChipButton chip={chip} />}
-                  {agents.length > 1 && (
-                    <span className="text-xs font-medium text-foreground-muted">
-                      {message.sender.name}
-                    </span>
-                  )}
                   <div className="text-sm leading-relaxed">
                     <ChatMarkdown>{message.body}</ChatMarkdown>
                   </div>
@@ -312,8 +320,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                     attachments={message.attachments}
                   />
                 </div>
-                <ReplyButton onReply={() => onReply(message)} />
-              </div>
+              </AgentRow>
             ) : (
               <p
                 id={messageAnchorId(message.messageId)}
@@ -331,6 +338,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   activity={activity}
                   turn={turn}
                   endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
+                  head={turnShown(activity, turn) && startsBlock(activity.agentId)}
                   agent={{
                     name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
                     iconUrl: turnAgent?.iconUrl ?? null,
@@ -348,18 +356,17 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         if (!requests.length) return null;
         const agent = agentOf(activity.agentId);
         return (
-          <div key={`requests:${activity.agentId}`} className="flex gap-3">
-            <AgentAvatar
-              name={agent ? chatAgentLabel(agent) : activity.agentId}
-              iconUrl={agent?.iconUrl ?? null}
-              serverId={serverId}
-              size={28}
-              className="mt-0.5"
-            />
-            <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-              <ChatRequests activity={activity} requests={requests} />
-            </div>
-          </div>
+          <AgentRow
+            key={`requests:${activity.agentId}`}
+            agent={{
+              name: agent ? chatAgentLabel(agent) : activity.agentId,
+              iconUrl: agent?.iconUrl ?? null,
+            }}
+            serverId={serverId}
+            head={startsBlock(activity.agentId)}
+          >
+            <ChatRequests activity={activity} requests={requests} />
+          </AgentRow>
         );
       })}
       {timeline.pending.map((send) => (
