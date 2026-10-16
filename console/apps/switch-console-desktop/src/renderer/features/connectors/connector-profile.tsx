@@ -1,10 +1,9 @@
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
 import { ConnectionIcon } from '@renderer/features/switch-servers/connection-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
@@ -14,7 +13,6 @@ import { TONE_BADGE, connectorCardState } from './connector-card-state';
 import {
   connectedAsLine,
   isYours,
-  keyAccessText,
   profileConnectAction,
   signInLabel,
   tokenLifetimeLabel,
@@ -72,7 +70,6 @@ export function ConnectorProfile({
   // Whatever the server or workspace says, a connection the person has can be disconnected.
   const hasConnection = isYours(connection);
   const connectedAs = connectedAsLine(connection);
-  const keyAccess = keyAccessText(connection);
   const action = profileConnectAction(connection);
 
   const enable = async () => {
@@ -157,32 +154,15 @@ export function ConnectorProfile({
       )}
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-sm font-semibold text-foreground">Details</h2>
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-6">
+        <h2 className="text-sm font-semibold text-foreground">General</h2>
+        <div className="grid grid-cols-3 gap-6">
           <Fact label="Category">
             <span className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-sm">
               {connection.category}
             </span>
           </Fact>
           <Fact label="Sign-in">{signInLabel(connection)}</Fact>
-          {keyAccess && <Fact label="What agents can do">{keyAccess}</Fact>}
           <Fact label="Agent access lasts">{tokenLifetimeLabel(connection)}</Fact>
-          {connection.key?.help_url && (
-            <Fact label="More info">
-              <button
-                type="button"
-                className="flex w-fit items-center gap-1 text-sm underline underline-offset-2 hover:text-foreground"
-                onClick={() =>
-                  void openExternalUrl(
-                    connection.key!.help_url!,
-                    `Could not open ${connection.name}'s help on keys`
-                  )
-                }
-              >
-                How to make a {connection.name} key <ExternalLink className="size-3.5" />
-              </button>
-            </Fact>
-          )}
         </div>
       </section>
 
