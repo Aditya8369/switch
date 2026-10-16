@@ -1029,6 +1029,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         agent_store=agent_store,
         user_store=user_store,
         message_store=message_store,
+        router=router,
         media_store=media_store,
         usage_store=usage_store,
         id_server_name=config.id_server_name,
