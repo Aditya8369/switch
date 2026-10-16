@@ -88,6 +88,7 @@ from switch_core.gateway.known_agents import known_agent_for
 from switch_core.observability.catalogue import OBSERVER_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.observability.throttle import WarningThrottle
+from switch_core.tenant_context import tenant_scope
 from switch_core.transport import (
     InboundMedia,
     InboundMembership,
@@ -485,7 +486,14 @@ class AgentConsumer(Consumer[AgentActor]):
         if meta is None:
             return
         await self._event_buffer.drop_room(self.tenant_id, self.agent.id, meta.room_id)
-        self._connections.release_room_everywhere(self.agent.id, meta.room_id)
+        # Recorded, so a claim held through another process goes too: every
+        # process runs this consumer today, but the claim is one row.
+        with tenant_scope(self.tenant_id):
+            async with (
+                self._connections.slots(self.agent.id),
+                self._connections.recorded(self.agent.id),
+            ):
+                self._connections.release_room_everywhere(self.agent.id, meta.room_id)
         self._connections.controllers.room_left(self.agent.id, meta.room_id)
 
     async def _member_name(

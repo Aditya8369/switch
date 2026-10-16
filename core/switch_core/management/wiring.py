@@ -13,7 +13,8 @@ Each process writes its controllers' connection transitions
 (`connection_ledger.py`), read against the lease the server holds for the
 process whether or not management is on (`switch_core/process_lease.py`): `run` writes
 transitions until cancelled, and `flush` writes what is left as the process
-drains, before the server marks its lease stopped.
+drains, before the server marks its lease stopped. `load_connections` reads
+which controllers the other processes hold, before the bridge serves.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.management.agent_operations import ManagementAgentOperations
@@ -106,6 +108,12 @@ class Management:
         closed by the server rather than lost with it."""
         await self.ledger.flush_all()
 
+    async def load_connections(self) -> None:
+        """Read which controllers' sockets the other processes hold, before
+        the bridge serves: until then every agent they run reads offline
+        here. The signal bus keeps it current from then on."""
+        await self.service.signals.read_connections()
+
     async def load_bindings(self) -> int:
         return await load_bindings(
             session_factory=self.session_factory,
@@ -140,11 +148,24 @@ def build_management(
     operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
+    signals = ControllerSignals(
+        notifier=ControllerNotifier(),
+        presence=presence,
+        bus=signal_bus,
+        session_factory=session_factory,
+        controllers=controllers,
+        operations=operations,
+        definitions=definitions,
+        rooms=RoomStore(),
+        processes=processes,
+        clock=clock,
+    )
     ledger = ControllerConnectionLedger(
         process_id=process_id,
         session_factory=session_factory,
         controllers=controllers,
         clock=clock,
+        announce=signals.connection_changed,
     )
     presence.use_ledger(ledger)
     service = ManagementService(
@@ -155,16 +176,7 @@ def build_management(
             third_party_avatars=third_party_avatars,
             controller_release=controller_release,
         ),
-        signals=ControllerSignals(
-            notifier=ControllerNotifier(),
-            presence=presence,
-            bus=signal_bus,
-            session_factory=session_factory,
-            controllers=controllers,
-            definitions=definitions,
-            operations=operations,
-            clock=clock,
-        ),
+        signals=signals,
         controllers=controllers,
         definitions=definitions,
         operations=operations,

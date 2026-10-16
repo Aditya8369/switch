@@ -253,6 +253,7 @@ class TestTheMachineState:
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
         )
         presence.use_ledger(ledger)
         owner = await add_member(harness.session_factory, "ada")
@@ -499,6 +500,7 @@ class TestTheLedger:
                 session_factory=harness.session_factory,
                 controllers=AgentControllerStore(),
                 clock=harness.clock,
+                announce=lambda tenant_id, controller_id: None,
             )
             elsewhere.disconnected(earlier, "heartbeat_lapsed")
             await elsewhere.flush_all()
@@ -517,6 +519,7 @@ class TestTheLedger:
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
         )
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
@@ -539,6 +542,7 @@ class TestTheLedger:
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
         )
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:

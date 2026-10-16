@@ -1046,6 +1046,10 @@ class AgentCore:
             raise
         self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
+        # Its connections end with it, here and in whichever process holds
+        # one: their rows went with its row. After its key is dropped, so a
+        # client told cannot open another.
+        await self.connections.agent_deleted(resolved_id)
         if self._room_agents_listener is not None:
             for room_id in room_ids:
                 await self._room_agents_listener(tenant_id, room_id)

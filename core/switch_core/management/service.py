@@ -40,8 +40,14 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExists
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
+    DISCONNECT_REVOKED,
+    ControllerConnection,
     ControllerPresence,
+    ControllerRevokedError,
+    ControllerTakenOverError,
+    UnknownControllerConnectionError,
 )
+from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
@@ -485,6 +491,127 @@ class ManagementService:
                 controller, self.settings.controller_release
             ),
         }
+
+    async def record_opened(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        *,
+        connection_id: str,
+        generation: int,
+        resume_cursors: dict[str, int | None],
+    ) -> None:
+        """Record the connection the controller is opening and tell every
+        other process: its socket may attach through any of them, and a
+        connection another process holds for this controller has been taken
+        over.
+
+        Committed before the connection is held here, so a read of the row
+        that lands in between finds the new connection named there, or finds
+        the earlier one while this process still holds only that one."""
+        await self.controllers.record_opened(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=connection_id,
+            generation=generation,
+            process_id=self.signals.process_id,
+            resume_cursors=resume_cursors,
+        )
+        await session.commit()
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+
+    async def hold_connection(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection:
+        """The connection a socket attaching names, held here, or the refusal.
+
+        Decided on the controller's row rather than on this process's memory,
+        which may be a moment behind what another process has done: only a
+        connection older than the one the row names is refused as taken
+        over. The row names the connection the controller opened last and the
+        process holding it:
+
+        - this connection, held by this process: the copy here is the one
+          that counts, and none here means it ended here (its heartbeat
+          lapsed, say), which is final, as it always was;
+        - another connection: the controller has opened a newer one, so a
+          copy of this one still here is closed `taken_over`, and the attach
+          refused as this process answers for it;
+        - this connection, held by another process: it is taken up here,
+          replacing any copy this process kept from holding it before.
+        """
+        presence = self.presence
+        controller_id = principal.controller_id
+        controller = await self.controllers.get(
+            session, principal.tenant_id, controller_id
+        )
+        if controller is None:
+            raise UnknownControllerConnectionError(connection_id)
+        if is_revoked(controller):
+            raise ControllerRevokedError(controller_id)
+        if controller.open_connection_id != connection_id:
+            local = presence.current_connection(controller_id)
+            if local is not None and local.id == connection_id:
+                presence.supersede(controller_id)
+            return presence.require(controller_id, connection_id, generation)
+        if controller.open_process_id == self.signals.process_id:
+            return presence.require(controller_id, connection_id, generation)
+        return await self._take_up(
+            session, principal, controller, connection_id, generation
+        )
+
+    async def _take_up(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        controller: AgentController,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection:
+        """Hold here the connection the controller opened last, which another
+        process holds or held, unless something has ended it. Recorded before
+        it is held, as an open is.
+
+        Its stream resumes each agent from the cursors recorded with it, which
+        are the open's until a socket on it goes and its holder writes them.
+        A socket attached to it whose going was never written (its holder
+        died, or has not written it yet) may have sent past them, and the
+        beats confirming how far went with that holder: resuming there would
+        skip what it sent after, so the controller is told to open again,
+        with its own cursors."""
+        if controller.open_generation != generation or (
+            controller.connection_id == connection_id
+            and (
+                controller.disconnected_at is None
+                or controller.disconnect_reason in _ENDING_REASONS
+            )
+        ):
+            raise UnknownControllerConnectionError(connection_id)
+        resume_cursors = _resume_cursors(controller.open_cursors)
+        if not await self.controllers.record_taken_up(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=connection_id,
+            process_id=self.signals.process_id,
+        ):
+            # The controller opened another connection since the row was read.
+            raise ControllerTakenOverError(connection_id)
+        await session.commit()
+        conn = self.presence.adopt(
+            controller_id=principal.controller_id,
+            tenant_id=principal.tenant_id,
+            connection_id=connection_id,
+            generation=generation,
+            resume_cursors=resume_cursors,
+        )
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+        return conn
 
     async def connection_state(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -1485,6 +1612,23 @@ class ManagementService:
             session, tenant_id, controller_ids, OPERATION_LIST_LIMIT
         )
         return [operation_view(operation) for operation in operations]
+
+
+# Why a connection ended for good: a socket going for any of these leaves
+# nothing to reattach to, and the controller opens another.
+_ENDING_REASONS = frozenset(
+    {HEARTBEAT_LAPSED.code, TAKEN_OVER.code, DISCONNECT_REVOKED}
+)
+
+
+def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
+    """The cursors recorded with a connection, as the presence holds them."""
+    if not recorded:
+        return {}
+    return {
+        agent_id: cursor if isinstance(cursor, int) else None
+        for agent_id, cursor in recorded.items()
+    }
 
 
 def placement_from(

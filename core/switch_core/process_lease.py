@@ -1,15 +1,16 @@
 """This switch-core process's lease, and reading every process's.
 
 Every process holds one, under its process id (`process_identity.py`): it is
-how one process knows another is alive. A controller's socket lives in the
-memory of the one process holding it, and that process writes the
-connection's transitions to the controller's row
-(`management/connection_ledger.py`). A process that dies writes no closing, so each
-process also holds a lease in `switch_core_processes`: it claims it at
-startup, renews it every `RENEW_INTERVAL`, and marks it stopped as it shuts
-down. A connection reads as online only while its holding process's lease is
-held: renewed within `LEASE_TTL` and not stopped. One write per process per
-renewal, however many machines it holds.
+how one process knows another is alive. An agent's or a controller's socket
+lives in the memory of the one process holding it, and that process writes the
+connection's transitions to a row (`bridges/agent/protocol/connection_rows.py`
+for agents, `management/connection_ledger.py` for controllers). A process that
+dies writes no closing, so each process also holds a lease in
+`switch_core_processes`: it claims it at startup, renews it every
+`RENEW_INTERVAL`, and marks it stopped as it shuts down. A connection reads as
+online only while its holding process's lease is held: renewed within
+`LEASE_TTL` and not stopped. One write per process per renewal, however many
+connections it holds.
 
 The lease also records the ids of the keys the process can read, which a
 process starting with a new front key checks (`db/key_rotation.py`).
@@ -123,6 +124,11 @@ class ProcessLease:
         if pruned:
             logger.info("Pruned %d switch-core process lease(s) long stale", pruned)
 
+    async def read_all(self) -> ProcessLeases:
+        """Every process's lease, as the database holds it now."""
+        async with self._session_factory() as session:
+            return await read_leases(session, self._processes)
+
     async def stop(self) -> None:
         """Mark the lease stopped: every connection this process still shows
         open reads as offline from now. Only the first call writes."""
@@ -137,15 +143,15 @@ class ProcessLease:
     async def run(self) -> None:
         """Renew every `RENEW_INTERVAL_SECONDS` until cancelled. A failed
         renewal is logged and retried at the next; three in a row and this
-        process's machines read offline elsewhere."""
+        process's connections read offline elsewhere."""
         while True:
             await asyncio.sleep(RENEW_INTERVAL_SECONDS)
             try:
                 await self.renew()
             except Exception:
                 logger.exception(
-                    "Renewing switch-core process lease %s failed; the machines "
-                    "it holds read offline once it is %s old",
+                    "Renewing switch-core process lease %s failed; the "
+                    "connections it holds read offline once it is %s old",
                     self.process_id,
                     LEASE_TTL,
                 )

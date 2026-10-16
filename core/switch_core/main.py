@@ -33,6 +33,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
+from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -134,6 +135,7 @@ from switch_core.db.schema_version import (
     schema_ahead_through_expand_only,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -311,19 +313,24 @@ async def _connection_sweep_loop(protocol: AgentCore) -> None:
 
 
 # Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
-# writes is what lets every other process see this one's machines go offline
-# now rather than when its lease lapses.
+# writes is what lets every other process see this one's connections go
+# offline now rather than when its lease lapses.
 _RELEASE_SECONDS = 1.0
 
 
-async def _release_process(management: Management | None, lease: ProcessLease) -> None:
-    """Record the controller sockets that went, then mark this process's lease
-    stopped. The lease is marked stopped even when the recording fails, so
-    the machines this process held read offline either way. Never raises: if
-    it all fails, the lease lapses on its own."""
+async def _release_process(
+    connections: SharedConnections,
+    management: Management | None,
+    lease: ProcessLease,
+) -> None:
+    """Record the agent connections and controller sockets that went, then
+    mark this process's lease stopped. The lease is marked stopped even when
+    the recording fails, so the connections this process held read offline
+    either way. Never raises: if it all fails, the lease lapses on its own."""
     try:
         async with asyncio.timeout(_RELEASE_SECONDS):
             try:
+                await connections.flush()
                 if management is not None:
                     await management.flush()
             finally:
@@ -331,14 +338,14 @@ async def _release_process(management: Management | None, lease: ProcessLease) -
     except TimeoutError:
         logger.warning(
             "Gave up releasing switch-core process %s after %.1fs; its "
-            "controllers' machines read offline once its lease lapses.",
+            "connections read offline once its lease lapses.",
             lease.process_id,
             _RELEASE_SECONDS,
         )
     except Exception:
         logger.warning(
             "Releasing switch-core process %s at shutdown failed; its "
-            "controllers' machines read offline once its lease lapses.",
+            "connections read offline once its lease lapses.",
             lease.process_id,
             exc_info=True,
         )
@@ -688,6 +695,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
+    # The agent connections this process holds, recorded for the others under
+    # this process's lease, and a copy of theirs kept in `connections`
+    # (`connection_rows.py`).
+    shared_connections = SharedConnections(
+        registry=connections,
+        session_factory=session_factory,
+        store=AgentConnectionStore(),
+        bus=signal_bus,
+        lease=process_lease,
+    )
 
     # One shared read per room for every client in this process.
     room_cache = RoomDeliveryCache(
@@ -1052,6 +1069,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
+        # And which controllers the other processes hold, so their agents do
+        # not read offline here until the signal bus has connected.
+        await management.load_connections()
+
+    # Before the bridge serves, so the first presence question already knows
+    # the agents connected to the other processes.
+    await shared_connections.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
@@ -1144,6 +1168,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 service_token_maintenance_loop(session_factory, service_broker)
             )
             lease_task = asyncio.create_task(process_lease.run())
+            shared_connections_task = asyncio.create_task(shared_connections.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1171,9 +1196,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 lease_task.cancel()
+                shared_connections_task.cancel()
                 if management_task is not None:
                     management_task.cancel()
-                await _release_process(management, process_lease)
+                await _release_process(shared_connections, management, process_lease)
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
@@ -1286,7 +1312,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 _shutdown(
                     server,
                     draining.set,
-                    lambda: _release_process(management, process_lease),
+                    lambda: _release_process(
+                        shared_connections, management, process_lease
+                    ),
                     _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
                     connections.controllers,
                     client_lifecycle,
