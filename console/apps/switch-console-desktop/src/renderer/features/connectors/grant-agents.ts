@@ -3,7 +3,8 @@ import type {
   ConnectionCatalogEntry,
 } from '@shared/core/switch-servers/connection-catalog';
 
-export const OPEN_AGENT_NOTE = 'Others can address this agent; it would act as you.';
+export const OPEN_GROUP_NOTE =
+  'Others can address these agents; they would act as you. Tick one to turn it on anyway.';
 export const ALREADY_ON_NOTE = 'Already on.';
 
 export type ChecklistRow = {
@@ -13,7 +14,6 @@ export type ChecklistRow = {
   ticked: boolean;
   /** Already granted: shown ticked, and not asked for again. */
   granted: boolean;
-  note: string | null;
 };
 
 /**
@@ -26,18 +26,35 @@ export function offersChecklist(entry: ConnectionCatalogEntry): boolean {
 }
 
 /**
- * The checklist's rows. An agent only its owner can address is ticked; one
- * that others can address is left unticked and says why, since whoever
- * addresses it would have it act as the owner.
+ * The checklist, in two groups. First the agents it starts ticked: those only
+ * their owner can address, and those that already have the service. Then the
+ * agents others can address, unticked under {@link OPEN_GROUP_NOTE}, since
+ * whoever addresses one would have it act as the owner.
  */
-export function checklistRows(agents: ConnectionAgent[]): ChecklistRow[] {
-  return agents.map((agent) => ({
+export function checklistGroups(agents: ConnectionAgent[]): {
+  ticked: ChecklistRow[];
+  open: ChecklistRow[];
+} {
+  const row = (agent: ConnectionAgent, ticked: boolean): ChecklistRow => ({
     agentId: agent.agent_id,
     name: agent.name,
-    ticked: agent.granted || !agent.addressing_open,
+    ticked,
     granted: agent.granted,
-    note: agent.granted ? ALREADY_ON_NOTE : agent.addressing_open ? OPEN_AGENT_NOTE : null,
-  }));
+  });
+  return {
+    ticked: agents
+      .filter((agent) => agent.granted || !agent.addressing_open)
+      .map((agent) => row(agent, true)),
+    open: agents
+      .filter((agent) => !agent.granted && agent.addressing_open)
+      .map((agent) => row(agent, false)),
+  };
+}
+
+/** The one button after signing in: connect, and turn it on for the agents ticked. */
+export function connectButtonLabel(ticked: number): string {
+  if (ticked === 0) return 'Connect';
+  return `Connect and turn on for ${ticked} ${ticked === 1 ? 'agent' : 'agents'}`;
 }
 
 /** What the checklist says when the person has no agents in the workspace. */

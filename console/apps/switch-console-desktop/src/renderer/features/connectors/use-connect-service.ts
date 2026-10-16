@@ -5,8 +5,9 @@ import { useReloadConnectors } from './connectors-queries';
 
 /**
  * Opens the connect modal for a service, from its card or its profile, and
- * re-reads the page however the modal ends: connecting and granting both
- * change what the page shows.
+ * re-reads the page as soon as the service is connected, so the profile behind
+ * the dialog is current, and again however the modal ends: connecting and
+ * granting both change what the page shows.
  */
 export function useConnectService(serverId: string, workspaceId: string) {
   const showConnect = useShowModal('connectServiceModal');
@@ -18,6 +19,7 @@ export function useConnectService(serverId: string, workspaceId: string) {
         workspaceId,
         connection,
         startAt,
+        onConnected: () => void reload(),
         onSuccess: () => void reload(),
         onClose: () => void reload(),
       }),

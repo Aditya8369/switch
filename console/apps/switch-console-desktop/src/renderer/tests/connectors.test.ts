@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import {
+  type ConnectFlowState,
+  canCloseConnectFlow,
+  connectFlowReducer,
+  initialConnectFlow,
+  isFinalRefusal,
+} from '@renderer/features/connectors/connect-flow';
 import { connectorCardState } from '@renderer/features/connectors/connector-card-state';
 import {
   disconnectCopy,
@@ -16,10 +23,10 @@ import {
   workspaceOffNotice,
 } from '@renderer/features/connectors/connectors-catalog';
 import {
-  ALREADY_ON_NOTE,
-  OPEN_AGENT_NOTE,
+  OPEN_GROUP_NOTE,
   agentsUnlistedText,
-  checklistRows,
+  checklistGroups,
+  connectButtonLabel,
   grantEach,
   grantFailureText,
   grantSuccessText,
@@ -33,6 +40,7 @@ import {
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatalogEntry {
   return {
@@ -252,19 +260,29 @@ describe('the checklist after connecting', () => {
     expect(offersChecklist(entry({ slug: 'github', pass_through: true }))).toBe(false);
   });
 
-  it('ticks owner-only agents and leaves open ones unticked, saying why', () => {
+  it('groups the agents it ticks first, then the open ones under one line', () => {
     expect(
-      checklistRows([
-        { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
+      checklistGroups([
         { agent_id: 'm2', name: 'M2', granted: false, addressing_open: true },
+        { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
         { agent_id: 'm3', name: 'M3', granted: true, addressing_open: true },
       ])
-    ).toEqual([
-      { agentId: 'm1', name: 'M1', ticked: true, granted: false, note: null },
-      { agentId: 'm2', name: 'M2', ticked: false, granted: false, note: OPEN_AGENT_NOTE },
-      { agentId: 'm3', name: 'M3', ticked: true, granted: true, note: ALREADY_ON_NOTE },
-    ]);
-    expect(OPEN_AGENT_NOTE).toBe('Others can address this agent; it would act as you.');
+    ).toEqual({
+      ticked: [
+        { agentId: 'm1', name: 'M1', ticked: true, granted: false },
+        { agentId: 'm3', name: 'M3', ticked: true, granted: true },
+      ],
+      open: [{ agentId: 'm2', name: 'M2', ticked: false, granted: false }],
+    });
+    expect(OPEN_GROUP_NOTE).toBe(
+      'Others can address these agents; they would act as you. Tick one to turn it on anyway.'
+    );
+  });
+
+  it('labels the one button by how many agents are ticked', () => {
+    expect(connectButtonLabel(0)).toBe('Connect');
+    expect(connectButtonLabel(1)).toBe('Connect and turn on for 1 agent');
+    expect(connectButtonLabel(3)).toBe('Connect and turn on for 3 agents');
   });
 
   it('sends the person to agent settings where the server cannot list agents', () => {
@@ -274,7 +292,7 @@ describe('the checklist after connecting', () => {
   });
 
   it('says so when the person has no agents yet', () => {
-    expect(checklistRows([])).toEqual([]);
+    expect(checklistGroups([])).toEqual({ ticked: [], open: [] });
     expect(noAgentsText('Example')).toBe(
       'You have no agents in this workspace yet. Once you add one, turn Example on for it from its settings.'
     );
@@ -326,6 +344,105 @@ describe('granting several agents', () => {
     expect(grantSuccessText('Example', outcome)).toBe('Example is on for M1, M3, and M4.');
     expect(grantSuccessText('Example', { granted: [], failed: [], warnings: [] })).toBe(
       "Example is not on for any agent. Turn it on later from an agent's settings."
+    );
+  });
+});
+
+/** A refusal as it reaches the renderer from the gateway. */
+function refusal(status: number, retryable?: boolean): RpcError {
+  return new RpcError(
+    serializeRpcError(
+      Object.assign(new Error(`Switch gateway returned ${status}`), {
+        name: 'GatewayError',
+        kind: 'http',
+        status,
+        detail: 'Refused.',
+        ...(retryable === undefined ? {} : { retryable }),
+      })
+    )
+  );
+}
+
+describe('the sign-in flow', () => {
+  const ready: ConnectFlowState = {
+    ...initialConnectFlow(false),
+    flowId: 'flow-1',
+    flow: { status: 'ready', account: 'ada@example.test', error: null },
+  };
+  const run = (state: ConnectFlowState, ...events: Parameters<typeof connectFlowReducer>[1][]) =>
+    events.reduce(connectFlowReducer, state);
+
+  it('cannot be closed while waiting for the browser, or mid-call', () => {
+    expect(canCloseConnectFlow(initialConnectFlow(false))).toBe(true);
+    expect(canCloseConnectFlow(ready)).toBe(false);
+    expect(canCloseConnectFlow(run(initialConnectFlow(false), { type: 'act' }))).toBe(false);
+  });
+
+  it('drops the flow on a confirm refused for good, keeps the error, and can close', () => {
+    for (const cause of [refusal(403, false), refusal(409, false), refusal(410), refusal(409)]) {
+      const after = run(
+        ready,
+        { type: 'act' },
+        { type: 'confirm_failed', cause, error: 'Refused.' }
+      );
+      expect(after).toMatchObject({ flowId: null, flow: null, busy: false, error: 'Refused.' });
+      expect(canCloseConnectFlow(after)).toBe(true);
+    }
+  });
+
+  it('keeps the flow on a confirm that can be tried again, and can still close', () => {
+    const after = run(
+      ready,
+      { type: 'act' },
+      { type: 'confirm_failed', cause: refusal(503, true), error: 'Try again.' }
+    );
+    expect(after).toMatchObject({ flowId: 'flow-1', error: 'Try again.' });
+    expect(canCloseConnectFlow(after)).toBe(true);
+  });
+
+  it("reads the server's retryable over the status, and never the text", () => {
+    expect(isFinalRefusal(refusal(409, true))).toBe(false);
+    expect(isFinalRefusal(refusal(500, false))).toBe(true);
+    expect(isFinalRefusal(refusal(500))).toBe(false);
+    expect(isFinalRefusal(new Error('409 account linked elsewhere'))).toBe(false);
+  });
+
+  it('counts a cancel answered 410 as cancelled, not as an error', () => {
+    expect(
+      run(ready, { type: 'act' }, { type: 'cancel_failed', cause: refusal(410), error: 'Gone.' })
+    ).toMatchObject({ flowId: null, flow: null, busy: false, error: null });
+    expect(
+      run(ready, { type: 'act' }, { type: 'cancel_failed', cause: refusal(503), error: 'Down.' })
+    ).toMatchObject({ flowId: 'flow-1', error: 'Down.' });
+  });
+
+  it('says why a sign-in failed, and lets the dialog close', () => {
+    const failed = run(ready, {
+      type: 'polled',
+      flow: { status: 'failed', account: null, error: null },
+      failure: 'Signing in failed.',
+    });
+    expect(failed.error).toBe('Signing in failed.');
+    expect(canCloseConnectFlow(failed)).toBe(true);
+  });
+
+  it('connects on a confirm, and the grants after it name an agent they failed for', async () => {
+    const after = run(ready, { type: 'act' }, { type: 'confirmed', warning: null });
+    expect(after).toMatchObject({ connected: true, flowId: null, busy: false, error: null });
+
+    const outcome = await grantEach(
+      [
+        { agentId: 'm1', name: 'M1' },
+        { agentId: 'm2', name: 'M2' },
+      ],
+      async (agentId) => {
+        if (agentId === 'm2') throw new Error('Agent not found.');
+        return null;
+      },
+      (cause) => (cause as Error).message
+    );
+    expect(grantFailureText('Example', outcome)).toBe(
+      'Could not turn Example on for M2 (Agent not found.). It is on for M1.'
     );
   });
 });

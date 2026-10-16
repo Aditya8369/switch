@@ -1,17 +1,22 @@
 /**
  * Connecting from a Connectors profile: the modal opens the step the catalog
  * entry calls for, a key form for a key service, GitHub's own step for
- * GitHub, and the generic sign-in otherwise.
+ * GitHub, and the generic sign-in otherwise. Once signed in, one screen
+ * confirms the account and then turns the service on for each agent ticked;
+ * a refused confirm turns nothing on.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 const switchServers = vi.hoisted(() => ({
   getGitHubConnection: vi.fn(),
   startServiceConnection: vi.fn(),
+  getServiceFlow: vi.fn(),
+  confirmServiceConnection: vi.fn(),
 }));
 const workspaces = vi.hoisted(() => ({
   getConnectionAgents: vi.fn(),
@@ -68,6 +73,10 @@ let root: Root | null = null;
 beforeEach(() => {
   for (const mock of [...Object.values(switchServers), ...Object.values(workspaces)])
     mock.mockReset();
+  workspaces.getConnectionAgents.mockResolvedValue([
+    { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
+    { agent_id: 'm2', name: 'M2', granted: false, addressing_open: true },
+  ]);
 });
 
 afterEach(async () => {
@@ -77,7 +86,10 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(connection: ConnectionCatalogEntry): Promise<HTMLElement> {
+async function render(
+  connection: ConnectionCatalogEntry,
+  onConnected: () => void = () => {}
+): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -92,6 +104,7 @@ async function render(connection: ConnectionCatalogEntry): Promise<HTMLElement> 
               workspaceId="workspace"
               connection={connection}
               startAt="connect"
+              onConnected={onConnected}
               onSuccess={() => {}}
               onClose={() => {}}
             />
@@ -132,4 +145,91 @@ it('opens any other service on the sign-in', async () => {
   expect(button(/^connect example/i, modal)).toBeDefined();
   expect(modal.querySelector('[aria-label="Example key"]')).toBeNull();
   expect(switchServers.getGitHubConnection).not.toHaveBeenCalled();
+});
+
+/** Signs in through the browser and waits for the one screen. */
+async function signIn(modal: HTMLElement): Promise<void> {
+  switchServers.startServiceConnection.mockResolvedValue('flow-1');
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'ready',
+    account: 'ada@example.test',
+    error: null,
+  });
+  await act(async () => button(/^connect example/i, modal)!.click());
+  await vi.waitFor(() => expect(modal.textContent).toMatch(/Signed in as ada@example\.test/));
+  await vi.waitFor(() => expect(modal.querySelector('[aria-label="Your agents"]')).not.toBeNull());
+}
+
+it('confirms the account, then turns the service on for each agent ticked', async () => {
+  switchServers.confirmServiceConnection.mockResolvedValue({ warning: null });
+  workspaces.setServiceGrant.mockResolvedValue(null);
+  const onConnected = vi.fn();
+  const modal = await render(entry({}), onConnected);
+  await signIn(modal);
+
+  const agents = modal.querySelector('[aria-label="Your agents"]')!;
+  expect(agents.textContent).toBe(
+    'M1Others can address these agents; they would act as you. Tick one to turn it on anyway.M2'
+  );
+  await act(async () => button(/^connect and turn on for 1 agent$/i, modal)!.click());
+
+  await vi.waitFor(() => expect(modal.textContent).toMatch(/Example connected/));
+  expect(switchServers.confirmServiceConnection).toHaveBeenCalledWith(
+    'server',
+    'example',
+    'flow-1'
+  );
+  expect(workspaces.setServiceGrant).toHaveBeenCalledOnce();
+  expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    agentId: 'm1',
+    service: 'example',
+    access: null,
+    resources: {},
+  });
+  expect(onConnected).toHaveBeenCalledOnce();
+  expect(modal.querySelector('[role="status"]')?.textContent).toBe('Example is on for M1.');
+});
+
+it('names an agent it could not turn the service on for', async () => {
+  switchServers.confirmServiceConnection.mockResolvedValue({ warning: null });
+  workspaces.setServiceGrant.mockRejectedValue(new Error('Agent not found.'));
+  const modal = await render(entry({}));
+  await signIn(modal);
+  await act(async () => button(/^connect and turn on for 1 agent$/i, modal)!.click());
+
+  await vi.waitFor(() =>
+    expect(modal.querySelector('[role="alert"]')?.textContent).toMatch(
+      /^Could not turn Example on for M1 \(.*\)\. It is not on for any agent\.$/
+    )
+  );
+});
+
+it('turns nothing on when Switch refuses the account', async () => {
+  switchServers.confirmServiceConnection.mockRejectedValue(
+    new RpcError(
+      serializeRpcError(
+        Object.assign(new Error('Switch gateway returned 403'), {
+          name: 'GatewayError',
+          kind: 'http',
+          status: 403,
+          detail: 'Example is switched off for this workspace.',
+          retryable: false,
+        })
+      )
+    )
+  );
+  const onConnected = vi.fn();
+  const modal = await render(entry({}), onConnected);
+  await signIn(modal);
+  await act(async () => button(/^connect and turn on for 1 agent$/i, modal)!.click());
+
+  await vi.waitFor(() =>
+    expect(modal.querySelector('[role="alert"]')?.textContent).toContain(
+      'Example is switched off for this workspace.'
+    )
+  );
+  expect(workspaces.setServiceGrant).not.toHaveBeenCalled();
+  expect(onConnected).not.toHaveBeenCalled();
+  expect(modal.querySelector('[data-slot="dialog-close"]')).not.toBeNull();
 });
