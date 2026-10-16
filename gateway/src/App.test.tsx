@@ -128,38 +128,6 @@ describe("AppRoutes", () => {
     expect(screen.getByRole("link", { name: /Connectors/ })).toBeTruthy();
   });
 
-  it("keeps every rail item reachable on a window too short for their labels", async () => {
-    mockFetch({
-      "/auth/session": [
-        200,
-        session({
-          state: "ready",
-          tenant: acme,
-          tenants: [acme],
-          user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: true },
-        }),
-      ],
-      "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
-    });
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn((query: string) => ({
-        matches: query.startsWith("(max-height:"),
-        media: query,
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        addListener: () => {},
-        removeListener: () => {},
-      })),
-    );
-    renderAt("/connectors");
-    expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
-    const link = screen.getByRole("link", { name: "Connectors" });
-    expect(link.getAttribute("aria-label")).toBe("Connectors");
-    expect(link.textContent).toBe("");
-    expect(screen.getByRole("link", { name: "Users" }).textContent).toBe("");
-  });
-
   it("puts a pending invite before everything else", async () => {
     storePendingInvite("abc");
     mockFetch({

@@ -25,7 +25,6 @@ import {
   Stack,
   Tooltip,
   Typography,
-  useMediaQuery,
 } from "@mui/material";
 import { memo, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
@@ -67,45 +66,26 @@ const ADMIN_ITEMS: NavItem[] = [
   { label: "Connectors", path: "/connectors", icon: PowerOutlined },
 ];
 
-const TARGET = 44;
+// Sized so an operator's eleven labelled items and the account button fit a
+// laptop window; anything shorter scrolls the items.
+const TARGET = 36;
+const ICON = 20;
+const ITEM_GAP = 6;
 // The logo sits slightly inside the nav button footprint: it is a solid mark
 // against thin-stroke icons, so matching the container would read as heavier.
-const LOGO = 28;
-// The label line under an icon, with the gap above it.
-const LABEL = 16;
-const ITEM_GAP = 12;
-// The logo, its divider, the rail's padding and the account button.
-const CHROME = 170;
+const LOGO = 24;
 
-/** The rail's height with every item labelled. */
-function labelledHeight(items: number): number {
-  return CHROME + items * (TARGET + LABEL) + (items - 1) * ITEM_GAP;
-}
-
-/**
- * One destination. On a window too short for every label, the label moves
- * into a tooltip so the icons still fit above the account button.
- */
-function RailItem({
-  item,
-  active,
-  compact,
-}: {
-  item: NavItem;
-  active: boolean;
-  compact: boolean;
-}) {
-  const link = (
+function RailItem({ item, active }: { item: NavItem; active: boolean }) {
+  return (
     <Box
       component={NavLink}
       to={item.path}
-      aria-label={compact ? item.label : undefined}
       aria-current={active ? "page" : undefined}
       sx={{
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 0.5,
+        gap: 0.25,
         textDecoration: "none",
         color: "text.primary",
         opacity: active ? 1 : 0.75,
@@ -122,7 +102,7 @@ function RailItem({
           justifyContent: "center",
           width: TARGET,
           height: TARGET,
-          borderRadius: "16px",
+          borderRadius: "12px",
           // The active indicator is a subtle vertical gradient pill with a
           // whisper of lift — never a filled accent.
           ...(active && {
@@ -132,22 +112,14 @@ function RailItem({
           }),
         }}
       >
-        <item.icon sx={{ fontSize: 22, strokeWidth: 1.5 }} />
+        <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
       </Box>
-      {!compact && (
-        <Typography
-          sx={{ fontSize: "0.75rem", lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
-        >
-          {item.label}
-        </Typography>
-      )}
+      <Typography
+        sx={{ fontSize: "0.6875rem", lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
+      >
+        {item.label}
+      </Typography>
     </Box>
-  );
-  if (!compact) return link;
-  return (
-    <Tooltip title={item.label} placement="right">
-      {link}
-    </Tooltip>
   );
 }
 
@@ -191,7 +163,6 @@ export default memo(function NavRail() {
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
   ];
-  const compact = useMediaQuery(`(max-height: ${labelledHeight(items.length)}px)`);
   const current = session?.tenant ?? null;
   const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
@@ -247,7 +218,7 @@ export default memo(function NavRail() {
         </Box>
       </Tooltip>
 
-      <Divider sx={{ my: 2, width: 29 }} />
+      <Divider sx={{ my: 1.5, width: 29 }} />
 
       <Stack
         sx={{
@@ -269,7 +240,6 @@ export default memo(function NavRail() {
             key={item.path}
             item={item}
             active={location.pathname.startsWith(item.path)}
-            compact={compact}
           />
         ))}
       </Stack>
