@@ -24,7 +24,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.connections.app_credentials import ConnectorApps
+from switch_core.connections.app_credentials import (
+    GITHUB_NEEDS_HTTPS,
+    ConnectorApps,
+)
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG
@@ -58,6 +61,7 @@ from tests.switch_core.connections.fake_vendor import (
 from tests.switch_core.management.harness import Harness, build_harness, cookies_for
 
 PUBLIC = "https://switch.example.com"
+HTTP_PUBLIC = "http://switch.example.com"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 GITHUB_CLIENT_ID = "example-github-client-id"
@@ -110,14 +114,21 @@ class FakeGitHub:
 
 
 class World:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], public_url: str
+    ) -> None:
         self.google = FakeGoogle()
         self.github = FakeGitHub()
         self.unreachable = False
+        self.vendor_calls: list[str] = []
+        self.public_url = public_url
+        # Settings beyond the public URL, such as a configured GitHub App.
+        self.config: dict[str, object] = {}
         self.harness: Harness = build_harness(session_factory)
         self.session_factory = session_factory
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        self.vendor_calls.append(str(request.url))
         if self.unreachable:
             raise httpx.ConnectError("unreachable", request=request)
         if request.url.host in ("api.github.com", "github.com"):
@@ -129,12 +140,12 @@ class World:
         registration = ClientRegistration(
             session_factory=self.session_factory,
             keyring=TEST_KEYRING,
-            public_url=PUBLIC,
+            public_url=self.public_url,
             server_name="switch.example.com",
         )
         apps = ConnectorApps(
             catalog=CATALOG,
-            config=_config(gateway_public_url=PUBLIC),
+            config=_config(gateway_public_url=self.public_url, **self.config),
             environ=environ or {},
             session_factory=self.session_factory,
             store=ServiceAppCredentialStore(TEST_KEYRING),
@@ -164,7 +175,7 @@ class World:
         app.state.connector_apps = apps
         app.state.github_connections = None
         app.state.service_flows = ServiceFlows(
-            PUBLIC, SignInFlows(self.session_factory, TEST_KEYRING)
+            self.public_url, SignInFlows(self.session_factory, TEST_KEYRING)
         )
         app.include_router(connector_apps_router)
         app.include_router(service_connections_router)
@@ -231,7 +242,12 @@ async def _audit(session_factory) -> list[ServerAuditEvent]:
 
 @pytest.fixture
 async def world(session_factory) -> World:
-    return World(session_factory)
+    return World(session_factory, PUBLIC)
+
+
+@pytest.fixture
+async def http_world(session_factory) -> World:
+    return World(session_factory, HTTP_PUBLIC)
 
 
 @pytest.fixture
@@ -493,6 +509,94 @@ class TestGitHub:
         assert answer.status_code == 422
         assert answer.json()["field"] == "private_key"
         assert await _rows(session_factory) == []
+
+
+class TestGitHubNeedsHttps:
+    def _body(self, world: World) -> dict[str, object]:
+        return {
+            "client_id": GITHUB_CLIENT_ID,
+            "client_secret": GITHUB_SECRET,
+            "private_key": world.github.pem(),
+            "replace": False,
+        }
+
+    async def test_the_list_says_why_github_cannot_be_set_up(
+        self, http_world: World, operator
+    ) -> None:
+        await http_world.install()
+        async with http_world.harness.client() as client:
+            listed = await client.get(APPS, cookies=cookies_for(operator))
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert body["public_url"] == HTTP_PUBLIC
+        apps = {entry["slug"]: entry for entry in body["apps"]}
+        assert apps["github"]["setup_blocked"] == GITHUB_NEEDS_HTTPS
+        assert apps["github"]["redirect_uri"] is None
+        assert apps[GOOGLE]["setup_blocked"] is None
+        assert apps[GOOGLE]["redirect_uri"] == (
+            f"{HTTP_PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
+        )
+
+    async def test_saving_and_checking_github_are_refused_before_github_is_asked(
+        self, http_world: World, operator, session_factory
+    ) -> None:
+        await http_world.install()
+        async with http_world.harness.client() as client:
+            cookies = cookies_for(operator)
+            saved = await client.put(
+                f"{APPS}/github", json=self._body(http_world), cookies=cookies
+            )
+            checked = await client.post(f"{APPS}/github/check", cookies=cookies)
+        for answer in (saved, checked):
+            assert answer.status_code == 409, answer.text
+            assert answer.json()["detail"] == GITHUB_NEEDS_HTTPS
+        assert http_world.vendor_calls == []
+        assert await _rows(session_factory) == []
+        assert await _audit(session_factory) == []
+
+    async def test_a_configured_github_app_is_checked_but_not_copied_in(
+        self, http_world: World, operator, session_factory, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "github.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_SECRET,
+                    "slug": "example-app",
+                    "origin": PUBLIC,
+                }
+            )
+        )
+        key = tmp_path / "github.pem"
+        key.write_text(http_world.github.pem())
+        http_world.config = {
+            "github_app_config_path": str(config),
+            "github_app_private_key_path": str(key),
+        }
+        apps = await http_world.install()
+        assert apps.effective("github").source == "configuration"
+        async with http_world.harness.client() as client:
+            cookies = cookies_for(operator)
+            copied = await client.post(f"{APPS}/github/import", cookies=cookies)
+            checked = await client.post(f"{APPS}/github/check", cookies=cookies)
+        assert copied.status_code == 409, copied.text
+        assert copied.json()["detail"] == GITHUB_NEEDS_HTTPS
+        assert await _rows(session_factory) == []
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["ok"] is True
+
+    async def test_google_is_set_up_as_before(
+        self, http_world: World, operator, session_factory
+    ) -> None:
+        await http_world.install()
+        async with http_world.harness.client() as client:
+            saved = await client.put(
+                f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies_for(operator)
+            )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["setup_blocked"] is None
+        assert len(await _rows(session_factory)) == 1
 
 
 class TestImportAndRemove:

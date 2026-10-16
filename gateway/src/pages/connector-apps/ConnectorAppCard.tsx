@@ -172,6 +172,7 @@ export default function ConnectorAppCard({
   const primary = primaryAction(app, checkFailure);
   const actions = menuActions(app);
   const summary = secretSummary(app);
+  const blocked = setupDisabled || app.setup_blocked !== null;
 
   const check = async () => {
     setChecking(true);
@@ -228,6 +229,7 @@ export default function ConnectorAppCard({
         {app.source === "configuration" && (
           <Typography variant="body2" color="text.secondary">
             {configuredSentence(app)}
+            {app.setup_blocked ? ` ${app.setup_blocked}` : ""}
           </Typography>
         )}
         {needs && <Alert severity={needs.cause === "stale" ? "info" : "warning"}>{needs.sentence}</Alert>}
@@ -271,7 +273,7 @@ export default function ConnectorAppCard({
           {primary && (
             <Button
               variant={primary === "check" ? "outlined" : "contained"}
-              disabled={checking || (setupDisabled && primary !== "check")}
+              disabled={checking || (blocked && primary !== "check")}
               onClick={() => run(primary)}
               startIcon={checking ? <CircularProgress size={16} /> : undefined}
             >
@@ -290,7 +292,7 @@ export default function ConnectorAppCard({
         {actions.map((action) => (
           <MenuItem
             key={action}
-            disabled={setupDisabled && action !== "remove"}
+            disabled={blocked && action !== "remove"}
             onClick={() => choose(action)}
             sx={action === "remove" ? { color: "error.main" } : undefined}
           >

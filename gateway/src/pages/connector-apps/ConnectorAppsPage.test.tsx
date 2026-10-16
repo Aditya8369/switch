@@ -104,6 +104,35 @@ describe("ConnectorAppsPage", () => {
     expect(card("google-workspace").getByRole("button", { name: "Set up Google Workspace" })).toBeTruthy();
     expect(screen.getByText(/Atlassian sets itself up the first time someone connects/)).toBeTruthy();
     expect(screen.queryByText(PUBLIC_URL_BANNER)).toBeNull();
+    expect(screen.getByText(/People are sent back to https:\/\/switch\.example\.test\./)).toBeTruthy();
+  });
+
+  it("holds GitHub's set-up when the public URL is not https, saying why", async () => {
+    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.";
+    serve({
+      ...listOf(
+        {
+          ...GITHUB,
+          source: "none",
+          client_id: null,
+          saved_client_id: null,
+          secrets: { client_secret: { set: false, last4: null }, private_key: { set: false, fingerprint: null } },
+          redirect_uri: null,
+          install_url: null,
+          setup_blocked: blocked,
+        },
+        NONE_GOOGLE,
+      ),
+      public_url: "http://switch.example.test",
+    });
+    render(<ConnectorAppsPage />);
+    expect(await screen.findByText(/People are sent back to http:\/\/switch\.example\.test\./)).toBeTruthy();
+    expect(card("github").getByText(blocked)).toBeTruthy();
+    expect(card("github").getByText("Needs attention")).toBeTruthy();
+    const github = card("github").getByRole("button", { name: "Set up GitHub" });
+    expect((github as HTMLButtonElement).disabled).toBe(true);
+    const google = card("google-workspace").getByRole("button", { name: "Set up Google Workspace" });
+    expect((google as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("asks for GATEWAY_PUBLIC_URL first, and holds set-up until it is there", async () => {

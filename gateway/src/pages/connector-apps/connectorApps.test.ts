@@ -13,6 +13,7 @@ import {
   primaryAction,
   removeWarning,
   secretSummary,
+  sentBackTo,
   setupInstructions,
   stateLabel,
   switchWarning,
@@ -95,6 +96,32 @@ describe("card state", () => {
     expect(attention(waiting, null)).toBeNull();
     expect(cardState(waiting, null)).toBe("configured");
     expect(primaryAction(waiting, null)).toBeNull();
+  });
+});
+
+describe("set-up blocked by the server", () => {
+  const BLOCKED = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.";
+
+  it("is the card's one sentence, with Set up as the fix", () => {
+    const github = { ...GITHUB, source: "none" as const, client_id: null, redirect_uri: null, setup_blocked: BLOCKED };
+    expect(attention(github, null)).toEqual({
+      cause: "setup_blocked",
+      sentence: BLOCKED,
+      action: "set_up",
+    });
+    expect(primaryAction(github, null)).toBe("set_up");
+  });
+
+  it("leaves an app set on the server working", () => {
+    const configured = { ...GITHUB, source: "configuration" as const, setup_blocked: BLOCKED };
+    expect(attention(configured, null)).toBeNull();
+    expect(cardState(configured, null)).toBe("configured");
+  });
+
+  it("names where people are sent back to", () => {
+    expect(sentBackTo("https://switch.example.test")).toBe(
+      "People are sent back to https://switch.example.test.",
+    );
   });
 });
 

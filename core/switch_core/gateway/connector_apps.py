@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -31,6 +32,7 @@ from switch_core.connections.app_checks import (
     check_app,
 )
 from switch_core.connections.app_credentials import (
+    GITHUB_NEEDS_HTTPS,
     AppSpec,
     AppValues,
     ConnectorApps,
@@ -145,6 +147,25 @@ def _spec(apps: ConnectorApps, service: str) -> AppSpec:
     return spec
 
 
+def _setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
+    """Why the operator can't set this app up here, known before any vendor
+    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; Google
+    accepts an http redirect for local development, GitHub does not."""
+    if (
+        spec.kind == "github_app"
+        and public_url is not None
+        and urlsplit(public_url).scheme != "https"
+    ):
+        return GITHUB_NEEDS_HTTPS
+    return None
+
+
+def _refuse_while_blocked(spec: AppSpec, public_url: str | None) -> None:
+    blocked = _setup_blocked(spec, public_url)
+    if blocked is not None:
+        raise HTTPException(409, blocked)
+
+
 def _redirect(
     spec: AppSpec, effective: EffectiveCredentials, public_url: str | None
 ) -> str | None:
@@ -154,7 +175,7 @@ def _redirect(
             return effective.github_app.connections.callback
         return (
             None
-            if public_url is None
+            if public_url is None or _setup_blocked(spec, public_url) is not None
             else public_url.rstrip("/") + GITHUB_CALLBACK_PATH
         )
     return None if public_url is None else core_callback(public_url, spec.service)
@@ -239,6 +260,7 @@ async def _entry(
         "unreadable": effective.unreadable,
         "load_error": effective.load_error,
         "redirect_uri": _redirect(spec, effective, apps.public_url),
+        "setup_blocked": _setup_blocked(spec, apps.public_url),
         "install_url": (
             f"https://github.com/apps/{slug}/installations/new"
             if spec.kind == "github_app" and slug
@@ -373,6 +395,7 @@ async def save_connector_app(
 ) -> dict[str, Any] | JSONResponse:
     spec = _spec(apps, service)
     _refuse_while_configured(apps.effective(service))
+    _refuse_while_blocked(spec, apps.public_url)
     given = {
         name: value
         for name, value in (
@@ -490,6 +513,7 @@ async def import_connector_app(
     effective = apps.effective(service)
     if effective.source != "configuration" or effective.values is None:
         raise HTTPException(409, f"{spec.name} is not set from configuration.")
+    _refuse_while_blocked(spec, apps.public_url)
     if effective.deprecated:
         raise HTTPException(
             409,
@@ -546,6 +570,9 @@ async def check_connector_app(
     """Ask the vendor about the app in use; nothing is stored."""
     spec = _spec(apps, service)
     effective = apps.effective(service)
+    # A configured GitHub App is called back at its own origin, not this URL.
+    if effective.source != "configuration":
+        _refuse_while_blocked(spec, apps.public_url)
     if effective.values is None:
         raise HTTPException(409, f"{spec.name} has no app to check.")
     if effective.deprecated:

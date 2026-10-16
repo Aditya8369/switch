@@ -18,6 +18,7 @@ export function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     load_error: null,
     redirect_uri:
       "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback",
+    setup_blocked: null,
     install_url: null,
     updated_by_name: "Ada",
     updated_at: "2026-10-15T10:00:00Z",

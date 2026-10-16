@@ -10,6 +10,7 @@ import type { ConnectorApp, ConnectorAppField, ConnectorAppImpact } from "../../
 export type CardState = "ready" | "not_set_up" | "configured" | "attention";
 
 export type AttentionCause =
+  | "setup_blocked"
   | "check_failed"
   | "unreadable"
   | "load_error"
@@ -73,6 +74,9 @@ export function waitingForRestart(app: ConnectorApp): boolean {
 
 /** What needs the operator, most pressing first; null when nothing does. */
 export function attention(app: ConnectorApp, checkFailure: string | null): Attention | null {
+  // A configured app keeps working: only setting one up here is blocked.
+  if (app.setup_blocked !== null && app.source !== "configuration")
+    return { cause: "setup_blocked", sentence: app.setup_blocked, action: "set_up" };
   if (checkFailure !== null)
     return { cause: "check_failed", sentence: checkFailure, action: "update_secret" };
   if (app.unreadable)
@@ -328,6 +332,8 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
     { text: "Restart Switch.", done: false },
   ];
 }
+
+export const sentBackTo = (publicUrl: string): string => `People are sent back to ${publicUrl}.`;
 
 export const PUBLIC_URL_BANNER =
   "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";

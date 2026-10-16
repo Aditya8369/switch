@@ -2326,8 +2326,10 @@ export interface ConnectorApp {
   unreadable: boolean;
   /** Why the app saved here can't be used. */
   load_error: string | null;
-  /** Where the vendor sends people back to Switch; null without GATEWAY_PUBLIC_URL. */
+  /** Where the vendor sends people back to Switch; null without a GATEWAY_PUBLIC_URL it accepts. */
   redirect_uri: string | null;
+  /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
+  setup_blocked: string | null;
   install_url: string | null;
   updated_by_name: string | null;
   updated_at: string | null;

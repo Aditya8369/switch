@@ -77,6 +77,11 @@ SECRET_NAMES: dict[AppKind, frozenset[str]] = {
 
 UNREADABLE = "Switch can't read the saved secret any more."
 
+GITHUB_NEEDS_HTTPS = (
+    "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people "
+    "back to Switch."
+)
+
 
 def app_kind(definition: ConnectionDefinition) -> AppKind | None:
     """The kind of app the operator sets up for `definition`, if any."""
@@ -189,10 +194,7 @@ class AppLoadError(Exception):
 def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubApp:
     """A GitHub App from saved values, called back at `public_url`."""
     if public_url is None or urlsplit(public_url).scheme != "https":
-        raise AppLoadError(
-            "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send "
-            "people back to Switch."
-        )
+        raise AppLoadError(GITHUB_NEEDS_HTTPS)
     try:
         connections = GitHubConnections(
             client_id=values.client_id,
