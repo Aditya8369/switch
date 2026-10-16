@@ -4,18 +4,21 @@ The events an agent receives come from two tables.
 
 **The agent's own events.** These are the events meant for the agent: a
 message addressed to it, a room_join in a room where it listens for joins, a
-task it takes part in, a command sent to it. The agent's consumer
-(`clients/agent_consumer.py`) decides whether a room row is one of these when
-the row is delivered to it live. The decision cannot be repeated later, because
-the addressing policy, budgets and role leases it depended on may have changed
-by then, so the consumer stores it as a row in `agent_events`. These rows are
-called own events. Each agent numbers its own events in its own sequence
-(`agent_events.seq`).
+task it takes part in, a command sent to it. The router
+(`delivery/router.py`) decides whether a room row is one of these as the row
+is written, and stores each decision as a row in `agent_events` in the same
+transaction as the room row (`store`). The decision cannot be repeated later,
+because the addressing policy, budgets and role leases it depended on may have
+changed by then. These rows are called own events. Each agent numbers its own
+events in its own sequence (`agent_events.seq`).
 
 **The rest of the conversation.** Everything else said in the agent's rooms is
 already stored in `messages`, numbered per room (`messages.seq`), and is read
 from there when a reader asks for it. Nothing is copied per agent, so a message
-in a busy room costs one write, not one write per agent in the room.
+in a busy room costs one write, not one write per agent in the room. A room row
+and the own events decided for it commit together, so a reader that can see
+the row can also see whether it is one of the agent's own events, and can read
+the conversation the moment it is written.
 
 A reader's position (`positions.py`) records how far it has read: one number
 for the agent's own events and one number per room for the conversation. Reading
@@ -33,7 +36,9 @@ When an own event is inserted, Postgres sends a notification
 (`db/agent_event_notify_ddl.py`). A listener in every process receives it and
 sets that agent's doorbell, an in-memory `asyncio.Event`, so the process that
 holds the agent's connection wakes up and reads the new own event from the table.
-The doorbell only wakes readers; the table is the record.
+A room row rings no doorbell of an agent's: a reader of the conversation asks to
+be woken by the room's own announcement instead (`rooms`, the
+`MessageListener`). Neither carries anything; the tables are the record.
 
 An unread count says how much unaddressed conversation in a room the agent has
 not caught up on. It is counted from `messages` when asked: the room's messages
@@ -47,16 +52,27 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from sqlalchemy import BigInteger, delete, func, literal, select, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Text,
+    bindparam,
+    delete,
+    func,
+    literal,
+    select,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-from switch_core.attachments import parse_attachment_group
+from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
     message_event,
@@ -84,6 +100,7 @@ from switch_core.db.models import (
     ClientRoom,
     Message,
     MessageAttachment,
+    PendingAttachmentGroup,
     Room,
 )
 from switch_core.db.session_scope import tenant_session
@@ -97,9 +114,30 @@ from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import InboundMedia, InboundMembership, InboundMessage
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
+
+
+class RoomAnnouncements(Protocol):
+    """Who announces that a room has new rows: `messages.notify.MessageListener`.
+
+    A reader of the rooms' conversation is woken by it, since a room row rings
+    no doorbell of an agent's. The waker is called with the room's id and is
+    told nothing else: it reads from its own position, as every reader here
+    does.
+    """
+
+    def subscribe(
+        self, room_id: str, waker: Callable[[str], Awaitable[None]]
+    ) -> None: ...
+
+    def unsubscribe(
+        self, room_id: str, waker: Callable[[str], Awaitable[None]]
+    ) -> None: ...
+
 
 # How long an own event stays in `agent_events` before `expire` deletes it. A client
 # that reconnects within this window receives every own event it missed; a client
@@ -108,24 +146,11 @@ logger = logging.getLogger(__name__)
 # conversation has no such window.
 DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
 
-# How old a row in `messages` must be before it is delivered as conversation.
-# The agent's consumer decides, when the row is delivered to it, whether the
-# row becomes an own event. If a reader delivered the row as conversation before
-# that decision and the consumer then made it an own event, the agent would receive
-# the same message twice. The wait is skipped when the agent already has a
-# own event for a later row in the same room, because the consumer handles a room's
-# rows in order and has therefore decided this one. The consumer normally
-# decides within milliseconds, so the duplicate only happens when it stalls
-# for longer than this; the agent then sees the message twice, never zero
-# times.
-CONVERSATION_SETTLE_SECONDS = 2.0
-
-# Several files posted as one message are stored as separate rows in
-# `messages` that share an attachment group. A reader waits this many seconds
-# beyond the settle time for the rest of the group, then delivers the files
-# that did arrive as one message marked incomplete. The agent's consumer waits
-# the same time (`ATTACHMENT_GROUP_TIMEOUT_SECONDS`) when it assembles a group.
-CONVERSATION_GROUP_GRACE_SECONDS = 5.0
+# How often a long poll that includes the rooms' conversation looks again while
+# it waits. A room row rings no agent's doorbell, and a long poll has no room
+# announcements to wait on, so without this it would sleep through its whole
+# timeout while the rooms it reads were being talked in.
+CONVERSATION_RECHECK_SECONDS = 2.0
 
 # Some clients can store only one integer as their place in the stream. Such a
 # client is sent a ticket: the id of a row in `agent_position_tickets` that
@@ -137,16 +162,10 @@ CONVERSATION_GROUP_GRACE_SECONDS = 5.0
 _READ = {"operation": "read"}
 _UNREAD = {"operation": "unread"}
 
-# The stored poll position moved forward by the new one, source by source,
-# never back: `positions.merged`, written in SQL so that it happens inside the
-# upsert and two overlapping saves cannot undo each other.
-_MERGED_POLL_POSITION = text(
-    "(SELECT jsonb_object_agg(source, GREATEST("
-    "COALESCE((agent_poll_positions.position ->> source)::bigint, -1), "
-    "COALESCE((excluded.position ->> source)::bigint, -1))) "
-    "FROM (SELECT jsonb_object_keys(agent_poll_positions.position) AS source "
-    "UNION SELECT jsonb_object_keys(excluded.position)) AS sources)"
-)
+# How many times a long poll reads again after another poll of the same reader
+# saved a position first. Each lost save means another poll moved the reader,
+# so the next read starts from where that one stopped.
+_POLL_SAVE_ATTEMPTS = 5
 
 # How long `enqueue` waits before each retry of a write that failed because the
 # database connection or the connection pool did. After the last, the error is
@@ -249,10 +268,14 @@ class Conversation:
     that are not conversation (the agent's own messages, other kinds of event,
     rows that are already own events) are skipped, but they still count as read, so
     the reader's position moves past them and they are not examined again.
+    `cut` maps each room whose read stopped at the row limit, with rows still
+    to read after it, to when the last row read was sent (seconds since the
+    epoch).
     """
 
     events: list[BufferedEvent] = field(default_factory=list)
     through: dict[str, int] = field(default_factory=dict)
+    cut: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -306,26 +329,44 @@ _MESSAGE_KEY_SQL = (
     "COALESCE(m.content->'com.switch.attachment_group'->>'id', m.transport_event_id)"
 )
 
+# The unread counts of one room at several positions (`:throughs`, each a
+# `messages.seq` in the room), in one statement. A message counts at a
+# position when it is a message, not sent by the agent, not one of its own
+# events, and inside (`:baseline`, position]. Several rows of one message share
+# a key and count once, so each key is reduced to its first qualifying row, and
+# the count at a position is the number of keys whose first row is at or
+# before it. That is the same number as counting the distinct keys of the
+# qualifying rows up to that position, but the room's rows are read once for
+# all the positions instead of once per position. `:through` is the highest
+# of `:throughs`. `firsts` is MATERIALIZED because Postgres otherwise copies it
+# into the per-position count, and under a cached generic plan that reruns the
+# room scan once per position (224 ms instead of 5 ms for 200 positions).
 _UNREAD_SQL = text(
     f"""
-    SELECT count(DISTINCT {_MESSAGE_KEY_SQL})
-    FROM messages m
-    WHERE m.room_id = :room_id
-      AND m.seq > :baseline
-      AND m.seq <= :through
-      AND m.seq > 0
-      AND m.event_type = 'm.room.message'
-      AND m.sender_id <> :me
-      AND NOT EXISTS (
-        SELECT 1 FROM agent_events e
-        WHERE e.agent_id = :agent_id
-          AND e.room_id = :room_id
-          AND e.type = 'message'
-          AND e.message_key = {_MESSAGE_KEY_SQL}
-          AND e.room_seq >= m.seq
-      )
+    WITH firsts AS MATERIALIZED (
+      SELECT min(m.seq) AS first_seq
+      FROM messages m
+      WHERE m.room_id = :room_id
+        AND m.seq > :baseline
+        AND m.seq <= :through
+        AND m.seq > 0
+        AND m.event_type = 'm.room.message'
+        AND m.sender_id <> :me
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_events e
+          WHERE e.agent_id = :agent_id
+            AND e.room_id = :room_id
+            AND e.type = 'message'
+            AND e.message_key = {_MESSAGE_KEY_SQL}
+            AND e.room_seq >= m.seq
+        )
+      GROUP BY {_MESSAGE_KEY_SQL}
+    )
+    SELECT t.through,
+           (SELECT count(*) FROM firsts f WHERE f.first_seq <= t.through)
+    FROM unnest(:throughs) AS t(through)
     """
-)
+).bindparams(bindparam("throughs", type_=ARRAY(BigInteger)))
 
 
 class EventBuffer:
@@ -334,8 +375,8 @@ class EventBuffer:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         sequence_base: int,
+        rooms: RoomAnnouncements,
         retention_seconds: float = DEFAULT_RETENTION_SECONDS,
-        settle_seconds: float = CONVERSATION_SETTLE_SECONDS,
     ) -> None:
         self._session_factory = session_factory
         # `sequence_base` comes from a database sequence that advances on every
@@ -346,22 +387,198 @@ class EventBuffer:
         # own event. Later own events are numbered from the agent's row in
         # `agent_event_heads`, so their numbers survive restarts.
         self.sequence_floor = sequence_base + 1
+        # Where a reader of the rooms' conversation asks to be woken when a
+        # room it reads has a new row.
+        self.rooms = rooms
         self._retention_seconds = retention_seconds
-        self._settle_seconds = settle_seconds
         # The doorbells of this process: one `asyncio.Event` per agent, set to
         # wake this process's readers of that agent when an own event is inserted.
-        # `enqueue` sets it for own events written here, and the notification
+        # The writer sets it for own events written here, and the notification
         # listener sets it for own events written by other processes. The events
         # themselves are always read from `agent_events`.
         self._notify: dict[str, asyncio.Event] = {}
 
-    @property
-    def settle_seconds(self) -> float:
-        return self._settle_seconds
-
     # ------------------------------------------------------------------
     # Producing
     # ------------------------------------------------------------------
+
+    async def store(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        agent_id: str,
+        client_id: str,
+        room_id: str,
+        event: AgentEvent,
+        room_seq: int,
+        message_key: str | None,
+    ) -> int | None:
+        """Number one own event and insert it in the caller's transaction, and
+        return its number, or None when nothing was stored.
+
+        This is how the router (`delivery/router.py`) writes an agent's own
+        events: in the transaction that writes the room row they come from, so
+        the row and the events decided for it commit together or not at all.
+        The number is claimed from the agent's row in `agent_event_heads`, and
+        that row stays locked until the caller commits, so an agent's numbers
+        are handed out in commit order whichever room each event comes from.
+        A caller that stores events for several agents has to claim them in a
+        fixed order (the router sorts by agent id), or two transactions each
+        holding one agent's row would wait for each other.
+
+        The work runs in a savepoint of its own, so a failure here leaves the
+        caller's transaction usable: the room row the caller wrote still
+        commits, and only this agent misses the event.
+
+        Nothing is stored, and the number taken is given back with the
+        savepoint, in two cases. The agent is no longer a member of the room:
+        membership is read after the agent's row is locked, so a removal that
+        committed while this waited for the lock is seen, and a removal that
+        comes later deletes the event under the same lock
+        (`forget_room`). Or an event from the same source is already stored:
+        an agent consumer of an older release, still running beside this one
+        during a rolling deploy, decides the same row and stores it itself.
+        """
+        savepoint = await session.begin_nested()
+        try:
+            seq = (await session.execute(self._claim(tenant_id, agent_id))).scalar_one()
+            member = (
+                select(ClientRoom.room_id)
+                .where(ClientRoom.client_id == client_id, ClientRoom.room_id == room_id)
+                .exists()
+            )
+            inserted = await session.scalar(
+                self._own_event_insert(
+                    select(
+                        literal(tenant_id, Text),
+                        literal(agent_id, Text),
+                        literal(seq, BigInteger),
+                        literal(room_id, Text),
+                        literal(room_seq, BigInteger),
+                        literal(message_key, Text),
+                        literal(event.type, Text),
+                        literal(event.model_dump(mode="json"), JSONB),
+                        literal(is_notifiable(event), Boolean),
+                    ).where(member)
+                )
+            )
+        except BaseException:
+            await savepoint.rollback()
+            raise
+        if inserted is None:
+            await savepoint.rollback()
+            return None
+        await savepoint.commit()
+        return int(seq)
+
+    def _claim(self, tenant_id: str, agent_id: str) -> Any:
+        """The next number of the agent's own events, taken from its row in
+        `agent_event_heads`, which the statement locks until the transaction
+        ends. An agent with no row yet gets one, starting at `sequence_floor`."""
+        return (
+            insert(AgentEventHead)
+            .values(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                first_seq=self.sequence_floor,
+                last_seq=self.sequence_floor,
+            )
+            .on_conflict_do_update(
+                index_elements=[AgentEventHead.agent_id],
+                set_={"last_seq": AgentEventHead.last_seq + 1},
+            )
+            .returning(AgentEventHead.last_seq)
+        )
+
+    @staticmethod
+    def _own_event_insert(values: Any) -> Any:
+        """An insert into `agent_events` of the row `values` selects, that
+        does nothing when an event from the same source is already stored
+        (`uq_agent_events_source`), and returns the stored number."""
+        return (
+            insert(AgentEventRow)
+            .from_select(
+                [
+                    AgentEventRow.tenant_id,
+                    AgentEventRow.agent_id,
+                    AgentEventRow.seq,
+                    AgentEventRow.room_id,
+                    AgentEventRow.room_seq,
+                    AgentEventRow.message_key,
+                    AgentEventRow.type,
+                    AgentEventRow.payload,
+                    AgentEventRow.notifiable,
+                ],
+                values,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    AgentEventRow.agent_id,
+                    AgentEventRow.message_key,
+                    AgentEventRow.room_id,
+                    AgentEventRow.room_seq,
+                    AgentEventRow.type,
+                ],
+                index_where=AgentEventRow.message_key.is_not(None),
+            )
+            .returning(AgentEventRow.seq)
+        )
+
+    async def forget_room(
+        self, session: AsyncSession, *, agent_id: str, room_id: str
+    ) -> None:
+        """Delete the agent's own events in one room, in the caller's
+        transaction, which is the one that takes the agent out of the room.
+
+        Sequence numbers are untouched and no gap is recorded: a reader that
+        skips these has missed nothing it was entitled to, and saying
+        otherwise would send it to re-read the context of a room it is not in.
+
+        The agent's row in `agent_event_heads` is locked first, the lock
+        `store` takes to number an event. An event the router was storing for
+        the room while this waited has then committed, and is deleted here;
+        one it stores after this commits finds the membership gone and is not
+        stored. Without the lock a message written as the agent was removed
+        could leave an event behind in a room it is no longer in, which a
+        stream resuming from an old position would hand it.
+        """
+        await session.execute(
+            insert(AgentEventHead)
+            .from_select(
+                [
+                    AgentEventHead.tenant_id,
+                    AgentEventHead.agent_id,
+                    AgentEventHead.first_seq,
+                    AgentEventHead.last_seq,
+                ],
+                select(
+                    Agent.tenant_id,
+                    Agent.id,
+                    literal(self.sequence_floor, BigInteger),
+                    literal(self.sequence_floor - 1, BigInteger),
+                ).where(Agent.id == agent_id),
+            )
+            .on_conflict_do_update(
+                index_elements=[AgentEventHead.agent_id],
+                set_={"last_seq": AgentEventHead.last_seq},
+            )
+        )
+        result = await session.execute(
+            delete(AgentEventRow).where(
+                AgentEventRow.agent_id == agent_id,
+                AgentEventRow.room_id == room_id,
+            )
+        )
+        dropped = result.rowcount or 0  # type: ignore[attr-defined]
+        if dropped:
+            logger.info(
+                "[EVENT-BUF] dropped %s retained event(s) for agent=%s room=%s: "
+                "no longer a member",
+                dropped,
+                agent_id,
+                room_id,
+            )
 
     async def enqueue(
         self,
@@ -373,7 +590,14 @@ class EventBuffer:
         room_seq: int,
         message_key: str | None,
     ) -> int:
-        """Store an event meant for the agent as an own event, and return its number.
+        """Store an event meant for the agent as an own event, in a transaction
+        of its own, and return its number.
+
+        For an event decided after the room row it comes from has committed:
+        a room command's handler (`bridges/agent/commands.py`) queues the
+        command for the agent only once it has checked the agent's session and
+        answered in the room. Everything decided as the row is written goes
+        through `store` instead.
 
         The number comes from the agent's row in `agent_event_heads`, which is
         advanced in the same transaction as the insert into `agent_events`, so
@@ -383,9 +607,8 @@ class EventBuffer:
         unread counts can recognise that row as already delivered.
 
         A write that fails because the database connection or the pool did is
-        retried after each of `ENQUEUE_RETRY_DELAYS`. The consumer has already
-        moved past the room row by the time it calls this, so an event not
-        stored here is never stored.
+        retried after each of `ENQUEUE_RETRY_DELAYS`. Nothing else will store
+        this event, so one not stored here is never stored.
         """
         for delay in (*ENQUEUE_RETRY_DELAYS, None):
             try:
@@ -424,38 +647,64 @@ class EventBuffer:
         room_seq: int,
         message_key: str | None,
     ) -> int:
-        """Number one own event and insert it, in one transaction."""
+        """Number one own event and insert it, in one transaction, unless an
+        event from the same source is already stored, and return its number.
+
+        The source is `(message_key, room_id, room_seq, type)`
+        (`uq_agent_events_source`): a write retried after a commit whose
+        acknowledgement was lost repeats one that was made, and would
+        otherwise give the agent the same event twice under two numbers. When
+        another write of the same source lands between the lookup and the
+        insert, the insert does nothing and the transaction is rolled back,
+        which also gives back the number it took.
+        """
+        source = (
+            select(AgentEventRow.seq).where(
+                AgentEventRow.agent_id == agent_id,
+                AgentEventRow.message_key == message_key,
+                AgentEventRow.room_id == room_id,
+                AgentEventRow.room_seq == room_seq,
+                AgentEventRow.type == event.type,
+            )
+            if message_key is not None
+            else None
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
-            claim = (
-                insert(AgentEventHead)
-                .values(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    first_seq=self.sequence_floor,
-                    last_seq=self.sequence_floor,
-                )
-                .on_conflict_do_update(
-                    index_elements=[AgentEventHead.agent_id],
-                    set_={"last_seq": AgentEventHead.last_seq + 1},
-                )
-                .returning(AgentEventHead.last_seq)
-            )
-            seq = (await session.execute(claim)).scalar_one()
-            session.add(
-                AgentEventRow(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    seq=seq,
-                    room_id=room_id,
-                    room_seq=room_seq,
-                    message_key=message_key,
-                    type=event.type,
-                    payload=event.model_dump(mode="json"),
-                    notifiable=is_notifiable(event),
+            if source is not None:
+                stored = await session.scalar(source)
+                if stored is not None:
+                    return int(stored)
+            seq = (await session.execute(self._claim(tenant_id, agent_id))).scalar_one()
+            inserted = await session.scalar(
+                self._own_event_insert(
+                    select(
+                        literal(tenant_id, Text),
+                        literal(agent_id, Text),
+                        literal(seq, BigInteger),
+                        literal(room_id, Text),
+                        literal(room_seq, BigInteger),
+                        literal(message_key, Text),
+                        literal(event.type, Text),
+                        literal(event.model_dump(mode="json"), JSONB),
+                        literal(is_notifiable(event), Boolean),
+                    )
                 )
             )
+            if inserted is None:
+                await session.rollback()
+                assert source is not None
+                stored = await session.scalar(source)
+                assert stored is not None
+                logger.info(
+                    "[EVENT-BUF] own event for agent %s from %s was already stored "
+                    "as %s",
+                    agent_id,
+                    message_key,
+                    stored,
+                )
+                return int(stored)
             await session.commit()
-        return seq
+        return int(seq)
 
     # ------------------------------------------------------------------
     # The agent's own events
@@ -762,21 +1011,30 @@ class EventBuffer:
 
         A row is delivered when it is a message or a join by someone other
         than the agent, sent after the agent joined the room, and not already
-        an own event. A row may only be delivered once the agent's consumer has
-        decided whether it becomes an own event. The consumer handles a room's rows
-        one at a time, in order, so every row up to the room row of the
-        agent's newest own event in that room is decided. A later row is treated as
-        decided once it is older than `CONVERSATION_SETTLE_SECONDS`. Each room
-        is read in order and the read stops at the first undecided row.
-        Several files posted as one message are delivered as one event, once
-        all of them are present or `CONVERSATION_GROUP_GRACE_SECONDS` has
-        passed.
+        an own event. Whether a row is one of the agent's own events is decided
+        as the row is written, and committed with it (`store`), so a row that
+        can be read here is already decided and is delivered at once.
+
+        The one row still undecided when it can be read is a file of a
+        multi-file post whose other files have not all been written: the post
+        is decided once, as a whole, when its last file arrives or when the
+        router gives up waiting for it (`PendingAttachmentGroup`). The read
+        stops at the first file of such a post, so the post is delivered by a
+        later read as one event rather than in pieces.
+
+        One transient case breaks the rule. During a rolling deploy a process
+        still on the release before the router writes a room row without
+        deciding it, and leaves the decision to its agent consumers a moment
+        later. A read that lands in between delivers the row as conversation,
+        and the agent receives it again as an own event if a consumer then
+        decides it is one.
         """
         if not after:
             return Conversation()
         started = time.perf_counter()
         events: list[BufferedEvent] = []
         through: dict[str, int] = {}
+        cut: dict[str, float] = {}
         async with tenant_session(self._session_factory, tenant_id) as session:
             me = await session.execute(
                 select(Client.transport_user_id, Client.id)
@@ -804,60 +1062,42 @@ class EventBuffer:
                     await session.scalars(select(Room).where(Room.id.in_(after)))
                 ).all()
             }
-            # Computed with the database's clock, which is the clock that
-            # stamped `sent_at`, so a difference between this process's clock
-            # and the database's cannot shorten or lengthen the settle time.
-            settled_before: datetime = cast(
-                datetime,
-                await session.scalar(
-                    select(func.now() - timedelta(seconds=self._settle_seconds))
-                ),
-            )
-            group_deadline = settled_before - timedelta(
-                seconds=CONVERSATION_GROUP_GRACE_SECONDS
-            )
-            # For each room, the room row of the agent's newest own event written by
-            # its consumer. Only message and room_join own events count: command
-            # own events are written elsewhere, so they say nothing about how far
-            # the consumer has got in the room.
-            decided_through: dict[str, int] = {
-                room_id: seq
-                for room_id, seq in (
-                    await session.execute(
-                        select(AgentEventRow.room_id, func.max(AgentEventRow.room_seq))
-                        .where(
-                            AgentEventRow.agent_id == agent_id,
-                            AgentEventRow.room_id.in_(after),
-                            AgentEventRow.type.in_(("message", "room_join")),
-                        )
-                        .group_by(AgentEventRow.room_id)
-                    )
-                ).all()
-            }
             for room_id, after_seq in sorted(after.items()):
                 room = rooms.get(room_id)
                 if room is None or room_id not in joined:
                     continue
-                rows: list[Message] = []
-                for row in (
-                    await session.scalars(
-                        select(Message)
+                # Whether a file's post is still pending is read in the same
+                # statement as the rows: the file that completes a post
+                # writes its row and deletes the pending one in one commit,
+                # so one snapshot shows a post either whole or pending, never
+                # a lone first file that is neither.
+                pending = (
+                    select(PendingAttachmentGroup.group_id)
+                    .where(
+                        PendingAttachmentGroup.room_id == Message.room_id,
+                        PendingAttachmentGroup.group_id
+                        == Message.content[ATTACHMENT_GROUP_KEY]["id"].astext,
+                    )
+                    .exists()
+                )
+                found = (
+                    await session.execute(
+                        select(Message, pending)
                         .where(
                             Message.room_id == room_id,
                             Message.seq > max(after_seq, 0),
                         )
                         .order_by(Message.seq)
-                        .limit(limit)
+                        .limit(limit + 1)
                     )
-                ).all():
-                    if (
-                        row.seq > decided_through.get(room_id, 0)
-                        and cast(datetime, row.sent_at) >= settled_before
-                    ):
-                        break
-                    rows.append(row)
-                if not rows:
+                ).all()
+                if not found:
                     continue
+                more = len(found) > limit
+                found = found[:limit]
+                rows = [row for row, _ in found]
+                if more:
+                    cut[room_id] = _epoch(cast(datetime, rows[-1].sent_at))
                 room_events, room_through = await self._conversation_in(
                     session,
                     room,
@@ -865,13 +1105,13 @@ class EventBuffer:
                     my_sender=my_sender,
                     joined_at=joined[room_id],
                     agent_id=agent_id,
-                    group_deadline=group_deadline,
+                    pending_rows={row.id for row, held in found if held},
                 )
                 events.extend(room_events)
                 if room_through > after_seq:
                     through[room_id] = room_through
         self._record_scan(_READ, len(events), started)
-        return Conversation(events=events, through=through)
+        return Conversation(events=events, through=through, cut=cut)
 
     async def _conversation_in(
         self,
@@ -882,10 +1122,12 @@ class EventBuffer:
         my_sender: str,
         joined_at: Any,
         agent_id: str,
-        group_deadline: datetime,
+        pending_rows: set[str],
     ) -> tuple[list[BufferedEvent], int]:
         """Turn one room's rows into conversation events, and return them with
-        the `messages.seq` of the last row examined."""
+        the `messages.seq` of the last row examined. `pending_rows` are the
+        ids of the rows whose multi-file post was still pending when the rows
+        were read."""
         # For each message key, the highest room row an own event for that message
         # was delivered through. A row at or below it is already an own event and is
         # skipped. A file of a multi-file message that arrives after the own event
@@ -931,17 +1173,33 @@ class EventBuffer:
             if group is not None:
                 groups.setdefault(group[0], []).append((group[1], group[2], row))
 
-        # A group that is still incomplete and within its grace time stops the
-        # read at its first file, so the whole group is delivered by a later
-        # read instead of in pieces.
+        # A group the router has not decided yet, because its files are still
+        # arriving, stops the read at its first file, so the whole group is
+        # delivered by a later read instead of in pieces.
+        undecided = {
+            group_id
+            for group_id, parts in groups.items()
+            if any(row.id in pending_rows for _, _, row in parts)
+        }
         held_from: int | None = None
-        for parts in groups.values():
-            total = parts[0][1]
-            lead = min(parts, key=lambda part: part[0])[2]
-            complete = len({index for index, _, _ in parts}) >= total
-            if not complete and cast(datetime, lead.sent_at) >= group_deadline:
-                first = min(row.seq for _, _, row in parts)
-                held_from = first if held_from is None else min(held_from, first)
+        for group_id in undecided:
+            first = min(row.seq for _, _, row in groups[group_id])
+            held_from = first if held_from is None else min(held_from, first)
+        # A group goes out at its last file, so one with a file before the
+        # hold and its last file at or after it would not go out in this read,
+        # while the read's place moved past its earlier files. The next read
+        # would then find only the later files and send the group without
+        # them. Such a group is held from its first file too, which can reach
+        # back to another group that starts earlier.
+        spans = [
+            (min(row.seq for _, _, row in parts), max(row.seq for _, _, row in parts))
+            for parts in groups.values()
+        ]
+        while held_from is not None:
+            spanning = [first for first, last in spans if first < held_from <= last]
+            if not spanning:
+                break
+            held_from = min(spanning)
 
         member_names = await self._member_names(
             session,
@@ -1046,8 +1304,8 @@ class EventBuffer:
 
         The event is based on the lowest-numbered file present, which carries
         the caption and the message id the sender was given. When files are
-        missing, the body says how many arrived, as a live delivery by the
-        consumer does.
+        missing, the body says how many arrived, as the own event the router
+        makes of an incomplete post does.
         """
         ordered = sorted(parts, key=lambda part: part[0])
         total = ordered[0][1]
@@ -1149,7 +1407,29 @@ class EventBuffer:
         )
         for room_id, seq in conversation.through.items():
             looked[room_source(room_id)] = seq
-        return _interleaved([own_events, *_by_source(conversation.events)]), looked
+        events = _interleaved([own_events, *_by_source(conversation.events)])
+        # A source cut short at `limit` has more to read after the last row it
+        # returned. An event from another source that happened later than that
+        # row waits for the next read, or it would overtake the cut source's
+        # later events. The events go out as a prefix of the merged order,
+        # with at least one event, so every read moves forward even when
+        # clocks disagree. A source with an event held back keeps its position
+        # at the last event sent, so the next read finds the event again.
+        cut = {room_source(room_id): at for room_id, at in conversation.cut.items()}
+        if len(own_events) >= limit:
+            cut[OWN_EVENTS] = own_events[-1].at
+        if cut:
+            kept = len(events)
+            for index, item in enumerate(events[1:], start=1):
+                if any(
+                    item.at > at for source, at in cut.items() if source != item.source
+                ):
+                    kept = index
+                    break
+            for source in {item.source for item in events[kept:]}:
+                looked.pop(source, None)
+            events = events[:kept]
+        return events, looked
 
     # ------------------------------------------------------------------
     # Tickets, for clients that hold one number
@@ -1342,38 +1622,92 @@ class EventBuffer:
         can no longer be told apart. A count cut at the window says so in its
         `reason`.
         """
+        counts = await self.unread_batch(tenant_id, agent_id, [(room_id, through_seq)])
+        return counts[(room_id, through_seq)]
+
+    async def unread_batch(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        positions: Iterable[tuple[str, int]],
+    ) -> dict[tuple[str, int], Unread]:
+        """`unread` for every (room, `messages.seq`) pair in `positions`, keyed
+        by the pair.
+
+        A stream catching an agent up reports a count alongside every event it
+        is woken for, up to a few hundred in one batch. Counted one at a time,
+        each count read the room's baseline, its retention window and the
+        agent's own user id again, then rescanned the same stretch of the
+        room's log. Here the agent's baselines and user id are read once, and
+        each room in the batch costs two statements however many positions are
+        asked of it: its window start, and one scan that counts at all of its
+        positions together (`_UNREAD_SQL`). The counts are the ones `unread`
+        gives for each pair on its own.
+        """
+        wanted: dict[str, set[int]] = {}
+        for room_id, through_seq in positions:
+            wanted.setdefault(room_id, set()).add(through_seq)
+        if not wanted:
+            return {}
+        counts: dict[tuple[str, int], Unread] = {}
         async with tenant_session(self._session_factory, tenant_id) as session:
-            baseline = await session.scalar(
-                select(AgentRoomRead.caught_up_seq).where(
-                    AgentRoomRead.agent_id == agent_id,
-                    AgentRoomRead.room_id == room_id,
-                )
-            )
-            if baseline is None:
-                return Unread(count=None, reason=NO_BASELINE)
-            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
-            window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
-            reason = None
-            if baseline < window_start:
-                baseline, reason = window_start, COUNTED_FROM_WINDOW
+            baselines: dict[str, int] = {
+                room_id: seq
+                for room_id, seq in (
+                    await session.execute(
+                        select(
+                            AgentRoomRead.room_id, AgentRoomRead.caught_up_seq
+                        ).where(
+                            AgentRoomRead.agent_id == agent_id,
+                            AgentRoomRead.room_id.in_(wanted),
+                        )
+                    )
+                ).all()
+            }
+            for room_id in wanted.keys() - baselines.keys():
+                for through_seq in wanted[room_id]:
+                    counts[(room_id, through_seq)] = Unread(
+                        count=None, reason=NO_BASELINE
+                    )
+            if not baselines:
+                return counts
             me = await session.scalar(
                 select(Client.transport_user_id)
                 .join(Agent, Agent.client_id == Client.id)
                 .where(Agent.id == agent_id)
             )
-            started = time.perf_counter()
-            count = await session.scalar(
-                _UNREAD_SQL,
-                {
-                    "room_id": room_id,
-                    "baseline": baseline,
-                    "through": through_seq,
-                    "me": me or "",
-                    "agent_id": agent_id,
-                },
-            )
-        self._record_scan(_UNREAD, count or 0, started)
-        return Unread(count=count or 0, reason=reason)
+            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
+            for room_id, baseline in baselines.items():
+                window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
+                reason = None
+                if baseline < window_start:
+                    baseline, reason = window_start, COUNTED_FROM_WINDOW
+                throughs = sorted(wanted[room_id])
+                started = time.perf_counter()
+                at = {
+                    through: count
+                    for through, count in (
+                        await session.execute(
+                            _UNREAD_SQL,
+                            {
+                                "room_id": room_id,
+                                "baseline": baseline,
+                                "through": throughs[-1],
+                                "throughs": throughs,
+                                "me": me or "",
+                                "agent_id": agent_id,
+                            },
+                        )
+                    ).all()
+                }
+                # One scan of the room's log, recorded with what it counted at
+                # the furthest position asked, which every other count is part of.
+                self._record_scan(_UNREAD, at[throughs[-1]] or 0, started)
+                for through_seq in throughs:
+                    counts[(room_id, through_seq)] = Unread(
+                        count=at[through_seq] or 0, reason=reason
+                    )
+        return counts
 
     # ------------------------------------------------------------------
     # Leaving
@@ -1386,32 +1720,6 @@ class EventBuffer:
         row in `agents` (`ON DELETE CASCADE`).
         """
         self._notify.pop(agent_id, None)
-
-    async def drop_room(self, tenant_id: str, agent_id: str, room_id: str) -> None:
-        """Delete the agent's own events in one room.
-
-        Called when the agent is removed from it. Sequence numbers are untouched
-        and no gap is recorded: a reader that skips these has missed nothing it
-        was entitled to, and saying otherwise would send it to re-read the
-        context of a room it is not in.
-        """
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            result = await session.execute(
-                delete(AgentEventRow).where(
-                    AgentEventRow.agent_id == agent_id,
-                    AgentEventRow.room_id == room_id,
-                )
-            )
-            await session.commit()
-        dropped = result.rowcount or 0  # type: ignore[attr-defined]
-        if dropped:
-            logger.info(
-                "[EVENT-BUF] dropped %s retained event(s) for agent=%s room=%s: "
-                "no longer a member",
-                dropped,
-                agent_id,
-                room_id,
-            )
 
     # ------------------------------------------------------------------
     # Retention
@@ -1566,11 +1874,11 @@ class EventBuffer:
             return events
 
         if conversation:
-            # New conversation rows do not set the doorbell, and they are only
-            # delivered once they have settled, so a poll that includes
-            # conversation wakes after twice the settle time to look again
-            # instead of sleeping through the whole timeout.
-            await self.wait(agent_id, min(timeout, self._settle_seconds * 2))
+            # New conversation rows do not set the doorbell, so a poll that
+            # includes conversation looks again every
+            # `CONVERSATION_RECHECK_SECONDS` instead of sleeping through the
+            # whole timeout.
+            await self.wait(agent_id, min(timeout, CONVERSATION_RECHECK_SECONDS))
         else:
             await self.wait(agent_id, timeout)
 
@@ -1589,6 +1897,53 @@ class EventBuffer:
         """Read once for a long-polling reader, save its new position, and
         return the events.
 
+        Two polls of the same reader can overlap. Each saves its new position
+        only if the stored one is still the one it read from, so of two polls
+        that read the same events, one returns them and the other reads again
+        from where the first stopped. Returning nothing after the last attempt
+        loses nothing, because the position did not move.
+        """
+        for _ in range(_POLL_SAVE_ATTEMPTS):
+            stored, position = await self._poll_position(
+                tenant_id, agent_id, reader_id, rooms if conversation else set()
+            )
+            events, moved = await self._legacy_read(
+                tenant_id,
+                agent_id,
+                reader_id,
+                position,
+                rooms,
+                conversation,
+                notifiable_only,
+                rooms_are_membership,
+            )
+            if await self._save_poll_position(
+                tenant_id, agent_id, reader_id, moved, expected=stored
+            ):
+                return events
+        logger.warning(
+            "[EVENT-BUF] legacy poller %s for agent %s lost the save of its "
+            "position %s times in a row to overlapping polls; returning nothing",
+            reader_id,
+            agent_id,
+            _POLL_SAVE_ATTEMPTS,
+        )
+        return []
+
+    async def _legacy_read(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        reader_id: str,
+        position: Position,
+        rooms: set[str],
+        conversation: bool,
+        notifiable_only: bool,
+        rooms_are_membership: bool,
+    ) -> tuple[list[AgentEvent], Position]:
+        """Read for a long-polling reader from `position`, and return the
+        events with the position to save once they are returned.
+
         The bound on own event numbers is read before the own events and the read stops
         at it, so the saved position covers exactly the own events returned. When
         `rooms` is the agent's membership, the bound is the newest own event in
@@ -1598,9 +1953,6 @@ class EventBuffer:
         `poll_room` reads a fixed room chosen by the reader, so it passes
         `rooms_are_membership=False` and moves to the head.
         """
-        position = await self._poll_position(
-            tenant_id, agent_id, reader_id, rooms if conversation else set()
-        )
         after = position[OWN_EVENTS]
         if rooms_are_membership:
             through = await self._last_seq_in_rooms(tenant_id, agent_id, after, rooms)
@@ -1650,14 +2002,14 @@ class EventBuffer:
                 moved,
                 {room_source(room_id): seq for room_id, seq in said.through.items()},
             )
-        await self._save_poll_position(tenant_id, agent_id, reader_id, moved)
-        return [item.event for item in _interleaved(found)]
+        return [item.event for item in _interleaved(found)], moved
 
     async def _poll_position(
         self, tenant_id: str, agent_id: str, reader_id: str, rooms: set[str]
-    ) -> Position:
-        """A long-polling reader's position from `agent_poll_positions`, with a
-        number for each room in `rooms`.
+    ) -> tuple[Position | None, Position]:
+        """A long-polling reader's stored position from `agent_poll_positions`,
+        or None when it has none, and the position to read from, with a number
+        for each room in `rooms`.
 
         A reader seen for the first time starts just before the agent's oldest
         own event still kept, so own events written before the client first polled are
@@ -1666,13 +2018,14 @@ class EventBuffer:
         window, for the same reason.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
-            stored = await session.scalar(
+            row = await session.scalar(
                 select(AgentPollPosition.position).where(
                     AgentPollPosition.agent_id == agent_id,
                     AgentPollPosition.reader_id == reader_id,
                 )
             )
-        position: Position = dict(stored) if stored is not None else {}
+        stored: Position | None = dict(row) if row is not None else None
+        position: Position = dict(stored or {})
         if OWN_EVENTS not in position:
             position[OWN_EVENTS] = await self.before_retained(tenant_id, agent_id)
         missing = {room_id for room_id in rooms if room_source(room_id) not in position}
@@ -1680,20 +2033,32 @@ class EventBuffer:
             starts = await self.room_window_starts(tenant_id, missing)
             for room_id, start in starts.items():
                 position[room_source(room_id)] = start
-        return position
+        return stored, position
 
     async def _save_poll_position(
-        self, tenant_id: str, agent_id: str, reader_id: str, position: Position
-    ) -> None:
-        # The row is inserted from a SELECT on `agents`, so if the agent was
-        # deleted while the poll was in flight, nothing is saved and the insert
-        # does not fail on the foreign key. An existing row is merged with the
-        # new position, source by source, rather than replaced: two polls of
-        # the same reader can overlap, and the one that finishes last may have
-        # read less, so replacing would move the reader back and deliver the
-        # same events again.
+        self,
+        tenant_id: str,
+        agent_id: str,
+        reader_id: str,
+        position: Position,
+        *,
+        expected: Position | None,
+    ) -> bool:
+        """Store a long-polling reader's new position if its stored position is
+        still `expected` (None for no row), and return whether it was stored.
+
+        The row is inserted from a SELECT on `agents`, so if the agent was
+        deleted while the poll was in flight, nothing is saved and the insert
+        does not fail on the foreign key.
+        """
+        unchanged = (
+            AgentPollPosition.position
+            == literal(expected, AgentPollPosition.position.type)
+            if expected is not None
+            else literal(False)
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
-            await session.execute(
+            saved = await session.scalar(
                 insert(AgentPollPosition)
                 .from_select(
                     [
@@ -1714,10 +2079,15 @@ class EventBuffer:
                         AgentPollPosition.agent_id,
                         AgentPollPosition.reader_id,
                     ],
-                    set_={"position": _MERGED_POLL_POSITION},
+                    set_={
+                        "position": literal(position, AgentPollPosition.position.type)
+                    },
+                    where=unchanged,
                 )
+                .returning(AgentPollPosition.reader_id)
             )
             await session.commit()
+        return saved is not None
 
     async def _last_seq_in_rooms(
         self, tenant_id: str, agent_id: str, after_seq: int, rooms: set[str]

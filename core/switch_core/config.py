@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    FOLLOW_THE_CONVERSATION,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     SERVICE_CONNECTIONS,
@@ -192,6 +193,11 @@ class SwitchConfig(BaseSettings):
     # silently ignored typo.
     feature_flags_enabled: str = ""
 
+    # Follow the conversation (feature flag `follow_the_conversation`).
+    # How long after an agent's answer a person's next channel message still
+    # counts as a follow-up to it.
+    follow_the_conversation_window_seconds: int = Field(default=300, ge=1, le=3600)
+
     # Gateway admin seed
     gateway_admin_email: str
     gateway_admin_password: str
@@ -356,6 +362,18 @@ class SwitchConfig(BaseSettings):
     # (pilot, development, demo, public), not the machine.
     service_name: str = "switch-core"
     environment: str | None = None
+    # The Kubernetes pod this process runs in, from the downward API. It names
+    # the process everywhere one process has to be told from another: its
+    # lease row, the controller connections it holds, the signals it sends,
+    # its log lines and its metrics (`process_identity.py`). Unset outside
+    # Kubernetes, where the host name stands in.
+    pod_name: str | None = None
+    # How many switch-core processes the deployment runs against this
+    # database. Read for the connection budget checked at boot
+    # (`db/connection_budget.py`) and for whether a dead LISTEN connection
+    # takes this process out of service: with one replica there is no other
+    # to send traffic to, so it does not.
+    core_replicas: int = Field(default=1, ge=1)
 
     # The placeholder a log line carries when no tenant is bound at all —
     # deliberately not a tenant id, and it must not be set to one. An
@@ -1161,6 +1179,10 @@ class SwitchConfig(BaseSettings):
     @property
     def service_connections_enabled(self) -> bool:
         return self.feature_flags[SERVICE_CONNECTIONS]
+
+    @property
+    def follow_the_conversation_enabled(self) -> bool:
+        return self.feature_flags[FOLLOW_THE_CONVERSATION]
 
     @property
     def agent_chats_enabled(self) -> bool:

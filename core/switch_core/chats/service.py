@@ -27,7 +27,7 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import markdown
 from sqlalchemy import (
@@ -99,6 +99,9 @@ from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.types import MessageFormat
 
+if TYPE_CHECKING:
+    from switch_core.delivery.router import MessageRouter, Routed
+
 logger = logging.getLogger(__name__)
 
 # Fixed so the ids derived from it are stable across processes and releases.
@@ -156,6 +159,7 @@ class ChatService:
         agent_store: AgentStore,
         user_store: UserStore,
         message_store: MessageStore,
+        router: MessageRouter,
         media_store: MediaStore,
         usage_store: UsageStore,
         id_server_name: str,
@@ -176,6 +180,7 @@ class ChatService:
         self._agent_store = agent_store
         self._user_store = user_store
         self._message_store = message_store
+        self._router = router
         self._media_store = media_store
         self._usage_store = usage_store
         self._id_server_name = id_server_name
@@ -1146,6 +1151,7 @@ class ChatService:
                 ),
             )
             posted: list[Message] = []
+            routed: list[Routed] = []
             for index, content in enumerate(contents):
                 message = message_row(
                     room_id=room.id,
@@ -1157,11 +1163,17 @@ class ChatService:
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
-                posted.append(
-                    await self._message_store.create(
-                        session, message, attachments_in(content)
+                routed.append(
+                    await self._router.store(
+                        session,
+                        tenant_id=tenant_id,
+                        room_id=room.id,
+                        transport_room_id=room.transport_room_id,
+                        message=message,
+                        attachments=attachments_in(content),
                     )
                 )
+                posted.append(message)
             await self._usage_store.record(
                 session,
                 tenant_id=tenant_id,
@@ -1180,6 +1192,8 @@ class ChatService:
                 .values(result={"messageIds": [m.transport_event_id for m in posted]})
             )
             await session.commit()
+        for each in routed:
+            each.committed()
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
@@ -1251,9 +1265,12 @@ class ChatService:
                 return str((operation.result or {})["commandId"])
 
             command_id = new_event_id()
-            await self._message_store.create(
+            routed = await self._router.store(
                 session,
-                message_row(
+                tenant_id=tenant_id,
+                room_id=room.id,
+                transport_room_id=room.transport_room_id,
+                message=message_row(
                     room_id=room.id,
                     event_id=command_id,
                     sender_id=client.transport_user_id,
@@ -1268,7 +1285,7 @@ class ChatService:
                     },
                     client_txn_id=request_id,
                 ),
-                [],
+                attachments=[],
             )
             await session.execute(
                 update(ChatOperation)
@@ -1280,6 +1297,7 @@ class ChatService:
                 .values(result={"commandId": command_id})
             )
             await session.commit()
+        routed.committed()
         return command_id
 
     async def warm(
