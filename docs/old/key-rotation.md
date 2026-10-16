@@ -40,11 +40,12 @@ before the upgrade, exactly as they were made.
 2. Deploy. On boot, switch-core re-encrypts every stored credential under the
    new key and logs how many it rewrote. Sessions signed before the upgrade
    stay valid until they expire, and buttons on existing Mattermost cards keep
-   working. The Helm chart replaces switch-core rather than rolling it, so
-   two versions never serve at once. Where they do (several replicas updated
-   one by one), a replica still on the previous version cannot verify a
-   session the new version signed, so someone who signs in mid-rollout may be
-   asked to sign in once more.
+   working. At one replica the Helm chart replaces switch-core rather than
+   rolling it, so two versions never serve at once. Where they do (with
+   `switchCore.replicaCount` above 1 the chart updates replicas one by one), a
+   replica still on the previous version cannot verify a session the new
+   version signed, so someone who signs in mid-rollout may be asked to sign in
+   once more.
 
    **This step is one-way.** Once the new version has booted, stored
    credentials are encrypted in a format the previous version cannot read, so
@@ -63,9 +64,10 @@ continuing. That is a key removed too early: put it back.
 ## Rotating
 
 Rotation takes two deploys, so that where replicas are updated one by one, no
-replica is handed a session signed with a key it does not have yet. With the
-Helm chart, which replaces switch-core in one step, step 1 is still what keeps
-the old key available for decrypting and verifying.
+replica is handed a session signed with a key it does not have yet. The Helm
+chart updates replicas one by one when `switchCore.replicaCount` is above 1.
+At one replica it replaces switch-core in one step, and step 1 is still what
+keeps the old key available for decrypting and verifying.
 
 1. Generate a new key and add it **after** the current one:
    `SECRET_KEYS=202610:<old>,202611:<new>`. Deploy. Every replica can now

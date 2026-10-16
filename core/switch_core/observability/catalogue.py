@@ -252,6 +252,17 @@ OBSERVER_FAILURES = _spec(
     "writing or reading.",
     "actor",
 )
+DELIVERY_BACKLOG_SKIPPED = _spec(
+    "switch.messages.backlog_skipped",
+    "sum",
+    "{message}",
+    "Room rows a consumer resuming from its stored cursor stepped over because "
+    "they were too old to act on (`transport/cursors.py`, BACKLOG_MAX_AGE): "
+    "rows written while no process read for that client, past the cap. They "
+    "stay in the room's history; the command replies and platform posts they "
+    "would have caused were never made. `actor` is whose consumer it was.",
+    "actor",
+)
 ROUTING_FAILURES = _spec(
     "switch.messages.routing_failures",
     "sum",
@@ -639,6 +650,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         SEND_FAILURES,
         DELIVERY_FAILURES,
         OBSERVER_FAILURES,
+        DELIVERY_BACKLOG_SKIPPED,
         ROUTING_FAILURES,
         DELIVERY_LAG,
         DELIVERY_CACHE_READS,

@@ -14,6 +14,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Agent
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
+from tests.ownership import NeverOwned
 from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 
@@ -40,10 +41,16 @@ class _Factory:
     def __init__(self) -> None:
         self.actors: dict[str, _Actor] = {}
 
-    def create(self, record: Any) -> tuple[_Actor, None]:
+    def create_actor(self, record: Any) -> _Actor:
         actor = _Actor()
         self.actors[record.id] = actor
-        return actor, None
+        return actor
+
+    def create_consumer(self, client_type: str, actor: _Actor) -> None:
+        return None
+
+    def has_consumer(self, client_type: str) -> bool:
+        return False
 
 
 async def test_each_agent_actor_gets_its_own_row_before_it_connects(
@@ -61,6 +68,8 @@ async def test_each_agent_actor_gets_its_own_row_before_it_connects(
         session_factory=session_factory,
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
     await service.start_all()
@@ -88,6 +97,8 @@ async def test_a_failed_bulk_read_still_starts_every_client(
         session_factory=session_factory,
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
     async def _fail(_records: Any) -> dict[str, Agent]:

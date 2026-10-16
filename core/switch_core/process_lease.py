@@ -7,10 +7,16 @@ connection's transitions to a row (`bridges/agent/protocol/connection_rows.py`
 for agents, `management/connection_ledger.py` for controllers). A process that
 dies writes no closing, so each process also holds a lease in
 `switch_core_processes`: it claims it at startup, renews it every
-`RENEW_INTERVAL`, and marks it stopped as it shuts down. A connection reads as
-online only while its holding process's lease is held: renewed within
-`LEASE_TTL` and not stopped. One write per process per renewal, however many
-connections it holds.
+`RENEW_EVERY_SECONDS`, and marks it stopped as it shuts down. A connection
+reads as online only while its holding process's lease is held: renewed
+within `LEASE_TTL` and not stopped. One write per process per renewal, however
+many connections it holds.
+
+The work that must run once (a client's consumer, a bridge's platform
+connection, a server-side connector) is owned through `ownership.py`, whose
+leases are valid only while their holder's process lease is held, and which
+stops its work when this process can no longer be sure its own is
+(`surely_held`).
 
 The lease also records the ids of the keys the process can read, which a
 process starting with a new front key checks (`db/key_rotation.py`).
@@ -24,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -36,11 +43,22 @@ from switch_core.db.stores.switch_core_process_store import (
 
 logger = logging.getLogger(__name__)
 
+# The unit the lease's lifetime is counted in, and how often the other
+# processes look at the leases (`ownership.BALANCE_INTERVAL_SECONDS`).
 RENEW_INTERVAL_SECONDS = 5.0
 
-# Three renewals: one missed write, or a slow one, does not put every machine
-# the process holds offline.
+# Several renewals: one missed write, or a slow one, does not put every
+# machine the process holds offline.
 LEASE_TTL = timedelta(seconds=3 * RENEW_INTERVAL_SECONDS)
+
+# How long after the last good renewal was sent the next is sent: a third of
+# the half lease `ProcessLease.surely_held` counts from. A renewal may then
+# take twice this, or fail once and be retried, before this process has to
+# stop its owned work (`ownership.py`).
+RENEW_EVERY_SECONDS = LEASE_TTL.total_seconds() / 6
+
+# How long after a failed renewal the next is tried.
+RETRY_RENEWAL_SECONDS = 1.0
 
 PRUNE_AFTER = timedelta(hours=1)
 
@@ -111,16 +129,43 @@ class ProcessLease:
         # has released its lease (as it starts draining, while it still runs)
         # no renewal may claim it back.
         self._stopped = False
+        # This process's monotonic clock when the last renewal that succeeded
+        # was sent, or None before the first and after `stop`. Sent, not
+        # answered: the database stamped the lease at some moment after this,
+        # so a deadline counted from here can only be early.
+        self._renewed_at: float | None = None
+
+    def surely_held(self) -> bool:
+        """Whether no other process can yet read this lease as lapsed.
+
+        Another process takes over this one's owned work once the lease is
+        `LEASE_TTL` old by the database's clock. This answers from half that,
+        on this process's own clock and from when the last good renewal was
+        sent, so the work stops here well before anyone else may start it,
+        however far the two clocks have drifted.
+        """
+        held_until = self.held_until()
+        return held_until is not None and time.monotonic() < held_until
+
+    def held_until(self) -> float | None:
+        """On this process's monotonic clock, when `surely_held` turns false
+        unless the lease is renewed first. None before the first renewal and
+        after `stop`."""
+        if self._renewed_at is None:
+            return None
+        return self._renewed_at + LEASE_TTL.total_seconds() / 2
 
     async def renew(self) -> None:
         """Claim or renew the lease, and prune leases long dead. Does nothing
         once the lease is stopped: a draining process stays released."""
         if self._stopped:
             return
+        sent_at = time.monotonic()
         async with self._session_factory() as session:
             await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
+        self._renewed_at = sent_at
         if pruned:
             logger.info("Pruned %d switch-core process lease(s) long stale", pruned)
 
@@ -135,17 +180,23 @@ class ProcessLease:
         if self._stopped:
             return
         self._stopped = True
+        self._renewed_at = None
         async with self._session_factory() as session:
             await self._processes.stop(session, self.process_id)
             await session.commit()
         logger.info("Released switch-core process lease %s", self.process_id)
 
     async def run(self) -> None:
-        """Renew every `RENEW_INTERVAL_SECONDS` until cancelled. A failed
-        renewal is logged and retried at the next; three in a row and this
-        process's connections read offline elsewhere."""
+        """Renew `RENEW_EVERY_SECONDS` after the last good renewal was sent,
+        until cancelled. A failed renewal is logged and retried after
+        `RETRY_RENEWAL_SECONDS`; once the lease is `LEASE_TTL` old this
+        process's connections read offline elsewhere.
+
+        Counted from the last renewal, wherever it was made, so a loop started
+        late (after a slow boot, whose renewal came from `Ownership.start`)
+        renews at once rather than an interval after it starts."""
         while True:
-            await asyncio.sleep(RENEW_INTERVAL_SECONDS)
+            await asyncio.sleep(self._until_next_renewal())
             try:
                 await self.renew()
             except Exception:
@@ -155,3 +206,9 @@ class ProcessLease:
                     self.process_id,
                     LEASE_TTL,
                 )
+                await asyncio.sleep(RETRY_RENEWAL_SECONDS)
+
+    def _until_next_renewal(self) -> float:
+        if self._renewed_at is None:
+            return 0.0 if not self._stopped else RENEW_EVERY_SECONDS
+        return max(0.0, self._renewed_at + RENEW_EVERY_SECONDS - time.monotonic())

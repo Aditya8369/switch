@@ -25,6 +25,7 @@ from switch_core.db.models import TENANT_ZERO_ID, Agent, Client
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.signals import SignalBus
+from tests.ownership import NeverOwned
 from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 DELIVERY_TIMEOUT = 10.0
@@ -39,17 +40,24 @@ class _Consumer:
     def preload_agent(self, agent: Agent) -> None:
         return None
 
-    async def start(self) -> None:
+    async def connect(self) -> None:
         return None
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self.stopped = True
 
 
 class _Factory:
-    def create(self, record: Any) -> tuple[_Consumer, _Consumer]:
-        consumer = _Consumer()
-        return consumer, consumer
+    """Each client reads for itself, in every process."""
+
+    def create_actor(self, record: Any) -> _Consumer:
+        return _Consumer()
+
+    def create_consumer(self, client_type: str, actor: _Consumer) -> _Consumer:
+        return actor
+
+    def has_consumer(self, client_type: str) -> bool:
+        return False
 
 
 def _lifecycle(
@@ -63,6 +71,8 @@ def _lifecycle(
         session_factory=session_factory,
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 

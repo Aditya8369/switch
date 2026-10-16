@@ -69,16 +69,19 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -87,19 +90,23 @@ from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
+from switch_core.ownership import Ownership
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.service import AgentSessionActivityService
+from switch_core.signals import SignalBus
 from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 from switch_core.tenant_context import tenant_scope
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.client import NullTrustClient
+from tests.ownership import process_lease_on
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -271,8 +278,12 @@ class Harness:
         owner_id: str,
         session_factory: object,
         collab_lifecycle: object,
+        ownership: Ownership,
     ) -> None:
         self.protocol = protocol
+        # Which work this one process owns: all of it, as with one process
+        # in production, once `start_clients` has balanced.
+        self.ownership = ownership
         # The real lifecycle under the `collaboration_bridges` marker, the
         # no-bridges stand-in otherwise.
         self.collab_lifecycle = collab_lifecycle
@@ -332,6 +343,7 @@ class Harness:
         run. Poll until each is present and ready before returning.
         """
         await self.client_lifecycle.start_all()
+        await self.ownership.start()
         for agent_id in self._registered:
             client = await self._await_client(agent_id, timeout)
             await client.wait_ready()
@@ -657,6 +669,28 @@ async def harness(
         client_factory.register("user", HumanActor)
         client_factory.register("bridge", Actor)
 
+        # This process's lease and what it owns, as `main` wires them. The
+        # signal bus is never started: there is no other process to tell.
+        lease = process_lease_on(session_factory)  # type: ignore[arg-type]
+        ownership = Ownership(
+            lease=lease,
+            session_factory=session_factory,  # type: ignore[arg-type]
+            bus=SignalBus(
+                session_factory,  # type: ignore[arg-type]
+                lambda: create_unpooled_engine(config),
+                process_id=lease.process_id,
+            ),
+            store=OwnershipLeaseStore(),
+            processes=SwitchCoreProcessStore(),
+        )
+        cursor_writer = CursorWriter(
+            session_factory=session_factory,  # type: ignore[arg-type]
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=lease.process_id,
+        )
+        cursor_writer_task = asyncio.create_task(cursor_writer.run())
+
         client_lifecycle = ClientLifecycleService(
             provisioning=provisioning,
             client_store=session_env.client_store,
@@ -665,6 +699,8 @@ async def harness(
             session_factory=session_factory,
             config=config,
             tenants_isolated=True,
+            ownership=ownership,
+            cursor_writer=cursor_writer,
         )
 
         if real_bridges:
@@ -684,6 +720,8 @@ async def harness(
                 session_activity_listener=session_activity_listener,
                 session_activity_service=AgentSessionActivityService(session_factory),
                 connections=connections,
+                ownership=ownership,
+                cursor_writer=cursor_writer,
             )
 
         room_service = RoomService(
@@ -735,10 +773,13 @@ async def harness(
             owner_id=owner_id,
             session_factory=session_factory,
             collab_lifecycle=collab_lifecycle,
+            ownership=ownership,
         )
         try:
             yield h
         finally:
+            await ownership.stop()
+            cursor_writer_task.cancel()
             if isinstance(collab_lifecycle, CollaborationBridgeLifecycleService):
                 await collab_lifecycle.stop_all()
             # Stop the agents' receive loops before the next test truncates, so none

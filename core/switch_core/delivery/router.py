@@ -65,7 +65,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from sqlalchemy import and_, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -761,6 +761,7 @@ class MessageRouter:
 
     # ── Writing a row ─────────────────────────────────────────────────────────
 
+    @overload
     async def store(
         self,
         session: AsyncSession,
@@ -770,11 +771,42 @@ class MessageRouter:
         transport_room_id: str,
         message: Message,
         attachments: list[MessageAttachment],
-    ) -> Routed:
+        unless_stored: Literal[False] = False,
+    ) -> Routed: ...
+
+    @overload
+    async def store(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        room_id: str,
+        transport_room_id: str,
+        message: Message,
+        attachments: list[MessageAttachment],
+        unless_stored: bool,
+    ) -> Routed | None: ...
+
+    async def store(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        room_id: str,
+        transport_room_id: str,
+        message: Message,
+        attachments: list[MessageAttachment],
+        unless_stored: bool = False,
+    ) -> Routed | None:
         """Decide `message` for every agent in its room, write it, and store
         the own events decided for it, all in the caller's transaction.
 
         The caller commits, then calls `Routed.committed()`.
+
+        With `unless_stored`, a message whose `transport_event_id` is already
+        stored is neither written nor routed again, and None comes back: the
+        id was derived from what caused the write (`transport/derived_ids.py`),
+        and an earlier run of the same cause wrote it and owed what it owed.
         """
         reads = await RoomReads.load(
             session,
@@ -795,7 +827,12 @@ class MessageRouter:
             plan = await self._decide(
                 session, reads, unwritten, sender_client_id=message.sender_client_id
             )
-        await self._messages.create(session, message, attachments)
+        if not unless_stored:
+            await self._messages.create(session, message, attachments)
+        elif not await self._messages.create_unless_stored(
+            session, message, attachments
+        ):
+            return None
         if reads is not None and await self._joined_since(session, reads):
             # An agent's arrival committed between the reads and the room's
             # lock, so it comes before this row in the room and the row is

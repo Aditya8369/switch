@@ -131,6 +131,12 @@ POLICY_NAME = "tenant_isolation"
 # controller sockets for every tenant at once, so its lease belongs to none of
 # them, and it holds no customer data, only that the process is alive.
 #
+# `ownership_leases` says which of those processes runs each piece of work that
+# must run once, a client's consumer or a bridge's platform connection: a kind,
+# the work's id, the holding process and a counter. One process holds work for
+# every tenant at once and claims it in one statement across them, and a row
+# carries no customer data, only which process runs which id.
+#
 # `cloud_machines` is a user's Switch cloud VM: one per person, whichever
 # workspaces it serves, as the person is global. It holds the VM's lifecycle,
 # disk and instance, and no workspace's data: what the machine runs for a
@@ -161,6 +167,7 @@ GLOBAL_TABLES = frozenset(
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
         "switch_core_processes",
+        "ownership_leases",
         "trust_settings",
         "service_oauth_clients",
         "schema_expand_only_revisions",

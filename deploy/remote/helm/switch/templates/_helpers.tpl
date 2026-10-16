@@ -442,9 +442,12 @@ preStop drain for a pod that rolls with a surge (a new pod is Ready before the
 old one stops): hold the old pod for a few seconds after it is marked
 terminating, so endpoint and load-balancer deregistration land before the
 process gets SIGTERM. Not for a Recreate Deployment, where nothing else is
-serving and the wait only lengthens the outage. The native `sleep` action needs
-no shell (the images are distroless) but needs Kubernetes 1.30+, so nothing
-renders on an older cluster.
+serving and the wait only lengthens the outage. Not for switch-core either:
+with more than one replica it drains itself after SIGTERM, first handing the
+work it owns to the other pods and then serving on for a few seconds out of
+readiness, and a sleep here would only hold that hand-over back. The native
+`sleep` action needs no shell (the images are distroless) but needs Kubernetes
+1.30+, so nothing renders on an older cluster.
 Usage: {{- include "switch.preStopDrain" . | nindent 10 }}
 */}}
 {{- define "switch.preStopDrain" -}}

@@ -3,10 +3,10 @@
 The router decides, in the transaction that writes a room row, which agents
 the row is for, and stores their own events with it. A row written any other
 way is decided for nobody: an addressed message that never reaches the agent
-it names, with nothing to say so. So the one call that numbers and inserts a
-live row, `MessageStore.create`, is made by the router and nowhere else, and
-this test fails the moment another module makes it, or inserts into
-`messages` some other way.
+it names, with nothing to say so. So the calls that number and insert a live
+row, `MessageStore.create` and `MessageStore.create_unless_stored`, are made
+by the router and nowhere else, and this test fails the moment another module
+makes one, or inserts into `messages` some other way.
 
 `MessageStore.create_historical` is exempt by design: it backfills history
 below a room's live rows, which nothing delivers.
@@ -30,14 +30,18 @@ def _calls(tree: ast.AST) -> list[ast.Call]:
 
 
 def _is_message_store_create(call: ast.Call) -> bool:
-    """`<the message store>.create(...)` or `MessageStore().create(...)`.
+    """`<the message store>.create(...)` or `MessageStore().create(...)`, or
+    the same with `create_unless_stored`.
 
     Matched on the receiver's name, the way every caller has spelled it: a
     store held as `message_store`, `_message_store` or `_messages`, or built
     on the spot.
     """
     func = call.func
-    if not isinstance(func, ast.Attribute) or func.attr != "create":
+    if not isinstance(func, ast.Attribute) or func.attr not in {
+        "create",
+        "create_unless_stored",
+    }:
         return False
     receiver = func.value
     if isinstance(receiver, ast.Attribute):
