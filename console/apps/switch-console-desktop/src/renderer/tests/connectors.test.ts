@@ -590,18 +590,31 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors out of the nav', () => {
-    expect(workspaceNavViews({ managed: false, serviceConnections: false })).not.toContain(
-      'connectors'
-    );
-    expect(workspaceNavViews({ managed: true, serviceConnections: true })).toEqual([
+  it('leaves Connectors and Admin out of the nav', () => {
+    const shown = workspaceNavViews({
+      managed: false,
+      serviceConnections: false,
+      administers: true,
+    });
+    expect(shown).not.toContain('connectors');
+    expect(shown).not.toContain('admin');
+    expect(
+      workspaceNavViews({ managed: true, serviceConnections: true, administers: true })
+    ).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'connectors',
       'templates',
+      'admin',
       'managedServer',
     ]);
+  });
+
+  it('shows Admin only to whoever administers the workspace', () => {
+    expect(
+      workspaceNavViews({ managed: false, serviceConnections: true, administers: false })
+    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates']);
   });
 
   it('has no page to show, rather than an empty one', () => {

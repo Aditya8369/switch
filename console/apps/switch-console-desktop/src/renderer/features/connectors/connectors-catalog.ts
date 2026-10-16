@@ -6,7 +6,7 @@ import {
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { ConnectorCardState } from './connector-card-state';
 
-export type ConnectorsTab = 'yours' | 'discover' | 'workspace';
+export type ConnectorsTab = 'yours' | 'discover';
 
 /** Whether a service belongs on Yours: the person has a connection to it, working or not. */
 export function isYours(entry: ConnectionCatalogEntry): boolean {
@@ -20,7 +20,7 @@ export function isYours(entry: ConnectionCatalogEntry): boolean {
  */
 export function connectorsInTab(
   entries: ConnectionCatalogEntry[],
-  tab: 'yours' | 'discover',
+  tab: ConnectorsTab,
   query: string
 ): ConnectionCatalogEntry[] {
   const needle = query.trim().toLocaleLowerCase();

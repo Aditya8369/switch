@@ -1,8 +1,7 @@
-import { Check, Plug, Plus } from 'lucide-react';
+import { ArrowRight, Check, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ConnectionIcon } from '@renderer/features/switch-servers/connection-icon';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
@@ -15,24 +14,19 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { cn } from '@renderer/utils/utils';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { TONE_BADGE, connectorCardState } from './connector-card-state';
 import { ConnectorProfile } from './connector-profile';
+import { ConnectorTile } from './connector-tile';
 import {
   type ConnectorsTab,
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
 } from './connectors-catalog';
-import {
-  useConnectorCatalog,
-  useServerFeatureFlags,
-  useWorkspaceServices,
-} from './connectors-queries';
+import { useConnectorCatalog, useServerFeatureFlags } from './connectors-queries';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
-import { WorkspaceServicesSection } from './workspace-services-section';
 
 function useServerId(): string {
   return useParams('connectors').params.serverId;
@@ -93,7 +87,6 @@ function Connectors({
   administers: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  const workspaceServices = useWorkspaceServices(workspaceId, administers);
   const [tab, setTab] = useState<ConnectorsTab>('yours');
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
@@ -108,16 +101,10 @@ function Connectors({
   const openProfile = (slug: string) => navigate('connectors', { serverId, connector: slug });
   const connect = useConnectService(serverId, workspaceId);
 
-  // An admin's switches, where the server has them: a server without them
-  // answers null, and the page then has no workspace layer at all.
-  const switchesShown =
-    administers && (workspaceServices.data != null || workspaceServices.isError);
   const tabs = [
     { value: 'yours', label: 'Yours' },
     { value: 'discover', label: 'Discover' },
-    ...(switchesShown ? [{ value: 'workspace', label: 'Workspace' } as const] : []),
   ] as const satisfies readonly { value: ConnectorsTab; label: string }[];
-  const shownTab = tab === 'workspace' && !switchesShown ? 'yours' : tab;
 
   const opened = open === null ? null : catalog.data?.find((entry) => entry.slug === open);
   // The profile replaces the whole page, title included: it is a place of its
@@ -150,27 +137,36 @@ function Connectors({
     );
 
   return (
-    <ServerPage width={880} title="Connectors" description={DESCRIPTION}>
+    <ServerPage
+      width={880}
+      title="Connectors"
+      description={DESCRIPTION}
+      action={
+        // Turning a service on or off for everyone is the Admin page's; only
+        // the way there is here, for whoever may.
+        administers && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate('admin', { serverId, tab: 'connectors' })}
+          >
+            Manage for the workspace
+            <ArrowRight className="size-3.5" />
+          </Button>
+        )
+      }
+    >
       <div className="flex items-center gap-3">
-        <SegmentedControl
-          ariaLabel="Connectors"
-          value={shownTab}
-          onChange={setTab}
-          options={tabs}
+        <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
+        <SearchInput
+          className="flex-1"
+          aria-label="Search connectors"
+          placeholder="Search by name, category or description"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
         />
-        {shownTab !== 'workspace' && (
-          <SearchInput
-            className="flex-1"
-            aria-label="Search connectors"
-            placeholder="Search by name, category or description"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        )}
       </div>
-      {shownTab === 'workspace' ? (
-        <WorkspaceServicesSection workspaceId={workspaceId} services={workspaceServices} />
-      ) : catalog.isError ? (
+      {catalog.isError ? (
         <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
       ) : !catalog.data ? (
         <p className="flex items-center gap-2 text-sm">
@@ -178,8 +174,8 @@ function Connectors({
         </p>
       ) : (
         <ConnectorGrid
-          entries={connectorsInTab(catalog.data, shownTab, query)}
-          tab={shownTab}
+          entries={connectorsInTab(catalog.data, tab, query)}
+          tab={tab}
           query={query}
           onOpen={openProfile}
           onConnect={(entry) =>
@@ -216,7 +212,7 @@ function ConnectorGrid({
   onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
-  tab: 'yours' | 'discover';
+  tab: ConnectorsTab;
   query: string;
   onOpen: (slug: string) => void;
   onConnect: (entry: ConnectionCatalogEntry) => void;
@@ -265,61 +261,48 @@ function ConnectorCard({
 }) {
   const state = connectorCardState(entry);
   const quick = cardQuickAction(entry, state);
-  const comingSoon = state.kind === 'coming_soon';
   return (
-    <div
-      className={cn(
-        'relative flex items-start gap-3 rounded-lg border border-border p-4 transition-colors',
-        comingSoon ? 'opacity-60' : 'hover:bg-background-tertiary-2'
-      )}
+    <ConnectorTile
+      slug={entry.slug}
+      name={entry.name}
+      inert={state.kind === 'coming_soon'}
+      onOpen={onOpen}
+      control={
+        quick === 'connect' ? (
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={`Connect ${entry.name}`}
+            title={`Connect ${entry.name}`}
+            onClick={onConnect}
+          >
+            <Plus className="size-4" />
+          </Button>
+        ) : quick === 'connected' ? (
+          <span
+            role="img"
+            aria-label={`${entry.name} connected`}
+            title="Connected"
+            className="flex size-8 items-center justify-center rounded-md border border-border-success bg-background-success text-foreground-success"
+          >
+            <Check className="size-4" />
+          </span>
+        ) : null
+      }
     >
-      <ConnectionIcon slug={entry.slug} name={entry.name} size="lg" />
-      <button
-        type="button"
-        disabled={comingSoon}
-        onClick={onOpen}
-        className="focus-visible:ring-ring min-w-0 flex-1 rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none enabled:cursor-pointer disabled:cursor-not-allowed"
-      >
-        {/* Stretched over the card, so the whole card opens the profile while the
-            control beside it keeps its own target. */}
-        <span aria-hidden className="absolute inset-0 rounded-lg" />
-        <span className="block truncate text-sm font-medium text-foreground">{entry.name}</span>
-        <span className="mt-1 line-clamp-2 block text-sm text-foreground-muted">
-          {entry.description}
-        </span>
-        <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
-          {entry.category}
-          {state.kind !== 'connect' && state.kind !== 'connected' && (
-            <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
-          )}
-        </span>
-        {state.detail && (
-          <span className="mt-1 block text-xs text-foreground-muted">{state.detail}</span>
+      <span className="mt-1 line-clamp-2 block text-sm text-foreground-muted">
+        {entry.description}
+      </span>
+      <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
+        {entry.category}
+        {state.kind !== 'connect' && state.kind !== 'connected' && (
+          <Badge variant={TONE_BADGE[state.tone]}>{state.label}</Badge>
         )}
-      </button>
-      {quick === 'connect' && (
-        <Button
-          variant="outline"
-          size="icon"
-          className="relative z-10 shrink-0"
-          aria-label={`Connect ${entry.name}`}
-          title={`Connect ${entry.name}`}
-          onClick={onConnect}
-        >
-          <Plus className="size-4" />
-        </Button>
+      </span>
+      {state.detail && (
+        <span className="mt-1 block text-xs text-foreground-muted">{state.detail}</span>
       )}
-      {quick === 'connected' && (
-        <span
-          role="img"
-          aria-label={`${entry.name} connected`}
-          title="Connected"
-          className="relative z-10 flex size-8 shrink-0 items-center justify-center rounded-md border border-border-success bg-background-success text-foreground-success"
-        >
-          <Check className="size-4" />
-        </span>
-      )}
-    </div>
+    </ConnectorTile>
   );
 }
 

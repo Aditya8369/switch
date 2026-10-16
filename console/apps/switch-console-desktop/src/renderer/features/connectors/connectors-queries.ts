@@ -46,12 +46,11 @@ export function useGitHubConnection(workspaceId: string, enabled: boolean) {
   });
 }
 
-/** The workspace's switches, asked for only by an admin; null data means the server has none. */
-export function useWorkspaceServices(workspaceId: string, administers: boolean) {
+/** The workspace's switches, for its admins; null data means the server has none. */
+export function useWorkspaceServices(workspaceId: string) {
   return useQuery({
     queryKey: workspaceServicesKey(workspaceId),
     queryFn: () => rpc.workspaces.getWorkspaceServices(workspaceId),
-    enabled: administers,
     retry: false,
   });
 }

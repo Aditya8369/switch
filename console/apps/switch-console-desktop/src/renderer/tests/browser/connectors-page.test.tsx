@@ -16,7 +16,6 @@ import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 const workspaces = vi.hoisted(() => ({
   getServiceConnections: vi.fn(),
   getConnectionAgents: vi.fn(),
-  getWorkspaceServices: vi.fn(),
   disconnectService: vi.fn(),
   getGitHubConnection: vi.fn(),
   setServiceGrant: vi.fn(),
@@ -50,17 +49,22 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'workspace' },
 }));
 
+const admin = vi.hoisted(() => ({ administers: false }));
+
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
-  administersWorkspaceInScope: () => false,
+  administersWorkspaceInScope: () => admin.administers,
 }));
 
 /** Stands in for the app's navigation: a card opens its profile by navigating. */
 const navigation = vi.hoisted(() => {
   let params: Record<string, string | undefined> = { serverId: 'server' };
+  let view = 'connectors';
   const listeners = new Set<() => void>();
   return {
     params: () => params,
-    navigate: (_view: string, next?: Record<string, string | undefined>) => {
+    view: () => view,
+    navigate: (to: string, next?: Record<string, string | undefined>) => {
+      view = to;
       params = { serverId: 'server', ...next };
       for (const listener of listeners) listener();
     },
@@ -71,6 +75,7 @@ const navigation = vi.hoisted(() => {
       };
     },
     reset: () => {
+      view = 'connectors';
       params = { serverId: 'server' };
     },
   };
@@ -166,10 +171,10 @@ let root: Root | null = null;
 
 beforeEach(() => {
   navigation.reset();
+  admin.administers = false;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   switchServers.openGitHubInstallation.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
-  workspaces.getWorkspaceServices.mockResolvedValue(null);
 });
 
 afterEach(async () => {
@@ -431,4 +436,22 @@ it('shows a connection the workspace has switched off as off, not as connected',
   expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain(
     'A workspace admin has switched it off.'
   );
+});
+
+it('offers an admin the way to the workspace switches, and nobody else', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  let page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  expect(button(/Manage for the workspace/, page)).toBeUndefined();
+  expect(page.querySelector('button[aria-label="Workspace"]')).toBeNull();
+  await act(async () => root!.unmount());
+  root = null;
+  container!.remove();
+
+  admin.administers = true;
+  page = await render();
+  await vi.waitFor(() => expect(button(/Manage for the workspace/, page)).toBeDefined());
+  await act(async () => button(/Manage for the workspace/, page)!.click());
+  expect(navigation.view()).toBe('admin');
+  expect(navigation.params()).toEqual({ serverId: 'server', tab: 'connectors' });
 });

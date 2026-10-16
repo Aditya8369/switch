@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
+import { adminView } from '@renderer/features/admin/admin-view';
 import { chatView } from '@renderer/features/chats/chat-view';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
 import { locationView } from '@renderer/features/locations/view';
@@ -45,6 +46,7 @@ export const views = {
   templateDetail: templateDetailView,
   templateUse: templateUseView,
   templateCapture: templateCaptureView,
+  admin: adminView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

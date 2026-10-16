@@ -1,9 +1,19 @@
-import { Bot, DoorOpen, FileText, House, type LucideIcon, Plug, Server } from 'lucide-react';
+import {
+  Bot,
+  DoorOpen,
+  FileText,
+  House,
+  type LucideIcon,
+  Plug,
+  Server,
+  ShieldCheck,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
 import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { isCurrentView, useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
@@ -27,6 +37,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: roomsParams } = useParams('serverRooms');
   const { params: connectorsParams } = useParams('connectors');
   const { params: templatesParams } = useParams('templates');
+  const { params: adminParams } = useParams('admin');
   const { params: managedServerParams } = useParams('managedServer');
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
@@ -46,9 +57,14 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     serverRooms: { icon: DoorOpen, label: 'Your Rooms', params: roomsParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
+    admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
     managedServer: { icon: Server, label: 'Server', params: managedServerParams },
   };
-  const shown = workspaceNavViews({ managed: active.managed, serviceConnections });
+  const shown = workspaceNavViews({
+    managed: active.managed,
+    serviceConnections,
+    administers: administersWorkspaceInScope(active.id),
+  });
 
   return (
     <SidebarMenu className="flex flex-col gap-[2px] px-2 pt-2">
