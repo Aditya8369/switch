@@ -49,10 +49,38 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope: () => false,
 }));
 
-vi.mock('@renderer/lib/layout/navigation-provider', () => ({
-  useNavigate: () => ({ navigate: () => {} }),
-  useParams: () => ({ params: { serverId: 'server' } }),
-}));
+/** Stands in for the app's navigation: a card opens its profile by navigating. */
+const navigation = vi.hoisted(() => {
+  let params: Record<string, string | undefined> = { serverId: 'server' };
+  const listeners = new Set<() => void>();
+  return {
+    params: () => params,
+    navigate: (_view: string, next?: Record<string, string | undefined>) => {
+      params = { serverId: 'server', ...next };
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    reset: () => {
+      params = { serverId: 'server' };
+    },
+  };
+});
+
+vi.mock('@renderer/lib/layout/navigation-provider', async () => {
+  const { useSyncExternalStore } = await import('react');
+  return {
+    useNavigate: () => ({ navigate: navigation.navigate }),
+    useParams: () => ({
+      params: useSyncExternalStore(navigation.subscribe, navigation.params),
+      setParams: () => {},
+    }),
+  };
+});
 
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: unknown) => modalHost.show(id, args),
@@ -132,6 +160,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  navigation.reset();
   for (const mock of Object.values(workspaces)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
   workspaces.getWorkspaceServices.mockResolvedValue(null);
@@ -253,7 +282,7 @@ async function openAtlassian(page: HTMLElement): Promise<void> {
   await act(async () => button(/^Atlassian/, grid(page)!)!.click());
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Atlassian'));
   await vi.waitFor(() =>
-    expect(page.querySelector('ul[aria-label="Used by"]')?.textContent).toBe('M1')
+    expect(page.querySelector('[role="list"][aria-label="Agents"]')?.textContent).toContain('M1')
   );
 }
 
@@ -278,8 +307,8 @@ it('offers Connect on the profile after a disconnect, made in the workspace show
   expect(button(/^Connect to Switch$/, page)).toBeDefined();
   expect(button(/^Disconnect$/, page)).toBeUndefined();
   expect(page.textContent).not.toContain('Connected as ada');
-  expect(page.textContent).toContain('None of your agents use it.');
-  expect(page.querySelector('ul[aria-label="Used by"]')).toBeNull();
+  expect(page.textContent).toContain('None of your agents use Atlassian yet.');
+  expect(page.querySelector('[role="list"][aria-label="Agents"]')).toBeNull();
 });
 
 it('says on the profile when re-reading the catalog fails, with Retry', async () => {
