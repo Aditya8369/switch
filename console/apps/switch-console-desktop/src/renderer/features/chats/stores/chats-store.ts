@@ -32,6 +32,8 @@ export type ChatsApi = {
   list: (serverId: string) => Promise<ChatSummary[]>;
   identity: (serverId: string) => Promise<{ userId: string; tenantId: string | null }>;
   timeline: (serverId: string) => TimelineApi;
+  archive: (serverId: string, roomId: string) => Promise<void>;
+  delete: (serverId: string, roomId: string) => Promise<void>;
 };
 
 export type ChatsEvents = {
@@ -151,9 +153,16 @@ export class ChatsStore {
     if (serverId === this.serverId) this.upsert(chat);
   }
 
-  /** Hidden by the person: off the list until a newer message brings it back. */
-  hide(roomId: string): void {
-    this.chats.delete(roomId);
+  /** Archived for everyone in it; throws, leaving the chat listed, if the server refuses. */
+  async archive(serverId: string, roomId: string): Promise<void> {
+    await this.api.archive(serverId, roomId);
+    this.remove(roomId, 'access');
+  }
+
+  /** Deleted with its messages for everyone; throws, leaving the chat listed, if the server refuses. */
+  async delete(serverId: string, roomId: string): Promise<void> {
+    await this.api.delete(serverId, roomId);
+    this.remove(roomId, 'access');
   }
 
   message(serverId: string, message: ChatMessage): void {
