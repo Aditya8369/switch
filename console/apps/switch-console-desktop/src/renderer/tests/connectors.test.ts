@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   type ConnectFlowState,
   canCloseConnectFlow,
@@ -25,15 +25,11 @@ import {
 } from '@renderer/features/connectors/connectors-catalog';
 import {
   OPEN_AGENT_NOTE,
+  addableAgents,
+  agentsSummary,
   agentsUnlistedText,
-  alreadyOnText,
-  connectButtonLabel,
-  grantEach,
-  grantFailureText,
-  grantSuccessText,
   noAgentsText,
-  offersPicker,
-  pickerGroups,
+  offersAddAgent,
 } from '@renderer/features/connectors/grant-agents';
 import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
@@ -291,33 +287,30 @@ describe('the profile', () => {
   });
 });
 
-describe('the agent picker after connecting', () => {
-  it('follows only a service a grant simply switches on, never GitHub', () => {
-    expect(offersPicker(entry({ pass_through: true }))).toBe(true);
-    expect(offersPicker(entry({ pass_through: false }))).toBe(false);
-    expect(offersPicker(entry({ slug: 'github', pass_through: true }))).toBe(false);
+describe('the agents on a connector page', () => {
+  const agents = [
+    { agent_id: 'm2', name: 'M2', granted: false, addressing_open: true },
+    { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
+    { agent_id: 'm3', name: 'M3', granted: true, addressing_open: true },
+  ];
+
+  it('can be added from the page only for a service a grant simply switches on, never GitHub', () => {
+    expect(offersAddAgent(entry({ pass_through: true }))).toBe(true);
+    expect(offersAddAgent(entry({ pass_through: false }))).toBe(false);
+    expect(offersAddAgent(entry({ slug: 'github', pass_through: true }))).toBe(false);
   });
 
-  it('starts with the agents only their owner can address, offers the open ones, names the rest', () => {
-    expect(
-      pickerGroups([
-        { agent_id: 'm2', name: 'M2', granted: false, addressing_open: true },
-        { agent_id: 'm1', name: 'M1', granted: false, addressing_open: false },
-        { agent_id: 'm3', name: 'M3', granted: true, addressing_open: true },
-      ])
-    ).toEqual({
-      picked: [{ agentId: 'm1', name: 'M1', open: false }],
-      offered: [{ agentId: 'm2', name: 'M2', open: true }],
-      on: [{ agentId: 'm3', name: 'M3', open: true }],
-    });
+  it('counts the agents using it beside the heading', () => {
+    expect(agentsSummary(0)).toBe('0 agents');
+    expect(agentsSummary(1)).toBe('1 agent');
+    expect(agentsSummary(3)).toBe('3 agents');
+  });
+
+  it('offers the agents without the service, narrowed by the search', () => {
+    expect(addableAgents(agents, '').map((agent) => agent.agent_id)).toEqual(['m2', 'm1']);
+    expect(addableAgents(agents, ' m1 ').map((agent) => agent.agent_id)).toEqual(['m1']);
+    expect(addableAgents(agents, 'M3')).toEqual([]);
     expect(OPEN_AGENT_NOTE).toBe('Others can address it; it would act as you.');
-    expect(alreadyOnText('Example', ['M3', 'M4'])).toBe('Example is already on for M3 and M4.');
-  });
-
-  it('labels the one button by how many agents are picked', () => {
-    expect(connectButtonLabel(0)).toBe('Connect');
-    expect(connectButtonLabel(1)).toBe('Connect and turn on for 1 agent');
-    expect(connectButtonLabel(3)).toBe('Connect and turn on for 3 agents');
   });
 
   it('sends the person to agent settings where the server cannot list agents', () => {
@@ -327,58 +320,8 @@ describe('the agent picker after connecting', () => {
   });
 
   it('says so when the person has no agents yet', () => {
-    expect(pickerGroups([])).toEqual({ picked: [], offered: [], on: [] });
     expect(noAgentsText('Example')).toBe(
       'You have no agents in this workspace yet. Once you add one, turn Example on for it from its settings.'
-    );
-  });
-});
-
-describe('granting several agents', () => {
-  const agents = [
-    { agentId: 'm1', name: 'M1' },
-    { agentId: 'gone', name: 'M3' },
-    { agentId: 'm4', name: 'M4' },
-  ];
-
-  it('makes the other grants when one fails, and names the agent it failed for', async () => {
-    const grant = vi.fn(async (agentId: string) => {
-      if (agentId === 'gone') throw new Error('Agent not found.');
-      return null;
-    });
-    const outcome = await grantEach(agents, grant, (cause) => (cause as Error).message);
-
-    expect(grant.mock.calls.map(([id]) => id)).toEqual(['m1', 'gone', 'm4']);
-    expect(outcome).toEqual({
-      granted: ['M1', 'M4'],
-      failed: [{ name: 'M3', reason: 'Agent not found.' }],
-      warnings: [],
-    });
-    expect(grantFailureText('Example', outcome)).toBe(
-      'Could not turn Example on for M3 (Agent not found.). It is on for M1 and M4.'
-    );
-  });
-
-  it('never reports success when every call failed', async () => {
-    const outcome = await grantEach(
-      agents.slice(0, 2),
-      async () => {
-        throw new Error('boom');
-      },
-      () => 'boom'
-    );
-    expect(grantFailureText('Example', outcome)).toBe(
-      'Could not turn Example on for M1 (boom); M3 (boom). It is not on for any agent.'
-    );
-  });
-
-  it('reports what was granted, and each warning once, when nothing failed', async () => {
-    const outcome = await grantEach(agents, async () => 'Access stays a while.', String);
-    expect(grantFailureText('Example', outcome)).toBeNull();
-    expect(outcome.warnings).toEqual(['Access stays a while.']);
-    expect(grantSuccessText('Example', outcome)).toBe('Example is on for M1, M3, and M4.');
-    expect(grantSuccessText('Example', { granted: [], failed: [], warnings: [] })).toBe(
-      "Example is not on for any agent. Turn it on later from an agent's settings."
     );
   });
 });
@@ -461,24 +404,9 @@ describe('the sign-in flow', () => {
     expect(canCloseConnectFlow(failed)).toBe(true);
   });
 
-  it('connects on a confirm, and the grants after it name an agent they failed for', async () => {
+  it('connects on a confirm', () => {
     const after = run(ready, { type: 'act' }, { type: 'confirmed', warning: null });
     expect(after).toMatchObject({ connected: true, flowId: null, busy: false, error: null });
-
-    const outcome = await grantEach(
-      [
-        { agentId: 'm1', name: 'M1' },
-        { agentId: 'm2', name: 'M2' },
-      ],
-      async (agentId) => {
-        if (agentId === 'm2') throw new Error('Agent not found.');
-        return null;
-      },
-      (cause) => (cause as Error).message
-    );
-    expect(grantFailureText('Example', outcome)).toBe(
-      'Could not turn Example on for M2 (Agent not found.). It is on for M1.'
-    );
   });
 });
 

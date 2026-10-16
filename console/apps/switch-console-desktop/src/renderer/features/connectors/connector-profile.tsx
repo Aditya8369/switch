@@ -9,6 +9,7 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { ConnectorAgentsSection } from './connector-agents-section';
 import { TONE_BADGE, connectorCardState } from './connector-card-state';
 import {
   connectedAsLine,
@@ -19,8 +20,8 @@ import {
   tokenLifetimeLabel,
   workspaceOffNotice,
 } from './connectors-catalog';
-import { useConnectionAgents, useReloadConnectors } from './connectors-queries';
-import { agentsUnlistedText, offersPicker } from './grant-agents';
+import { useReloadConnectors } from './connectors-queries';
+import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
 const ACTION_LABEL = {
@@ -34,27 +35,37 @@ const ACTION_LABEL = {
  * One connector, in place of the catalog: who the person is connected as and
  * what they allowed, which of their agents use it, and the way to connect,
  * reconnect or disconnect. When the workspace has it off, a member is told
- * who can switch it on and an admin is offered the switch.
+ * who can switch it on and an admin is offered the switch. Opened right after
+ * connecting, the Add agent search under the agents starts open.
  */
 export function ConnectorProfile({
   serverId,
   workspaceId,
   connection,
   administers,
+  justConnected,
   onBack,
 }: {
   serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   administers: boolean;
+  /** Set when the profile opens because the service was just connected, with the warning Switch gave. */
+  justConnected: { warning: string | null } | null;
   onBack: () => void;
 }) {
   const reload = useReloadConnectors(workspaceId);
   const connect = useConnectService(serverId, workspaceId);
   const showDisconnect = useShowModal('disconnectServiceModal');
-  const agents = useConnectionAgents(workspaceId, connection.slug);
   const [enabling, setEnabling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(justConnected !== null);
+  const [notice, setNotice] = useState(justConnected?.warning ?? null);
+  const afterConnected = (warning: string | null) => {
+    if (!offersAddAgent(connection)) return;
+    setNotice(warning);
+    setAdding(true);
+  };
 
   const state = connectorCardState(connection);
   const offNotice = workspaceOffNotice(connection, administers);
@@ -63,7 +74,6 @@ export function ConnectorProfile({
   const connectedAs = connectedAsLine(connection);
   const keyAccess = keyAccessText(connection);
   const action = profileConnectAction(connection);
-  const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
 
   const enable = async () => {
     setEnabling(true);
@@ -76,7 +86,7 @@ export function ConnectorProfile({
       });
       await reload();
       if (!hasConnection && connection.connectable)
-        connect({ ...connection, workspace_enabled: true }, 'connect');
+        connect({ ...connection, workspace_enabled: true }, 'connect', afterConnected);
     } catch (cause) {
       setError(failureText(cause, `Could not switch ${connection.name} on for the workspace.`));
     } finally {
@@ -110,7 +120,9 @@ export function ConnectorProfile({
             <Button
               variant={action === 'manage' || action === 'replace' ? 'outline' : 'default'}
               disabled={!connection.connectable}
-              onClick={() => connect(connection, action === 'replace' ? 'replace' : 'connect')}
+              onClick={() =>
+                connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
+              }
             >
               {ACTION_LABEL[action]}
             </Button>
@@ -143,42 +155,15 @@ export function ConnectorProfile({
       )}
 
       <div className="mt-6 grid grid-cols-[minmax(0,1fr)_240px] gap-8 border-t border-border pt-6">
-        <section className="min-w-0 space-y-2">
-          <div className="flex items-center gap-2">
-            <h2 className="flex-1 text-lg font-semibold text-foreground">Used by</h2>
-            {state.kind === 'connected' && offersPicker(connection) && (
-              <Button size="sm" variant="outline" onClick={() => connect(connection, 'grant')}>
-                Turn on for agents
-              </Button>
-            )}
-          </div>
-          {agents.isPending && <Spinner />}
-          {agents.isError && (
-            <p role="alert" className="text-sm text-destructive">
-              {failureText(agents.error, 'Could not load which of your agents use it.')}
-            </p>
-          )}
-          {agents.data === null && (
-            <p className="text-sm text-foreground-muted">{agentsUnlistedText(connection.name)}</p>
-          )}
-          {agents.data && usedBy.length === 0 && (
-            <p className="text-sm text-foreground-muted">None of your agents use it.</p>
-          )}
-          {usedBy.length > 0 && (
-            <ul aria-label="Used by" className="flex flex-wrap gap-2">
-              {usedBy.map((agent) => (
-                <li key={agent.agent_id}>
-                  <Badge variant="outline" className="h-6 px-2.5 text-xs">
-                    {agent.name}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="text-xs text-foreground-muted">
-            Turn it on or off for one agent from that agent&apos;s settings.
-          </p>
-        </section>
+        <ConnectorAgentsSection
+          serverId={serverId}
+          workspaceId={workspaceId}
+          connection={connection}
+          connected={state.kind === 'connected'}
+          adding={adding}
+          onAddingChange={setAdding}
+          notice={notice}
+        />
         <aside className="space-y-6">
           <Fact label="Category">
             <span className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-sm">

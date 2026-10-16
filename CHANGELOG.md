@@ -1764,14 +1764,14 @@ version of their own to them without also giving them a release of their own.
   to return to it and confirm. Services whose sign-in returns through the
   server (Google Workspace, GitHub) also no longer stop on the server's
   "Continue in Switch Console" page, with a server from the same release.
-- **Turning a connector on for agents works like adding agents to a room.**
-  After connecting a service, and from "Turn on for agents" on its profile,
-  the agents it will be turned on for are picked the way a room's participants
-  are: each picked agent is a tile with its avatar and what runs it, and a
-  search box adds another. Agents only you can address start picked; one
-  others can address is found through the search and carries a note that it
-  would act as you; agents that already have the service are named under the
-  box. It used to be a checklist of names.
+- **A connector's agents are managed on its page, the way a room's
+  participants are.** The connector's page lists the agents using it as
+  cards, with each agent's avatar and what runs it, under an "Agents" heading
+  with the count. "Add agent" opens a search of your other agents under the
+  cards, and choosing one turns the service on for it at once. Connecting a
+  service now lands on its page with that search open, instead of a checklist
+  in the connect dialog. An agent others can address is offered with a note
+  that it would act as you.
 - **Connector tools ask in approval-required and auto-accept-edits mode.**
   Calls to a granted service's tools (Jira and Confluence through Atlassian,
   Datadog, Google Workspace) used to run without asking in every mode. They now

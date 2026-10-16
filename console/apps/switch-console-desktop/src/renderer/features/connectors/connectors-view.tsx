@@ -30,6 +30,7 @@ import {
   useServerFeatureFlags,
   useWorkspaceServices,
 } from './connectors-queries';
+import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 import { WorkspaceServicesSection } from './workspace-services-section';
 
@@ -75,6 +76,9 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
   );
 });
 
+/** The profile in front of the catalog, and whether it opened because the service was just connected. */
+type Opened = { slug: string; justConnected: { warning: string | null } | null };
+
 function Connectors({
   serverId,
   workspaceId,
@@ -88,7 +92,7 @@ function Connectors({
   const workspaceServices = useWorkspaceServices(workspaceId, administers);
   const [tab, setTab] = useState<ConnectorsTab>('yours');
   const [query, setQuery] = useState('');
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<Opened | null>(null);
   const connect = useConnectService(serverId, workspaceId);
 
   // An admin's switches, where the server has them: a server without them
@@ -102,13 +106,13 @@ function Connectors({
   ] as const satisfies readonly { value: ConnectorsTab; label: string }[];
   const shownTab = tab === 'workspace' && !switchesShown ? 'yours' : tab;
 
-  const opened = catalog.data?.find((entry) => entry.slug === open);
+  const opened = open && catalog.data?.find((entry) => entry.slug === open.slug);
   // The profile replaces the whole page, title included: it is a place of its
   // own, reached from the catalog, with the way back at its top. Same column
   // as `ServerPage`, so moving between the two does not shift the content.
   // A failed re-read keeps the last data, so the profile says so rather than
   // showing what may no longer be true as if it were.
-  if (opened)
+  if (opened && open)
     return (
       <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
@@ -117,10 +121,12 @@ function Connectors({
               <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
             )}
             <ConnectorProfile
+              key={opened.slug}
               serverId={serverId}
               workspaceId={workspaceId}
               connection={opened}
               administers={administers}
+              justConnected={open.justConnected}
               onBack={() => setOpen(null)}
             />
           </div>
@@ -160,8 +166,12 @@ function Connectors({
           entries={connectorsInTab(catalog.data, shownTab, query)}
           tab={shownTab}
           query={query}
-          onOpen={setOpen}
-          onConnect={(entry) => connect(entry, 'connect')}
+          onOpen={(slug) => setOpen({ slug, justConnected: null })}
+          onConnect={(entry) =>
+            connect(entry, 'connect', (warning) => {
+              if (offersAddAgent(entry)) setOpen({ slug: entry.slug, justConnected: { warning } });
+            })
+          }
         />
       )}
     </ServerPage>

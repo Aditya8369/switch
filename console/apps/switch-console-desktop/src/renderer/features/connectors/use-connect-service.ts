@@ -6,20 +6,28 @@ import { useReloadConnectors } from './connectors-queries';
 /**
  * Opens the connect modal for a service, from its card or its profile, and
  * re-reads the page as soon as the service is connected, so the profile behind
- * the dialog is current, and again however the modal ends: connecting and
- * granting both change what the page shows.
+ * the dialog is current, and again however the modal ends. `afterConnected`
+ * runs as the service is connected, with the warning Switch gave, so the
+ * caller can open the page's Add agent search.
  */
 export function useConnectService(serverId: string, workspaceId: string) {
   const showConnect = useShowModal('connectServiceModal');
   const reload = useReloadConnectors(workspaceId);
   return useCallback(
-    (connection: ConnectionCatalogEntry, startAt: 'connect' | 'grant' | 'replace') =>
+    (
+      connection: ConnectionCatalogEntry,
+      startAt: 'connect' | 'replace',
+      afterConnected: (warning: string | null) => void
+    ) =>
       showConnect({
         serverId,
         workspaceId,
         connection,
         startAt,
-        onConnected: () => void reload(),
+        onConnected: (warning) => {
+          void reload();
+          afterConnected(warning);
+        },
         onSuccess: () => void reload(),
         onClose: () => void reload(),
       }),
