@@ -434,10 +434,14 @@ async def disconnect(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
-    """Disconnect GitHub: its grants go, and what was issued is revoked."""
+    """Disconnect GitHub: its grants go, and what was issued is revoked.
+
+    Works with no App on the server too, so a connection made under an App
+    since removed can still be dropped; the warning then says the sign-in
+    could not be revoked.
+    """
     try:
         warning = await broker.disconnect(session, user.id, "github")
     except ServiceError as error:

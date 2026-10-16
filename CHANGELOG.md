@@ -59,7 +59,9 @@ version of their own to them without also giving them a release of their own.
   retyped. Changes are recorded in a new server-wide audit log
   (`server_audit_events`). Members of a server without an app are told to ask
   whoever runs it to add it under Connectors; `GET /service-connections`
-  gains `server_setup_needed`. See `docs/old/github-app-setup.md` and
+  gains `server_setup_needed`. A connection made under an app since removed
+  can still be disconnected; the disconnect then says Switch could not revoke
+  the sign-in and where to revoke it. See `docs/old/github-app-setup.md` and
   `docs/old/google-workspace-setup.md`.
 - **A connection knows the app it signed in through.** A connection made
   through an app the operator has since replaced shows as needing

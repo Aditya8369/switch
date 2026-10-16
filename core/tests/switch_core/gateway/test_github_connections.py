@@ -508,6 +508,31 @@ async def test_disconnect_finishes_and_warns_when_github_revoke_fails(github_app
         )
 
 
+async def test_disconnect_works_once_the_app_is_removed(github_app):
+    client, github, _, factory = github_app
+    flow = await authorize(client)
+    await relay(client, flow)
+    assert (await complete(client, flow)).status_code == 200
+    # As `install_github_app(state, None)` and the broker leave the server.
+    state = client._transport.app.state
+    state.github_connections = None
+    state.service_broker.replace_adapter("github", None)
+    result = await client.delete(BASE)
+    assert result.status_code == 200
+    assert result.json()["warning"] == (
+        "GitHub is not set up on this server, so Switch could not revoke the "
+        "sign-in. Revoke it at GitHub."
+    )
+    github.revoke.assert_not_called()
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(ServiceConnection).where(ServiceConnection.service == "github")
+            )
+            is None
+        )
+
+
 @pytest.mark.parametrize("status", [204, 404, 422])
 async def test_oauth_revocation_deletes_only_the_selected_token(
     github_app, monkeypatch, status
