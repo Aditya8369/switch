@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
@@ -7,7 +7,11 @@ import { ChatRow } from '@renderer/features/chats/components/chat-row';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
-import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
+import {
+  SidebarItemMiniButton,
+  SidebarMenuAction,
+  SidebarMenuRow,
+} from '@renderer/features/sidebar/sidebar-primitives';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -16,6 +20,13 @@ import { Button } from '@renderer/lib/ui/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { ManagedAgentPage } from './managed-agent-page';
+
+export type AgentSection = 'settings';
+
+const NAV_ITEMS = [
+  { section: 'settings', label: 'Agent settings', icon: Settings },
+] as const satisfies readonly { section: AgentSection; label: string; icon: typeof Settings }[];
 
 function Section({
   title,
@@ -62,7 +73,7 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   return { agentRooms, ...agentConversations(agentChats, agentRooms ?? []) };
 }
 
-/** The direct chat open on an agent's Chats tab: the one in the params, else its newest. */
+/** The direct chat open on an agent's page: the one in the params, else its newest. */
 export function openAgentChat(
   agent: ManagedAgentView,
   roomId: string | undefined
@@ -72,9 +83,10 @@ export function openAgentChat(
 }
 
 /**
- * An agent's chats: its direct chats, beside the one open, and the rooms it is
- * in, which open in the room view. The open chat is kept in the view's params;
- * with none chosen it is the newest direct chat.
+ * An agent's page: its navigation (the agent's settings, its direct chats and
+ * the rooms it is in, which open in the room view) beside what is selected.
+ * The selection is kept in the view's params; with none chosen it is the
+ * newest direct chat.
  */
 export const AgentChats = observer(function AgentChats({ agent }: { agent: ManagedAgentView }) {
   const { params, setParams } = useParams('managedAgent');
@@ -85,8 +97,9 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
 
   const { agentRooms, direct, rooms } = conversationsOf(agent);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
+  const section = params.section;
   const roomId = openAgentChat(agent, params.roomId)?.roomId ?? null;
-  const open = (id: string) => setParams({ roomId: id });
+  const open = (id: string) => setParams({ roomId: id, section: undefined });
   const newChat = async () => {
     const chat = await directChats.start(serverId, agentId);
     if (chat) open(chat.roomId);
@@ -95,6 +108,24 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
+        <nav aria-label="Agent" className="flex flex-col gap-[2px] pb-3">
+          {NAV_ITEMS.map((item) => (
+            <SidebarMenuRow
+              key={item.section}
+              isActive={section === item.section}
+              onClick={() => setParams({ section: item.section })}
+            >
+              <div className="flex h-6 min-w-0 flex-1 items-center gap-1">
+                <span className="flex size-6 shrink-0 items-center justify-center">
+                  <item.icon className="size-4 text-foreground-muted" />
+                </span>
+                <SidebarMenuAction className="overflow-hidden">
+                  <span className="min-w-0 truncate">{item.label}</span>
+                </SidebarMenuAction>
+              </div>
+            </SidebarMenuRow>
+          ))}
+        </nav>
         <Section title="Direct chats" addLabel="New chat" onAdd={() => void newChat()}>
           {chatsStore.listError && <Note>{chatsStore.listError}</Note>}
           {direct.map((chat) => (
@@ -102,7 +133,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               key={chat.roomId}
               serverId={serverId}
               chat={chat}
-              isActive={chat.roomId === roomId}
+              isActive={!section && chat.roomId === roomId}
               onOpen={() => open(chat.roomId)}
             />
           ))}
@@ -131,9 +162,17 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           {agentRooms && rooms.length === 0 && <Note>Not in any room yet.</Note>}
         </Section>
       </div>
-      <div className="min-w-0 flex-1">
-        {roomId ? (
-          <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} showHeader />
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {section === 'settings' ? (
+          <ManagedAgentPage agent={agent} />
+        ) : roomId ? (
+          <>
+            <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"
+            />
+          </>
         ) : (
           <EmptyState
             label="No chat open"

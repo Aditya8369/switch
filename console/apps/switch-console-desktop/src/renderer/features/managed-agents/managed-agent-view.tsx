@@ -28,10 +28,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { AgentChats, openAgentChat } from './agent-chats';
-import { type AgentTab, agentTabStore } from './agent-tab-store';
+import { AgentChats, type AgentSection, openAgentChat } from './agent-chats';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
 import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
@@ -40,14 +38,11 @@ type ManagedAgentParams = {
   serverId: string;
   agentId: string;
   name: string;
-  /** The chat open on the Chats tab. */
+  /** The chat open on the agent's page. */
   roomId?: string;
+  /** Shown instead of a chat when set. */
+  section?: AgentSection;
 };
-
-const TABS = [
-  { value: 'chats', label: 'Chats' },
-  { value: 'settings', label: 'Settings' },
-] as const satisfies readonly { value: AgentTab; label: string }[];
 
 const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const { params } = useParams('managedAgent');
@@ -55,34 +50,28 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId) ?? null;
   const server = switchServersStore.servers.find((s) => s.id === params.serverId) ?? null;
   const label = agent ? managedAgentLabel(agent) : params.name;
-  const tabbed = useFeatureFlags(params.serverId).agent_chats;
-  const tab = agentTabStore.tabFor(params.agentId);
-  const chat = tabbed && agent && tab === 'chats' ? openAgentChat(agent, params.roomId) : null;
+  const chatsOn = useFeatureFlags(params.serverId).agent_chats;
+  const settings = params.section === 'settings';
+  const chat = chatsOn && agent && !settings ? openAgentChat(agent, params.roomId) : null;
   const activities = useAgentActivities(params.serverId, chat ?? undefined);
-  const breadcrumb = (
-    <TitlebarBreadcrumb
-      crumbs={[
-        {
-          key: 'agent',
-          icon: (
-            <AgentAvatar
-              name={label}
-              iconUrl={agent?.iconUrl ?? null}
-              serverId={params.serverId}
-              size={16}
-              className="bg-transparent"
-            />
-          ),
-          label,
-        },
-      ]}
-    />
-  );
+  const crumb = {
+    key: 'agent',
+    icon: (
+      <AgentAvatar
+        name={label}
+        iconUrl={agent?.iconUrl ?? null}
+        serverId={params.serverId}
+        size={16}
+        className="bg-transparent"
+      />
+    ),
+    label,
+  };
   const pill = server && <ServerStatusPill server={server} />;
-  if (!tabbed)
+  if (!chatsOn)
     return (
       <Titlebar
-        leftSlot={breadcrumb}
+        leftSlot={<TitlebarBreadcrumb crumbs={[crumb]} />}
         rightSlot={
           <div className="mr-1 flex items-center gap-1.5">
             {pill}
@@ -94,36 +83,29 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   return (
     <Titlebar
       className="border-b border-border pr-[7px]"
-      leftClassName="min-w-0 [-webkit-app-region:drag]"
-      leftSlot={
-        <div className="flex min-w-0 items-center gap-3">
-          {breadcrumb}
-          <div className="shrink-0 [-webkit-app-region:no-drag]">
-            <SegmentedControl
-              value={tab}
-              onChange={(next) => agentTabStore.setTab(params.agentId, next)}
-              options={TABS}
-              ariaLabel="Agent view"
-            />
-          </div>
-        </div>
-      }
-      rightClassName="shrink-0 pl-3"
+      leftClassName="w-[300px] shrink-0 self-stretch border-r border-border [-webkit-app-region:drag]"
+      leftSlot={<TitlebarBreadcrumb crumbs={[{ ...crumb, maxWidthClassName: 'max-w-none' }]} />}
+      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4 [-webkit-app-region:drag]"
       rightSlot={
-        <div className="flex items-center gap-1.5">
-          {server &&
-            serverState(server) !== 'connected' &&
-            serverState(server) !== 'running-local' &&
-            pill}
-          {agent &&
-            (chat ? (
-              <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
-                <ManagedAgentActionItems agent={agent} />
-              </ChatHeaderControls>
-            ) : (
-              <ManagedAgentActionsMenu agent={agent} />
-            ))}
-        </div>
+        <>
+          <span className="truncate text-sm font-medium">
+            {settings ? 'Agent settings' : chat?.name}
+          </span>
+          <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            {server &&
+              serverState(server) !== 'connected' &&
+              serverState(server) !== 'running-local' &&
+              pill}
+            {agent &&
+              (chat ? (
+                <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
+                  <ManagedAgentActionItems agent={agent} />
+                </ChatHeaderControls>
+              ) : (
+                <ManagedAgentActionsMenu agent={agent} />
+              ))}
+          </div>
+        </>
       }
     />
   );
@@ -223,7 +205,7 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
   const { params } = useParams('managedAgent');
   const agents = useManagedAgents(params.serverId);
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId);
-  const tabbed = useFeatureFlags(params.serverId).agent_chats;
+  const chatsOn = useFeatureFlags(params.serverId).agent_chats;
   if (agents.error)
     return (
       <ServerPage width={900} title={params.name} description="">
@@ -254,10 +236,8 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
         </p>
       </ServerPage>
     );
-  if (!tabbed) return <ManagedAgentPage key={agent.agentId} agent={agent} />;
-  const tab = agentTabStore.tabFor(agent.agentId);
-  if (tab === 'chats') return <AgentChats key={agent.agentId} agent={agent} />;
-  return <ManagedAgentPage key={agent.agentId} agent={agent} />;
+  if (!chatsOn) return <ManagedAgentPage key={agent.agentId} agent={agent} />;
+  return <AgentChats key={agent.agentId} agent={agent} />;
 });
 
 export const managedAgentView = {
@@ -270,7 +250,8 @@ export const managedAgentView = {
       typeof value.serverId !== 'string' ||
       typeof value.agentId !== 'string' ||
       typeof value.name !== 'string' ||
-      (value.roomId !== undefined && typeof value.roomId !== 'string')
+      (value.roomId !== undefined && typeof value.roomId !== 'string') ||
+      (value.section !== undefined && value.section !== 'settings')
     )
       return { ok: false, redirect: 'home', discardParams: true };
     return { ok: true };
