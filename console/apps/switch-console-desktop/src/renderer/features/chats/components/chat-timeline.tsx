@@ -201,10 +201,14 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         if (foldedNotices.has(message.messageId)) return null;
         const ended = turnEndNotice(message);
         const sentAt = new Date(message.sentAt);
-        const separator =
-          previous === null || sentAt.getTime() - previous.getTime() > GROUP_GAP_MS ? (
-            <Separator className={spacing()}>{dayLabel(sentAt)}</Separator>
-          ) : null;
+        // The conversation's first message gets no separator above it; a later group does.
+        const newGroup =
+          previous === null
+            ? timeline.hasMore
+            : sentAt.getTime() - previous.getTime() > GROUP_GAP_MS;
+        const separator = newGroup ? (
+          <Separator className={spacing()}>{dayLabel(sentAt)}</Separator>
+        ) : null;
         previous = sentAt;
         if (separator) blockAgent = null;
         const chip = threadChip(message, find);

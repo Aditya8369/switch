@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, Plus, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
 import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import { ChatRow } from '@renderer/features/chats/components/chat-row';
@@ -20,6 +20,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 
 export type AgentSection = 'settings';
@@ -86,7 +87,7 @@ export function openAgentChat(
  * An agent's page: its navigation (the agent's settings, its direct chats and
  * the rooms it is in, which open in the room view) beside what is selected.
  * The selection is kept in the view's params; with none chosen it is the
- * newest direct chat.
+ * newest direct chat, and an agent with none gets one started once per visit.
  */
 export const AgentChats = observer(function AgentChats({ agent }: { agent: ManagedAgentView }) {
   const { params, setParams } = useParams('managedAgent');
@@ -104,6 +105,25 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     const chat = await directChats.start(serverId, agentId);
     if (chat) open(chat.roomId);
   };
+
+  const ownServer = chatsStore.serverId === serverId;
+  const listing = ownServer && chatsStore.userId === null && !chatsStore.listError;
+  const autoStartTried = useRef(false);
+  const [autoStarting, setAutoStarting] = useState(false);
+  const autoStart = shouldAutoStartChat({
+    listed: ownServer && chatsStore.userId !== null,
+    listFailed: chatsStore.listError !== null,
+    hasDirectChats: direct.length > 0,
+    selected: Boolean(params.roomId) || section === 'settings',
+    tried: autoStartTried.current,
+  });
+  useEffect(() => {
+    if (!autoStart) return;
+    autoStartTried.current = true;
+    setAutoStarting(true);
+    void newChat().finally(() => setAutoStarting(false));
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- runs when the decision turns true, not when newChat is redefined
+  }, [autoStart]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -173,7 +193,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"
             />
           </>
-        ) : (
+        ) : listing || autoStart || autoStarting ? null : (
           <EmptyState
             label="No chat open"
             description="Start a chat with this agent."

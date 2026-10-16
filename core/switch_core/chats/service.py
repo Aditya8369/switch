@@ -922,11 +922,7 @@ class ChatService:
                 try:
                     created = await self._room_service.create_room(
                         RoomCreateConfig(
-                            name=name
-                            or "Chat with "
-                            + ", ".join(
-                                agent.display_name or agent.name for agent in agents
-                            ),
+                            name=name or "New chat",
                             description="Switch Console chat with "
                             + ", ".join(agent.name for agent in agents),
                             agent_ids=[agent.id for agent in agents],
