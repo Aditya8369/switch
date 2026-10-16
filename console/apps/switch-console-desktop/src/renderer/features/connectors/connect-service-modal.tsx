@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import {
+  type ServiceCalls,
+  workspaceServiceCalls,
+} from '@renderer/features/switch-servers/service-calls';
+import {
   ServiceConnectStep,
   ServiceSignInStep,
 } from '@renderer/features/switch-servers/service-connect-step';
@@ -38,6 +42,7 @@ export function ConnectServiceModal({
   onConnected: () => void;
 } & BaseModalProps) {
   const [step, setStep] = useState(startAt);
+  const calls = workspaceServiceCalls(workspaceId);
   const [warning, setWarning] = useState<string | null>(null);
   const keyConnected = (result: string | null) => {
     onConnected();
@@ -60,7 +65,7 @@ export function ConnectServiceModal({
   if (connection.key)
     return (
       <ServiceKeyStep
-        serverId={serverId}
+        calls={calls}
         connection={connection}
         form={connection.key}
         onBack={onClose}
@@ -70,7 +75,7 @@ export function ConnectServiceModal({
   if (offersChecklist(connection))
     return (
       <SignInAndTurnOn
-        serverId={serverId}
+        calls={calls}
         workspaceId={workspaceId}
         connection={connection}
         onConnected={onConnected}
@@ -79,7 +84,7 @@ export function ConnectServiceModal({
     );
   return (
     <ServiceConnectStep
-      serverId={serverId}
+      calls={calls}
       connection={connection}
       onBack={onClose}
       onConnected={onConnected}
@@ -93,13 +98,13 @@ export function ConnectServiceModal({
  * on for each agent ticked. A refused confirm turns nothing on.
  */
 function SignInAndTurnOn({
-  serverId,
+  calls,
   workspaceId,
   connection,
   onConnected,
   onDone,
 }: {
-  serverId: string;
+  calls: ServiceCalls;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   onConnected: () => void;
@@ -118,7 +123,7 @@ function SignInAndTurnOn({
     );
   return (
     <ServiceSignInStep
-      serverId={serverId}
+      calls={calls}
       connection={connection}
       onBack={onDone}
       readyContent={(busy) => (

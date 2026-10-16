@@ -27,6 +27,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
 
+import { serverServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { ServiceKeyStep } from '@renderer/features/switch-servers/service-key-step';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
@@ -107,7 +108,7 @@ async function render(
       <Dialog open>
         <DialogContent>
           <ServiceKeyStep
-            serverId="server"
+            calls={serverServiceCalls('server')}
             connection={connection}
             form={connection.key!}
             onBack={() => {}}

@@ -113,17 +113,7 @@ export function ConnectorProfile({
             </Button>
           )}
           {hasConnection && (
-            <Button
-              variant="outline"
-              onClick={() =>
-                showDisconnect({
-                  serverId,
-                  workspaceId,
-                  connection,
-                  onSuccess: () => void reload(),
-                })
-              }
-            >
+            <Button variant="outline" onClick={() => showDisconnect({ workspaceId, connection })}>
               Disconnect
             </Button>
           )}

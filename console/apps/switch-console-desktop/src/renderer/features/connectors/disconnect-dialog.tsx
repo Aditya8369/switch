@@ -13,25 +13,25 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { disconnectCopy } from './connector-copy';
-import { useConnectionAgents } from './connectors-queries';
+import { useConnectionAgents, useReloadConnectors } from './connectors-queries';
 
 /**
- * Disconnecting a service from its profile, after saying which of the
- * person's agents lose it. A warning Switch answers with stays on screen until
- * the person closes the dialog.
+ * Disconnecting a service from its profile, in the profile's workspace, after
+ * saying which of the person's agents lose it. The page is re-read before the
+ * dialog closes, so the profile it uncovers is already current. A warning
+ * Switch answers with stays on screen until the person closes the dialog.
  */
 export function DisconnectServiceDialog({
-  serverId,
   workspaceId,
   connection,
   onSuccess,
   onClose,
 }: {
-  serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
 } & BaseModalProps) {
   const agents = useConnectionAgents(workspaceId, connection.slug);
+  const reload = useReloadConnectors(workspaceId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -47,8 +47,9 @@ export function DisconnectServiceDialog({
     try {
       const result =
         connection.slug === 'github'
-          ? await rpc.switchServers.disconnectGitHub(serverId)
-          : await rpc.switchServers.disconnectService(serverId, connection.slug);
+          ? await rpc.workspaces.disconnectGitHub(workspaceId)
+          : await rpc.workspaces.disconnectService({ workspaceId, service: connection.slug });
+      await reload();
       if (result.warning) {
         setWarning(result.warning);
         setDone(true);

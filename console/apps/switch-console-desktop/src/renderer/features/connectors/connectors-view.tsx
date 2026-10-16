@@ -106,11 +106,16 @@ function Connectors({
   // The profile replaces the whole page, title included: it is a place of its
   // own, reached from the catalog, with the way back at its top. Same column
   // as `ServerPage`, so moving between the two does not shift the content.
+  // A failed re-read keeps the last data, so the profile says so rather than
+  // showing what may no longer be true as if it were.
   if (opened)
     return (
       <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-          <div className="mx-auto w-full p-6" style={{ maxWidth: 880 }}>
+          <div className="mx-auto w-full space-y-4 p-6" style={{ maxWidth: 880 }}>
+            {catalog.isError && (
+              <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
+            )}
             <ConnectorProfile
               serverId={serverId}
               workspaceId={workspaceId}
@@ -145,16 +150,7 @@ function Connectors({
       {shownTab === 'workspace' ? (
         <WorkspaceServicesSection workspaceId={workspaceId} services={workspaceServices} />
       ) : catalog.isError ? (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {failureText(catalog.error, 'Could not load the connectors.')}
-          </AlertDescription>
-          <AlertAction>
-            <Button size="sm" variant="outline" onClick={() => void catalog.refetch()}>
-              Retry
-            </Button>
-          </AlertAction>
-        </Alert>
+        <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
       ) : !catalog.data ? (
         <p className="flex items-center gap-2 text-sm">
           <Spinner /> Loading connectors…
@@ -169,6 +165,19 @@ function Connectors({
         />
       )}
     </ServerPage>
+  );
+}
+
+function CatalogError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <Alert variant="destructive">
+      <AlertDescription>{failureText(error, 'Could not load the connectors.')}</AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          Retry
+        </Button>
+      </AlertAction>
+    </Alert>
   );
 }
 

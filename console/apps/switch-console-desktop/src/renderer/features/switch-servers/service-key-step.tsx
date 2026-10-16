@@ -1,7 +1,6 @@
 import { CircleCheck, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
@@ -23,6 +22,7 @@ import type {
   ConnectionCatalogEntry,
   ServiceKeyForm,
 } from '@shared/core/switch-servers/connection-catalog';
+import type { ServiceCalls } from './service-calls';
 
 /**
  * Connecting a service by pasting a key: a form of the fields the catalog
@@ -31,13 +31,13 @@ import type {
  * sends it back, so a key typed here is cleared once it is submitted.
  */
 export function ServiceKeyStep({
-  serverId,
+  calls,
   connection,
   form,
   onBack,
   onConnected,
 }: {
-  serverId: string;
+  calls: ServiceCalls;
   connection: ConnectionCatalogEntry;
   form: ServiceKeyForm;
   onBack: () => void;
@@ -73,7 +73,7 @@ export function ServiceKeyStep({
     );
     clearSecrets();
     try {
-      const result = await rpc.switchServers.connectServiceWithKey(serverId, service, fields);
+      const result = await calls.connectWithKey(service, fields);
       setIdentity(result.external_identity);
       setWarning(result.warning);
       setConnected(true);
@@ -89,7 +89,7 @@ export function ServiceKeyStep({
     setBusy(true);
     setError(null);
     try {
-      const result = await rpc.switchServers.disconnectService(serverId, service);
+      const result = await calls.disconnect(service);
       setWarning(result.warning);
       setConnected(false);
       setIdentity(null);

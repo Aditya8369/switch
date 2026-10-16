@@ -1,12 +1,11 @@
 import { CircleCheck, ExternalLink } from 'lucide-react';
-import { type ReactNode, useEffect, useReducer } from 'react';
+import { type ReactNode, useEffect, useReducer, useRef } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
 } from '@renderer/features/connectors/connect-flow';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -17,6 +16,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { ServiceCalls } from './service-calls';
 
 /**
  * Connecting a service through Switch's generic sign-in: the browser signs in
@@ -24,12 +24,12 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
  * the account before Switch keeps it. GitHub has its own step.
  */
 export function ServiceConnectStep({
-  serverId,
+  calls,
   connection,
   onBack,
   onConnected,
 }: {
-  serverId: string;
+  calls: ServiceCalls;
   connection: ConnectionCatalogEntry;
   onBack: () => void;
   /** Moves on once the account is connected, with the warning Switch gave. */
@@ -37,7 +37,7 @@ export function ServiceConnectStep({
 }) {
   return (
     <ServiceSignInStep
-      serverId={serverId}
+      calls={calls}
       connection={connection}
       onBack={onBack}
       readyContent={() => (
@@ -58,14 +58,14 @@ export function ServiceConnectStep({
  * waits for before it shows the account connected.
  */
 export function ServiceSignInStep({
-  serverId,
+  calls,
   connection,
   onBack,
   readyContent,
   confirmLabel,
   onConnected,
 }: {
-  serverId: string;
+  calls: ServiceCalls;
   connection: ConnectionCatalogEntry;
   onBack: () => void;
   /** Under "Signed in as", once the browser has finished; `busy` while confirming. */
@@ -82,13 +82,16 @@ export function ServiceSignInStep({
   const { connected, flowId, flow, busy, warning, error } = state;
   const closable = canCloseConnectFlow(state);
   useCloseGuard(!closable);
+  // Callers build their calls as they render; polling follows the flow, not them.
+  const callsRef = useRef(calls);
+  callsRef.current = calls;
   useEffect(() => {
     if (!flowId) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const result = await rpc.switchServers.getServiceFlow(serverId, service, flowId);
+        const result = await callsRef.current.getSignIn(service, flowId);
         if (!alive) return;
         dispatch({
           type: 'polled',
@@ -110,14 +113,14 @@ export function ServiceSignInStep({
       alive = false;
       clearTimeout(timer);
     };
-  }, [serverId, service, flowId, connection.name]);
+  }, [service, flowId, connection.name]);
   const fallback = `Could not update the ${connection.name} connection.`;
   const start = async () => {
     dispatch({ type: 'act' });
     try {
       dispatch({
         type: 'started',
-        flowId: await rpc.switchServers.startServiceConnection(serverId, service),
+        flowId: await calls.startSignIn(service),
       });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -127,7 +130,7 @@ export function ServiceSignInStep({
     dispatch({ type: 'act' });
     let result: { warning: string | null };
     try {
-      result = await rpc.switchServers.confirmServiceConnection(serverId, service, id);
+      result = await calls.confirmSignIn(service, id);
     } catch (cause) {
       dispatch({ type: 'confirm_failed', cause, error: failureText(cause, fallback) });
       return;
@@ -141,7 +144,7 @@ export function ServiceSignInStep({
   const cancel = async (id: string) => {
     dispatch({ type: 'act' });
     try {
-      await rpc.switchServers.cancelServiceConnection(serverId, service, id);
+      await calls.cancelSignIn(service, id);
       dispatch({ type: 'cancelled' });
     } catch (cause) {
       dispatch({ type: 'cancel_failed', cause, error: failureText(cause, fallback) });
@@ -150,7 +153,7 @@ export function ServiceSignInStep({
   const disconnect = async () => {
     dispatch({ type: 'act' });
     try {
-      const result = await rpc.switchServers.disconnectService(serverId, service);
+      const result = await calls.disconnect(service);
       dispatch({ type: 'disconnected', warning: result.warning });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });

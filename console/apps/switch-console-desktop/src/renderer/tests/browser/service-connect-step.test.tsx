@@ -28,6 +28,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import { serverServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import {
   ServiceConnectStep,
   ServiceSignInStep,
@@ -122,7 +123,7 @@ async function signIn(): Promise<void> {
 function signInStep(onConnected: (warning: string | null) => Promise<void>): ReactNode {
   return (
     <ServiceSignInStep
-      serverId="server"
+      calls={serverServiceCalls('server')}
       connection={EXAMPLE}
       onBack={() => {}}
       readyContent={(busy) => <p data-testid="ready">{busy ? 'Busy' : 'Your agents'}</p>}
@@ -143,7 +144,7 @@ it('connects through the sign-in, once the person confirms the account', async (
   const onConnected = vi.fn();
   await render(
     <ServiceConnectStep
-      serverId="server"
+      calls={serverServiceCalls('server')}
       connection={EXAMPLE}
       onBack={() => {}}
       onConnected={onConnected}

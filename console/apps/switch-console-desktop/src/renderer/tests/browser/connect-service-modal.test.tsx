@@ -1,6 +1,6 @@
 /**
- * Connecting from a Connectors profile: the modal opens the step the catalog
- * entry calls for, a key form for a key service, GitHub's own step for
+ * Connecting from a Connectors profile, in the profile's workspace: the modal
+ * opens the step the catalog entry calls for, a key form for a key service, GitHub's own step for
  * GitHub, and the generic sign-in otherwise. Once signed in, one screen
  * confirms the account and then turns the service on for each agent ticked;
  * a refused confirm turns nothing on.
@@ -14,13 +14,13 @@ import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 const switchServers = vi.hoisted(() => ({
   getGitHubConnection: vi.fn(),
-  startServiceConnection: vi.fn(),
-  getServiceFlow: vi.fn(),
-  confirmServiceConnection: vi.fn(),
 }));
 const workspaces = vi.hoisted(() => ({
   getConnectionAgents: vi.fn(),
   setServiceGrant: vi.fn(),
+  startServiceConnection: vi.fn(),
+  getServiceFlow: vi.fn(),
+  confirmServiceConnection: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -124,7 +124,7 @@ it('opens a key service on its key form', async () => {
   const modal = await render(KEYED);
 
   expect(modal.querySelector('[aria-label="Datadog key"]')).not.toBeNull();
-  expect(switchServers.startServiceConnection).not.toHaveBeenCalled();
+  expect(workspaces.startServiceConnection).not.toHaveBeenCalled();
   expect(switchServers.getGitHubConnection).not.toHaveBeenCalled();
 });
 
@@ -149,8 +149,8 @@ it('opens any other service on the sign-in', async () => {
 
 /** Signs in through the browser and waits for the one screen. */
 async function signIn(modal: HTMLElement): Promise<void> {
-  switchServers.startServiceConnection.mockResolvedValue('flow-1');
-  switchServers.getServiceFlow.mockResolvedValue({
+  workspaces.startServiceConnection.mockResolvedValue('flow-1');
+  workspaces.getServiceFlow.mockResolvedValue({
     status: 'ready',
     account: 'ada@example.test',
     error: null,
@@ -161,7 +161,7 @@ async function signIn(modal: HTMLElement): Promise<void> {
 }
 
 it('confirms the account, then turns the service on for each agent ticked', async () => {
-  switchServers.confirmServiceConnection.mockResolvedValue({ warning: null });
+  workspaces.confirmServiceConnection.mockResolvedValue({ warning: null });
   workspaces.setServiceGrant.mockResolvedValue(null);
   const onConnected = vi.fn();
   const modal = await render(entry({}), onConnected);
@@ -174,11 +174,11 @@ it('confirms the account, then turns the service on for each agent ticked', asyn
   await act(async () => button(/^connect and turn on for 1 agent$/i, modal)!.click());
 
   await vi.waitFor(() => expect(modal.textContent).toMatch(/Example connected/));
-  expect(switchServers.confirmServiceConnection).toHaveBeenCalledWith(
-    'server',
-    'example',
-    'flow-1'
-  );
+  expect(workspaces.confirmServiceConnection).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    service: 'example',
+    flowId: 'flow-1',
+  });
   expect(workspaces.setServiceGrant).toHaveBeenCalledOnce();
   expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
     workspaceId: 'workspace',
@@ -192,7 +192,7 @@ it('confirms the account, then turns the service on for each agent ticked', asyn
 });
 
 it('names an agent it could not turn the service on for', async () => {
-  switchServers.confirmServiceConnection.mockResolvedValue({ warning: null });
+  workspaces.confirmServiceConnection.mockResolvedValue({ warning: null });
   workspaces.setServiceGrant.mockRejectedValue(new Error('Agent not found.'));
   const modal = await render(entry({}));
   await signIn(modal);
@@ -206,7 +206,7 @@ it('names an agent it could not turn the service on for', async () => {
 });
 
 it('turns nothing on when Switch refuses the account', async () => {
-  switchServers.confirmServiceConnection.mockRejectedValue(
+  workspaces.confirmServiceConnection.mockRejectedValue(
     new RpcError(
       serializeRpcError(
         Object.assign(new Error('Switch gateway returned 403'), {

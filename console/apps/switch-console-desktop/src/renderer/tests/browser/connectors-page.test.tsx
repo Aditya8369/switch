@@ -2,10 +2,12 @@
  * The Connectors page of the workspace in scope: its grid shows the
  * workspace's catalog, a service that cannot be used here says so, and a
  * catalog that cannot be read shows the real error with a way to retry
- * rather than an empty grid.
+ * rather than an empty grid. A profile shows the truth after a disconnect,
+ * made in the page's workspace: the page is re-read before the dialog
+ * closes, and a re-read that fails says so on the profile.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act } from 'react';
+import { act, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
@@ -15,6 +17,12 @@ const workspaces = vi.hoisted(() => ({
   getServiceConnections: vi.fn(),
   getConnectionAgents: vi.fn(),
   getWorkspaceServices: vi.fn(),
+  disconnectService: vi.fn(),
+}));
+const modalHost = vi.hoisted(() => ({
+  show: (_id: string, _args: unknown): void => {
+    throw new Error('No modal host is mounted.');
+  },
 }));
 const featureFlags = vi.hoisted(() => ({
   get: vi.fn(async () => ({
@@ -47,11 +55,44 @@ vi.mock('@renderer/lib/layout/navigation-provider', () => ({
 }));
 
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
-  useShowModal: () => () => {},
+  useShowModal: (id: string) => (args: unknown) => modalHost.show(id, args),
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
+import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
+import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+
+type DisconnectArgs = {
+  workspaceId: string;
+  connection: ConnectionCatalogEntry;
+  onSuccess?: (result: unknown) => void;
+};
+
+/** Stands in for the modal renderer: shows the disconnect dialog once the profile asks for it. */
+function ModalHost() {
+  const [shown, setShown] = useState<{ id: string; args: DisconnectArgs } | null>(null);
+  useEffect(() => {
+    modalHost.show = (id, args) => setShown({ id, args: args as DisconnectArgs });
+  }, []);
+  if (shown?.id !== 'disconnectServiceModal') return null;
+  const { args } = shown;
+  return (
+    <Dialog open>
+      <DialogContent>
+        <DisconnectServiceDialog
+          workspaceId={args.workspaceId}
+          connection={args.connection}
+          onSuccess={(result) => {
+            setShown(null);
+            args.onSuccess?.(result);
+          }}
+          onClose={() => setShown(null)}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEntry {
   return {
@@ -113,6 +154,7 @@ async function render(): Promise<HTMLElement> {
     root!.render(
       <QueryClientProvider client={client}>
         <Panel />
+        <ModalHost />
       </QueryClientProvider>
     )
   );
@@ -182,4 +224,74 @@ it('shows the real error when the catalog cannot be read, with Retry', async () 
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   await act(async () => button(/^retry$/i, page)!.click());
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+});
+
+/** The catalog and agents as the server answers before and after Atlassian is disconnected. */
+function serveDisconnect(): void {
+  let connected = true;
+  workspaces.getServiceConnections.mockImplementation(async () =>
+    CATALOG.map((item) =>
+      item.slug === 'atlassian' && !connected
+        ? { ...item, status: 'not_connected', external_identity: null }
+        : item
+    )
+  );
+  workspaces.getConnectionAgents.mockImplementation(async () => [
+    { agent_id: 'm1', name: 'M1', granted: connected, addressing_open: false },
+  ]);
+  workspaces.disconnectService.mockImplementation(async () => {
+    connected = false;
+    return { warning: null };
+  });
+}
+
+async function openAtlassian(page: HTMLElement): Promise<void> {
+  await vi.waitFor(() => expect(button(/^Atlassian/, grid(page)!)).toBeDefined());
+  await act(async () => button(/^Atlassian/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Atlassian'));
+  await vi.waitFor(() => expect(page.textContent).toContain('M1'));
+}
+
+async function disconnect(page: HTMLElement): Promise<void> {
+  await act(async () => button(/^Disconnect$/, page)!.click());
+  const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian'));
+  await act(async () => button(/^Disconnect$/, dialog()!)!.click());
+  await vi.waitFor(() => expect(dialog()).toBeNull());
+}
+
+it('offers Connect on the profile after a disconnect, made in the workspace shown', async () => {
+  serveDisconnect();
+  const page = await render();
+  await openAtlassian(page);
+
+  await disconnect(page);
+  expect(workspaces.disconnectService).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    service: 'atlassian',
+  });
+  expect(button(/^Connect to Switch$/, page)).toBeDefined();
+  expect(button(/^Disconnect$/, page)).toBeUndefined();
+  expect(page.textContent).not.toContain('Connected as ada');
+  expect(page.textContent).toContain('None of your agents use it.');
+});
+
+it('says on the profile when re-reading the catalog fails, with Retry', async () => {
+  serveDisconnect();
+  const page = await render();
+  await openAtlassian(page);
+  const serve = workspaces.getServiceConnections.getMockImplementation()!;
+  workspaces.getServiceConnections.mockRejectedValue(new Error('Switch is down.'));
+
+  await disconnect(page);
+  await vi.waitFor(() =>
+    expect(page.querySelector('[role="alert"]')?.textContent).toContain(
+      'Could not load the connectors.'
+    )
+  );
+
+  workspaces.getServiceConnections.mockImplementation(serve);
+  await act(async () => button(/^retry$/i, page)!.click());
+  await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
+  expect(page.querySelector('[role="alert"]')).toBeNull();
 });
