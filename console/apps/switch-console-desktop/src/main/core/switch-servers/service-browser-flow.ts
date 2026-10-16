@@ -5,7 +5,6 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
   completeServiceConnection,
-  confirmServiceConnection,
   getConnectionCatalog,
   getServiceFlow,
   startServiceConnection,
@@ -16,7 +15,8 @@ import { listenForSignIn } from './sign-in-listener';
  * Signing in to a service through Switch's generic OAuth flow, from this
  * Console: GitHub's browser flow (`github-browser-flow.ts`) for any service,
  * keyed by its slug. The listener takes the code back and hands it to Core
- * with the completion secret only this Console holds.
+ * with the completion secret only this Console holds; Core connects the
+ * service in that step, and the renderer reads the outcome from the flow.
  */
 /** Some vendors issue codes as signed tokens: Atlassian's run past 2,000 characters. */
 const MAX_CODE_LENGTH = 8192;
@@ -40,7 +40,9 @@ export async function startServiceBrowserFlow(
     state,
     maxCodeLength: MAX_CODE_LENGTH,
     ports: catalogEntry?.loopback_ports ?? null,
-    complete: (code) => completeServiceConnection(server, service, state, code, secret),
+    complete: async (code) => {
+      await completeServiceConnection(server, service, state, code, secret);
+    },
   });
   const timeout = setTimeout(() => {
     active.delete(key(server, service, state));
@@ -89,17 +91,22 @@ function activeFlow(server: SwitchServer, service: string, id: string) {
   return entry;
 }
 
+/**
+ * Where the sign-in stands. Once it reads connected the flow is over: the
+ * listener and secret go, and the server is told it can drop the flow. A
+ * failed flow stays until the person cancels it, so the reason stays readable.
+ */
 export async function getServiceBrowserFlow(server: SwitchServer, service: string, id: string) {
-  activeFlow(server, service, id);
-  return getServiceFlow(server, service, id);
-}
-
-export async function confirmServiceBrowserFlow(server: SwitchServer, service: string, id: string) {
   const entry = activeFlow(server, service, id);
-  const result = await confirmServiceConnection(server, service, id, entry.secret);
-  entry.close();
-  active.delete(key(server, service, id));
-  return result;
+  const flow = await getServiceFlow(server, service, id);
+  if (flow.status === 'connected') {
+    entry.close();
+    active.delete(key(server, service, id));
+    cancelServiceConnection(server, service, id).catch((cause: unknown) =>
+      log.warn('Could not drop a finished service sign-in', cause)
+    );
+  }
+  return flow;
 }
 
 export async function cancelServiceBrowserFlow(server: SwitchServer, service: string, id: string) {

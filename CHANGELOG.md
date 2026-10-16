@@ -1764,6 +1764,15 @@ version of their own to them without also giving them a release of their own.
   to return to it and confirm. Services whose sign-in returns through the
   server (Google Workspace, GitHub) also no longer stop on the server's
   "Continue in Switch Console" page, with a server from the same release.
+- **A sign-in connects without a confirm step.** Once the browser returns,
+  the server keeps the connection and Console shows the result: a service
+  whose agents are added from its page opens that page with the search ready,
+  and any other shows "connected" in the dialog. Console no longer asks to
+  confirm the account first; the account is chosen at the vendor, and
+  Disconnect undoes a wrong one. A sign-in the server refuses, such as an
+  account already linked to someone else in the workspace, shows the reason in
+  the dialog, and the browser's page says to look there. GitHub's sign-in
+  works the same way. Needs a server from this release.
 - **A connector's agents are managed on its page, the way a room's
   participants are.** The connector's page lists the agents using it as
   cards, with each agent's avatar and what runs it, under an "Agents" heading

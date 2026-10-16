@@ -1,5 +1,5 @@
-import { CircleCheck, ExternalLink } from 'lucide-react';
-import { type ReactNode, useEffect, useReducer, useRef } from 'react';
+import { ExternalLink } from 'lucide-react';
+import { useEffect, useReducer, useRef } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
@@ -20,8 +20,9 @@ import type { ServiceCalls } from './service-calls';
 
 /**
  * Connecting a service through Switch's generic sign-in: the browser signs in
- * at the vendor, this Console takes the result back, and the person confirms
- * the account before Switch keeps it. GitHub has its own step.
+ * at the vendor, this Console takes the result back, and Switch keeps the
+ * account as soon as it has it. The dialog follows the sign-in and shows the
+ * account connected, or why it was not. GitHub has its own step.
  */
 export function ServiceConnectStep({
   calls,
@@ -35,44 +36,6 @@ export function ServiceConnectStep({
   /** Moves on once the account is connected, with the warning Switch gave. */
   onConnected?: (warning: string | null) => void;
 }) {
-  return (
-    <ServiceSignInStep
-      calls={calls}
-      connection={connection}
-      onBack={onBack}
-      readyContent={() => (
-        <p className="text-sm text-foreground-muted">
-          Confirm this is the {connection.name} account you want to connect to Switch.
-        </p>
-      )}
-      confirmLabel={(account) => `Connect ${account}`}
-      onConnected={async (warning) => onConnected?.(warning)}
-    />
-  );
-}
-
-/**
- * The sign-in, with what the signed-in screen shows under the account and
- * what its one button says chosen by the caller. The button confirms the
- * account with Switch, then hands over to `onConnected`, which the dialog
- * waits for before it shows the account connected.
- */
-export function ServiceSignInStep({
-  calls,
-  connection,
-  onBack,
-  readyContent,
-  confirmLabel,
-  onConnected,
-}: {
-  calls: ServiceCalls;
-  connection: ConnectionCatalogEntry;
-  onBack: () => void;
-  /** Under "Signed in as", once the browser has finished; `busy` while confirming. */
-  readyContent: (busy: boolean) => ReactNode;
-  confirmLabel: (account: string) => string;
-  onConnected: (warning: string | null) => Promise<void>;
-}) {
   const service = connection.slug;
   const [state, dispatch] = useReducer(
     connectFlowReducer,
@@ -85,6 +48,8 @@ export function ServiceSignInStep({
   // Callers build their calls as they render; polling follows the flow, not them.
   const callsRef = useRef(calls);
   callsRef.current = calls;
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
   useEffect(() => {
     if (!flowId) return;
     let alive = true;
@@ -93,13 +58,17 @@ export function ServiceSignInStep({
       try {
         const result = await callsRef.current.getSignIn(service, flowId);
         if (!alive) return;
+        if (result.status === 'connected') {
+          onConnectedRef.current?.(result.warning);
+          dispatch({ type: 'connected', warning: result.warning });
+          return;
+        }
         dispatch({
           type: 'polled',
           flow: result,
           failure: `Signing in to ${connection.name} failed. Cancel and try again.`,
         });
-        if (result.status !== 'ready' && result.status !== 'failed')
-          timer = setTimeout(() => void poll(), 2000);
+        if (result.status !== 'failed') timer = setTimeout(() => void poll(), 2000);
       } catch (cause) {
         if (alive)
           dispatch({
@@ -124,21 +93,6 @@ export function ServiceSignInStep({
       });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
-    }
-  };
-  const confirm = async (id: string) => {
-    dispatch({ type: 'act' });
-    let result: { warning: string | null };
-    try {
-      result = await calls.confirmSignIn(service, id);
-    } catch (cause) {
-      dispatch({ type: 'confirm_failed', cause, error: failureText(cause, fallback) });
-      return;
-    }
-    try {
-      await onConnected(result.warning);
-    } finally {
-      dispatch({ type: 'confirmed', warning: result.warning });
     }
   };
   const cancel = async (id: string) => {
@@ -170,19 +124,12 @@ export function ServiceSignInStep({
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
-          flow?.status === 'ready' ? (
-            <>
-              <p className="flex items-center gap-2 text-sm">
-                <CircleCheck className="size-5 text-foreground-success" />
-                Signed in as <strong>{flow.account}</strong>
-              </p>
-              {readyContent(busy)}
-            </>
-          ) : (
-            <p className="flex items-center gap-2 text-sm">
-              <Spinner /> Finish signing in in your browser, then return here.
-            </p>
-          )
+          <p className="flex items-center gap-2 text-sm">
+            <Spinner />
+            {flow?.status === 'checking'
+              ? `Connecting ${connection.name}…`
+              : 'Finish signing in in your browser, then return here.'}
+          </p>
         ) : (
           <>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
@@ -220,17 +167,9 @@ export function ServiceSignInStep({
       </DialogContentArea>
       <DialogFooter>
         {flowId ? (
-          <>
-            <Button variant="outline" disabled={busy} onClick={() => void cancel(flowId)}>
-              Cancel
-            </Button>
-            {flow?.status === 'ready' && (
-              <Button disabled={busy} onClick={() => void confirm(flowId)}>
-                {busy && <Spinner />}
-                {confirmLabel(flow.account ?? connection.name)}
-              </Button>
-            )}
-          </>
+          <Button variant="outline" disabled={busy} onClick={() => void cancel(flowId)}>
+            Cancel
+          </Button>
         ) : (
           <>
             <Button variant="outline" onClick={onBack} disabled={busy}>

@@ -4,7 +4,6 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelGitHubConnection,
   completeGitHubConnection,
-  confirmGitHubConnection,
   getGitHubFlow,
   startGitHubConnection,
 } from './gateway-client';
@@ -76,19 +75,23 @@ export async function startGitHubBrowserFlow(
   }
 }
 
+/**
+ * Where the sign-in stands. Once it reads connected the flow is over: the
+ * listener and secret go, and the server is told it can drop the flow. A
+ * failed flow stays until the person cancels it, so the reason stays readable.
+ */
 export async function getGitHubBrowserFlow(server: SwitchServer, id: string) {
   const entry = active.get(key(server, id));
   if (!entry) throw new Error('Sign-in was interrupted. Start it again from Switch Console.');
-  return getGitHubFlow(server, id);
-}
-
-export async function confirmGitHubBrowserFlow(server: SwitchServer, id: string) {
-  const entry = active.get(key(server, id));
-  if (!entry) throw new Error('Sign-in was interrupted. Start it again from Switch Console.');
-  const result = await confirmGitHubConnection(server, id, entry.secret);
-  entry.close();
-  active.delete(key(server, id));
-  return result;
+  const flow = await getGitHubFlow(server, id);
+  if (flow.status === 'connected') {
+    entry.close();
+    active.delete(key(server, id));
+    cancelGitHubConnection(server, id).catch((cause: unknown) =>
+      log.warn('Could not drop a finished GitHub sign-in', cause)
+    );
+  }
+  return flow;
 }
 
 export async function cancelGitHubBrowserFlow(server: SwitchServer, id: string) {

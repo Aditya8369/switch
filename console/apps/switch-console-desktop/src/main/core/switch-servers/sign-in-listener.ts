@@ -72,12 +72,12 @@ export async function listenForSignIn({
     listener.close();
     focusMainWindow();
     void complete(code).then(
+      () => reply(200, `Signed in to ${name}, and connected to Switch. This tab can be closed.`),
       () =>
         reply(
-          200,
-          `Signed in to ${name}. Switch Console has the next step; this tab can be closed.`
-        ),
-      () => reply(400, 'Sign-in was interrupted. Start it again from Switch Console.')
+          400,
+          `Switch could not finish signing in to ${name}. Switch Console says what happened.`
+        )
     );
   });
   await listenOn(listener, name, ports);

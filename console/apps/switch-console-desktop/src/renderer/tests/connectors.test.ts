@@ -4,7 +4,6 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
-  isFinalRefusal,
 } from '@renderer/features/connectors/connect-flow';
 import { connectorCardState } from '@renderer/features/connectors/connector-card-state';
 import {
@@ -342,71 +341,57 @@ function refusal(status: number, retryable?: boolean): RpcError {
 }
 
 describe('the sign-in flow', () => {
-  const ready: ConnectFlowState = {
+  const waiting: ConnectFlowState = {
     ...initialConnectFlow(false),
     flowId: 'flow-1',
-    flow: { status: 'ready', account: 'ada@example.test', error: null },
+    flow: { status: 'pending', account: null, error: null, warning: null },
   };
   const run = (state: ConnectFlowState, ...events: Parameters<typeof connectFlowReducer>[1][]) =>
     events.reduce(connectFlowReducer, state);
 
   it('cannot be closed while waiting for the browser, or mid-call', () => {
     expect(canCloseConnectFlow(initialConnectFlow(false))).toBe(true);
-    expect(canCloseConnectFlow(ready)).toBe(false);
+    expect(canCloseConnectFlow(waiting)).toBe(false);
     expect(canCloseConnectFlow(run(initialConnectFlow(false), { type: 'act' }))).toBe(false);
-  });
-
-  it('drops the flow on a confirm refused for good, keeps the error, and can close', () => {
-    for (const cause of [refusal(403, false), refusal(409, false), refusal(410), refusal(409)]) {
-      const after = run(
-        ready,
-        { type: 'act' },
-        { type: 'confirm_failed', cause, error: 'Refused.' }
-      );
-      expect(after).toMatchObject({ flowId: null, flow: null, busy: false, error: 'Refused.' });
-      expect(canCloseConnectFlow(after)).toBe(true);
-    }
-  });
-
-  it('keeps the flow on a confirm that can be tried again, and can still close', () => {
-    const after = run(
-      ready,
-      { type: 'act' },
-      { type: 'confirm_failed', cause: refusal(503, true), error: 'Try again.' }
-    );
-    expect(after).toMatchObject({ flowId: 'flow-1', error: 'Try again.' });
-    expect(canCloseConnectFlow(after)).toBe(true);
-  });
-
-  it("reads the server's retryable over the status, and never the text", () => {
-    expect(isFinalRefusal(refusal(409, true))).toBe(false);
-    expect(isFinalRefusal(refusal(500, false))).toBe(true);
-    expect(isFinalRefusal(refusal(500))).toBe(false);
-    expect(isFinalRefusal(new Error('409 account linked elsewhere'))).toBe(false);
   });
 
   it('counts a cancel answered 410 as cancelled, not as an error', () => {
     expect(
-      run(ready, { type: 'act' }, { type: 'cancel_failed', cause: refusal(410), error: 'Gone.' })
+      run(waiting, { type: 'act' }, { type: 'cancel_failed', cause: refusal(410), error: 'Gone.' })
     ).toMatchObject({ flowId: null, flow: null, busy: false, error: null });
     expect(
-      run(ready, { type: 'act' }, { type: 'cancel_failed', cause: refusal(503), error: 'Down.' })
+      run(waiting, { type: 'act' }, { type: 'cancel_failed', cause: refusal(503), error: 'Down.' })
     ).toMatchObject({ flowId: 'flow-1', error: 'Down.' });
   });
 
-  it('says why a sign-in failed, and lets the dialog close', () => {
-    const failed = run(ready, {
+  it("says why a sign-in failed, in the server's words where it has them, and lets the dialog close", () => {
+    const failed = run(waiting, {
       type: 'polled',
-      flow: { status: 'failed', account: null, error: null },
+      flow: { status: 'failed', account: null, error: null, warning: null },
       failure: 'Signing in failed.',
     });
     expect(failed.error).toBe('Signing in failed.');
+    expect(failed.flowId).toBe('flow-1');
     expect(canCloseConnectFlow(failed)).toBe(true);
+    const refused = run(waiting, {
+      type: 'polled',
+      flow: { status: 'failed', account: null, error: 'Already linked elsewhere.', warning: null },
+      failure: 'Signing in failed.',
+    });
+    expect(refused.error).toBe('Already linked elsewhere.');
   });
 
-  it('connects on a confirm', () => {
-    const after = run(ready, { type: 'act' }, { type: 'confirmed', warning: null });
-    expect(after).toMatchObject({ connected: true, flowId: null, busy: false, error: null });
+  it('is connected, with the warning, once the server has kept the account', () => {
+    const after = run(waiting, { type: 'connected', warning: 'Access stays a while.' });
+    expect(after).toMatchObject({
+      connected: true,
+      flowId: null,
+      flow: null,
+      busy: false,
+      error: null,
+      warning: 'Access stays a while.',
+    });
+    expect(canCloseConnectFlow(after)).toBe(true);
   });
 });
 

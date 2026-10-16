@@ -27,7 +27,6 @@ const disconnectGitHub = vi.hoisted(() => vi.fn());
 const serviceBrowserFlow = vi.hoisted(() => ({
   startServiceBrowserFlow: vi.fn(),
   getServiceBrowserFlow: vi.fn(),
-  confirmServiceBrowserFlow: vi.fn(),
   cancelServiceBrowserFlow: vi.fn(),
 }));
 const openExternal = vi.hoisted(() => vi.fn());
@@ -445,7 +444,6 @@ describe('selecting the workspace’s tenant before the call', () => {
 
     await workspacesController.startServiceConnection({ workspaceId: 'ws', service: 'example' });
     await workspacesController.getServiceFlow(flow);
-    await workspacesController.confirmServiceConnection(flow);
     await workspacesController.cancelServiceConnection(flow);
     await workspacesController.connectServiceWithKey({
       workspaceId: 'ws',
@@ -461,11 +459,6 @@ describe('selecting the workspace’s tenant before the call', () => {
       expect.any(Function)
     );
     expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');
-    expect(serviceBrowserFlow.confirmServiceBrowserFlow).toHaveBeenCalledWith(
-      srv,
-      'example',
-      'flow-1'
-    );
     expect(serviceBrowserFlow.cancelServiceBrowserFlow).toHaveBeenCalledWith(
       srv,
       'example',

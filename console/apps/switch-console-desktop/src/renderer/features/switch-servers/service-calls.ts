@@ -12,7 +12,6 @@ import type {
 export type ServiceCalls = {
   startSignIn: (service: string) => Promise<string>;
   getSignIn: (service: string, flowId: string) => Promise<ServiceFlow>;
-  confirmSignIn: (service: string, flowId: string) => Promise<{ warning: string | null }>;
   cancelSignIn: (service: string, flowId: string) => Promise<void>;
   connectWithKey: (service: string, fields: Record<string, string>) => Promise<ServiceKeyConnected>;
   disconnect: (service: string) => Promise<{ warning: string | null }>;
@@ -22,8 +21,6 @@ export function serverServiceCalls(serverId: string): ServiceCalls {
   return {
     startSignIn: (service) => rpc.switchServers.startServiceConnection(serverId, service),
     getSignIn: (service, flowId) => rpc.switchServers.getServiceFlow(serverId, service, flowId),
-    confirmSignIn: (service, flowId) =>
-      rpc.switchServers.confirmServiceConnection(serverId, service, flowId),
     cancelSignIn: (service, flowId) =>
       rpc.switchServers.cancelServiceConnection(serverId, service, flowId),
     connectWithKey: (service, fields) =>
@@ -36,8 +33,6 @@ export function workspaceServiceCalls(workspaceId: string): ServiceCalls {
   return {
     startSignIn: (service) => rpc.workspaces.startServiceConnection({ workspaceId, service }),
     getSignIn: (service, flowId) => rpc.workspaces.getServiceFlow({ workspaceId, service, flowId }),
-    confirmSignIn: (service, flowId) =>
-      rpc.workspaces.confirmServiceConnection({ workspaceId, service, flowId }),
     cancelSignIn: (service, flowId) =>
       rpc.workspaces.cancelServiceConnection({ workspaceId, service, flowId }),
     connectWithKey: (service, fields) =>

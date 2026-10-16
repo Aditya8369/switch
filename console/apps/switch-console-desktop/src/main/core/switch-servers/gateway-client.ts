@@ -3213,30 +3213,14 @@ export async function getGitHubFlow(server: SwitchServer, id: string) {
     ).json()
   );
 }
-export async function confirmGitHubConnection(
-  server: SwitchServer,
-  id: string,
-  completionSecret: string
-) {
-  const response = await gatewayFetch(
-    server,
-    `/provider-connections/github/flows/${encodeURIComponent(id)}/confirm`,
-    {
-      authenticated: true,
-      method: 'POST',
-      body: { completion_secret: completionSecret },
-    }
-  );
-  if (response.status === 204) return { warning: null };
-  return z.object({ warning: z.string().nullable() }).parse(await response.json());
-}
+/** Hand the code back: the server exchanges it and keeps the connection. */
 export async function completeGitHubConnection(
   server: SwitchServer,
   id: string,
   code: string,
   completionSecret: string
 ) {
-  await gatewayFetch(
+  const response = await gatewayFetch(
     server,
     `/provider-connections/github/flows/${encodeURIComponent(id)}/complete`,
     {
@@ -3245,6 +3229,9 @@ export async function completeGitHubConnection(
       body: { code, completion_secret: completionSecret },
     }
   );
+  return z
+    .object({ warning: z.string().nullable(), login: z.string() })
+    .parse(await response.json());
 }
 export async function cancelGitHubConnection(server: SwitchServer, id: string) {
   await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
@@ -3316,6 +3303,7 @@ export async function getServiceFlow(server: SwitchServer, service: string, id: 
     ).json()
   );
 }
+/** Hand the code back: the server exchanges it and keeps the connection. */
 export async function completeServiceConnection(
   server: SwitchServer,
   service: string,
@@ -3323,24 +3311,22 @@ export async function completeServiceConnection(
   code: string,
   completionSecret: string
 ) {
-  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/complete`, {
-    authenticated: true,
-    method: 'POST',
-    body: { code, completion_secret: completionSecret },
-  });
-}
-export async function confirmServiceConnection(
-  server: SwitchServer,
-  service: string,
-  id: string,
-  completionSecret: string
-) {
   const response = await gatewayFetch(
     server,
-    `${serviceFlows(service)}/${encodeURIComponent(id)}/confirm`,
-    { authenticated: true, method: 'POST', body: { completion_secret: completionSecret } }
+    `${serviceFlows(service)}/${encodeURIComponent(id)}/complete`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { code, completion_secret: completionSecret },
+    }
   );
-  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+  return z
+    .object({
+      warning: z.string().nullable(),
+      consent: z.enum(['read', 'write']),
+      account: z.string(),
+    })
+    .parse(await response.json());
 }
 export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
   await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {

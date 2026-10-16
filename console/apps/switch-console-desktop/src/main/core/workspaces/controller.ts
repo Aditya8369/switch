@@ -81,7 +81,6 @@ import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import {
   cancelServiceBrowserFlow,
-  confirmServiceBrowserFlow,
   getServiceBrowserFlow,
   startServiceBrowserFlow,
 } from '@main/core/switch-servers/service-browser-flow';
@@ -832,12 +831,6 @@ export const workspacesController = createRPCController({
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
       getServiceBrowserFlow(server, params.service, params.flowId)
-    ),
-
-  /** Keep the account the sign-in found: the connection is written in this workspace. */
-  confirmServiceConnection: (params: { workspaceId: string; service: string; flowId: string }) =>
-    withWorkspaceSession(params.workspaceId, (server) =>
-      confirmServiceBrowserFlow(server, params.service, params.flowId)
     ),
 
   cancelServiceConnection: (params: { workspaceId: string; service: string; flowId: string }) =>

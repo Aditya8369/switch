@@ -59,10 +59,8 @@ const {
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
-  confirmGitHubConnection,
   startServiceConnection,
   completeServiceConnection,
-  confirmServiceConnection,
   connectServiceWithKey,
   disconnectService,
   acceptInvitation,
@@ -1055,7 +1053,7 @@ describe('GitHub connection transport', () => {
     getSessionCookie.mockResolvedValue(makeJwt(7200));
   });
   afterEach(() => vi.unstubAllGlobals());
-  it('sends objects, encoded once, for start, complete and confirm', async () => {
+  it('sends objects, encoded once, for start and complete, and reads the account back', async () => {
     const state = 'a'.repeat(43);
     const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
     fetchMock.mockResolvedValueOnce(
@@ -1067,17 +1065,18 @@ describe('GitHub connection transport', () => {
       )
     );
     await startGitHubConnection(SERVER, input);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await confirmGitHubConnection(SERVER, state, input.completion_secret);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ warning: null, login: 'example-user' }))
+    );
+    expect(
+      await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret)
+    ).toEqual({ warning: null, login: 'example-user' });
     const bodies = (fetchMock.mock.calls as unknown[][]).map((call) =>
       JSON.parse((call[1] as RequestInit).body as string)
     );
     expect(bodies).toEqual([
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: input.completion_secret },
-      { completion_secret: input.completion_secret },
     ]);
   });
   it('only accepts authorization URLs on the authenticated server', async () => {
@@ -1441,29 +1440,22 @@ describe('a service sign-in', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('starts, completes and confirms on the service’s own routes', async () => {
+  it('starts and completes on the service’s own routes, and reads the account back', async () => {
     answer({
       id: state,
       mode: 'loopback',
       url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
     });
     expect((await startServiceConnection(SERVER, 'example', input)).mode).toBe('loopback');
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43));
-    answer({ warning: null, consent: 'write' });
-    expect(await confirmServiceConnection(SERVER, 'example', state, 'b'.repeat(43))).toEqual({
-      warning: null,
-    });
+    answer({ warning: null, consent: 'write', account: 'ada@example.test' });
+    expect(
+      await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43))
+    ).toEqual({ warning: null, consent: 'write', account: 'ada@example.test' });
     const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
-    expect(calls.map(([url]) => url)).toEqual([
-      flows,
-      `${flows}/${state}/complete`,
-      `${flows}/${state}/confirm`,
-    ]);
+    expect(calls.map(([url]) => url)).toEqual([flows, `${flows}/${state}/complete`]);
     expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
-      { completion_secret: 'b'.repeat(43) },
     ]);
   });
 

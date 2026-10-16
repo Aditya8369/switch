@@ -15,14 +15,14 @@ export type ConnectFlowState = {
 };
 
 export type ConnectFlowEvent =
-  /** An action begins: start, confirm, cancel or disconnect. */
+  /** An action begins: start, cancel or disconnect. */
   | { type: 'act' }
   | { type: 'started'; flowId: string }
-  /** `failure` is what to say if the sign-in failed without saying why. */
+  /** The flow is still under way, or failed; `failure` is what to say if it failed without saying why. */
   | { type: 'polled'; flow: ServiceFlow; failure: string }
   | { type: 'poll_failed'; error: string }
-  | { type: 'confirmed'; warning: string | null }
-  | { type: 'confirm_failed'; cause: unknown; error: string }
+  /** The server kept the connection; the flow is over. */
+  | { type: 'connected'; warning: string | null }
   | { type: 'cancelled' }
   | { type: 'cancel_failed'; cause: unknown; error: string }
   | { type: 'disconnected'; warning: string | null }
@@ -36,10 +36,9 @@ export function initialConnectFlow(connected: boolean): ConnectFlowState {
 const NO_FLOW = { flowId: null, flow: null } as const;
 
 /**
- * The sign-in's state after `event`. A confirm the server refuses for good
- * drops the flow, since the server has dropped or will never accept it; one
- * it may still accept keeps it, so the person can try again. A cancel the
- * server answers with 410 found the flow already gone, which is what
+ * The sign-in's state after `event`. A flow that failed keeps its id, so the
+ * person can cancel it and start over with the reason still showing. A cancel
+ * the server answers with 410 found the flow already gone, which is what
  * cancelling wanted.
  */
 export function connectFlowReducer(
@@ -59,15 +58,8 @@ export function connectFlowReducer(
       };
     case 'poll_failed':
       return { ...state, ...NO_FLOW, error: event.error };
-    case 'confirmed':
+    case 'connected':
       return { ...state, ...NO_FLOW, busy: false, connected: true, warning: event.warning };
-    case 'confirm_failed':
-      return {
-        ...state,
-        ...(isFinalRefusal(event.cause) ? NO_FLOW : {}),
-        busy: false,
-        error: event.error,
-      };
     case 'cancelled':
       return { ...state, ...NO_FLOW, busy: false, error: null };
     case 'cancel_failed':
@@ -87,20 +79,6 @@ export function connectFlowReducer(
  */
 export function canCloseConnectFlow(state: ConnectFlowState): boolean {
   return !state.busy && (state.flowId === null || state.error !== null);
-}
-
-/**
- * Whether the server refused for good, so trying the same flow again cannot
- * succeed. Read from the server's `retryable` where it says, else from the
- * status: 403 (not allowed here), 409 (the account or flow conflicts) and
- * 410 (the flow is gone).
- */
-export function isFinalRefusal(cause: unknown): boolean {
-  if (!(cause instanceof RpcError)) return false;
-  const retryable = cause.data.retryable;
-  if (typeof retryable === 'boolean') return !retryable;
-  const status = cause.numberField('status');
-  return status === 403 || status === 409 || status === 410;
 }
 
 function isGone(cause: unknown): boolean {
