@@ -1367,7 +1367,7 @@ export function unpostedReply(text: string, outcome: TurnOutcome, detail: string
         ? `\n\nMy last words were:\n\n${cap(text, ROOM_REPLY_LIMIT)}`
         : '';
     const hint = isRequestTooLarge(error)
-      ? '\n\nThis conversation is too large for the model provider, and compacting it hits the same limit. Use !reset to start a fresh session, then send your message again.'
+      ? '\n\nThis conversation is too large for the model provider. Use !reset to start a fresh session, then send your message again.'
       : '';
     return `${failed}${said}${hint}`;
   }
