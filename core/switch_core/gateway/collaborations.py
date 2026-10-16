@@ -798,16 +798,12 @@ async def claim_bridge_identity(
     from ever being recognised by their own agents, so a second claim is
     ordinary rather than a conflict.
     """
-    # Read before anything commits: the caller's row belongs to this session,
-    # and a commit expires it, after which reading it would need IO this async
-    # session cannot do implicitly.
-    caller_id = user.id
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
 
-    target_user_id = payload.user_id or caller_id
-    if target_user_id != caller_id and not is_admin:
+    target_user_id = payload.user_id or user.id
+    if target_user_id != user.id and not is_admin:
         raise HTTPException(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
@@ -868,7 +864,7 @@ async def claim_bridge_identity(
     await record_audit_event(
         session,
         tenant_id=external_user.tenant_id,
-        actor_user_id=caller_id,
+        actor_user_id=user.id,
         action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
         target_type="external_user",
         target_id=external_user.id,
