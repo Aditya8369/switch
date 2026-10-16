@@ -120,13 +120,7 @@ async def test_creating_a_chat_with_an_agent_no_controller_hosts_starts_nothing(
     with caplog.at_level(logging.WARNING):
         await chats.new_chat(chats.alice, agent, "c1")
 
-    # Filter out router transport errors (test harness has no transports)
-    warnings = [
-        r
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and "could not be posted" not in r.getMessage()
-    ]
-    assert not warnings
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 async def test_a_warm_reaches_the_agents_controller(chats: _Harness) -> None:
