@@ -75,7 +75,10 @@ export type HostSessionStart = {
   replyToRoom?: (reply: RoomReply) => Promise<void>;
   /** Service tokens to scrub from every event before it is recorded; none when absent. */
   redactions?: Redactions;
-  /** Told each time the provider asks to run a connector's tool. */
+  /**
+   * Told each time the provider asks to run a connector's tool, before the
+   * request is published, so a notice it raises comes ahead of the card.
+   */
   connectorApproval?: (connector: string) => void;
 };
 /** What the host posts for a turn a room message started that ended without the agent posting. */
@@ -1170,9 +1173,9 @@ export class HostedSession {
               },
       };
       this.questions.set(request.requestId, { request, options });
-      await this.publish({ type: 'request.opened', request });
       if (event.type === 'request.opened' && event.connector !== undefined)
         this.config.connectorApproval?.(event.connector);
+      await this.publish({ type: 'request.opened', request });
     }
     if (event.type === 'request.resolved' || event.type === 'user-input.resolved') {
       const request = this.snapshot().requests.find((r) => r.requestId === event.requestId);

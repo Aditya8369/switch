@@ -63,7 +63,7 @@ export function serviceFallbackNotice(service: string, reason: string, fallback:
  * tools used to be allowed in every mode; they now follow the agent's mode.
  */
 export const CONNECTOR_APPROVAL_NOTICE =
-  'Connector tools now ask in this mode. Switch the agent to full access to allow them.';
+  'Connector tools ask in this mode. Turn on Bypass permissions for this agent to allow them without asking.';
 
 /** How a notice names a catalog service; the slug for one it does not know. */
 export function serviceName(service: string): string {
