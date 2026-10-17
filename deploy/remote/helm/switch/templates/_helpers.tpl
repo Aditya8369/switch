@@ -755,6 +755,16 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       key: CONTROLLER_TOKEN_SECRET
 - name: CONTROLLER_STATUS_INTERVAL_SECONDS
   value: {{ .Values.switchCore.agentManagement.statusIntervalSeconds | quote }}
+{{- with .Values.switchCore.agentManagement.agentCreatedAgents }}
+{{- if .max }}
+- name: AGENT_CREATED_AGENTS_MAX
+  value: {{ .max | quote }}
+{{- end }}
+{{- if .perDay }}
+- name: AGENT_CREATED_AGENTS_PER_DAY
+  value: {{ .perDay | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- with .Values.switchCore.controllerRelease }}
 {{- if .version }}

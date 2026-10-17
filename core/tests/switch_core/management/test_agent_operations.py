@@ -63,6 +63,7 @@ MANAGEMENT_OPERATIONS = {
     "get_advanced_config",
     "create_agent",
     "list_managed_agents",
+    "delete_agent",
 }
 
 
@@ -678,6 +679,7 @@ class TestListManagedAgents:
                 "state": "online",
             },
             "desired_state": "running",
+            "created_by_agent_id": agent_id,
             "actual": None,
             "revision": entry["revision"],
         }
@@ -1050,6 +1052,25 @@ agent:
   repo: https://github.com/acme/widgets
   connections:
     - { service: github, repos: [acme/widgets] }
+"""
+
+
+SOLO_NO_GRANT = SOLO_TEMPLATE.replace(
+    "  connections:\n    - { service: github, repos: [acme/widgets] }\n", ""
+)
+
+SOLO_V2 = """\
+version: 2
+params:
+  machine: { type: machine, default: [$first] }
+resources:
+  solo:
+    type: agent
+    display_name: Solo
+    instructions: Work alone.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{solo.name}"
 """
 
 
@@ -1466,3 +1487,179 @@ class TestAgentCreatedAgentsAreCapped:
             "three": agent_id,
             "mine": None,
         }
+
+
+async def _limit_to(harness: Harness, agent_id: str, templates: list[str]) -> None:
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == agent_id)
+            .values(manage_agents_templates=templates)
+        )
+        await session.commit()
+
+
+@pytest.mark.usefixtures("_short_listen")
+class TestAnAgentLimitedToTemplates:
+    """An agent whose capability is narrowed to chosen templates creates
+    agents by running one of them, and in no other way."""
+
+    async def test_runs_a_chosen_template(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        template_id = await _template(harness, owner, SOLO_NO_GRANT)
+        await _limit_to(harness, agent_id, [template_id])
+
+        response = await _call(
+            client, agent_id, "run_template", bearer(key), {"template_id": template_id}
+        )
+
+        assert response.status_code == 200, response.text
+        agent = await _agent_row(harness, "solo")
+        assert agent is not None
+
+    async def test_any_other_way_of_creating_is_refused(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        other_template = await _template(harness, owner, SOLO_NO_GRANT)
+        await _limit_to(harness, agent_id, ["official:none-chosen"])
+
+        direct = await _call(
+            client, agent_id, "create_agent", bearer(key), _create_body("laptop")
+        )
+        unlisted = await _call(
+            client,
+            agent_id,
+            "run_template",
+            bearer(key),
+            {"template_id": other_template},
+        )
+        written = await _call(
+            client,
+            agent_id,
+            "create_room_from_yaml",
+            bearer(key),
+            {"yaml": SOLO_V2},
+        )
+
+        assert direct.status_code == 403, direct.text
+        assert "(templates_only)" in direct.json()["detail"]
+        assert unlisted.status_code == 400, unlisted.text
+        assert "templates_only" in unlisted.text
+        assert written.status_code == 400, written.text
+        assert "templates_only" in written.text
+        assert await _agent_row(harness, "builder") is None
+        assert await _agent_row(harness, "solo") is None
+
+    async def test_may_start_and_stop_but_not_redefine_a_managed_agent(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        created = await _call(
+            client, agent_id, "create_agent", bearer(key), _create_body("laptop")
+        )
+        assert created.status_code == 200, created.text
+        builder_id = created.json()["result"]["agent_id"]
+        await _limit_to(harness, agent_id, [])
+
+        stopped = await _call(
+            client,
+            agent_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": builder_id, "desired_state": "stopped"},
+        )
+        redefined = await _call(
+            client,
+            agent_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": builder_id, "instructions": "Do something else."},
+        )
+
+        assert stopped.status_code == 200, stopped.text
+        assert redefined.status_code == 403, redefined.text
+        assert "(templates_only)" in redefined.json()["detail"]
+
+
+class TestDeleteAgent:
+    """An agent deletes the managed agents it created, and no others."""
+
+    async def test_deletes_what_it_created_and_nothing_else(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        other_id, other_key = await _agent_with_key(
+            harness, owner, "other", can_manage_agents=True
+        )
+        created = await _call(
+            client, agent_id, "create_agent", bearer(key), _create_body("laptop")
+        )
+        builder_id = created.json()["result"]["agent_id"]
+        by_person = await create_managed_agent(
+            client, owner, name="mine", controller_id=controller.controller_id
+        )
+        mine_id = by_person.json()["agent_id"]
+
+        listed = await _call(client, agent_id, "list_managed_agents", bearer(key))
+        creators = {
+            entry["name"]: entry["created_by_agent_id"]
+            for entry in listed.json()["result"]
+        }
+        assert creators == {"builder": agent_id, "mine": None}
+
+        not_its = await _call(
+            client,
+            other_id,
+            "delete_agent",
+            bearer(other_key),
+            {"agent_id": builder_id},
+        )
+        persons = await _call(
+            client, agent_id, "delete_agent", bearer(key), {"agent_id": mine_id}
+        )
+        itself = await _call(
+            client, agent_id, "delete_agent", bearer(key), {"agent_id": agent_id}
+        )
+        assert not_its.status_code == 403, not_its.text
+        assert "(not_yours)" in not_its.json()["detail"]
+        assert persons.status_code == 403, persons.text
+        assert itself.status_code == 400, itself.text
+        assert "(not_found)" in itself.json()["detail"]
+        assert await _agent_row(harness, "builder") is not None
+        assert await _agent_row(harness, "mine") is not None
+
+        deleted = await _call(
+            client, agent_id, "delete_agent", bearer(key), {"agent_id": builder_id}
+        )
+
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["result"] == {
+            "agent_id": builder_id,
+            "name": "builder",
+            "deleted": True,
+        }
+        assert await _agent_row(harness, "builder") is None
+        assert harness.protocol.connections.controllers.binding(builder_id) is None

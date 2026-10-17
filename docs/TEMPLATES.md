@@ -682,6 +682,21 @@ documents against (`core/switch_core/template_guide.py`; keep it in step).
   `update_template` does the same for a new document.
 - **Changing and deleting.** Only the agent that saved a template may change
   or delete it; not its owner's templates, and not another agent's.
+- **Limiting an agent to templates.** An owner can narrow an agent's "can
+  manage agents" capability to chosen saved templates
+  (`PUT /gateway/agents/{id}/manage-agents-templates` with
+  `{"templates": [ids]}`, or `null` to lift it). The agent then creates
+  agents only by running one of those: `create_agent`, a document it writes
+  with new agents, and changing a managed agent's definition or machine are
+  refused (`templates_only`). Each chosen template must be saved by a person
+  or official, since an agent could rewrite one an agent saved. The params a
+  chosen template declares are still the agent's to fill, so declare only
+  the ones it may choose.
+- **Caps.** A server can cap how many agents agents create for one owner
+  (`AGENT_CREATED_AGENTS_MAX`, `AGENT_CREATED_AGENTS_PER_DAY`). A run counts
+  all its agents at once and creates none when they do not fit
+  (`quota_exceeded`). An agent deletes the agents it created with
+  `delete_agent`, and only those.
 
 A refusal tells the agent why. The server logs it, naming the agent, and
 counts it in telemetry by operation and reason.

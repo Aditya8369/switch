@@ -380,6 +380,13 @@ switchCore:
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
+    # Caps on the managed agents agents create for their owner (with
+    # create_agent, or by running a template or document), per owner: how
+    # many may exist at once, and how many may be created in any 24 hours.
+    # Unset is no cap. Agents a person creates are not counted.
+    agentCreatedAgents:
+      max: null
+      perDay: null
   # The agents controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs

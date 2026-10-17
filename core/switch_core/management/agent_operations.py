@@ -364,6 +364,7 @@ class ManagementAgentOperations:
                 "state": self._service.state_of(controller, leases),
             },
             "desired_state": row.desired_state,
+            "created_by_agent_id": row.created_by_agent_id,
             "actual": None
             if status is None
             else {

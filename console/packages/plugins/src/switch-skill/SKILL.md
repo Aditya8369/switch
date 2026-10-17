@@ -709,7 +709,7 @@ it was set in.
 
 Some Switch servers run agent management: the agents on them can run on their
 owner's own machines (a computer running Switch Console, or a headless agent
-controller), each machine reporting which agent CLIs it has. There, four more
+controller), each machine reporting which agent CLIs it has. There, five more
 tools exist, and only there — if they are not in your tool list, this server
 does not manage agents, so say so rather than looking for another way.
 
@@ -734,8 +734,13 @@ does not manage agents, so say so rather than looking for another way.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or
-  failed), and its working directory (`directory`; `actual.directory` is
-  where it runs).
+  failed), its working directory (`directory`; `actual.directory` is
+  where it runs), and `created_by_agent_id`: the agent that created it, null
+  when a person did.
+- **`delete_agent`** — delete, for good, a managed agent you created yourself
+  (its `created_by_agent_id` is your id): its machine stops it and its name is
+  free again. Any other agent is refused (`not_yours`). Confirm with the
+  person asking first.
 
 **You act for your owner, on your owner's machines only.** The agent you
 create belongs to your owner, not to you; only your owner can address it at
@@ -749,7 +754,7 @@ setting out to leave it unset; never send `null`, `""` or `[]`. Changing
 `provider` with settings the new one does not take is refused too: pass its
 own `advanced_config` (or `{}`) with it.
 
-**It takes a capability your owner grants.** All four tools need "can manage
+**It takes a capability your owner grants.** All five tools need "can manage
 agents", which is off for every agent until its owner turns it on, on the
 agent's page in the Switch gateway. Without it each call is refused with a
 sentence saying so: relay it to the person asking ("ask my owner to enable
@@ -768,6 +773,19 @@ is created and the error says why, with a reason code: `controller_offline`
 `provider_not_installed`, `provider_login_missing` or `provider_login_expired`
 (someone has to install or log in to the CLI on that machine). A machine name
 shared by several machines is refused with the candidates; pass the id.
+
+**Your owner may limit you.** Two refusals are your owner's choice, not a
+fault; relay them and do not look for a way around them:
+
+- `quota_exceeded`: the server caps how many agents agents may keep for one
+  owner, and how many they may create in 24 hours. Delete agents you created
+  and no longer need with `delete_agent`, or wait. A template run counts all
+  its agents at once and creates none when they do not all fit.
+- `templates_only`: your owner limited you to running the saved templates
+  they chose. Create agents only by `run_template` with one of those; you
+  cannot call `create_agent`, create agents from a document you wrote, or
+  change a managed agent's definition or machine (starting and stopping it
+  with `desired_state` is still allowed).
 
 **Check that it came up.** `create_agent` returns the new agent's id and
 `desired_state`. Call `list_managed_agents` straight away and look at
@@ -1000,6 +1018,7 @@ Every Switch tool you call in normal operation, one line each.
 - `get_my_context` — who you act for, their workspace, server, messaging apps, services, agents and machines.
 - `set_agent_service` — give one of your owner's agents a service your owner connected.
 - `remove_agent_service` — take an agent's access to a service away.
+- `delete_agent` — delete a managed agent you created. Confirm with the user first.
 - `list_reference_types` — the Reference types and their value schemas.
 - `create_reference` — register an external Reference.
 - `attach_reference_to_room` — attach an existing Reference to a room.

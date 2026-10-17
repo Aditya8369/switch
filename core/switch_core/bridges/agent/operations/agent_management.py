@@ -34,6 +34,7 @@ from switch_core.db.models import User, require_tenant_id
 AGENT_MANAGEMENT_OPERATIONS = "agent_management"
 
 CAPABILITY_LABEL = "can manage agents"
+TEMPLATES_ONLY = "templates_only"
 
 _port: AgentManagementPort | None = None
 
@@ -109,6 +110,18 @@ async def management_permission() -> Permitted | str:
         owner=owner,
         agent_id=agent_id,
         templates=None if templates is None else [str(t) for t in templates],
+    )
+
+
+def templates_only(permitted: Permitted, what: str) -> str | None:
+    """Why an agent limited to running saved templates may not do `what`;
+    None when its capability is not narrowed."""
+    if permitted.templates is None:
+        return None
+    return (
+        f"Your owner allows you to create agents only by running the saved "
+        f"templates they chose for you, so you cannot {what}. Run one of those "
+        f"templates with run_template instead ({TEMPLATES_ONLY})."
     )
 
 
@@ -242,6 +255,9 @@ async def create_agent(
         most a minute.
     """
     permitted = await permitted_to_manage()
+    refusal = templates_only(permitted, "create an agent directly")
+    if refusal is not None:
+        raise PermissionError(f"Nothing was created: {refusal}")
     return await _management().create_agent(
         permitted.tenant_id,
         permitted.owner.id,
@@ -275,7 +291,9 @@ async def list_managed_agents() -> list[dict[str, Any]]:
     Returns:
         A list of managed agents, each {agent_id, name, display_name,
         description, provider, model, advanced_config, directory, machine,
-        desired_state, actual, revision}.
+        desired_state, created_by_agent_id, actual, revision}.
+        `created_by_agent_id` is the agent that created it (you, for one you
+        may `delete_agent`), null when a person did.
         `directory` is the working directory the definition names (null only
         when its machine has not said where it keeps workspaces).
         `machine` is {id, name, state} (null when the agent is not placed on
@@ -294,3 +312,40 @@ async def list_managed_agents() -> list[dict[str, Any]]:
     return await _management().list_managed_agents(
         permitted.tenant_id, permitted.owner.id
     )
+
+
+@gated_operation(AGENT_MANAGEMENT_OPERATIONS)
+async def delete_agent(agent_id: str) -> dict[str, Any]:
+    """Delete a managed agent you created, for good.
+
+    Requires the "can manage agents" capability. Only an agent you created
+    yourself (with `create_agent`, or by running a template or document) can
+    be deleted this way: `list_managed_agents` shows yours with your id as
+    `created_by_agent_id`. Its machine stops it, it leaves every room, and its
+    name is free again; this cannot be undone, so confirm with the person
+    asking first. Deleting one also makes room under your owner's limits on
+    how many agents agents may keep.
+
+    Args:
+        agent_id: The agent's `agent_id` from `list_managed_agents`.
+
+    Returns:
+        {agent_id, name, deleted: true}.
+    """
+    permitted = await permitted_to_manage()
+    managed = await _management().managed_agent(
+        permitted.tenant_id, permitted.owner.id, agent_id
+    )
+    if managed is None:
+        raise ValueError(
+            f"Nothing was deleted: {agent_id} is not one of your owner's managed "
+            "agents (not_found)."
+        )
+    if managed.get("created_by_agent_id") != permitted.agent_id:
+        raise PermissionError(
+            f"Nothing was deleted: {managed['name']} was not created by you, and "
+            "an agent may delete only the agents it created. Ask your owner to "
+            "delete it in Switch Console (not_yours)."
+        )
+    await get_protocol().delete_agent(agent_id=agent_id)
+    return {"agent_id": agent_id, "name": managed["name"], "deleted": True}

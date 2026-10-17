@@ -21,9 +21,11 @@ from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
+    TEMPLATES_ONLY,
     management_permission,
     management_port,
     permitted_to_manage,
+    templates_only,
 )
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
@@ -1759,9 +1761,16 @@ async def create_room_from_yaml(
     """
     async with _refusals_reported("create_room_from_yaml"):
         if is_v2_text(yaml):
-            return await _run_document(yaml, inputs, {}, template_name=None)
+            return await _run_document(
+                yaml, inputs, {}, template_name=None, template_id=None
+            )
         return await _provision_as_agent(
-            yaml, inputs, template_name=None, new_agents=[], room_addressing={}
+            yaml,
+            inputs,
+            template_name=None,
+            template_id=None,
+            new_agents=[],
+            room_addressing={},
         )
 
 
@@ -1808,6 +1817,7 @@ async def _provision_as_agent(
     inputs: dict[str, Any] | None,
     *,
     template_name: str | None,
+    template_id: str | None,
     new_agents: Sequence[NewAgentPlan],
     room_addressing: dict[str, list[str]],
 ) -> dict[str, Any]:
@@ -1818,7 +1828,9 @@ async def _provision_as_agent(
     ``new_agents`` are created first, as managed agents of the owner, once
     every check of the agents and the rooms has passed; when the rooms then
     fail, they are deleted again. ``yaml`` is None for a template that
-    creates agents and no room.
+    creates agents and no room. ``template_id`` is the saved template being
+    run, None for a document the agent wrote; an agent limited to running
+    chosen templates creates agents only from one of those.
     """
     protocol = get_protocol()
     acting = await _acting_for()
@@ -1839,6 +1851,20 @@ async def _provision_as_agent(
                         Problem(p.slot, "cannot_manage_agents", permission)
                         for p in new_agents
                     ]
+                )
+            if (
+                permission.templates is not None
+                and template_id not in permission.templates
+            ):
+                refusal = templates_only(
+                    permission,
+                    "create agents from a document you wrote"
+                    if template_id is None
+                    else "run this template",
+                )
+                assert refusal is not None
+                raise AgentsNotCreated(
+                    [Problem(p.slot, TEMPLATES_ONLY, refusal) for p in new_agents]
                 )
         creator = TemplateAgents(
             protocol=protocol,
@@ -2095,7 +2121,9 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        return await _run_document(content, inputs, agents or {}, template_name=name)
+        return await _run_document(
+            content, inputs, agents or {}, template_name=name, template_id=template_id
+        )
 
 
 async def _run_document(
@@ -2104,6 +2132,7 @@ async def _run_document(
     filled: dict[str, str],
     *,
     template_name: str | None,
+    template_id: str | None,
 ) -> dict[str, Any]:
     """Work a template's agents and rooms out of its document and create
     them, as the calling agent."""
@@ -2132,6 +2161,7 @@ async def _run_document(
         plan.document,
         plan.inputs or None,
         template_name=template_name,
+        template_id=template_id,
         new_agents=plan.new_agents,
         room_addressing=plan.room_addressing,
     )
@@ -2427,6 +2457,12 @@ async def update_agent_detail(
                 "run state Switch can set."
             )
         permitted = await permitted_to_manage()
+        if changes.definition_changes() or changes.machine is not None:
+            refusal = templates_only(
+                permitted, "change a managed agent's definition or machine"
+            )
+            if refusal is not None:
+                raise PermissionError(f"Nothing was changed: {refusal}")
         managed = await port.update_managed_agent(
             permitted.tenant_id, permitted.owner.id, agent_id, changes, protocol
         )

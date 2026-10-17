@@ -324,6 +324,9 @@ class AgentDetail(AgentSummary):
     # owner's machines and managed agents, create managed agents on them).
     # Only the owner changes it; it matters only where agent management runs.
     can_manage_agents: bool
+    # The saved templates "can manage agents" is narrowed to: the agent may
+    # create agents only by running one of these. Null when not narrowed.
+    manage_agents_templates: list[str] | None
     integration_profile: dict[str, Any]
     tools: list[AgentToolSummary]
     models: list[AgentModelSummary]
@@ -346,6 +349,16 @@ class UpdateAgentCanManageAgentsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
+
+
+class UpdateAgentManageAgentsTemplatesRequest(BaseModel):
+    """Limit an agent's "can manage agents" capability to running these saved
+    templates (ids, as `list_templates` gives them), or lift the limit (null).
+    An empty list leaves it no way to create agents."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    templates: list[str] | None
 
 
 class UpdateAgentIconRequest(BaseModel):

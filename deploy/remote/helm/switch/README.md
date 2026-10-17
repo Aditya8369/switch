@@ -234,6 +234,13 @@ With `secrets.existingSecret`, put the token secret in that Secret as
 and its migration Job, so enabling it is one rollout. Controllers enroll and
 connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
 
+An agent with "can manage agents" creates agents for its owner. To bound how
+many, set `switchCore.agentManagement.agentCreatedAgents.max` (how many
+agent-created agents one owner may have at once) and `.perDay` (how many
+agents may create for one owner in any 24 hours). The chart renders them as
+`AGENT_CREATED_AGENTS_MAX` and `AGENT_CREATED_AGENTS_PER_DAY`; unset is no
+cap, and agents a person creates are never counted.
+
 `switchCore.agentManagement.enabled` is gone: the chart refuses to render with it
 set to true, and switch-core refuses to start with `AGENT_MANAGEMENT_ENABLED=true`.
 Move it to the flag list instead.

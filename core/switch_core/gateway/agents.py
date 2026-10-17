@@ -14,7 +14,7 @@ from switch_core.agent_icon import (
     normalise_icon_url,
     refuse_third_party_avatar,
 )
-from switch_core.authz import Principal, require_manage
+from switch_core.authz import Principal, can, require_manage
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
@@ -28,10 +28,11 @@ from switch_core.bridges.agent.protocol.types import (
     TaskProtocolConfig,
 )
 from switch_core.config import SwitchConfig
-from switch_core.db.models import User
+from switch_core.db.models import Template, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -59,9 +60,11 @@ from switch_core.gateway.schemas import (
     UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
+    UpdateAgentManageAgentsTemplatesRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
+from switch_core.official_templates import is_official, official_template
 
 logger = logging.getLogger(__name__)
 
@@ -695,6 +698,89 @@ async def update_can_manage_agents(
         "%s 'can manage agents' for agent %s by its owner %s",
         "Enabled" if req.enabled else "Disabled",
         agent.name,
+        user.name,
+    )
+
+    return await assemble_agent_detail(
+        session,
+        agent=agent,
+        agent_store=agent_store,
+        room_store=room_store,
+        user_store=user_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+
+
+@router.put("/{agent_id}/manage-agents-templates")
+async def update_manage_agents_templates(
+    agent_id: str,
+    req: UpdateAgentManageAgentsTemplatesRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> AgentDetail:
+    """Limit the agent's "can manage agents" capability to running the saved
+    templates listed, or lift the limit with null.
+
+    Limited, the agent may create agents only by running one of these
+    templates: not with `create_agent`, not from a document it writes, and it
+    may not change a managed agent's definition or machine. Each template must
+    be one the owner can read, and saved by a person or shipped with Switch:
+    an agent may change the templates it saved, so one of those would not
+    limit it. Only the agent's owner may change this.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    if agent.owner_id is None or agent.owner_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner can change which templates it may run.",
+        )
+    templates = None if req.templates is None else list(dict.fromkeys(req.templates))
+    for template_id in templates or []:
+        if is_official(template_id):
+            if (
+                official_template(
+                    template_id,
+                    config.feature_flags[AGENT_MANAGEMENT],
+                    config.feature_flags[SWITCH_BUDDY],
+                )
+                is None
+            ):
+                raise HTTPException(
+                    status_code=422, detail=f"No template with id {template_id}."
+                )
+            continue
+        template = await session.get(Template, template_id)
+        if template is None or not can(Principal(user.id, False), "read", template):
+            raise HTTPException(
+                status_code=422,
+                detail=f"No template with id {template_id} that you can see.",
+            )
+        if template.created_by_agent_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Template '{template.name}' was saved by an agent, which "
+                    "could change it; save a copy yourself and choose that."
+                ),
+            )
+
+    await agent_store.update(session, agent_id, manage_agents_templates=templates)
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info(
+        "Limited 'can manage agents' for agent %s to %s by its owner %s",
+        agent.name,
+        "no templates (lifted)" if templates is None else f"{len(templates)} templates",
         user.name,
     )
 
