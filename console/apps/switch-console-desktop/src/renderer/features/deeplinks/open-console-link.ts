@@ -150,7 +150,6 @@ async function openAgent(serverId: string, agentId: string, tab: string | null):
   const agents = await rpc.managedAgents.list(serverId).catch(() => null);
   const agent = agents?.find((listed) => listed.agentId === agentId) ?? null;
   if (agent === null) {
-    appState.navigation.navigate('serverAgents', { serverId });
     toast.error('Could not open that agent', {
       description: "It isn't one of your agents on this server, so it has no page here.",
     });
