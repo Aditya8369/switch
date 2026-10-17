@@ -1,6 +1,7 @@
 import { toast } from 'sonner';
 import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
 import type { SettingsPageTab } from '@renderer/features/settings/components/SettingsPage';
+import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
@@ -91,7 +92,7 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       navigation.navigate('chat', { serverId, roomId: link.id!, agentId: null });
       return;
     case 'buddy':
-      navigation.navigate('switchBuddy', { serverId });
+      await openBuddy(serverId, link.tab);
       return;
     case 'templates':
       navigation.navigate('templates', {
@@ -123,6 +124,25 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
     case 'settings':
       return;
   }
+}
+
+/**
+ * switch-buddy's page: its agent page once it exists, on the tab the link
+ * names, else the page that sets it up, where there are no tabs yet.
+ */
+async function openBuddy(serverId: string, tab: string | null): Promise<void> {
+  const agents = await rpc.managedAgents.list(serverId).catch(() => null);
+  const buddy = agents?.find(isBuddy) ?? null;
+  if (buddy === null) {
+    appState.navigation.navigate('switchBuddy', { serverId });
+    return;
+  }
+  agentTabStore.setTab(buddy.agentId, tab === 'settings' ? 'settings' : 'chats');
+  appState.navigation.navigate('managedAgent', {
+    serverId,
+    agentId: buddy.agentId,
+    name: buddy.name,
+  });
 }
 
 /** An agent's page is its managed-agent page; one Console does not manage has none here. */

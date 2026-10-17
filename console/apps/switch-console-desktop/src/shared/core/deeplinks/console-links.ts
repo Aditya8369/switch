@@ -36,7 +36,7 @@ export const CONSOLE_PAGES = {
   rooms: { description: 'Every room on the server.' },
   room: { description: 'A room.', id: 'room' },
   chat: { description: 'A direct chat with an agent.', id: 'room' },
-  buddy: { description: "switch-buddy's own page." },
+  buddy: { description: "switch-buddy's own page.", tabs: ['chats', 'settings'] },
   templates: { description: 'Templates.', tabs: ['agent', 'room', 'group'] },
   template: { description: 'A template.', id: 'template' },
   'messaging-apps/connect': {
