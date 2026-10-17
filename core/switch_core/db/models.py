@@ -730,6 +730,10 @@ class Agent(TenantScoped, Base):
     can_manage_agents: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Narrows `can_manage_agents` to the saved templates listed (by id): the
+    # agent may run only those, and create agents no other way. Null leaves
+    # the capability whole.
+    manage_agents_templates: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -3798,12 +3802,16 @@ class AgentDefinition(TenantScoped, Base):
         ),
         Index("ix_agent_definitions_controller_id", "controller_id"),
         Index("ix_agent_definitions_owner_id", "owner_id"),
+        Index("ix_agent_definitions_created_by_agent_id", "created_by_agent_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
     controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The agent that created this one for its owner; null when a person did.
+    # Not a foreign key: what an agent created outlives it.
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     desired_state: Mapped[str] = mapped_column(Text, nullable=False)
     definition: Mapped[dict] = mapped_column(JSONB, nullable=False)

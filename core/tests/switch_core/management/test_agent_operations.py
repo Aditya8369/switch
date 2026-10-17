@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import AsyncIterator, Iterator
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -50,6 +51,7 @@ from tests.switch_core.management.harness import (
     bearer,
     build_harness,
     cookies_for,
+    create_managed_agent,
     enroll_console,
     place_agent,
     provider,
@@ -1377,3 +1379,90 @@ class TestTheConsoleRunsAVersion2Template:
         body = response.json()
         assert {p["code"] for p in body["problems"]} == {"machine_unresolved"}
         assert "claude is not signed in on laptop" in body["detail"]
+
+
+class TestAgentCreatedAgentsAreCapped:
+    """At most 3 agent-created agents may exist for an owner, and at most 2
+    may be created in any 24 hours; agents a person creates are not counted."""
+
+    @pytest.fixture
+    def harness(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> Iterator[Harness]:
+        harness = build_harness(
+            session_factory,
+            agent_created_agents_max=3,
+            agent_created_agents_per_day=2,
+        )
+        previous = op_context._protocol
+        op_context.init_operations_protocol(harness.protocol)
+        try:
+            yield harness
+        finally:
+            op_context._protocol = previous
+
+    async def _backdate(self, harness: Harness, owner: User) -> None:
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(AgentDefinition)
+                .where(AgentDefinition.owner_id == owner.id)
+                .values(created_at=AgentDefinition.created_at - timedelta(days=2))
+            )
+            await session.commit()
+
+    async def test_the_daily_and_standing_caps_refuse_and_leave_nothing(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        async def create(name: str) -> httpx.Response:
+            return await _call(
+                client,
+                agent_id,
+                "create_agent",
+                bearer(key),
+                _create_body("laptop", name=name),
+            )
+
+        for name in ("one", "two"):
+            created = await create(name)
+            assert created.status_code == 200, created.text
+        by_person = await create_managed_agent(
+            client, owner, name="mine", controller_id=controller.controller_id
+        )
+        assert by_person.status_code == 201, by_person.text
+
+        daily = await create("three")
+        assert daily.status_code == 400
+        assert "(quota_exceeded)" in daily.json()["detail"]
+        assert "24 hours" in daily.json()["detail"]
+        assert await _agent_row(harness, "three") is None
+
+        await self._backdate(harness, owner)
+        assert (await create("three")).status_code == 200
+        standing = await create("four")
+        assert standing.status_code == 400
+        assert "at most 3" in standing.json()["detail"]
+        assert await _agent_row(harness, "four") is None
+
+        async with harness.session_factory() as session:
+            creators = dict(
+                (
+                    await session.execute(
+                        select(Agent.name, AgentDefinition.created_by_agent_id).join(
+                            AgentDefinition, AgentDefinition.agent_id == Agent.id
+                        )
+                    )
+                ).all()
+            )
+        assert creators == {
+            "one": agent_id,
+            "two": agent_id,
+            "three": agent_id,
+            "mine": None,
+        }

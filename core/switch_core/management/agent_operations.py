@@ -12,6 +12,7 @@ another person's machine is never matched, so it reads as not existing.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_management import (
+    QUOTA_EXCEEDED,
     AgentManagementRefused,
     CheckedPlacement,
     ManagedAgentChanges,
@@ -128,9 +130,13 @@ class ManagementAgentOperations:
         *,
         service: ManagementService,
         session_factory: async_sessionmaker[AsyncSession],
+        agent_created_max: int | None,
+        agent_created_per_day: int | None,
     ) -> None:
         self._service = service
         self._session_factory = session_factory
+        self._agent_created_max = agent_created_max
+        self._agent_created_per_day = agent_created_per_day
 
     async def list_machines(
         self, tenant_id: str, owner_id: str
@@ -242,6 +248,43 @@ class ManagementAgentOperations:
             f"{NOTHING_CREATED}: {sentence or exc.message} ({exc.code}).",
         )
 
+    async def check_creation_quota(
+        self, tenant_id: str, owner_id: str, count: int
+    ) -> None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._check_quota(session, tenant_id, owner_id, count)
+            await session.commit()
+
+    async def _check_quota(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, count: int
+    ) -> None:
+        definitions = self._service.definitions
+        if self._agent_created_max is not None:
+            existing = await definitions.count_agent_created(
+                session, tenant_id, owner_id, None
+            )
+            if existing + count > self._agent_created_max:
+                raise AgentManagementRefused(
+                    QUOTA_EXCEEDED,
+                    f"{NOTHING_CREATED}: agents may keep at most "
+                    f"{self._agent_created_max} agents they created for your "
+                    f"owner, and {existing} exist already; delete some first "
+                    f"({QUOTA_EXCEEDED}).",
+                )
+        if self._agent_created_per_day is not None:
+            since = datetime.now(UTC) - timedelta(days=1)
+            recent = await definitions.count_agent_created(
+                session, tenant_id, owner_id, since
+            )
+            if recent + count > self._agent_created_per_day:
+                raise AgentManagementRefused(
+                    QUOTA_EXCEEDED,
+                    f"{NOTHING_CREATED}: agents may create at most "
+                    f"{self._agent_created_per_day} agents for your owner in "
+                    f"24 hours, and have created {recent}; try again later "
+                    f"({QUOTA_EXCEEDED}).",
+                )
+
     async def check_new_agent(
         self, tenant_id: str, owner_id: str, spec: NewManagedAgent
     ) -> CheckedPlacement:
@@ -275,9 +318,16 @@ class ManagementAgentOperations:
                 session, tenant_id, owner_id, spec.machine, NOTHING_CREATED
             )
             request = self._create_request(spec, controller)
+            if spec.created_by_agent_id is not None:
+                await self._check_quota(session, tenant_id, owner_id, 1)
             try:
                 view = await self._service.create_managed_agent(
-                    session, tenant_id, owner_id, request, protocol
+                    session,
+                    tenant_id,
+                    owner_id,
+                    request,
+                    protocol,
+                    created_by_agent_id=spec.created_by_agent_id,
                 )
             except ManagementError as exc:
                 raise self._refusal(exc, controller, spec.provider) from exc

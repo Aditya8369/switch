@@ -678,6 +678,7 @@ async def _run_as_person(
         management=management_port(),
         broker=protocol.service_broker,
         listen_timeout=LISTEN_TIMEOUT_SECONDS,
+        creator_agent_id=None,
     )
     try:
         parsed = None

@@ -73,6 +73,8 @@ class FakeManagement:
         self._env = env
         self.created: list[NewManagedAgent] = []
         self.fail_create: set[str] = set()
+        self.quota_asked: list[int] = []
+        self.quota_left: int | None = None
 
     def _machine(self, ref: str) -> dict[str, Any]:
         for machine in MACHINES:
@@ -85,6 +87,17 @@ class FakeManagement:
 
     async def list_machines(self, tenant_id: str, owner_id: str) -> list[dict]:
         return MACHINES
+
+    async def check_creation_quota(
+        self, tenant_id: str, owner_id: str, count: int
+    ) -> None:
+        self.quota_asked.append(count)
+        if self.quota_left is not None and count > self.quota_left:
+            raise AgentManagementRefused(
+                "quota_exceeded",
+                f"Nothing was created: agents may create {self.quota_left} more "
+                "agents for your owner (quota_exceeded).",
+            )
 
     async def check_new_agent(
         self, tenant_id: str, owner_id: str, spec: NewManagedAgent
@@ -284,6 +297,46 @@ async def test_a_team_template_creates_its_agents_then_the_room(managed):
     (room,) = await _rooms(managed)
     assert room.name == "red-room"
     assert managed["admin"].sent[-1]["body"].startswith("@red-lead start.")
+
+
+@pytest.mark.asyncio
+async def test_an_agents_run_names_it_as_the_creator_and_asks_the_quota_once(
+    managed,
+):
+    template_id = await _stored(managed, TEAM)
+
+    await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "red"},
+    )
+
+    assert managed["management"].quota_asked == [2]
+    assert {spec.created_by_agent_id for spec in managed["management"].created} == {
+        managed["agent_id"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_run_past_the_quota_creates_nothing(managed):
+    managed["management"].quota_left = 1
+    template_id = await _stored(managed, TEAM)
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(
+            managed["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "red"},
+        )
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("red-lead", "quota_exceeded"),
+        ("red-helper", "quota_exceeded"),
+    }
+    assert managed["management"].created == []
+    assert await _rooms(managed) == []
 
 
 @pytest.mark.asyncio

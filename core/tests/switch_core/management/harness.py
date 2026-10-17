@@ -214,6 +214,8 @@ def build_harness(
     third_party_avatars: bool = True,
     controller_release: ControllerRelease | None = None,
     signal_engine: Callable[[], Any] = _no_listening_engine,
+    agent_created_agents_max: int | None = None,
+    agent_created_agents_per_day: int | None = None,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -231,6 +233,8 @@ def build_harness(
         server_url=server_url,
         third_party_avatars=third_party_avatars,
         controller_release=controller_release,
+        agent_created_agents_max=agent_created_agents_max,
+        agent_created_agents_per_day=agent_created_agents_per_day,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,

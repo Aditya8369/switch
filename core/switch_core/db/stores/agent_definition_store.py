@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Agent, AgentDefinition
@@ -24,11 +25,13 @@ class AgentDefinitionStore:
         controller_id: str | None,
         desired_state: str,
         definition: dict[str, Any],
+        created_by_agent_id: str | None,
     ) -> AgentDefinition:
         row = AgentDefinition(
             agent_id=agent_id,
             owner_id=owner_id,
             controller_id=controller_id,
+            created_by_agent_id=created_by_agent_id,
             revision=1,
             desired_state=desired_state,
             definition=definition,
@@ -37,6 +40,24 @@ class AgentDefinitionStore:
         await session.flush()
         await session.refresh(row)
         return row
+
+    async def count_agent_created(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        since: datetime | None,
+    ) -> int:
+        """How many of the owner's managed agents an agent created, of those
+        that still exist; only those created at or after `since` when given."""
+        query = select(func.count()).where(
+            AgentDefinition.tenant_id == tenant_id,
+            AgentDefinition.owner_id == owner_id,
+            AgentDefinition.created_by_agent_id.is_not(None),
+        )
+        if since is not None:
+            query = query.where(AgentDefinition.created_at >= since)
+        return int((await session.execute(query)).scalar_one())
 
     async def get_for_agent(
         self, session: AsyncSession, tenant_id: str, agent_id: str

@@ -205,7 +205,12 @@ async def create_managed_agent(
     protocol: Protocol,
 ) -> dict[str, Any]:
     return await management.create_managed_agent(
-        session, require_tenant_id(), user.id, body, protocol
+        session,
+        require_tenant_id(),
+        user.id,
+        body,
+        protocol,
+        created_by_agent_id=None,
     )
 
 

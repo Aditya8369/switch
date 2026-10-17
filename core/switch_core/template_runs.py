@@ -210,7 +210,9 @@ def room_ids_of(result: dict[str, Any]) -> dict[str, str]:
 
 class TemplateAgents:
     """Checks, creates and, when the run fails, deletes a run's agents, for
-    one owner in one tenant."""
+    one owner in one tenant. `creator_agent_id` is the agent running the
+    template or document, None when a person is; an agent's run counts
+    towards the caps on agent-created agents."""
 
     def __init__(
         self,
@@ -219,11 +221,13 @@ class TemplateAgents:
         management: AgentManagementPort | None,
         broker: ServiceBroker | None,
         listen_timeout: float,
+        creator_agent_id: str | None,
     ) -> None:
         self._protocol = protocol
         self._management = management
         self._broker = broker
         self._listen_timeout = listen_timeout
+        self._creator_agent_id = creator_agent_id
 
     async def check(
         self, tenant_id: str, owner_id: str, plans: Sequence[NewAgentPlan]
@@ -245,6 +249,16 @@ class TemplateAgents:
                 ]
             )
         problems: list[Problem] = []
+        if self._creator_agent_id is not None:
+            try:
+                await self._management.check_creation_quota(
+                    tenant_id, owner_id, len(plans)
+                )
+            except AgentManagementRefused as refused:
+                message = _bare(str(refused), refused.code)
+                problems.extend(
+                    Problem(plan.slot, refused.code, message) for plan in plans
+                )
         names = [plan.name for plan in plans]
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
             taken = {
@@ -434,9 +448,8 @@ class TemplateAgents:
                     )
         return grants, problems
 
-    @staticmethod
     def _spec(
-        plan: NewAgentPlan, machine: str, directory: str | None
+        self, plan: NewAgentPlan, machine: str, directory: str | None
     ) -> NewManagedAgent:
         return NewManagedAgent(
             name=plan.name,
@@ -452,6 +465,7 @@ class TemplateAgents:
             auto_approve=plan.auto_approve,
             isolation=plan.isolation,
             start=True,
+            created_by_agent_id=self._creator_agent_id,
         )
 
     async def create(

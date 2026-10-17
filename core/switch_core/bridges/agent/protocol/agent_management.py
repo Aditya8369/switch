@@ -21,6 +21,9 @@ if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 
+QUOTA_EXCEEDED = "quota_exceeded"
+
+
 class AgentManagementRefused(ValueError):
     """Management said no: a machine that is not the owner's, a placement it
     refuses, a definition that does not validate. A ValueError, so it reaches
@@ -38,7 +41,9 @@ class NewManagedAgent:
     """A managed agent an agent asks to have created for its owner.
 
     `machine` is the machine's id, or its exact name among the owner's
-    machines that are not revoked."""
+    machines that are not revoked. `created_by_agent_id` is the agent asking;
+    None when a person is (a template run from Switch Console). Only the
+    agents an agent creates count towards the creation caps."""
 
     name: str
     description: str
@@ -53,6 +58,7 @@ class NewManagedAgent:
     auto_approve: bool
     isolation: str
     start: bool
+    created_by_agent_id: str | None
 
 
 @dataclass(frozen=True)
@@ -129,6 +135,15 @@ class AgentManagementPort(Protocol):
         protocol: AgentCore,
     ) -> dict[str, Any]:
         """Create and place a managed agent owned by `owner_id`."""
+        ...
+
+    async def check_creation_quota(
+        self, tenant_id: str, owner_id: str, count: int
+    ) -> None:
+        """Refuse (`quota_exceeded`) when agents creating `count` more managed
+        agents for the owner would pass the configured caps. `create_agent`
+        makes this check itself for an agent-created spec; a caller creating
+        several at once checks them together first."""
         ...
 
     async def check_new_agent(

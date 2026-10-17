@@ -762,6 +762,13 @@ class SwitchConfig(BaseSettings):
     controller_release_version: str | None = None
     controller_release_url: str | None = None
     controller_release_sha256: str | None = None
+    # Caps on the managed agents agents create for their owner (`create_agent`,
+    # and the agents a template or document an agent runs creates), per owner:
+    # how many may exist at once, and how many may be created in any 24 hours.
+    # Unset is no cap. Agents a person creates in Switch Console are neither
+    # counted nor capped.
+    agent_created_agents_max: int | None = Field(default=None, gt=0)
+    agent_created_agents_per_day: int | None = Field(default=None, gt=0)
     # Share one read of a room's new messages between every client in it
     # (`transport/room_cache.py`). Without it, a room of N agents reads each
     # new page N times, which is what exhausted the pool in a restart burst.

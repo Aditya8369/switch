@@ -1845,6 +1845,7 @@ async def _provision_as_agent(
             management=management_port(),
             broker=protocol.service_broker,
             listen_timeout=LISTEN_TIMEOUT_SECONDS,
+            creator_agent_id=agent.id,
         )
         checked = await creator.check(tenant_id, owner.id, new_agents)
     created_names = {plan.name for plan in new_agents}

@@ -130,6 +130,8 @@ def build_management(
     server_url: str | None,
     third_party_avatars: bool,
     controller_release: ControllerRelease | None,
+    agent_created_agents_max: int | None,
+    agent_created_agents_per_day: int | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
@@ -199,7 +201,10 @@ def build_management(
         service=service,
         authenticator=authenticator,
         agent_operations=ManagementAgentOperations(
-            service=service, session_factory=session_factory
+            service=service,
+            session_factory=session_factory,
+            agent_created_max=agent_created_agents_max,
+            agent_created_per_day=agent_created_agents_per_day,
         ),
         session_factory=session_factory,
         lease=lease,
@@ -227,6 +232,8 @@ def create_management(
         server_url=config.gateway_public_url,
         third_party_avatars=config.third_party_avatars_enabled,
         controller_release=config.controller_release,
+        agent_created_agents_max=config.agent_created_agents_max,
+        agent_created_agents_per_day=config.agent_created_agents_per_day,
         session_factory=session_factory,
         presence=presence,
         # The agent API-key cache's bound: the longest a controller revoked

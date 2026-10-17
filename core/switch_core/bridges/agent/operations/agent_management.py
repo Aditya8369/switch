@@ -68,8 +68,13 @@ def _management() -> AgentManagementPort:
 
 @dataclass(frozen=True)
 class Permitted:
+    """`templates` is the saved templates the agent is limited to running,
+    None when its capability is not narrowed."""
+
     tenant_id: str
     owner: User
+    agent_id: str
+    templates: list[str] | None
 
 
 async def management_permission() -> Permitted | str:
@@ -98,7 +103,13 @@ async def management_permission() -> Permitted | str:
                 f"Agent {agent.name}'s owner no longer exists, so it cannot "
                 "manage agents."
             )
-    return Permitted(tenant_id=require_tenant_id(), owner=owner)
+        templates = agent.manage_agents_templates
+    return Permitted(
+        tenant_id=require_tenant_id(),
+        owner=owner,
+        agent_id=agent_id,
+        templates=None if templates is None else [str(t) for t in templates],
+    )
 
 
 async def permitted_to_manage() -> Permitted:
@@ -248,6 +259,7 @@ async def create_agent(
             auto_approve=auto_approve,
             isolation="shared",
             start=start,
+            created_by_agent_id=permitted.agent_id,
         ),
         get_protocol(),
     )

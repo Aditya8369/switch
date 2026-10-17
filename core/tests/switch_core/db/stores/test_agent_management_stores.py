@@ -273,6 +273,7 @@ class TestDefinitions:
                 controller_id=controller.id,
                 desired_state="running",
                 definition={"provider": "claude"},
+                created_by_agent_id=None,
             )
             assert row.revision == 1
             updated = await DEFINITIONS.update(
@@ -317,6 +318,7 @@ class TestDefinitions:
                 controller_id=None,
                 desired_state="stopped",
                 definition={"provider": "claude"},
+                created_by_agent_id=None,
             )
             with pytest.raises(IntegrityError, match="uq_agent_definitions_agent"):
                 await DEFINITIONS.create(
@@ -326,6 +328,7 @@ class TestDefinitions:
                     controller_id=None,
                     desired_state="stopped",
                     definition={"provider": "claude"},
+                    created_by_agent_id=None,
                 )
 
 

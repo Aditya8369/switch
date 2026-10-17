@@ -1258,10 +1258,13 @@ class ManagementService:
         owner_id: str,
         request: CreateManagedAgentRequest,
         protocol: AgentCore,
+        *,
+        created_by_agent_id: str | None,
     ) -> dict[str, Any]:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
-        refusal leaves nothing behind."""
+        refusal leaves nothing behind. `created_by_agent_id` is the agent that
+        asked for it on its owner's behalf; None when a person did."""
         controller = await self._check_target(
             session,
             tenant_id,
@@ -1308,6 +1311,7 @@ class ManagementService:
             controller_id=request.controller_id,
             desired_state=request.desired_state,
             definition=definition.model_dump(),
+            created_by_agent_id=created_by_agent_id,
         )
         revisions = await self._bump_and_collect(
             session, tenant_id, {request.controller_id}
@@ -1444,6 +1448,7 @@ class ManagementService:
                 controller_id=target.controller_id,
                 desired_state=target.desired_state,
                 definition=target.definition,
+                created_by_agent_id=None,
             )
             affected: set[str | None] = {target.controller_id}
         else:
