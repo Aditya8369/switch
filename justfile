@@ -112,6 +112,11 @@ local-server-fresh flags="agent_management,agent_chats,switch_buddy":
     echo '{ "enabled": true }' > "$app_data/$dir/local-switch-server/checkout-build.json"
     echo "Console data: $dir. Pick \"On this computer\": it builds switch-core from $(pwd)"
     echo "and starts it with FEATURE_FLAGS_ENABLED={{ flags }}."
+    # just loaded this checkout's .env into the environment. Docker compose lets
+    # the environment override a stack's own .env, so a Console started with it
+    # would publish the managed stack on this checkout's ports (5432…) and hand
+    # it this checkout's database passwords and flags. Start it without them.
+    [ -f .env ] && for key in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d =); do unset "$key"; done
     cd console && SWITCH_CONSOLE_USER_DATA_DIR="$dir" SWITCH_CONSOLE_MANAGED_FEATURE_FLAGS='{{ flags }}' pnpm dev
 
 # Made by the gateway admin from .env, so it joins the admin's workspace, as
