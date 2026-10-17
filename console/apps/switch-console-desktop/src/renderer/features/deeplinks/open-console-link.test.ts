@@ -17,7 +17,14 @@ const servers = vi.hoisted(() => ({
 }));
 
 vi.mock('sonner', () => ({ toast: { error: toastError } }));
-vi.mock('@renderer/lib/stores/app-state', () => ({ appState: { navigation: { navigate } } }));
+// A method that needs its store, as the real one does: called detached, it throws.
+const navigation = vi.hoisted(() => ({
+  navigate(this: unknown, ...args: unknown[]) {
+    if (this !== navigation) throw new Error('navigate was called without its store');
+    navigate(...args);
+  },
+}));
+vi.mock('@renderer/lib/stores/app-state', () => ({ appState: { navigation } }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({ showModal }));
 vi.mock('@renderer/lib/ipc', () => ({ rpc: { managedAgents: { list } } }));
 vi.mock('@renderer/features/managed-agents/agent-tab-store', () => ({
