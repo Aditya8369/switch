@@ -66,44 +66,44 @@ function originOf(address: string): string | null {
 }
 
 async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> {
-  const navigate = appState.navigation.navigate;
+  const navigation = appState.navigation;
   switch (link.page) {
     case 'home':
-      navigate('server', { serverId });
+      navigation.navigate('server', { serverId });
       return;
     case 'agents':
-      navigate('serverAgents', { serverId });
+      navigation.navigate('serverAgents', { serverId });
       return;
     case 'agents/new':
-      navigate('serverAgents', { serverId });
+      navigation.navigate('serverAgents', { serverId });
       showModal('addAgentModal', { entryPoint: 'link' });
       return;
     case 'agent':
       await openAgent(serverId, link.id!, link.tab);
       return;
     case 'rooms':
-      navigate('serverRooms', { serverId });
+      navigation.navigate('serverRooms', { serverId });
       return;
     case 'room':
-      navigate('room', { roomId: link.id! });
+      navigation.navigate('room', { roomId: link.id! });
       return;
     case 'chat':
-      navigate('chat', { serverId, roomId: link.id!, agentId: null });
+      navigation.navigate('chat', { serverId, roomId: link.id!, agentId: null });
       return;
     case 'buddy':
-      navigate('switchBuddy', { serverId });
+      navigation.navigate('switchBuddy', { serverId });
       return;
     case 'templates':
-      navigate('templates', {
+      navigation.navigate('templates', {
         serverId,
         ...(link.tab ? { kind: link.tab as 'agent' | 'room' | 'group' } : {}),
       });
       return;
     case 'template':
-      navigate('templateDetail', { serverId, templateId: link.id! });
+      navigation.navigate('templateDetail', { serverId, templateId: link.id! });
       return;
     case 'messaging-apps/connect':
-      navigate('server', { serverId });
+      navigation.navigate('server', { serverId });
       showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       return;
     case 'connections':
