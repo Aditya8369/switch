@@ -75,7 +75,7 @@ describe('openConsoleLink', () => {
   it('says so for an agent that has no page here', async () => {
     list.mockResolvedValueOnce([]);
     await openConsoleLink('switchdash://open/agent/someone-elses');
-    expect(navigate).toHaveBeenCalledWith('serverAgents', { serverId: 'srv-1' });
+    expect(navigate).not.toHaveBeenCalled();
     expect(toastError).toHaveBeenCalled();
   });
 

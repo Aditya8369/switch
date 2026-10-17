@@ -23,6 +23,11 @@ export const DEEPLINK_SCHEME = 'switchdash';
  * app. Set to `1` only when you specifically want to test deeplinks against the
  * dev build (and run `pnpm run deeplink:reset` afterwards to hand the scheme
  * back to the installed app).
+ *
+ * With several checkouts on one Mac, each registers its own `Electron.app`
+ * and the OS picks any of them, so aim a test link at the build you started:
+ * `open -a <checkout>/console/node_modules/electron/dist/Electron.app 'switchdash://…'`.
+ * `deeplink:reset` only unregisters the checkout it runs in.
  */
 const DEV_REGISTER_DEEPLINK_ENV = 'SWITCHDASH_REGISTER_DEEPLINK';
 
