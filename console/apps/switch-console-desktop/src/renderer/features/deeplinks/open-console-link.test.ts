@@ -79,7 +79,22 @@ describe('openConsoleLink', () => {
     expect(toastError).toHaveBeenCalled();
   });
 
+  it("opens switch-buddy's own page on the tab the link names", async () => {
+    list.mockResolvedValueOnce([
+      { agentId: 'a-1', name: 'reviewer' },
+      { agentId: 'b-1', name: 'switch-buddy-ada' },
+    ]);
+    await openConsoleLink('switchdash://open/buddy?tab=settings');
+    expect(setTab).toHaveBeenCalledWith('b-1', 'settings');
+    expect(navigate).toHaveBeenCalledWith('managedAgent', {
+      serverId: 'srv-1',
+      agentId: 'b-1',
+      name: 'switch-buddy-ada',
+    });
+  });
+
   it('switches to the server a link names', async () => {
+    list.mockResolvedValueOnce([]);
     await openConsoleLink('switchdash://open/buddy?server=https%3A%2F%2Fswitch.example.com%2F');
     expect(servers.setActive).toHaveBeenCalledWith('srv-2');
     expect(navigate).toHaveBeenCalledWith('switchBuddy', { serverId: 'srv-2' });

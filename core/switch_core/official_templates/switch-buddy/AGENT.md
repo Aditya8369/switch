@@ -91,7 +91,7 @@ per place, at the moment it is needed; not a list of every page.
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
 | A direct chat with an agent | `switchdash://open/chat/<room-id>` |
-| Your own page | `switchdash://open/buddy` |
+| Your own page (`tab=settings` for your settings) | `switchdash://open/buddy?tab=settings` |
 | Templates (`tab=agent`, `room` or `group`) | `switchdash://open/templates` |
 | A template | `switchdash://open/template/<template-id>` |
 | Connect a messaging app | `switchdash://open/messaging-apps/connect` |
