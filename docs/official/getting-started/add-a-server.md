@@ -40,7 +40,7 @@ There is no URL to copy and no secret to enter. A first setup takes about a minu
 
 **Note**
 
-A local server you set up with an earlier version of Switch Console, which ran in Docker, keeps running in Docker. Resetting it from the server's page deletes its data, and the next start sets it up without Docker.
+A local server you set up with an earlier version of Switch Console, which ran in Docker, keeps running in Docker until you move it. On the server's page, **Move to the Docker-free server** moves it with everything in it: agents, rooms, history and its Mattermost. Docker has to be running for the move, which takes a few minutes. If the move fails, the Docker server is left exactly as it was. After a successful move, the old Docker volumes are kept but no longer used; Mattermost's files volume stays in use.
 
 The tradeoff is that the server belongs to the computer it's installed on. Colleagues can't connect to it. Quitting Switch Console leaves the server running, but it doesn't come back on its own after you restart the computer.
 

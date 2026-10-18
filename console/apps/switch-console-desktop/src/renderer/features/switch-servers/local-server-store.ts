@@ -206,6 +206,12 @@ export class LocalServerStore {
     await this.runStart(() => rpc.localSwitchServer.start(), 'Could not start the server.');
   }
 
+  /** Move a server that runs on Docker to the Docker-free runtime, keeping
+   * its data. */
+  async moveToNative(): Promise<void> {
+    await this.runStart(() => rpc.localSwitchServer.moveToNative(), 'Could not move the server.');
+  }
+
   /** Move whatever publishes on `port` to a free port, then start. */
   async useAnotherPort(port: number): Promise<void> {
     await this.runStart(

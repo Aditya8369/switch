@@ -8,6 +8,7 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import {
   CHECKOUT_IMAGE_TAG,
@@ -330,6 +331,14 @@ const ManagedServerPage = observer(function ManagedServerPage({
               aria-label="Run Mattermost"
             />
           </div>
+        )}
+
+        {sshHost === null && localServerStore.runtime === 'docker' && (
+          <MoveOffDocker
+            disabled={working || !(localDocker?.available ?? false)}
+            dockerDetail={localDocker && !localDocker.available ? localDocker.detail : null}
+            onConfirm={() => void localServerStore.moveToNative()}
+          />
         )}
 
         {/* Dev builds launched from a Switch checkout only. */}
@@ -754,3 +763,58 @@ export const managedServerView = {
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string }>;
+
+/**
+ * The offer to move a server set up on Docker to the Docker-free runtime,
+ * keeping its data. Asks once more before doing it: the server is down while
+ * it moves.
+ */
+function MoveOffDocker({
+  disabled,
+  dockerDetail,
+  onConfirm,
+}: {
+  disabled: boolean;
+  /** Why Docker cannot be used right now, when it cannot. The move reads the
+   * old server's data through Docker. */
+  dockerDetail: string | null;
+  onConfirm: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-[10px] border-[0.5px] border-[var(--hair-strong)] px-[14px] py-3">
+      <div className="min-w-0">
+        <p className="text-[13px] text-foreground">Move to the Docker-free server</p>
+        <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
+          {confirming
+            ? 'The server is unavailable for a few minutes while it moves. Agents, rooms and history come along, and so does Mattermost. If anything goes wrong, the Docker server is left exactly as it was.'
+            : dockerDetail
+              ? `Moving reads this server's data through Docker, which is not available. ${dockerDetail}`
+              : 'Runs this server without Docker from now on, keeping its agents, rooms and history. Mattermost moves too, still in Docker.'}
+        </p>
+      </div>
+      <div className="flex shrink-0 gap-2">
+        {confirming && (
+          <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
+            Cancel
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            setConfirming(false);
+            onConfirm();
+          }}
+        >
+          {confirming ? 'Move it' : 'Move…'}
+        </Button>
+      </div>
+    </div>
+  );
+}

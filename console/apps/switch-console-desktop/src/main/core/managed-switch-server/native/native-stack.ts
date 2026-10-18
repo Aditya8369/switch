@@ -2,7 +2,11 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
-import { assertManagedServerUrlFree } from '@main/core/switch-servers/servers-store';
+import { fetchBridges, updateBridge } from '@main/core/switch-servers/gateway-client';
+import {
+  assertManagedServerUrlFree,
+  getManagedServer,
+} from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import {
   COMPATIBLE_SWITCH_VERSION,
@@ -50,6 +54,7 @@ import {
   startMattermost,
   stopMattermost,
 } from './mattermost';
+import { type DockerExport, importIntoCluster } from './migrate-from-docker';
 import type { NativeLayout } from './native-paths';
 import {
   findPostgresForCluster,
@@ -95,6 +100,9 @@ export type NativeStartOptions = {
   mattermost: boolean | null;
   /** The app's bundled toolchain, or null in a build that ships none. */
   bundleRoot: string | null;
+  /** A Docker stack's exported databases to import into a new cluster, when
+   * this start is the move off Docker; null for every other start. */
+  importFrom: DockerExport | null;
 };
 
 export async function readNativeDeployedVersion(layout: NativeLayout): Promise<DeployedVersion> {
@@ -224,6 +232,22 @@ async function startNativeMattermost(params: StartMattermostParams): Promise<voi
     throw new Error(`Mattermost needs Docker, which is not available. ${docker.detail}`);
   }
   await startMattermost(params);
+  await pointMattermostBridgeAt(`http://localhost:${params.mattermostPort}`);
+}
+
+/**
+ * Point the server's Mattermost bridge at the address switch-core reaches
+ * Mattermost on from this machine. The seeder sets it only when it first
+ * registers the bridge, and a server moved off Docker registered it under the
+ * compose network's name for Mattermost, which means nothing outside it.
+ */
+async function pointMattermostBridgeAt(url: string): Promise<void> {
+  const server = await getManagedServer();
+  if (!server)
+    throw new Error('The local server is not registered, so its bridge cannot be updated.');
+  const bridge = (await fetchBridges(server)).find((candidate) => candidate.type === 'mattermost');
+  if (!bridge) throw new Error('Mattermost was set up, but the server lists no Mattermost bridge.');
+  await updateBridge(server, bridge.id, { connectionConfig: { url } });
 }
 
 /**
@@ -334,6 +358,12 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
 
   const passwords = { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword };
   let upgrade: UpgradeJournal | null = null;
+  if (opts.importFrom !== null && (await clusterExists(layout))) {
+    throw new Error(
+      `A Docker-free database already exists in ${layout.pgdata}, so the Docker server's ` +
+        `data cannot be moved into it.`
+    );
+  }
   if (await clusterExists(layout)) {
     upgrade = await prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
       readDeployedVersion: () => readNativeDeployedVersion(layout),
@@ -351,6 +381,15 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
   // From here a failure leaves processes behind that nothing would stop; a
   // failed start stops them again, so it does not look half-running.
   try {
+    if (opts.importFrom !== null) {
+      await importIntoCluster(
+        opts.importFrom,
+        ports.postgres,
+        secrets.dbPassword,
+        onMessage,
+        pgLog
+      );
+    }
     const telemetryEnabled = await telemetryConsent();
     const settings = buildNativeCoreSettings({
       apiPort: ports.api,
@@ -500,6 +539,21 @@ export async function resetNativeStack(
   await clearSecrets(host);
   await clearPorts(host);
   await finishUpgrade(host);
+}
+
+/**
+ * Throw away a native server a move off Docker started but did not finish:
+ * its processes, database and run state. Credentials and ports stay — they
+ * are the Docker server's, which is still there to go back to.
+ */
+export async function discardNativeData(
+  layout: NativeLayout,
+  bundleRoot: string | null
+): Promise<void> {
+  await stopNativeStack(layout, bundleRoot);
+  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run]) {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 export async function nativeStackRunning(layout: NativeLayout): Promise<boolean> {

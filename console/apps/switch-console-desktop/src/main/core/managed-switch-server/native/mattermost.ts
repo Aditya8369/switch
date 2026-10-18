@@ -29,6 +29,13 @@ import type { SwitchCoreInstall } from './switch-core-install';
 const COMPOSE_FILE = 'mattermost-compose.yml';
 const SETTINGS_FILE = 'mattermost.json';
 const PROJECT_NAME = `${LOCAL_SERVER_PROJECT_NAME}-mattermost`;
+
+/**
+ * Mattermost's files volume, named as the Docker stack's compose names its
+ * own (`<project>_mmdata`), so a server moved off Docker keeps every file its
+ * Mattermost already holds, and a new one starts with an empty volume.
+ */
+export const MATTERMOST_FILES_VOLUME = `${LOCAL_SERVER_PROJECT_NAME}_mmdata`;
 const COMPOSE_TIMEOUT_MS = 20 * 60 * 1000;
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -107,7 +114,7 @@ export function mattermostComposeYaml(params: MattermostComposeParams): string {
   for (const [key, value] of Object.entries(env)) {
     lines.push(`      ${key}: ${JSON.stringify(value)}`);
   }
-  lines.push('volumes:', '  mmdata:', '');
+  lines.push('volumes:', '  mmdata:', `    name: ${MATTERMOST_FILES_VOLUME}`, '');
   return lines.join('\n');
 }
 

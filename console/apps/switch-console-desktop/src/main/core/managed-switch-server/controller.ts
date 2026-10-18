@@ -1,14 +1,14 @@
-import { propagateServerApiUrl } from "@main/core/agents/propagate-server-api-url";
-import { embeddedControllerService } from "@main/core/embedded-controller/embedded-controllers";
-import { getManagedServer } from "@main/core/switch-servers/servers-store";
+import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
+import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
+import { getManagedServer } from '@main/core/switch-servers/servers-store';
 import type {
   DockerAvailability,
   LocalActivityEntry,
   LocalServerStatus,
   StartLocalServerResult,
-} from "@shared/core/managed-switch-server/managed-switch-server";
-import { createRPCController } from "@shared/lib/ipc/rpc";
-import { localServerService } from "./local-server-service";
+} from '@shared/core/managed-switch-server/managed-switch-server';
+import { createRPCController } from '@shared/lib/ipc/rpc';
+import { localServerService } from './local-server-service';
 
 export const localSwitchServerController = createRPCController({
   getStatus: (): Promise<LocalServerStatus> => Promise.resolve(localServerService.getStatus()),
@@ -18,6 +18,10 @@ export const localSwitchServerController = createRPCController({
   start: (): Promise<StartLocalServerResult> => localServerService.start(),
 
   stop: (): Promise<void> => localServerService.stop(),
+
+  /** Move a server that runs on Docker to the Docker-free runtime, keeping
+   * its data. */
+  moveToNative: (): Promise<StartLocalServerResult> => localServerService.moveToNative(),
 
   reset: (): Promise<void> => localServerService.reset(),
 
@@ -44,7 +48,7 @@ export const localSwitchServerController = createRPCController({
   useAnotherPort: async (port: number): Promise<StartLocalServerResult> => {
     const before = await getManagedServer();
     const result = await localServerService.useAnotherPort(port);
-    if (result.kind !== "started" || !before) return result;
+    if (result.kind !== 'started' || !before) return result;
     const after = await getManagedServer();
     if (after && after.apiUrl !== before.apiUrl) {
       await propagateServerApiUrl(after.id, after.apiUrl);
