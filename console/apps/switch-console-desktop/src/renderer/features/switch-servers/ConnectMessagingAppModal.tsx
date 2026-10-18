@@ -33,6 +33,7 @@ import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-serv
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
+import { GUIDE_FILLED_FIELDS, isGuidedPlatform, OwnAppGuide } from './own-app-guide';
 import { switchServersStore } from './switch-servers-store';
 import { WebhookAddressStep } from './webhook-address-step';
 import { administersWorkspaceInScope } from './workspace-admin';
@@ -119,6 +120,22 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
   const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
   const selectedType = types.find((t) => t.key === typeKey) ?? null;
+  // What the guide works out itself (the Slack workspace, the Discord server)
+  // is filled in for the person, not asked of them.
+  const visibleFields = (selectedType?.fields ?? []).filter(
+    (field) =>
+      !isGuidedPlatform(selectedType?.key) ||
+      !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
+  );
+  const setGuideField = useCallback((key: string, value: string | null) => {
+    setConfig((prev) => {
+      if ((prev[key] ?? null) === value) return prev;
+      const next = { ...prev };
+      if (value === null) delete next[key];
+      else next[key] = value;
+      return next;
+    });
+  }, []);
   // Unknown until the type list has loaded; assume supported so the checkbox
   // isn't forced off while that request is in flight.
   const channelCreationSupported = selectedType?.channelCreationSupported ?? true;
@@ -402,7 +419,16 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                     <ExternalLink className="size-3" />
                   </button>
 
-                  {selectedType.fields.map((field) =>
+                  {isGuidedPlatform(selectedType.key) && workspaceId !== null && (
+                    <OwnAppGuide
+                      platform={selectedType.key}
+                      workspaceId={workspaceId}
+                      config={config}
+                      setField={setGuideField}
+                    />
+                  )}
+
+                  {visibleFields.map((field) =>
                     field.kind === 'boolean' ? (
                       <label
                         key={field.key}

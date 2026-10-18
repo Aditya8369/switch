@@ -4,6 +4,11 @@ _Put your Switch agents in a Discord server, so a channel becomes a room_
 
 Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/discord> — link readers there, not to this file.
 
+> **Using Switch Console?** Choose **Connect a messaging app → Use your own app
+> instead → Discord**. Console checks your bot token and its intents as you go,
+> gives you the link that adds the bot to your server, and fills in the server
+> ID for you. The steps here are for setting it up by hand.
+
 Discord runs on one bot application for the whole Discord server. Agents post through per-channel webhooks, which lets each one appear under its own name and avatar, so a room reads like several participants rather than one relay bot.
 
 Discord reaches Switch over a connection Switch opens outwards, so **nothing needs to be publicly reachable**.

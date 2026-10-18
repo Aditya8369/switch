@@ -11,6 +11,9 @@ import {
   addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer,
+  checkDiscordToken,
+  checkSlackTokens,
+  fetchSlackOwnAppSetup,
   beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
@@ -97,6 +100,11 @@ import type {
 } from '@main/core/telemetry/events';
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import type {
+  DiscordTokenChecked,
+  SlackOwnAppSetup,
+  SlackTokensChecked,
+} from '@shared/core/switch-servers/own-app-setup';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -313,6 +321,29 @@ export const workspacesController = createRPCController({
 
   listMessagingApps: (workspaceId: string): Promise<MessagingApps> =>
     withReachableWorkspaceSession(workspaceId, fetchMessagingApps),
+
+  /** Slack's create-app page, filled in with the app this server needs. */
+  slackOwnAppSetup: (workspaceId: string): Promise<SlackOwnAppSetup> =>
+    withReachableWorkspaceSession(workspaceId, fetchSlackOwnAppSetup),
+
+  /** Whether a Slack app's tokens work, and its workspace. Do not log the tokens. */
+  checkSlackTokens: (params: {
+    workspaceId: string;
+    botToken: string;
+    appToken: string;
+  }): Promise<SlackTokensChecked> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      checkSlackTokens(server, { botToken: params.botToken, appToken: params.appToken })
+    ),
+
+  /** A Discord application read from its bot token. Do not log the token. */
+  checkDiscordToken: (params: {
+    workspaceId: string;
+    botToken: string;
+  }): Promise<DiscordTokenChecked> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      checkDiscordToken(server, params.botToken)
+    ),
 
   /** Returns the platform's consent URL for the renderer to open in the browser. */
   beginMessagingAppInstall: (params: { workspaceId: string; platform: string }): Promise<string> =>
