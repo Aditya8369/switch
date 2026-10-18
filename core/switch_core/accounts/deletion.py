@@ -32,7 +32,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
@@ -54,6 +54,7 @@ from switch_core.db.models import (
     ReferenceType,
     Room,
     SealedProviderLogin,
+    ServiceAppCredential,
     ServiceGrant,
     ServiceTokenIssuance,
     Skill,
@@ -61,6 +62,7 @@ from switch_core.db.models import (
     TenantJoinDomain,
     TenantMember,
     User,
+    WorkspaceServiceSetting,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.tenant_context import tenant_scope
@@ -118,6 +120,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("agent_controller_operations", "created_by"): "deleted",
     ("sealed_provider_logins", "sealed_by"): "deleted",
     ("service_grants", "created_by"): "deleted",
+    ("workspace_service_settings", "updated_by"): "handed over",
+    ("service_app_credentials", "updated_by"): "handed over",
     ("provider_connections", "user_id"): "database cascades",
     ("external_user_claims", "user_id"): "database cascades",
     ("chat_operations", "user_id"): "database cascades",
@@ -217,6 +221,7 @@ class AccountDeletion:
         user_id = user.id
         for workspace in workspaces:
             await self._leave_workspace(user_id, workspace)
+        await self._hand_over_server_settings(session, user_id)
         await session.execute(
             delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
         )
@@ -228,6 +233,33 @@ class AccountDeletion:
         await session.execute(delete(User).where(User.id == user_id))
         await session.commit()
         logger.info("Deleted the account of user %s", user_id)
+
+    async def _hand_over_server_settings(
+        self, session: AsyncSession, user_id: str
+    ) -> None:
+        """A service app the person last saved for the whole server stays, as
+        last saved by the server's administrator account, which outlives every
+        other account."""
+        saved = await session.scalar(
+            select(ServiceAppCredential.service)
+            .where(ServiceAppCredential.updated_by == user_id)
+            .limit(1)
+        )
+        if saved is None:
+            return
+        admin_id = await session.scalar(
+            select(User.id).where(func.lower(User.email) == self.admin_email.lower())
+        )
+        if admin_id is None:
+            raise RuntimeError(
+                f"The server's administrator account ({self.admin_email}) is missing, "
+                "so the service apps a deleted account last saved have nobody to pass to."
+            )
+        await session.execute(
+            update(ServiceAppCredential)
+            .where(ServiceAppCredential.updated_by == user_id)
+            .values(updated_by=admin_id)
+        )
 
     async def _leave_workspace(self, user_id: str, workspace: Workspace) -> None:
         tenant_id = workspace.id
@@ -436,6 +468,11 @@ class AccountDeletion:
                 .where(MessagingInstall.installed_by_user_id == user_id)
                 .values(installed_by_user_id=successor)
             )
+            await session.execute(
+                update(WorkspaceServiceSetting)
+                .where(WorkspaceServiceSetting.updated_by == user_id)
+                .values(updated_by=successor)
+            )
         else:
             await session.execute(
                 delete(Invitation).where(Invitation.created_by == user_id)
@@ -446,6 +483,11 @@ class AccountDeletion:
             await session.execute(
                 delete(MessagingInstall).where(
                     MessagingInstall.installed_by_user_id == user_id
+                )
+            )
+            await session.execute(
+                delete(WorkspaceServiceSetting).where(
+                    WorkspaceServiceSetting.updated_by == user_id
                 )
             )
         await session.execute(

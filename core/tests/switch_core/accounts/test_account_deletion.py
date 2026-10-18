@@ -40,6 +40,7 @@ from switch_core.db.models import (
     Tenant,
     TenantMember,
     User,
+    WorkspaceServiceSetting,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -338,6 +339,14 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
             )
         )
         session.add(OidcIdentity(user_id=leaving.id, iss="https://idp", sub="s1"))
+        session.add(
+            WorkspaceServiceSetting(
+                tenant_id=TENANT_ZERO_ID,
+                service="github",
+                enabled=False,
+                updated_by=leaving.id,
+            )
+        )
         await session.commit()
         ids = {
             "user": leaving.id,
@@ -364,6 +373,13 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
         assert (
             await session.scalar(
                 select(Invitation.created_by).where(Invitation.id == ids["invitation"])
+            )
+        ) == ids["owner"]
+        assert (
+            await session.scalar(
+                select(WorkspaceServiceSetting.updated_by).where(
+                    WorkspaceServiceSetting.service == "github"
+                )
             )
         ) == ids["owner"]
         room = await session.scalar(select(Room).where(Room.id == ids["shared_room"]))
