@@ -161,7 +161,8 @@ beforeEach(() => {
   native.running.mockResolvedValue(false);
   native.deployed.mockResolvedValue({ kind: 'absent' });
   native.start.mockResolvedValue({ result: started, bringUpMattermost: null });
-  move.blocked.mockResolvedValue(null);
+  // Docker servers stay on Docker unless a test is about moving them.
+  move.blocked.mockResolvedValue('not moved in this test');
 });
 
 it('upgrades a running server that is behind at boot, without switching to it', async () => {
@@ -546,46 +547,68 @@ it('turns Mattermost on for a running server without restarting it', async () =>
 
 const exported = { dir: '/data/backups/moved', dumps: [], deployedVersion: '0.11.0' };
 
-it('moves a Docker server off Docker, keeping its data, and records the new runtime', async () => {
+it('moves a Docker server off Docker on its own at the next start, keeping its data', async () => {
   m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
   m.running.mockResolvedValue(false);
+  move.blocked.mockResolvedValue(null);
   move.export.mockResolvedValue(exported);
   const service = new LocalServerService();
   await boot(service);
 
-  await expect(service.moveToNative()).resolves.toEqual(started);
+  await expect(service.start()).resolves.toEqual(started);
 
   expect(move.export).toHaveBeenCalledOnce();
-  expect(native.start).toHaveBeenCalledWith(expect.objectContaining({ importFrom: exported }));
+  expect(native.start).toHaveBeenCalledWith(
+    expect.objectContaining({ importFrom: exported, mattermost: true })
+  );
   expect(m.start).not.toHaveBeenCalled();
-  expect(mattermost.write).toHaveBeenCalledWith('/data/local-switch-server', true);
   expect(runtime.write).toHaveBeenCalledWith('/data/local-switch-server', 'native');
   expect(service.getStatus()).toMatchObject({ phase: 'running', runtime: 'native' });
 });
 
-it('leaves the Docker server in place when the move fails', async () => {
+it('moves a running Docker server off Docker at boot', async () => {
   m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
-  m.running.mockResolvedValue(false);
+  m.running.mockResolvedValue(true);
+  move.blocked.mockResolvedValue(null);
   move.export.mockResolvedValue(exported);
-  native.start.mockRejectedValue(new Error('pg_restore failed'));
   const service = new LocalServerService();
   await boot(service);
 
-  const result = await service.moveToNative();
-
-  expect(result.kind).toBe('error');
-  expect(native.discard).toHaveBeenCalledOnce();
-  expect(runtime.write).not.toHaveBeenCalledWith('/data/local-switch-server', 'native');
-  expect(service.getStatus().error).toContain('pg_restore failed');
-  expect(service.getStatus().error).toContain('Nothing was lost');
+  expect(move.export).toHaveBeenCalledOnce();
+  expect(service.getStatus()).toMatchObject({ phase: 'running', runtime: 'native' });
 });
 
-it('refuses to move a server the move cannot carry', async () => {
+it('keeps a server on Docker, running, when the move fails, and says so', async () => {
   m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
-  move.blocked.mockResolvedValue('Start it once to update it, then move it.');
+  m.running.mockResolvedValue(false);
+  move.blocked.mockResolvedValue(null);
+  move.export.mockResolvedValue(exported);
+  native.start.mockRejectedValue(new Error('pg_restore failed'));
+  m.start.mockResolvedValue(started);
   const service = new LocalServerService();
   await boot(service);
 
-  await expect(service.moveToNative()).rejects.toThrow('Start it once to update it');
+  await expect(service.start()).resolves.toEqual(started);
+
+  expect(native.discard).toHaveBeenCalledOnce();
+  expect(m.start).toHaveBeenCalledOnce();
+  expect(runtime.write).not.toHaveBeenCalledWith('/data/local-switch-server', 'native');
+  expect(service.getStatus()).toMatchObject({ phase: 'running' });
+  expect(service.getStatus().notice).toContain('pg_restore failed');
+  expect(service.getStatus().notice).toContain('still running on Docker');
+});
+
+it('starts a server on Docker as before when it cannot be moved yet', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  m.running.mockResolvedValue(false);
+  move.blocked.mockResolvedValue('Start it once to update it, then move it.');
+  m.start.mockResolvedValue(started);
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.start();
+
   expect(move.export).not.toHaveBeenCalled();
+  expect(m.start).toHaveBeenCalledOnce();
+  expect(service.getStatus().notice).toBeNull();
 });

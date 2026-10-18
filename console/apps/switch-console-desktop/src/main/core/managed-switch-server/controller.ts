@@ -19,10 +19,6 @@ export const localSwitchServerController = createRPCController({
 
   stop: (): Promise<void> => localServerService.stop(),
 
-  /** Move a server that runs on Docker to the Docker-free runtime, keeping
-   * its data. */
-  moveToNative: (): Promise<StartLocalServerResult> => localServerService.moveToNative(),
-
   reset: (): Promise<void> => localServerService.reset(),
 
   /** Dev-only: build the stack's images from the local Switch checkout on the
