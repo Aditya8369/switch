@@ -1054,6 +1054,32 @@ async def test_the_periodic_recheck_recovers_a_missed_notification(
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
+async def test_a_changed_agent_resends_the_chats_it_is_in(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _stream(chats, chats.bob, {}, recheck=60.0)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    async with chats.factory() as session:
+        await AgentStore().update(
+            session,
+            agent.id,
+            icon_url="https://example.com/new.png",
+            display_name="Helper",
+        )
+        await session.commit()
+    await chats.service.agent_changed(TENANT, agent.id)
+
+    name, summary = await events.next()
+    assert name == "chat" and summary["roomId"] == room_id
+    assert summary["agents"][0]["iconUrl"] == "https://example.com/new.png"
+    assert summary["agents"][0]["displayName"] == "Helper"
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
 def _stream_on(process: _Process, user: User) -> _Events:
     """A stream held by `process` that re-reads on its own only after an hour,
     so whatever it says before then, something woke it to say."""

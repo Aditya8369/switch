@@ -1115,6 +1115,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     ChatSignals(service=chat_service, bus=signal_bus)
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
+    protocol.set_agent_profile_listener(chat_service.agent_changed)
 
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
