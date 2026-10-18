@@ -42,7 +42,8 @@ describe('agentConversations', () => {
     const channel = summary({ roomId: 'team', channelType: 'channel_private' });
     const split = agentConversations(
       [direct, slackDm, channel],
-      [room('team', 'team'), room('dm', 'dm'), room('slack-dm', 'Dana'), room('old', 'old', true)]
+      [room('team', 'team'), room('dm', 'dm'), room('slack-dm', 'Dana'), room('old', 'old', true)],
+      new Set()
     );
     expect(split.direct.map((chat) => chat.roomId)).toEqual(['dm']);
     expect(split.rooms.map((each) => each.roomId)).toEqual(['slack-dm', 'team']);
@@ -50,7 +51,7 @@ describe('agentConversations', () => {
 
   it('puts a direct room with two agents under Rooms', () => {
     const shared = summary({ roomId: 'pair', agents: [agent('a', 'alpha'), agent('b', 'beta')] });
-    const split = agentConversations([shared], []);
+    const split = agentConversations([shared], [], new Set());
     expect(split.direct).toEqual([]);
     expect(split.rooms).toEqual([{ roomId: 'pair', roomName: 'Chat with helper' }]);
   });
@@ -62,12 +63,21 @@ describe('agentConversations', () => {
       channelType: 'channel_private',
       agents: [agent('a', 'alpha'), agent('b', 'beta')],
     });
-    const split = agentConversations([group], [room('team', 'team')]);
+    const split = agentConversations([group], [room('team', 'team')], new Set());
     expect(split.direct).toEqual([]);
     expect(split.rooms).toEqual([
       { roomId: 'team', roomName: 'team', archived: false, status: 'live', roomRole: null },
       { roomId: 'group', roomName: 'Try me' },
     ]);
+  });
+
+  it('excludes stale membership entries for removed rooms', () => {
+    const split = agentConversations(
+      [],
+      [room('removed', 'Removed Room'), room('live', 'Live Room')],
+      new Set(['removed'])
+    );
+    expect(split.rooms.map((each) => each.roomId)).toEqual(['live']);
   });
 });
 

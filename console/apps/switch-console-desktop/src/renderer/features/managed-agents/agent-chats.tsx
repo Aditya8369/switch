@@ -71,7 +71,7 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   // The chats store follows the window's server; another server's chats are not in it.
   const agentChats = chatsStore.serverId === serverId ? chatsStore.chatsOfAgent(agentId) : [];
   const agentRooms = switchRoomsStore.roomsFor(workspaceId, agentId);
-  return { agentRooms, ...agentConversations(agentChats, agentRooms ?? []) };
+  return { agentRooms, ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed) };
 }
 
 /** The direct chat open on an agent's page: the one in the params, else its newest. */
