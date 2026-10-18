@@ -17,6 +17,7 @@ from switch_core.bridges.agent.operations.context import get_protocol
 from switch_core.bridges.agent.operations.registry import operation
 from switch_core.connections.broker import ServiceBroker, ServiceError
 from switch_core.db.models import Agent
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.known_agents import known_agent_for
 
@@ -76,7 +77,7 @@ async def set_agent_service(
     permitted = await permitted_to_manage()
     broker = _broker()
     protocol = get_protocol()
-    async with protocol.session_factory() as session:
+    async with tenant_session(protocol.session_factory, permitted.tenant_id) as session:
         agent = await _owned_agent(session, permitted.owner.id, agent_name)
         if known_agent_for(agent) is None:
             raise ValueError(
@@ -124,7 +125,7 @@ async def remove_agent_service(agent_name: str, service: str) -> dict[str, Any]:
     permitted = await permitted_to_manage()
     broker = _broker()
     protocol = get_protocol()
-    async with protocol.session_factory() as session:
+    async with tenant_session(protocol.session_factory, permitted.tenant_id) as session:
         agent = await _owned_agent(session, permitted.owner.id, agent_name)
         grant = await _CONNECTIONS.get_grant(session, agent.id, service)
         if grant is None:

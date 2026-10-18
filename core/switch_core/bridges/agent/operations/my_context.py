@@ -33,6 +33,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.feature_flags import SWITCH_CLOUD
 from switch_core.version import switch_core_version
@@ -98,7 +99,7 @@ async def get_my_context() -> dict[str, Any]:
     """
     protocol = get_protocol()
     tenant_id = require_tenant_id()
-    async with protocol.session_factory() as session:
+    async with tenant_session(protocol.session_factory, tenant_id) as session:
         caller = await protocol.agent_store.get(session, get_agent_id())
         if caller is None:
             raise ValueError(f"Unknown agent: {get_agent_id()}")
