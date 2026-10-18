@@ -1230,6 +1230,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             gateway_app=gateway_app,
             protocol=protocol,
         )
+        # What deleting an account needs of it: revoking the person's machines.
+        gateway_app.state.controller_revoker = management.service
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()

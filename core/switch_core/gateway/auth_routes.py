@@ -78,8 +78,6 @@ from switch_core.gateway.schemas import (
     SignupResponse,
     UserResponse,
 )
-from switch_core.management.dependencies import get_management_if_installed
-from switch_core.management.service import ManagementService
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.tenant_context import tenant_scope
@@ -421,9 +419,6 @@ async def delete_my_account(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
-    management: Annotated[
-        ManagementService | None, Depends(get_management_if_installed)
-    ],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
@@ -450,7 +445,8 @@ async def delete_my_account(
     deletion = AccountDeletion(
         session_factory=session_factory,
         protocol=protocol,
-        management=management,
+        # Set by the wiring when agent management runs (`switch_core.main`).
+        management=getattr(request.app.state, "controller_revoker", None),
         broker=broker,
         resources=resource_service,
         rooms=room_service,
