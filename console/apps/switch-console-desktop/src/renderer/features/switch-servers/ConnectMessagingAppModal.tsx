@@ -33,7 +33,12 @@ import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-serv
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
-import { GUIDE_FILLED_FIELDS, isGuidedPlatform, OwnAppGuide } from './own-app-guide';
+import {
+  GUIDE_FILLED_FIELDS,
+  GUIDE_REQUIRED_FIELDS,
+  isGuidedPlatform,
+  OwnAppGuide,
+} from './own-app-guide';
 import { switchServersStore } from './switch-servers-store';
 import { WebhookAddressStep } from './webhook-address-step';
 import { administersWorkspaceInScope } from './workspace-admin';
@@ -122,7 +127,15 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const selectedType = types.find((t) => t.key === typeKey) ?? null;
   // What the guide works out itself (the Slack workspace, the Discord server)
   // is filled in for the person, not asked of them.
-  const visibleFields = (selectedType?.fields ?? []).filter(
+  // The guide asks for its tokens as required, whatever the schema says (a
+  // token a shared app leaves optional is not, on a server's own app).
+  const guidedFields = (selectedType?.fields ?? []).map((field) =>
+    isGuidedPlatform(selectedType?.key) &&
+    GUIDE_REQUIRED_FIELDS[selectedType.key].includes(field.key)
+      ? { ...field, required: true }
+      : field
+  );
+  const visibleFields = guidedFields.filter(
     (field) =>
       !isGuidedPlatform(selectedType?.key) ||
       !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
@@ -161,7 +174,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   );
 
   const trimmedName = displayName.trim();
-  const missingRequired = (selectedType?.fields ?? []).some((f) => {
+  const missingRequired = guidedFields.some((f) => {
     if (!f.required) return false;
     const value = config[f.key];
     // `false` is an answer, not an omission — only a blank string is missing.

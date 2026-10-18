@@ -16,6 +16,13 @@ export function isGuidedPlatform(key: string | null | undefined): key is GuidedP
   return GUIDED_PLATFORMS.includes(key as GuidedPlatform);
 }
 
+/** The tokens the guide needs, asked for as required whatever the schema says:
+ * on a server's own app they are, even where a shared app makes them optional. */
+export const GUIDE_REQUIRED_FIELDS: Record<GuidedPlatform, readonly string[]> = {
+  slack: ['bot_token', 'app_token'],
+  discord: ['bot_token'],
+};
+
 /** The fields the guide fills in itself, which the form does not ask for. */
 export const GUIDE_FILLED_FIELDS: Record<GuidedPlatform, readonly string[]> = {
   slack: ['workspace_id'],
@@ -117,7 +124,7 @@ function SlackGuide({ workspaceId, config, setField }: Props) {
 
   return (
     <ol className="space-y-3 rounded-lg border border-border bg-background-1 p-3">
-      <Step n={1} done={ready}>
+      <Step n={1} done={!!check.data}>
         <p>Create the app in Slack. It opens already set up for this server.</p>
         <Button
           size="sm"
@@ -138,13 +145,13 @@ function SlackGuide({ workspaceId, config, setField }: Props) {
           <Status ok={false}>{failureText(setup.error, 'Could not prepare the Slack app.')}</Status>
         )}
       </Step>
-      <Step n={2} done={botToken.length > 0}>
+      <Step n={2} done={!!check.data}>
         <p>
           In Slack, open <b>Install App</b>, click <b>Install to your workspace</b> and allow it.
           Copy the <b>Bot User OAuth Token</b> (xoxb-…) into <b>Bot token</b> below.
         </p>
       </Step>
-      <Step n={3} done={appToken.length > 0}>
+      <Step n={3} done={!!check.data}>
         <p>
           Open <b>Basic Information</b>, and under <b>App-Level Tokens</b> click{' '}
           <b>Generate Token and Scopes</b>. Add the <b>connections:write</b> scope, generate, and
@@ -231,15 +238,17 @@ function DiscordGuide({ workspaceId, config, setField }: Props) {
       </Step>
       <Step n={3} done={intentsOn && !!server}>
         <p>Add the bot to your Discord server, with the permissions Switch needs.</p>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!intentsOn}
-          onClick={() => data && void openExternalUrl(data.inviteUrl, 'Could not open Discord')}
-        >
-          Add the bot to your server
-          <ExternalLink className="size-3.5" />
-        </Button>
+        {data && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!intentsOn}
+            onClick={() => void openExternalUrl(data.inviteUrl, 'Could not open Discord')}
+          >
+            Add the bot to your server
+            <ExternalLink className="size-3.5" />
+          </Button>
+        )}
         {intentsOn && servers.length === 0 && (
           <p className="flex items-center gap-1.5 text-xs text-foreground-muted">
             <Spinner className="size-3" /> Waiting for the bot to join a server…
