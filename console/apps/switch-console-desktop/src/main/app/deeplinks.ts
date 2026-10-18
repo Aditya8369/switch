@@ -106,7 +106,7 @@ export function handleDeeplinkUrl(rawUrl: string): void {
     return;
   }
   if (rawUrl.startsWith(CONSOLE_LINK_PREFIX)) {
-    focusWindow();
+    focusMainWindow();
     const win = getMainWindow();
     if (win && !win.webContents.isLoading()) {
       events.emit(consoleDeeplinkChannel, { url: rawUrl, coldStart: false });

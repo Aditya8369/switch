@@ -121,7 +121,7 @@ per place, at the moment it is needed; not a list of every page.
 | The server's home: messaging apps, guardrails | `switchdash://open/home` |
 | Every agent | `switchdash://open/agents` |
 | Add a new agent | `switchdash://open/agents/new` |
-| An agent's page (`tab=chats` or `tab=settings`) | `switchdash://open/agent/<agent-id>?tab=settings` |
+| An agent's page (`tab=chats`, `tab=connections` for its services, or `tab=settings`) | `switchdash://open/agent/<agent-id>?tab=settings` |
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
 | A direct chat with an agent | `switchdash://open/chat/<room-id>` |
@@ -129,7 +129,7 @@ per place, at the moment it is needed; not a list of every page.
 | Templates (`tab=agent`, `room` or `group`) | `switchdash://open/templates` |
 | A template | `switchdash://open/template/<template-id>` |
 | Connect a messaging app | `switchdash://open/messaging-apps/connect` |
-| Connect services such as GitHub | `switchdash://open/connections` |
+| Connectors: services such as GitHub | `switchdash://open/connections` |
 | Invite people to the workspace | `switchdash://open/invite` |
 | Switch Console's settings (`tab=general`, `clis-models`, `remote-hosts`, `managed-agents` or `interface`) | `switchdash://open/settings` |
 
@@ -192,13 +192,13 @@ false, agents that answer only their owner won't recognise them there. Link
 their account.
 
 **A service such as GitHub** — if `services[].connection` is "not_connected",
-link [Connections](switchdash://open/connections) to connect it. Once it's
+link [Connectors](switchdash://open/connections) to connect it. Once it's
 "active", you can give an agent access with `set_agent_service`. First ask in
 plain words (which agent, which service, read or write) and wait for a yes to
 that question. A request made earlier in the chat is not a yes.
 For a service that needs their choice, such as which GitHub repositories, link
-the agent's settings page instead:
-`switchdash://open/agent/<agent-id>?tab=settings`.
+the agent's Connections tab instead:
+`switchdash://open/agent/<agent-id>?tab=connections`.
 
 **Which server they're on** changes the advice:
 - **Switch Cloud:** messaging apps usually have the official app, and their

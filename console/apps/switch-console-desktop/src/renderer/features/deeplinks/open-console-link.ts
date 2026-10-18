@@ -108,7 +108,7 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       return;
     case 'connections':
-      showModal('connectionsModal', { serverId });
+      navigation.navigate('connectors', { serverId });
       return;
     case 'invite': {
       const workspaceId = workspacesStore.idOnServerInScope(serverId);
@@ -137,7 +137,7 @@ async function openBuddy(serverId: string, tab: string | null): Promise<void> {
     appState.navigation.navigate('switchBuddy', { serverId });
     return;
   }
-  agentTabStore.setTab(buddy.agentId, tab === 'settings' ? 'settings' : 'chats');
+  agentTabStore.setTab(buddy.agentId, tab === 'settings' || tab === 'connections' ? tab : 'chats');
   appState.navigation.navigate('managedAgent', {
     serverId,
     agentId: buddy.agentId,
@@ -155,6 +155,7 @@ async function openAgent(serverId: string, agentId: string, tab: string | null):
     });
     return;
   }
-  if (tab === 'chats' || tab === 'settings') agentTabStore.setTab(agentId, tab);
+  if (tab === 'chats' || tab === 'connections' || tab === 'settings')
+    agentTabStore.setTab(agentId, tab);
   appState.navigation.navigate('managedAgent', { serverId, agentId, name: agent.name });
 }

@@ -55,7 +55,7 @@ async def set_agent_service(
     and only services your owner has connected (`get_my_context` lists both).
     Some services need a choice only a person can make, such as which GitHub
     repositories: when the refusal says so, link your owner to the agent's
-    settings page (`switchdash://open/agent/<agent-id>?tab=settings`), where
+    Connections tab (`switchdash://open/agent/<agent-id>?tab=connections`), where
     Switch Console asks for it.
 
     Args:
