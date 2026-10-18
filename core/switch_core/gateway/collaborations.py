@@ -29,7 +29,6 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.own_app_setup import (
     SetupCheckError,
-    check_discord,
     check_slack,
     slack_create_url,
     slack_manifest,
@@ -70,9 +69,6 @@ from switch_core.gateway.schemas import (
     ClaimIdentityRequest,
     DirectorySearchResponse,
     DirectoryUserSummary,
-    DiscordServer,
-    DiscordTokenCheck,
-    DiscordTokenChecked,
     ExternalUserSummary,
     IdentityClaimant,
     SlackOwnAppSetup,
@@ -321,28 +317,6 @@ async def check_slack_tokens(
         workspace_id=checked.workspace_id,
         workspace_name=checked.workspace_name,
         bot_name=checked.bot_name,
-    )
-
-
-@router.post("/setup/discord/check")
-async def check_discord_token(
-    req: DiscordTokenCheck,
-    _user: Annotated[User, Depends(require_tenant_admin)],
-) -> DiscordTokenChecked:
-    """The Discord application behind a bot token: whether its intents are on,
-    the link that adds its bot to a server, and the servers it is in."""
-    try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            checked = await check_discord(http, bot_token=req.bot_token)
-    except SetupCheckError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    return DiscordTokenChecked(
-        application_id=checked.application_id,
-        name=checked.name,
-        message_content=checked.message_content,
-        server_members=checked.server_members,
-        invite_url=checked.invite_url,
-        servers=[DiscordServer(**server) for server in checked.servers],
     )
 
 

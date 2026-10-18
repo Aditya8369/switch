@@ -1,20 +1,14 @@
-"""Setting up a Slack or Discord app of your own, with as little by hand as the
-platforms allow.
+"""Setting up a Slack app of your own, with as little by hand as Slack allows.
 
-A self-hosted Switch cannot use the official Switch apps, so whoever runs it
-creates an app on the platform and pastes its tokens. This module does what
-can be done for them:
+A self-hosted Switch cannot use the official Switch app, so whoever runs it
+creates a Slack app and pastes its tokens. Slack creates an app from a
+manifest, and its create-app page takes one in its address: `slack_manifest`
+is that manifest, built from what this server actually uses (its scopes,
+events and in-room commands), so the app comes out configured. `check_slack`
+then reads the workspace from the bot token and confirms the app-level token
+opens a Socket Mode connection.
 
-- **Slack** creates an app from a manifest, and its create-app page takes one
-  in its address. `slack_manifest` is that manifest, built from what this
-  server actually uses (its scopes, events and in-room commands), so the app
-  comes out configured. `check_slack` then reads the workspace from the bot
-  token and confirms the app-level token opens a Socket Mode connection.
-- **Discord** has no manifest, so the application is made by hand. From its bot
-  token, `check_discord` reads the application, says whether the two
-  privileged intents Switch needs are on, builds the link that adds the bot to
-  a server with the permissions Switch needs, and lists the servers it has
-  joined, so nobody has to copy an id.
+Discord has nothing like a manifest, so its setup stays the guide.
 """
 
 from __future__ import annotations
@@ -27,13 +21,10 @@ from urllib.parse import urlencode
 import httpx
 
 from switch_core.bridges.agent.commands import COMMANDS
-from switch_core.bridges.collaboration.discord.install import PERMISSIONS, SCOPES
 from switch_core.bridges.collaboration.slack.install import BOT_SCOPES
 
 SLACK_API = "https://slack.com/api"
 SLACK_CREATE_APP = "https://api.slack.com/apps"
-DISCORD_API = "https://discord.com/api/v10"
-DISCORD_AUTHORIZE = "https://discord.com/oauth2/authorize"
 
 #: What the app is called in Slack; Slack allows 35 characters.
 SLACK_APP_NAME = "Agent Switch"
@@ -43,12 +34,6 @@ SLACK_BOT_EVENTS = ("message.channels", "message.groups", "message.im", "message
 
 #: Slack refuses a slash command description longer than this.
 _SLACK_DESCRIPTION_MAX = 100
-
-# Discord application flags for the privileged intents. An application in
-# fewer than 100 servers gets the `_LIMITED` bit when the switch is turned on
-# in the developer portal; a verified one gets the full bit.
-_GUILD_MEMBERS = (1 << 14) | (1 << 15)
-_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 
 
 class SetupCheckError(Exception):
@@ -66,6 +51,9 @@ def slack_manifest() -> dict[str, Any]:
     """The manifest of a Slack app that does everything this server uses."""
     commands = []
     for command in COMMANDS:
+        # A command with no description is one kept out of the listing.
+        if not command.description.strip():
+            continue
         entry: dict[str, Any] = {
             "command": f"/{command.name}",
             "description": _short(command.description),
@@ -162,58 +150,3 @@ async def _slack_call(
         raise SetupCheckError(f"Could not reach Slack: {error}") from error
     body = response.json()
     return body if isinstance(body, dict) else {}
-
-
-@dataclass(frozen=True)
-class DiscordCheck:
-    application_id: str
-    name: str
-    message_content: bool
-    server_members: bool
-    invite_url: str
-    servers: list[dict[str, str]]
-
-
-async def check_discord(http: httpx.AsyncClient, *, bot_token: str) -> DiscordCheck:
-    """The application behind a bot token, its intents, and where its bot is."""
-    headers = {"Authorization": f"Bot {bot_token.strip()}"}
-    application = await _discord_get(http, "/applications/@me", headers)
-    servers = await _discord_get(http, "/users/@me/guilds", headers)
-    flags = int(application.get("flags") or 0)
-    application_id = str(application["id"])
-    return DiscordCheck(
-        application_id=application_id,
-        name=str(application.get("name", "")),
-        message_content=bool(flags & _MESSAGE_CONTENT),
-        server_members=bool(flags & _GUILD_MEMBERS),
-        invite_url=f"{DISCORD_AUTHORIZE}?"
-        + urlencode(
-            {
-                "client_id": application_id,
-                "scope": " ".join(SCOPES),
-                "permissions": str(PERMISSIONS),
-            }
-        ),
-        servers=[
-            {"id": str(server["id"]), "name": str(server.get("name", ""))}
-            for server in servers
-            if isinstance(server, dict) and "id" in server
-        ],
-    )
-
-
-async def _discord_get(
-    http: httpx.AsyncClient, path: str, headers: dict[str, str]
-) -> Any:
-    try:
-        response = await http.get(f"{DISCORD_API}{path}", headers=headers)
-    except httpx.HTTPError as error:
-        raise SetupCheckError(f"Could not reach Discord: {error}") from error
-    if response.status_code == httpx.codes.UNAUTHORIZED:
-        raise SetupCheckError(
-            "Discord refused the bot token. On the application's Bot tab, reset "
-            "the token and copy the new one."
-        )
-    if response.status_code != httpx.codes.OK:
-        raise SetupCheckError(f"Discord answered {response.status_code} for {path}.")
-    return response.json()

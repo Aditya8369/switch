@@ -11,7 +11,6 @@ import {
   addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer,
-  checkDiscordToken,
   checkSlackTokens,
   fetchSlackOwnAppSetup,
   beginChatClaim,
@@ -101,7 +100,6 @@ import type {
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type {
-  DiscordTokenChecked,
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
@@ -334,15 +332,6 @@ export const workspacesController = createRPCController({
   }): Promise<SlackTokensChecked> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       checkSlackTokens(server, { botToken: params.botToken, appToken: params.appToken })
-    ),
-
-  /** A Discord application read from its bot token. Do not log the token. */
-  checkDiscordToken: (params: {
-    workspaceId: string;
-    botToken: string;
-  }): Promise<DiscordTokenChecked> =>
-    withReachableWorkspaceSession(params.workspaceId, (server) =>
-      checkDiscordToken(server, params.botToken)
     ),
 
   /** Returns the platform's consent URL for the renderer to open in the browser. */

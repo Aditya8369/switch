@@ -1,7 +1,6 @@
 /**
- * Setting up a Slack or Discord app of your own: the guide reads the workspace
- * or server from the pasted tokens and fills it in, once the platform says the
- * tokens work.
+ * Setting up a Slack app of your own: the guide opens Slack with the app filled
+ * in, and fills in the workspace once Slack says the pasted tokens work.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -19,7 +18,6 @@ vi.hoisted(() => {
 const workspaces = vi.hoisted(() => ({
   slackOwnAppSetup: vi.fn(),
   checkSlackTokens: vi.fn(),
-  checkDiscordToken: vi.fn(),
 }));
 const openExternalUrl = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/lib/ipc', () => ({ rpc: { workspaces } }));
@@ -40,7 +38,7 @@ afterEach(async () => {
 });
 
 async function render(
-  platform: 'slack' | 'discord',
+  platform: 'slack',
   config: Record<string, string>,
   setField: (key: string, value: string | null) => void
 ) {
@@ -94,46 +92,5 @@ describe('the Slack guide', () => {
     });
     expect(setField).toHaveBeenLastCalledWith('workspace_id', 'T123');
     expect(document.body.textContent).toContain('Both tokens work, for the Acme workspace');
-  });
-});
-
-describe('the Discord guide', () => {
-  it('says which intent is off, and fills in the server once the bot is in one', async () => {
-    workspaces.checkDiscordToken.mockResolvedValue({
-      applicationId: '42',
-      name: 'Acme Switch',
-      messageContent: true,
-      serverMembers: true,
-      inviteUrl: 'https://discord.com/oauth2/authorize?client_id=42',
-      servers: [{ id: '7', name: 'Acme' }],
-    });
-    const setField = vi.fn();
-    await render('discord', { bot_token: 'token' }, setField);
-    await settle();
-    await settle();
-    expect(setField).toHaveBeenLastCalledWith('guild_id', '7');
-    expect(document.body.textContent).toContain('Added to Acme');
-    await act(async () => button('Add the bot to your server').click());
-    expect(openExternalUrl).toHaveBeenCalledWith(
-      'https://discord.com/oauth2/authorize?client_id=42',
-      expect.any(String)
-    );
-  });
-
-  it('holds back the server while an intent is off', async () => {
-    workspaces.checkDiscordToken.mockResolvedValue({
-      applicationId: '42',
-      name: 'Acme Switch',
-      messageContent: false,
-      serverMembers: true,
-      inviteUrl: 'https://discord.com/oauth2/authorize?client_id=42',
-      servers: [{ id: '7', name: 'Acme' }],
-    });
-    const setField = vi.fn();
-    await render('discord', { bot_token: 'token' }, setField);
-    await settle();
-    await settle();
-    expect(setField).not.toHaveBeenCalledWith('guild_id', '7');
-    expect(button('Add the bot to your server').disabled).toBe(true);
   });
 });

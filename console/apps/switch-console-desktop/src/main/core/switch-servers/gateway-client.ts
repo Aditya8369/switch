@@ -46,7 +46,6 @@ import {
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import type {
-  DiscordTokenChecked,
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
@@ -1664,34 +1663,6 @@ export async function checkSlackTokens(
     workspaceId: body.workspace_id,
     workspaceName: body.workspace_name,
     botName: body.bot_name,
-  };
-}
-
-/** A Discord application read from its bot token, as `checkSlackTokens` does for Slack. */
-export async function checkDiscordToken(
-  server: SwitchServer,
-  botToken: string
-): Promise<DiscordTokenChecked> {
-  const res = await ownAppCheck(server, '/collaborations/setup/discord/check', {
-    bot_token: botToken,
-  });
-  const body = z
-    .object({
-      application_id: z.string(),
-      name: z.string(),
-      message_content: z.boolean(),
-      server_members: z.boolean(),
-      invite_url: z.string(),
-      servers: z.array(z.object({ id: z.string(), name: z.string() })),
-    })
-    .parse(await res.json());
-  return {
-    applicationId: body.application_id,
-    name: body.name,
-    messageContent: body.message_content,
-    serverMembers: body.server_members,
-    inviteUrl: body.invite_url,
-    servers: body.servers,
   };
 }
 

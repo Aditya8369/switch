@@ -1626,24 +1626,3 @@ class SlackTokensChecked(BaseModel):
     workspace_id: str
     workspace_name: str
     bot_name: str
-
-
-class DiscordTokenCheck(BaseModel):
-    bot_token: str
-
-
-class DiscordServer(BaseModel):
-    id: str
-    name: str
-
-
-class DiscordTokenChecked(BaseModel):
-    application_id: str
-    name: str
-    #: The two privileged intents Switch needs, as the developer portal has them.
-    message_content: bool
-    server_members: bool
-    #: Adds the bot to a server with the permissions Switch needs.
-    invite_url: str
-    #: The servers the bot is in now.
-    servers: list[DiscordServer]

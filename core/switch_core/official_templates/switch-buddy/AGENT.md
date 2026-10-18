@@ -174,15 +174,17 @@ workspace. Offer to draft the message.
 - `official_app`: one step. Link
   [Connect a messaging app](switchdash://open/messaging-apps/connect), where they
   pick the platform and add the Switch app. No tokens to copy.
-- `own_app`: they create an app on the platform first. For Slack and Discord,
-  Switch Console walks them through it: link
-  [Connect a messaging app](switchdash://open/messaging-apps/connect), tell them
-  to choose "Use your own app instead" and the platform, and follow the steps it
-  shows. Slack's app comes pre-filled, the tokens are checked as they paste them,
-  and the workspace or server is filled in for them. For the other platforms,
-  read the platform's page in your clone,
-  `docs/official/deploy/messaging-apps/<platform>.md`, and walk them through it
-  in order. Never ask them to paste a token into this chat.
+- `own_app`: they create an app on the platform first.
+  - **Slack:** Switch Console walks them through it. Link
+    [Connect a messaging app](switchdash://open/messaging-apps/connect) and tell
+    them to choose "Use your own app instead", then Slack, and follow the steps.
+    The app comes pre-filled, the tokens are checked as they paste them, and the
+    workspace is filled in for them.
+  - **Other platforms:** read the platform's page in your clone,
+    `docs/official/deploy/messaging-apps/<platform>.md`, and walk them through
+    it in order. Then link the same page and tell them to choose "Use your own
+    app instead" and paste the values.
+  - Never ask them to paste a token into this chat.
 
 **Their chat account** — when an app is connected but `your_account_linked` is
 false, agents that answer only their owner won't recognise them there. Link
