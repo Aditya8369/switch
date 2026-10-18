@@ -547,7 +547,9 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   // dismissed with Escape.
   const goBack = onBack ?? null;
 
-  const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
+  // The first run goes on to the workspace; the dialog is finished.
+  const finished = onClose === null ? 'Continue' : 'Done';
+  const primaryLabel = running ? finished : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
     if (running) onDone(store.status?.serverId ?? null);
     else void store.start();
