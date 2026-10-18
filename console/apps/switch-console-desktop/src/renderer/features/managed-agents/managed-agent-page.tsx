@@ -59,6 +59,7 @@ import {
 } from './managed-agent-changes';
 import { managedAgentLabel } from './managed-agent-state';
 import { ManagedMachinePill } from './managed-machine-card';
+import { useManagedAgentActions } from './use-managed-agent-actions';
 import {
   MANAGED_AGENTS_KEY,
   useAdvancedConfigSchema,
@@ -105,6 +106,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   const [error, setError] = useState<string | null>(null);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
   const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
+  const { busy, remove } = useManagedAgentActions(agent);
 
   const setValue = <K extends keyof Edits['values']>(key: K, value: Draft[K]) =>
     setEdits((current) => ({ ...current, values: { ...current.values, [key]: value } }));
@@ -385,6 +387,21 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
               Sessions of agents on a machine are not listed here yet.
             </p>
           </section>
+          {chatsOn && (
+            <section className="flex flex-col gap-6">
+              <SectionLabel>Danger zone</SectionLabel>
+              <SettingRow
+                title="Delete agent"
+                info={null}
+                description="Its machine stops it and it is deleted from Switch, for every room it is in."
+                control={
+                  <Button variant="destructive" disabled={busy} onClick={remove}>
+                    Delete agent…
+                  </Button>
+                }
+              />
+            </section>
+          )}
         </div>
       </div>
     </div>

@@ -1,7 +1,6 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { MoreVertical, Power, PowerOff, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ChatHeaderControls } from '@renderer/features/chats/components/chat-header';
 import { useAgentActivities } from '@renderer/features/chats/components/chat-panel';
@@ -14,12 +13,9 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
-import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
-import { rpc } from '@renderer/lib/ipc';
-import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -32,7 +28,8 @@ import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agent
 import { AgentChats, type AgentSection, openAgentChat } from './agent-chats';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
-import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
+import { useManagedAgentActions } from './use-managed-agent-actions';
+import { useManagedAgents } from './use-managed-agents';
 
 type ManagedAgentParams = {
   serverId: string;
@@ -135,49 +132,8 @@ function ManagedAgentActionsMenu({ agent }: { agent: ManagedAgentView }) {
 }
 
 function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
-  const label = managedAgentLabel(agent);
-  const queryClient = useQueryClient();
-  const { navigate } = useNavigate();
-  const confirm = useShowModal('confirmActionModal');
-  const [busy, setBusy] = useState(false);
-
-  const act = async (fallback: string, run: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await run();
-      await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
-    } catch (failure) {
-      const { headline, detail } = describeFailure(failure, fallback);
-      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const setDesiredState = (desiredState: 'running' | 'stopped') =>
-    act(
-      desiredState === 'running'
-        ? `${label} could not be started.`
-        : `${label} could not be stopped.`,
-      () =>
-        rpc.managedAgents.setDesiredState({
-          serverId: agent.serverId,
-          agentId: agent.agentId,
-          desiredState,
-        })
-    );
-  const remove = () =>
-    confirm({
-      title: `Delete ${label}?`,
-      description: `Its machine stops it and it is deleted from Switch, for every room it is in.`,
-      confirmLabel: 'Delete',
-      onSuccess: () =>
-        void act(`${label} could not be deleted.`, async () => {
-          await rpc.managedAgents.remove({ serverId: agent.serverId, agentId: agent.agentId });
-          // Its name is free again: the New agent form checks names against this list.
-          await queryClient.invalidateQueries({ queryKey: ['workspace-agents'] });
-          navigate('serverAgents', { serverId: agent.serverId });
-        }),
-    });
+  const { busy, setDesiredState, remove } = useManagedAgentActions(agent);
+  const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
 
   return (
     <>
@@ -192,11 +148,15 @@ function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
           Turn on agent
         </DropdownMenuItem>
       )}
-      <DropdownMenuSeparator />
-      <DropdownMenuItem variant="destructive" disabled={busy} onClick={remove}>
-        <Trash2 className="size-4" />
-        Delete agent…
-      </DropdownMenuItem>
+      {!chatsOn && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" disabled={busy} onClick={remove}>
+            <Trash2 className="size-4" />
+            Delete agent…
+          </DropdownMenuItem>
+        </>
+      )}
     </>
   );
 }
