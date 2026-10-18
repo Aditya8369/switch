@@ -167,6 +167,9 @@ export type StartMattermostParams = {
   callbackPort: number;
   onMessage: (message: string) => void;
   onLog: (line: string) => void;
+  /** Runs once Mattermost's container is up and before the seeder, which
+   * leaves an already-registered bridge's address alone. */
+  beforeSeed: () => Promise<void>;
 };
 
 /**
@@ -190,6 +193,7 @@ export async function startMattermost(params: StartMattermostParams): Promise<vo
   );
   onMessage('Starting Mattermost (pulling its image if needed)…');
   await compose(layout, ['up', '-d'], onLog);
+  await params.beforeSeed();
 
   onMessage('Setting up Mattermost…');
   await runCommand(

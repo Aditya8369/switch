@@ -49,6 +49,7 @@ import {
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
 import {
+  mattermostCallbackBaseUrl,
   pullMattermostImage,
   type StartMattermostParams,
   startMattermost,
@@ -226,28 +227,41 @@ export type NativeStartResult = {
 };
 
 /** {@link startMattermost}, first checking Docker is there to run it. */
-async function startNativeMattermost(params: StartMattermostParams): Promise<void> {
+async function startNativeMattermost(
+  params: Omit<StartMattermostParams, 'beforeSeed'>
+): Promise<void> {
   const docker = await detectDocker();
   if (!docker.available) {
     throw new Error(`Mattermost needs Docker, which is not available. ${docker.detail}`);
   }
-  await startMattermost(params);
-  await pointMattermostBridgeAt(`http://localhost:${params.mattermostPort}`);
+  await startMattermost({
+    ...params,
+    beforeSeed: () =>
+      pointMattermostBridgeAt(
+        `http://localhost:${params.mattermostPort}`,
+        mattermostCallbackBaseUrl(process.platform, params.callbackPort)
+      ),
+  });
 }
 
 /**
- * Point the server's Mattermost bridge at the address switch-core reaches
- * Mattermost on from this machine. The seeder sets it only when it first
- * registers the bridge, and a server moved off Docker registered it under the
- * compose network's name for Mattermost, which means nothing outside it.
+ * Point an already-registered Mattermost bridge at the addresses that work
+ * from this machine, before the seeder runs: the seeder sets the address only
+ * when it first registers the bridge, and a server moved off Docker carries
+ * one under the compose network's name for Mattermost, which the server then
+ * refuses as unresolvable. A server with no bridge yet has nothing to point —
+ * the seeder registers it with the right address.
  */
-async function pointMattermostBridgeAt(url: string): Promise<void> {
+async function pointMattermostBridgeAt(url: string, callbackBaseUrl: string): Promise<void> {
   const server = await getManagedServer();
-  if (!server)
+  if (!server) {
     throw new Error('The local server is not registered, so its bridge cannot be updated.');
+  }
   const bridge = (await fetchBridges(server)).find((candidate) => candidate.type === 'mattermost');
-  if (!bridge) throw new Error('Mattermost was set up, but the server lists no Mattermost bridge.');
-  await updateBridge(server, bridge.id, { connectionConfig: { url } });
+  if (!bridge) return;
+  await updateBridge(server, bridge.id, {
+    connectionConfig: { url, callback_base_url: callbackBaseUrl },
+  });
 }
 
 /**
