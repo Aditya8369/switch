@@ -582,13 +582,12 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <Laptop className="size-5" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">Switch server · this computer</p>
-            <p className="truncate text-xs text-foreground-muted">
-              switch-core {store.status?.version ?? ''} ·{' '}
-              {needsDocker
-                ? 'runs on this computer via Docker'
-                : 'runs on this computer, no Docker needed'}
-            </p>
+            <p className="text-sm font-medium text-foreground">Switch server</p>
+            {store.status?.version && (
+              <p className="truncate text-xs text-foreground-muted">
+                Version {store.status.version}
+              </p>
+            )}
           </div>
         </div>
 
@@ -596,10 +595,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           <div className="bg-card space-y-2 rounded-lg border border-border p-3">
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
-              <SetupStepItem>
-                Set up PostgreSQL and the Switch server. They come with Switch Console, so nothing
-                needs downloading
-              </SetupStepItem>
+              <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
               <SetupStepItem>Run them in the background on this computer</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
@@ -637,13 +633,10 @@ export const LocalSetupStep = observer(function LocalSetupStep({
         )}
 
         {running && (
-          <Alert>
-            <CircleCheck className="size-4" />
-            <AlertTitle>Local server is running</AlertTitle>
-            <AlertDescription>
-              It's now in your servers list — open it to onboard an agent.
-            </AlertDescription>
-          </Alert>
+          <p className="flex items-center gap-2 text-sm text-foreground">
+            <CircleCheck className="size-4 text-green-500" />
+            Local server is running
+          </p>
         )}
 
         {store.error && !(needsDocker && dockerUnavailable) && !running && (
@@ -672,16 +665,16 @@ export const LocalSetupStep = observer(function LocalSetupStep({
                 </p>
               </div>
             )}
-            <LogTail
-              lines={store.logs}
-              placeholder={
-                starting
-                  ? needsDocker
-                    ? 'Waiting for Docker to report progress…'
-                    : 'Waiting for progress…'
-                  : null
-              }
-            />
+            {/* Docker reports its pulls line by line; the native setup has no
+                log to tail, and its step shows beside the spinner above. */}
+            {(needsDocker || store.logs.length > 0) && (
+              <LogTail
+                lines={store.logs}
+                placeholder={
+                  starting && needsDocker ? 'Waiting for Docker to report progress…' : null
+                }
+              />
+            )}
           </div>
         )}
       </div>
