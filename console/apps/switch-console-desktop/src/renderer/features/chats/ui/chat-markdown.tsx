@@ -8,7 +8,7 @@ import {
   type UrlTransform,
 } from 'streamdown';
 import type { PluggableList } from 'unified';
-import { openConsoleLink } from '@renderer/features/deeplinks/open-console-link';
+import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
 import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
 import { cn } from '@renderer/utils/utils';
 import { CONSOLE_LINK_PREFIX, CONSOLE_LINK_SCHEME } from '@shared/core/deeplinks/console-links';
@@ -68,7 +68,7 @@ function ChatLink({ href, children }: React.ComponentProps<'a'> & ExtraProps) {
         // the confirm dialog.
         event.preventDefault();
         if (typeof href === 'string' && href.startsWith(CONSOLE_LINK_PREFIX))
-          void openConsoleLink(href);
+          followConsoleLink(href);
         else if (isHttp) confirmOpenExternalLink(href);
       }}
     >

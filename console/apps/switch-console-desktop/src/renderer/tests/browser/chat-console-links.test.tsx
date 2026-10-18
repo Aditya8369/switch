@@ -16,7 +16,9 @@ vi.hoisted(() => {
 
 const openConsoleLink = vi.hoisted(() => vi.fn());
 const confirmOpenExternalLink = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/features/deeplinks/open-console-link', () => ({ openConsoleLink }));
+vi.mock('@renderer/features/deeplinks/console-link-handler', () => ({
+  followConsoleLink: openConsoleLink,
+}));
 vi.mock('@renderer/lib/open-external-link', () => ({ confirmOpenExternalLink }));
 
 import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
