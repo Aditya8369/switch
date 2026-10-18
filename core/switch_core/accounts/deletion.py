@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from sqlalchemy import delete, func, or_, select, update
 
@@ -78,7 +78,6 @@ if TYPE_CHECKING:
     from switch_core.db.stores.api_key_store import ApiKeyStore
     from switch_core.db.stores.template_store import TemplateStore
     from switch_core.db.stores.user_store import UserStore
-    from switch_core.management.service import ManagementService
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
@@ -133,6 +132,15 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
 }
 
 
+class ControllerRevoker(Protocol):
+    """Revokes a machine, as removing it in Switch Console does. Agent
+    management's, handed over by the wiring: core does not import it."""
+
+    async def revoke_controller(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
+    ) -> None: ...
+
+
 class AccountDeletionRefused(Exception):
     """Deleting the account would strand something; the message says what to
     do first, in words for the person."""
@@ -149,7 +157,7 @@ class Workspace:
 class AccountDeletion:
     session_factory: async_sessionmaker[AsyncSession]
     protocol: AgentCore
-    management: ManagementService | None
+    management: ControllerRevoker | None
     broker: ServiceBroker
     resources: ResourceService
     rooms: RoomService
