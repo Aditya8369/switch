@@ -37,12 +37,19 @@ export type LocalServerEnvParams = {
 /**
  * The feature flags a server Console runs is started with, in a build with the
  * new first run: what switch-buddy needs (agent management, its chat and the
- * buddy itself) and addressing an agent without tagging it. A build without it
+ * buddy itself), addressing an agent without tagging it, and connectors such
+ * as GitHub (service connections). A build without it
  * starts them with none, as before.
  */
 export function managedServerFeatureFlags(newFirstRun: boolean): readonly string[] {
   return newFirstRun
-    ? ['agent_management', 'agent_chats', 'switch_buddy', 'follow_the_conversation']
+    ? [
+        'agent_management',
+        'agent_chats',
+        'switch_buddy',
+        'follow_the_conversation',
+        'service_connections',
+      ]
     : [];
 }
 

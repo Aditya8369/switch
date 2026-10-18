@@ -92,6 +92,7 @@ describe('buildEnvFile', () => {
       'agent_chats',
       'switch_buddy',
       'follow_the_conversation',
+      'service_connections',
     ]);
     expect(managedServerFeatureFlags(false)).toEqual([]);
   });
