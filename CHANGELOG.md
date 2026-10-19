@@ -179,6 +179,13 @@ version of their own to them without also giving them a release of their own.
   could not tell where the image would be loaded from.
 
 #### Fixed
+- **A Teams app on a federated credential can deploy from the Helm chart.**
+  switch-core's migrate init container and the pre-upgrade migration Job were
+  given the Teams app's settings but not its projected token, so
+  `TEAMS_APP_FEDERATED_TOKEN_FILE` named a missing file and both refused to
+  load their configuration: with `switchCore.teamsApp.credential: federated`,
+  no release could migrate or start. The two that migrate are no longer given
+  the Teams app at all.
 - **A controller Switch Console runs on an SSH host is no longer shown as behind.**
   It enrolls like a standalone controller, so Core named it the release and the
   Machines page marked it behind, though it runs Console's bundle and cannot
