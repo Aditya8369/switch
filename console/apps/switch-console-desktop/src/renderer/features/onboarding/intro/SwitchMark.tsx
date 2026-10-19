@@ -52,22 +52,22 @@ const BODY =
 
 /*
  * `strokeWidth` is the one property the sequence drives in JS rather than through WAAPI
- * (only opacity / transform / filter / clipPath get accelerated), so it is written straight
- * to the element's inline style. A WAAPI effect outranks inline style and survives a
- * re-render; a direct style write does not. If React also owned strokeWidth via the `style`
- * prop, every re-render of the page — e.g. a parent's state change on completion — would
- * stomp the animated value back to full thickness and the logo would snap from a hairline
- * back to solid.
+ * (only opacity / transform / filter / clipPath get accelerated). motion/react writes it to
+ * the element's `stroke-width` ATTRIBUTE, and an inline style outranks a presentation
+ * attribute, so the starting thickness must be an attribute too: written as inline style,
+ * it held the logo solid while the animation thinned an attribute nobody could see. If
+ * React owned it (as a prop), a re-render — e.g. a parent's state change on completion —
+ * would stomp the animated value back to full thickness.
  *
  * So the initial thickness is set once imperatively and the animation is its sole owner.
  * These callbacks are module-level on purpose: a ref callback with a changing identity is
  * re-invoked (null, then the node) on every render, which would reintroduce the same stomp.
  */
 const initRingStroke = (el: SVGPathElement | null): void => {
-  if (el) el.style.strokeWidth = String(MARK_T.from * 2);
+  if (el) el.setAttribute('stroke-width', String(MARK_T.from * 2));
 };
 const initDividerStroke = (el: SVGLineElement | null): void => {
-  if (el) el.style.strokeWidth = String(MARK_T.from);
+  if (el) el.setAttribute('stroke-width', String(MARK_T.from));
 };
 
 const CLIP_OUTER = 'switch-mark-outer';
@@ -231,14 +231,12 @@ export function SwitchMark({ clock }: SwitchMarkProps) {
             />
           </g>
 
-          {/* the exact filled logo, on top, for the static opening */}
-          <path
-            className="mark-solid"
-            d={BODY}
-            fillRule="evenodd"
-            clipRule="evenodd"
-            style={{ opacity: 1 }}
-          />
+          {/*
+            the exact filled logo, on top, for the static opening. Its starting opacity is an
+            attribute, not inline style: motion/react fades an SVG element's opacity
+            ATTRIBUTE, which an inline style would outrank, holding the solid logo on top.
+          */}
+          <path className="mark-solid" d={BODY} fillRule="evenodd" clipRule="evenodd" opacity={1} />
 
           {PIPS.map((d) => (
             <path
