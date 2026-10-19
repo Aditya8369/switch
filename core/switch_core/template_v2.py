@@ -549,7 +549,7 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
             NestedTemplate(
                 key=key,
                 name=names[key],
-                description=str(fill(spec.get("description") or "")),
+                description=str(resolve(fill(spec.get("description") or ""), key)),
                 visibility=str(spec.get("visibility", "private")),
                 content=_dump(document),
             )

@@ -24,6 +24,14 @@ MACHINES = [
 ]
 
 INPUTS: dict[str, dict[str, str]] = {
+    "agent-templates/bug-fixing-desk.template.yaml": {
+        "team": "acme",
+        "repo": "https://github.com/acme/app",
+        "jira_site": "https://acme.atlassian.net",
+        "jira_project": "ACME",
+        "jira_epic": "ACME-1",
+        "bridge": "Slack",
+    },
     "agent-templates/jq-expert.template.yaml": {},
     "agent-templates/support-desk.template.yaml": {"team": "acme", "bridge": "Slack"},
     "agent-templates/switch-expert.v2.template.yaml": {"start_in": "new_room"},
@@ -67,3 +75,44 @@ def test_example_plans_a_run(relative: str):
     assert plan.document is not None
     assert "{" + "agent}" not in plan.document
     assert yaml.safe_load(plan.document)
+
+
+def test_the_bug_fixing_desk_saves_the_fix_room_its_manager_runs():
+    text = (EXAMPLES / "agent-templates/bug-fixing-desk.template.yaml").read_text()
+    plan = plan_template(
+        text,
+        {},
+        INPUTS["agent-templates/bug-fixing-desk.template.yaml"],
+        builtins={"$creator": "ada"},
+        machines=MACHINES,
+    )
+    (fix_room,) = plan.templates
+    assert fix_room.name == "acme bug fix room"
+    assert "Run by acme-bug-manager" in fix_room.description
+    params = yaml.safe_load(fix_room.content)["params"]
+    assert {k: v["default"] for k, v in params.items() if "default" in v} == {
+        "repo": "https://github.com/acme/app",
+        "fixer": "acme-bug-fixer",
+        "bug_room": "acme-bugs",
+        "bridge": "Slack",
+    }
+    assert lint_template(fix_room.content).warnings == []
+    assert "Fix room template: acme bug fix room" in (plan.document or "")
+    # The manager supplies the bug alone: every other input has its default.
+    room = plan_template(
+        fix_room.content,
+        {},
+        {
+            "bug": "login",
+            "ticket": "ACME-2",
+            "summary": "Login fails.",
+            "owner": "ada",
+            "thread": "t1",
+        },
+        builtins={"$creator": "acme-bug-manager"},
+        machines=MACHINES,
+    )
+    assert room.new_agents == []
+    run = yaml.safe_load(room.document or "")
+    assert run["room"]["agents"] == ["{fixer}"]
+    assert run["params"]["fixer"]["default"] == "acme-bug-fixer"
