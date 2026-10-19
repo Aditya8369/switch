@@ -60,9 +60,20 @@ export async function runOnce(input: {
   cwd: string;
   model: string | null;
   timeoutMs: number;
+  /**
+   * Text to use instead of the tree's own, for an ablation: the skill file
+   * (frontmatter and all) and the reminder under the message. Everything
+   * else still comes from `source`.
+   */
+  overrides?: { skill?: string; reminder?: string };
 }): Promise<RunResult> {
   const { source, scenario } = input;
-  const [{ ClaudeAdapter }, { roomCommand, roomMessageSchema }, hosted, { SWITCH_SKILL_CONTEXT }] =
+  const [
+    { ClaudeAdapter },
+    { roomCommand, roomMessageSchema, REPLY_REMINDER },
+    hosted,
+    { SWITCH_SKILL_CONTEXT },
+  ] =
     await Promise.all([
       load(source, 'packages/agent-providers/src/claude/claude-adapter.ts'),
       load(source, 'packages/agent-providers/src/host/room-prompt.ts'),
@@ -121,7 +132,13 @@ export async function runOnce(input: {
       },
       connectorMcpServers: [],
       // As `agentSpecialization` in packages/plugins/src/agents/session-launch.ts.
-      systemContext: [SWITCH_SKILL_CONTEXT, scenario.agentInstructions].filter(Boolean).join('\n\n'),
+      systemContext: [
+        // The same frontmatter strip as packages/plugins/src/switch-skill/index.ts.
+        input.overrides?.skill?.replace(/^---\n[\s\S]*?\n---\n+/, '') ?? SWITCH_SKILL_CONTEXT,
+        scenario.agentInstructions,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
     });
     const sender = scenario.room.participants.find((p) => p.name === scenario.message.sender);
     const command = roomCommand({
@@ -146,7 +163,13 @@ export async function runOnce(input: {
       preface: null,
       firstOfConversation: true,
     });
-    await adapter.sendTurn({ sessionId, turnId, text: command.body.text });
+    let text: string = command.body.text;
+    const reminder = input.overrides?.reminder;
+    if (reminder !== undefined) {
+      if (!text.endsWith(REPLY_REMINDER)) throw new Error('The message does not end with the reminder.');
+      text = text.slice(0, text.length - REPLY_REMINDER.length) + reminder;
+    }
+    await adapter.sendTurn({ sessionId, turnId, text });
     const timeout = new Promise<{ outcome: string; usage: unknown }>((resolve) =>
       setTimeout(() => resolve({ outcome: 'timeout', usage: null }), input.timeoutMs)
     );

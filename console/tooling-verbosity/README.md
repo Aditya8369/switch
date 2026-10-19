@@ -40,7 +40,8 @@ pnpm --filter "@switch-console/agent-providers^..." --filter "@switch-console/pl
 
 Options: `--scenario` (repeatable; all by default), `--runs`, `--label` (the
 results folder), `--concurrency`, `--model`, `--timeout` (seconds per run),
-and `--source`.
+`--source`, and, for an ablation, `--skill-file` (a skill file to use in place
+of the tree's) and `--reminder-file` (the reminder under each message).
 
 Results land in `results/<label>/<scenario>/` (gitignored): one JSON per run
 with every post, every tool call and the metrics, and a `summary.md` with a

@@ -8,7 +8,7 @@
  * them. See README.md.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -29,6 +29,8 @@ const { values } = parseArgs({
     model: { type: 'string' },
     concurrency: { type: 'string', default: '3' },
     timeout: { type: 'string', default: '900' },
+    'skill-file': { type: 'string' },
+    'reminder-file': { type: 'string' },
   },
 });
 
@@ -76,6 +78,12 @@ async function pool<T>(count: number, limit: number, task: (index: number) => Pr
 }
 
 const catalog = operations();
+const overrides = {
+  ...(values['skill-file'] ? { skill: readFileSync(values['skill-file'], 'utf8') } : {}),
+  ...(values['reminder-file']
+    ? { reminder: readFileSync(values['reminder-file'], 'utf8').trim() }
+    : {}),
+};
 for (const name of names) {
   const scenario = SCENARIOS[name];
   if (!scenario) throw new Error(`No scenario named ${name}.`);
@@ -92,6 +100,7 @@ for (const name of names) {
         cwd: tree.dir,
         model: values.model ?? null,
         timeoutMs: Number(values.timeout) * 1000,
+        overrides,
       });
       const record = { scenario: name, run: index + 1, ...result, metrics: measure(result.posts) };
       await writeFile(join(out, `run-${index + 1}.json`), JSON.stringify(record, null, 2));
