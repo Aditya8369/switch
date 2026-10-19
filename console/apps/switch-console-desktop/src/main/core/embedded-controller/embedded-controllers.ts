@@ -1,4 +1,5 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { hostname, release } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -86,6 +87,14 @@ export const providerPrecheck = new ProviderPrecheck({
   },
   log: {
     warn: (message, fields) => log.warn(message, { event: 'embedded_controller', ...fields }),
+  },
+  read: async (file) => {
+    try {
+      return await readFile(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   },
   now: Date.now,
 });

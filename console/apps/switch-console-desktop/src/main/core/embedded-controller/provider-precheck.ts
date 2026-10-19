@@ -17,7 +17,16 @@ export type ProviderPrecheckDeps = {
   /** Runs the check to its end; rejects, saying why, when it fails. */
   execute: (executable: string, args: string[], env: NodeJS.ProcessEnv) => Promise<void>;
   log: { warn: (message: string, fields?: Record<string, unknown>) => void };
+  /** The file's text, or null when there is none yet. */
+  read: (file: string) => Promise<string | null>;
   now: () => number;
+};
+
+/** A provider as the precheck found it, in the terms a controller reports it to Switch. */
+export type PrecheckedProvider = {
+  provider: string;
+  installed: boolean;
+  auth: 'ok' | 'expired' | 'missing' | 'unknown';
 };
 
 /** A check older than this is made again when asked; the controller takes none older either. */
@@ -67,5 +76,43 @@ export class ProviderPrecheck {
    */
   seedFile(): string | null {
     return this.startedAt === null ? null : this.deps.seedFile();
+  }
+
+  /**
+   * What the checks started in this session have found so far, still fresh;
+   * null when none were started. For a page that cannot wait for this
+   * computer's controller to report.
+   */
+  async results(): Promise<PrecheckedProvider[] | null> {
+    if (this.startedAt === null) return null;
+    const text = await this.deps.read(this.deps.seedFile());
+    if (text === null) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      this.deps.log.warn('The provider checks made ahead of the controller are not readable', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    const entries = (parsed as { providers?: unknown }).providers;
+    if (!Array.isArray(entries)) return [];
+    return entries.flatMap((entry): PrecheckedProvider[] => {
+      const status = (entry as { status?: Record<string, unknown> }).status;
+      if (!status) return [];
+      const { provider, installed, auth, checked_at: checkedAt } = status;
+      if (
+        typeof provider !== 'string' ||
+        typeof installed !== 'boolean' ||
+        (auth !== 'ok' && auth !== 'expired' && auth !== 'missing' && auth !== 'unknown') ||
+        typeof checkedAt !== 'string'
+      )
+        return [];
+      // Checked before this session's start: a file left from an earlier one.
+      const at = Date.parse(checkedAt);
+      if (!(at >= this.startedAt! - 1000) || this.deps.now() - at >= FRESH_MS) return [];
+      return [{ provider, installed, auth }];
+    });
   }
 }

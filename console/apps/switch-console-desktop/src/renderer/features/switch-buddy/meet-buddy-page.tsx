@@ -53,13 +53,21 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
 }) {
   const exit = useWizardExit();
   const [settingUp, setSettingUp] = useState(false);
-  const { state: computer } = useThisComputer(serverId, workspaceId);
-  const providers = useMemo(
-    () => buddyProviders(agentProviders(), computer.kind === 'ready' ? computer.machine : null),
-    [computer]
+  const { state: computer, earlyProviders } = useThisComputer(serverId, workspaceId);
+  // What this computer's controller reports, or until it does, what Console
+  // found checking the providers as onboarding opened.
+  const reported = useMemo(
+    () =>
+      computer.kind === 'ready'
+        ? computer.machine
+        : earlyProviders
+          ? { providers: earlyProviders }
+          : null,
+    [computer, earlyProviders]
   );
+  const providers = useMemo(() => buddyProviders(agentProviders(), reported), [reported]);
   const [outOfPatience, setOutOfPatience] = useState(false);
-  const machineReady = computer.kind === 'ready';
+  const machineReady = reported !== null;
   useEffect(() => {
     if (!machineReady) return;
     const timer = setTimeout(() => setOutOfPatience(true), CHECK_PATIENCE_MS);
@@ -97,9 +105,27 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     setSettingUp(true);
   };
 
-  const startWith = async (providerId: string) => {
+  // A provider chosen before this computer's controller is up: started once it is.
+  const [waitingToStart, setWaitingToStart] = useState<string | null>(null);
+  useEffect(() => {
+    if (waitingToStart === null) return;
+    if (computer.kind === 'failed') {
+      setWaitingToStart(null);
+      setStarting(null);
+      return;
+    }
     if (computer.kind !== 'ready') return;
+    const providerId = waitingToStart;
+    setWaitingToStart(null);
+    void startWithRef.current(providerId);
+  }, [computer, waitingToStart]);
+
+  const startWith = async (providerId: string) => {
     setStarting(providerId);
+    if (computer.kind !== 'ready') {
+      setWaitingToStart(providerId);
+      return;
+    }
     reportBuddyStep('start', providerId);
     setError(null);
     try {
@@ -117,6 +143,8 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
       setStarting(null);
     }
   };
+  const startWithRef = useRef(startWith);
+  startWithRef.current = startWith;
 
   const header = (
     <div className="flex flex-col items-center gap-2 text-center">

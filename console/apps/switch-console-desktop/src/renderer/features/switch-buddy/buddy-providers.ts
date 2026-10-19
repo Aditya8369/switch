@@ -15,7 +15,7 @@ export type BuddyProvider = { id: string; name: string; state: BuddyProviderStat
 
 export function buddyProviders(
   providers: readonly Pick<AgentProviderDefinition, 'id' | 'name'>[],
-  machine: OwnedMachine | null
+  machine: Pick<OwnedMachine, 'providers'> | null
 ): BuddyProvider[] {
   return providers.map((provider) => {
     const reported = machine?.providers.find((entry) => entry.provider === provider.id);

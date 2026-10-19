@@ -16,6 +16,7 @@ function precheck(overrides: Partial<ProviderPrecheckDeps> = {}) {
     probeDir: () => '/data/provider-precheck',
     execute,
     log: { warn },
+    read: async () => null,
     now: () => clock,
     ...overrides,
   });
@@ -69,5 +70,32 @@ describe('ProviderPrecheck', () => {
         error: 'spawn failed',
       })
     );
+  });
+
+  it('offers what it has found so far, fresh and from this session', async () => {
+    const at = (offset: number) => new Date(1_000_000 + offset).toISOString();
+    const file = JSON.stringify({
+      providers: [
+        { status: { provider: 'claude', installed: true, auth: 'ok', checked_at: at(500) } },
+        { status: { provider: 'codex', installed: true, auth: 'missing', checked_at: at(600) } },
+        {
+          status: {
+            provider: 'cursor',
+            installed: false,
+            auth: 'unknown',
+            checked_at: at(-60_000),
+          },
+        },
+      ],
+    });
+    const { service, advance } = precheck({ read: async () => file });
+    expect(await service.results()).toBeNull();
+    service.start();
+    expect(await service.results()).toEqual([
+      { provider: 'claude', installed: true, auth: 'ok' },
+      { provider: 'codex', installed: true, auth: 'missing' },
+    ]);
+    advance(10 * 60 * 1000 + 1_000);
+    expect(await service.results()).toEqual([]);
   });
 });
