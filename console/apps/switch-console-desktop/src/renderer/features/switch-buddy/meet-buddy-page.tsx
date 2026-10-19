@@ -1,5 +1,5 @@
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -11,10 +11,10 @@ import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame'
 import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
 import { firstNameOf, isBuddy } from './buddy-identity';
-import { BuddyIntroLines } from './buddy-intro-lines';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
+import { MeetBuddyIntro } from './meet-buddy-intro';
 import { ProviderSetup } from './provider-setup';
 import { useThisComputer } from './use-this-computer';
 
@@ -96,6 +96,8 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   const [error, setError] = useState<string | null>(null);
   const user = switchServersStore.statusFor(serverId)?.user ?? null;
   const firstName = firstNameOf(user?.name);
+  // The opening plays once: back from setting up a provider, it is at rest.
+  const introPlayed = useRef(false);
 
   const skip = () => {
     reportBuddyStep('skip', null);
@@ -131,11 +133,8 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
 
   const header = (
     <div className="flex flex-col items-center gap-2 text-center">
-      <BuddyAvatar size={settingUp ? 48 : 80} shape="tile" />
+      <BuddyAvatar size={48} shape="tile" />
       <h1 className="mt-2 text-2xl font-semibold">Meet switch-buddy</h1>
-      {!settingUp && (
-        <p className="text-sm text-foreground-muted">Your first AI assistant in Switch</p>
-      )}
     </div>
   );
 
@@ -208,8 +207,13 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         )
       }
     >
-      {header}
-      <BuddyIntroLines firstName={firstName} />
+      <MeetBuddyIntro
+        firstName={firstName}
+        play={!introPlayed.current}
+        onPlayed={() => {
+          introPlayed.current = true;
+        }}
+      />
       {computer.kind === 'failed' && (
         <p role="alert" className="text-center text-sm text-destructive">
           {computer.error}
