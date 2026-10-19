@@ -17,8 +17,13 @@ import { STAGE, THEMES } from './intro/timeline';
 
 /** How long the last frame holds before the intro gives way to Welcome. */
 const HOLD_S = 0.7;
-/** The fade into Welcome, at the end or on a skip. */
-const FADE_S = 0.35;
+/**
+ * The way out, at the end or on a skip: the chat rises and fades, the glow
+ * behind it fades, and Welcome comes in after.
+ */
+const OUTRO = { duration: 0.42, ease: [0.4, 0, 0.2, 1] } as const;
+/** How far the chat rises as it goes, in stage pixels. */
+const OUTRO_RISE = 48;
 
 /**
  * The intro that opens the first run, before Welcome: the Switch mark opens,
@@ -70,23 +75,19 @@ export function OnboardingIntro({ onDone }: { onDone: () => void }) {
   const theme = THEMES[effectiveTheme === 'emdark' ? 'dark' : 'light'] as CSSProperties;
 
   return (
-    <motion.div
-      className="relative h-full w-full overflow-hidden bg-background"
-      style={theme}
-      initial={false}
-      animate={{ opacity: leaving ? 0 : 1 }}
-      transition={{ duration: FADE_S, ease: 'easeOut' }}
-      onAnimationComplete={() => {
-        if (leaving) doneRef.current();
-      }}
-    >
+    <div className="relative h-full w-full overflow-hidden bg-background" style={theme}>
       {/* The window can still be dragged by its top edge, as on every page. */}
       <div className="absolute inset-x-0 top-0 z-50 h-10 [-webkit-app-region:drag]" />
-      <div className="absolute top-3 right-3 z-50 [-webkit-app-region:no-drag]">
+      <motion.div
+        className="absolute top-3 right-3 z-50 [-webkit-app-region:no-drag]"
+        initial={false}
+        animate={{ opacity: leaving ? 0 : 1 }}
+        transition={OUTRO}
+      >
         <Button variant="ghost" size="sm" onClick={leave}>
           Skip
         </Button>
-      </div>
+      </motion.div>
       <div
         ref={frame}
         className="absolute inset-0 flex cursor-default items-center justify-center"
@@ -103,24 +104,41 @@ export function OnboardingIntro({ onDone }: { onDone: () => void }) {
             side, so drawn at its natural size on the stage's centre it sits
             where the design has it, blur intact.
           */}
-          <img
-            src={aurora}
-            alt=""
-            aria-hidden
-            className="pointer-events-none absolute"
-            style={{
-              width: 2488,
-              height: 1525,
-              left: 'calc(50% + 9px)',
-              top: 'calc(50% + 181.5px)',
-              transform: 'translate(-50%, -50%) rotate(180deg)',
-              opacity: 'var(--sw-aurora-opacity)',
-              mixBlendMode: 'var(--sw-aurora-blend)' as CSSProperties['mixBlendMode'],
+          <motion.div
+            className="pointer-events-none absolute inset-0"
+            initial={false}
+            animate={{ opacity: leaving ? 0 : 1 }}
+            transition={OUTRO}
+          >
+            <img
+              src={aurora}
+              alt=""
+              aria-hidden
+              className="pointer-events-none absolute"
+              style={{
+                width: 2488,
+                height: 1525,
+                left: 'calc(50% + 9px)',
+                top: 'calc(50% + 181.5px)',
+                transform: 'translate(-50%, -50%) rotate(180deg)',
+                opacity: 'var(--sw-aurora-opacity)',
+                mixBlendMode: 'var(--sw-aurora-blend)' as CSSProperties['mixBlendMode'],
+              }}
+            />
+          </motion.div>
+          <motion.div
+            className="absolute inset-0"
+            initial={false}
+            animate={leaving ? { opacity: 0, y: -OUTRO_RISE } : { opacity: 1, y: 0 }}
+            transition={OUTRO}
+            onAnimationComplete={() => {
+              if (leaving) doneRef.current();
             }}
-          />
-          <IntroSequence onComplete={finished} />
+          >
+            <IntroSequence onComplete={finished} />
+          </motion.div>
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }
