@@ -144,11 +144,13 @@ export const chatsController = createRPCController({
     return { userId: me.id, tenantId: workspace.tenantId };
   },
   list: (serverId: string): Promise<ChatSummary[]> => onServer(serverId, listChats),
+  /** `greeting`: what the chat's one agent, the caller's own, says as it joins, in place of its usual line. */
   create: async (params: {
     serverId: string;
     agentIds: string[];
     name: string | null;
     requestId: string;
+    greeting: string | null;
   }): Promise<ChatSummary> => {
     const chat = await onServer(params.serverId, (server) => createChat(server, params));
     if (params.agentIds.length === 1)

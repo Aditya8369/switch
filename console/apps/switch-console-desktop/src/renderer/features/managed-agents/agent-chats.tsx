@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Plus, Settings } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plug, Plus, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
@@ -14,20 +14,45 @@ import {
 } from '@renderer/features/sidebar/sidebar-primitives';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
+import { type AgentSection, agentSections, shownAgentSection } from './agent-sections';
 import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
-
-export type AgentSection = 'settings';
+import { managedAgentLabel } from './managed-agent-state';
 
 const NAV_ITEMS = [
+  { section: 'connections', label: 'Connections', icon: Plug },
   { section: 'settings', label: 'Agent settings', icon: Settings },
 ] as const satisfies readonly { section: AgentSection; label: string; icon: typeof Settings }[];
+
+export const agentSectionLabel = (section: AgentSection): string =>
+  NAV_ITEMS.find((item) => item.section === section)!.label;
+
+/**
+ * The sections the agent's page offers, and the one showing: `chosen` from
+ * the view's params when it is offered, else none, and a chat shows.
+ */
+export function useAgentSection(
+  serverId: string,
+  agent: ManagedAgentView | null,
+  chosen: AgentSection | undefined
+) {
+  const flags = useFeatureFlags(serverId);
+  const grants = useAgentServiceGrants(
+    flags.service_connections,
+    agent?.workspaceId ?? null,
+    agent?.agentId ?? ''
+  );
+  const sections = agentSections(flags.service_connections, grants.data);
+  return { sections, section: shownAgentSection(chosen, sections) };
+}
 
 function Section({
   title,
@@ -98,7 +123,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
 
   const { agentRooms, direct, rooms } = conversationsOf(agent);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
-  const section = params.section;
+  const { sections, section } = useAgentSection(serverId, agent, params.section);
   const roomId = openAgentChat(agent, params.roomId)?.roomId ?? null;
   const open = (id: string) => setParams({ roomId: id, section: undefined });
   const newChat = async () => {
@@ -114,7 +139,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     listed: ownServer && chatsStore.userId !== null,
     listFailed: chatsStore.listError !== null,
     hasDirectChats: direct.length > 0,
-    selected: Boolean(params.roomId) || section === 'settings',
+    selected: Boolean(params.roomId) || section !== null,
     tried: autoStartTried.current,
   });
   useEffect(() => {
@@ -129,7 +154,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
         <nav aria-label="Agent" className="flex flex-col gap-[2px] pb-3">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) => sections.includes(item.section)).map((item) => (
             <SidebarMenuRow
               key={item.section}
               isActive={section === item.section}
@@ -184,7 +209,14 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
       </div>
       <div className="relative flex min-w-0 flex-1 flex-col">
         {section === 'settings' ? (
-          <ManagedAgentPage agent={agent} />
+          <ManagedAgentPage agent={agent} serviceGrants={!sections.includes('connections')} />
+        ) : section === 'connections' ? (
+          <AgentConnectionsTab
+            workspaceId={workspaceId}
+            agentId={agentId}
+            agentName={managedAgentLabel(agent)}
+            cloud={agent.machine !== null && isCloudMachine(agent.machine)}
+          />
         ) : roomId ? (
           <>
             <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />

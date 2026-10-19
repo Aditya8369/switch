@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -146,4 +146,23 @@ function constrainEmbeddedWebviews(window: BrowserWindow): void {
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
+}
+
+/**
+ * Brings Console to the front, over whatever app is there (a browser that
+ * just finished a sign-in, say), and returns the window it showed, or null
+ * before the window exists.
+ */
+export function focusMainWindow(): BrowserWindow | null {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return null;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  if (process.platform === 'darwin') {
+    app.focus({ steal: true });
+  } else {
+    app.focus();
+  }
+  win.focus();
+  return win;
 }

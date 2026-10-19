@@ -25,7 +25,8 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { AgentChats, type AgentSection, openAgentChat } from './agent-chats';
+import { AgentChats, agentSectionLabel, openAgentChat, useAgentSection } from './agent-chats';
+import { type AgentSection, isAgentSection } from './agent-sections';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
 import { useManagedAgentActions } from './use-managed-agent-actions';
@@ -48,19 +49,23 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const server = switchServersStore.servers.find((s) => s.id === params.serverId) ?? null;
   const label = agent ? managedAgentLabel(agent) : params.name;
   const chatsOn = useFeatureFlags(params.serverId).agent_chats;
-  const settings = params.section === 'settings';
-  const chat = chatsOn && agent && !settings ? openAgentChat(agent, params.roomId) : null;
+  const { section } = useAgentSection(params.serverId, agent, params.section);
+  const chat = chatsOn && agent && !section ? openAgentChat(agent, params.roomId) : null;
   const activities = useAgentActivities(params.serverId, chat ?? undefined);
   const crumb = {
     key: 'agent',
-    icon: (
+    // Nothing until the agent is read: a stand-in drawn from its name
+    // would be replaced by its own picture a moment later.
+    icon: agent ? (
       <AgentAvatar
         name={label}
-        iconUrl={agent?.iconUrl ?? null}
+        iconUrl={agent.iconUrl}
         serverId={params.serverId}
         size={16}
         className="bg-transparent"
       />
+    ) : (
+      <span className="inline-block size-4 shrink-0" aria-hidden />
     ),
     label,
   };
@@ -86,7 +91,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       rightSlot={
         <>
           <span className="truncate text-sm font-medium">
-            {settings ? 'Agent settings' : chat?.name}
+            {section ? agentSectionLabel(section) : chat?.name}
           </span>
           <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
             {server &&
@@ -196,7 +201,7 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
         </p>
       </ServerPage>
     );
-  if (!chatsOn) return <ManagedAgentPage key={agent.agentId} agent={agent} />;
+  if (!chatsOn) return <ManagedAgentPage key={agent.agentId} agent={agent} serviceGrants />;
   return <AgentChats key={agent.agentId} agent={agent} />;
 });
 
@@ -211,7 +216,7 @@ export const managedAgentView = {
       typeof value.agentId !== 'string' ||
       typeof value.name !== 'string' ||
       (value.roomId !== undefined && typeof value.roomId !== 'string') ||
-      (value.section !== undefined && value.section !== 'settings')
+      (value.section !== undefined && !isAgentSection(value.section))
     )
       return { ok: false, redirect: 'home', discardParams: true };
     return { ok: true };
