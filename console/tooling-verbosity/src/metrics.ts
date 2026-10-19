@@ -15,7 +15,13 @@ export type Metrics = {
   longestPost: number;
   headings: number;
   bullets: number;
+  /** Whether a short post came before the answer, as the skill asks before going quiet. */
+  headsUp: boolean;
+  /** Whether the last post ends by offering more ("Want me to…?"), which the skill rules out. */
+  closingOffer: boolean;
 };
+
+const OFFER = /(want me to|happy to|shall i|should i|let me know|say the word)[^\n]*$/i;
 
 const words = (text: string) => text.split(/\s+/).filter(Boolean).length;
 
@@ -29,6 +35,8 @@ export function measure(posts: Post[]): Metrics {
     headings: lines.filter((l) => /^#{1,6}\s/.test(l) || /^\*\*[^*]+\*\*:?\s*$/.test(l.trim()))
       .length,
     bullets: lines.filter((l) => /^\s*([-*•]|\d+\.)\s/.test(l)).length,
+    headsUp: posts.length > 1 && words(posts[0]!.body) < 40,
+    closingOffer: posts.length > 0 && OFFER.test(posts[posts.length - 1]!.body.trim()),
   };
 }
 
@@ -43,9 +51,12 @@ type Record = { run: number; outcome: string; metrics: Metrics; posts: Post[] };
 export function summarise(scenario: Scenario, label: string, records: Record[]): string {
   const rows = records.map(
     (r) =>
-      `| ${r.run} | ${r.outcome} | ${r.metrics.posts} | ${r.metrics.words} | ${r.metrics.longestPost} | ${r.metrics.headings} | ${r.metrics.bullets} |`
+      `| ${r.run} | ${r.outcome} | ${r.metrics.posts} | ${r.metrics.words} | ${r.metrics.longestPost} | ${r.metrics.headings} | ${r.metrics.bullets} | ${r.metrics.headsUp ? 'yes' : 'no'} | ${r.metrics.closingOffer ? 'yes' : 'no'} |`
   );
-  const col = (key: keyof Metrics) => median(records.map((r) => r.metrics[key]));
+  const col = (key: 'posts' | 'words' | 'longestPost' | 'headings' | 'bullets') =>
+    median(records.map((r) => r.metrics[key]));
+  const count = (key: 'headsUp' | 'closingOffer') =>
+    `${records.filter((r) => r.metrics[key]).length}/${records.length}`;
   const posts = records.flatMap((r) =>
     r.posts.map((p, i) => `### Run ${r.run}, post ${i + 1} (${words(p.body)} words)\n\n${p.body}\n`)
   );
@@ -54,10 +65,10 @@ export function summarise(scenario: Scenario, label: string, records: Record[]):
     '',
     scenario.about,
     '',
-    '| run | outcome | posts | words | longest post | headings | bullets |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| run | outcome | posts | words | longest post | headings | bullets | heads-up | closing offer |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...rows,
-    `| **median** | | ${col('posts')} | ${col('words')} | ${col('longestPost')} | ${col('headings')} | ${col('bullets')} |`,
+    `| **median** | | ${col('posts')} | ${col('words')} | ${col('longestPost')} | ${col('headings')} | ${col('bullets')} | ${count('headsUp')} | ${count('closingOffer')} |`,
     '',
     '## What was posted',
     '',

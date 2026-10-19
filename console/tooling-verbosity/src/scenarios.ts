@@ -85,6 +85,30 @@ export const SCENARIOS: Record<string, Scenario> = {
   },
 
   /**
+   * An ask that takes real digging before there is anything to say. Checks
+   * the other half of the writing rules: a one-line heads-up before going
+   * quiet, then a findings report that stays a chat message.
+   */
+  investigation: {
+    name: 'investigation',
+    about:
+      'A question that needs several minutes of code reading. A good run posts a one-line ' +
+      'heads-up first, then a short finding: the answer, the gap if any, what to do.',
+    repoCommit: COMMIT,
+    agentName: 'platform-agent',
+    agentInstructions: '',
+    room: PLATFORM_ROOM,
+    history: CHATTER,
+    message: {
+      sender: 'dana.reyes',
+      body:
+        'Someone told me agents sometimes answer in their final text instead of posting to the room, ' +
+        'so the person never sees the reply. Can you dig into how we guard against that and whether ' +
+        "there's still a gap?",
+    },
+  },
+
+  /**
    * An explicit ask for step-by-step instructions, where length is earned.
    * The check here is the other way round: a fix for verbosity must not cut
    * steps the person needs.
