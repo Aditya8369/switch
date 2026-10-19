@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_templates import template_kind
 from switch_core.db.models import Template, require_tenant_id
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.template_v2 import NestedTemplate
 
@@ -46,11 +47,12 @@ async def check_names_free(
             f"Nothing was created: this run would save two templates named "
             f"{', '.join(repr(n) for n in twice)}."
         )
-    async with session_factory() as session:
+    tenant_id = require_tenant_id()
+    async with tenant_session(session_factory, tenant_id) as session:
         taken = (
             await session.execute(
                 select(Template.name).where(
-                    Template.tenant_id == require_tenant_id(),
+                    Template.tenant_id == tenant_id,
                     Template.owner_id == owner_id,
                     Template.name.in_(names),
                 )
@@ -81,7 +83,8 @@ async def saved(
     if not templates:
         yield []
         return
-    async with session_factory() as session:
+    tenant_id = require_tenant_id()
+    async with tenant_session(session_factory, tenant_id) as session:
         rows = []
         for nested in templates:
             read, write = _VISIBILITY[nested.visibility]
@@ -104,16 +107,17 @@ async def saved(
     try:
         yield rows
     except BaseException:
-        await _delete(session_factory, store, rows)
+        await _delete(session_factory, store, tenant_id, rows)
         raise
 
 
 async def _delete(
     session_factory: async_sessionmaker[AsyncSession],
     store: TemplateStore,
+    tenant_id: str,
     rows: Sequence[Template],
 ) -> None:
-    async with session_factory() as session:
+    async with tenant_session(session_factory, tenant_id) as session:
         for row in rows:
             try:
                 await store.delete(session, row.id)
