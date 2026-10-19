@@ -316,6 +316,26 @@ class TestRename:
         assert result.bridge_failures == ["slack: Slack is down"]
         assert (await _agent(session_factory, agent_id)).name == "flint-scout"
 
+    async def test_chats_with_the_agent_hear_of_the_new_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        adapter = _FakeAdapter()
+        svc = _service(session_factory, adapter)
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+        changed: list[str] = []
+
+        async def heard(_tenant_id: str, changed_id: str) -> None:
+            changed.append(changed_id)
+
+        svc.set_agent_profile_listener(heard)
+
+        await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
+
+        assert changed == [agent_id]
+
     async def test_the_same_name_is_a_no_op(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

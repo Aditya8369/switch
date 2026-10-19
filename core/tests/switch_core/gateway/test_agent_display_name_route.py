@@ -7,6 +7,10 @@ refused at write time, and clearing is expressible and lands as NULL.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,6 +40,7 @@ _AGENT_STORE = AgentStore()
 
 _NAME = "Switch Dev"
 _OTHER_NAME = "Switch Reviewer"
+_CHATS: Any = SimpleNamespace(agent_changed=AsyncMock())
 
 
 class TestUpdateAgentDisplayName:
@@ -54,6 +59,7 @@ class TestUpdateAgentDisplayName:
                 _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
+                _CHATS,
             )
 
             assert summary.display_name == _NAME
@@ -78,6 +84,7 @@ class TestUpdateAgentDisplayName:
                 _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
+                _CHATS,
             )
 
             assert summary.display_name == _NAME
@@ -99,6 +106,7 @@ class TestUpdateAgentDisplayName:
                 _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
+                _CHATS,
             )
 
             assert summary.display_name == _OTHER_NAME
@@ -123,6 +131,7 @@ class TestUpdateAgentDisplayName:
                 _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
+                _CHATS,
             )
 
             assert summary.display_name is None
@@ -147,6 +156,7 @@ class TestUpdateAgentDisplayName:
                     _PROTOCOL,  # type: ignore[arg-type]
                     other,
                     await is_admin(session, other),
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 403
@@ -170,6 +180,7 @@ class TestUpdateAgentDisplayName:
                 _PROTOCOL,  # type: ignore[arg-type]
                 admin,
                 await is_admin(session, admin),
+                _CHATS,
             )
 
             assert summary.display_name == _NAME
@@ -189,6 +200,7 @@ class TestUpdateAgentDisplayName:
                     _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 404
@@ -220,6 +232,7 @@ class TestUpdateAgentDisplayName:
                     _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 400
@@ -256,6 +269,7 @@ class TestBridgesHearOfTheChange:
                 protocol,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
+                _CHATS,
             )
 
         assert protocol.updated == [agent.id]
@@ -277,6 +291,7 @@ class TestBridgesHearOfTheChange:
                     protocol,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
+                    _CHATS,
                 )
 
         assert protocol.updated == []

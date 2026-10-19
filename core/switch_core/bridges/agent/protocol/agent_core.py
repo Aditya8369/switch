@@ -151,6 +151,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
+    from switch_core.bridges.collaboration.install_service import (
+        MessagingInstallService,
+    )
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -342,9 +345,15 @@ class AgentCore:
     # `!delete-agent … confirm`. Set by the process wiring, shared with the
     # admin client that runs that command.
     deletion_requests: AgentDeletionRequests | None = None
+    # The messaging apps this server registered as its own, set by the process
+    # wiring; None when it registered none, the ordinary case.
+    install_service: MessagingInstallService | None = None
     # Told (tenant_id, room_id) for each room a deleted agent was in, after it
     # is gone, so whatever follows rooms' agents can catch up at once.
     _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Told (tenant_id, agent_id) after an agent's icon or display name changes,
+    # so whatever shows them can refresh.
+    _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -814,6 +823,9 @@ class AgentCore:
         await self.api_key_store.create(session, new_api_key_record)
 
         old_api_key_id = existing.api_key_id
+        profile_changed = (icon_url is not None and icon_url != existing.icon_url) or (
+            display_name is not None and display_name != existing.display_name
+        )
         # An omitted icon keeps whatever the agent already has: re-registration
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
@@ -866,6 +878,8 @@ class AgentCore:
 
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
+        if profile_changed:
+            await self._agent_profile_changed(existing.id)
         return existing.id
 
     def set_agent_removal_listener(
@@ -877,6 +891,15 @@ class AgentCore:
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._room_agents_listener = listener
+
+    def set_agent_profile_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_profile_listener = listener
+
+    async def _agent_profile_changed(self, agent_id: str) -> None:
+        if self._agent_profile_listener is not None:
+            await self._agent_profile_listener(require_tenant_id(), agent_id)
 
     async def _create_bridge_identities(
         self, tenant_id: str, agent: AgentIdentity
@@ -1167,6 +1190,7 @@ class AgentCore:
         self.client_lifecycle.announce(tenant_id)
         if self._agent_rename_listener is not None:
             await self._agent_rename_listener(tenant_id, agent_id, old_name)
+        await self._agent_profile_changed(agent_id)
         bridge_failures = await self._rename_bridge_identities(
             tenant_id, old_name, identity
         )
@@ -4273,6 +4297,10 @@ class AgentCore:
             target = await self.agent_store.get(session, target_agent_id)
             if target is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
+            profile_changed = any(
+                key in update.columns and update.columns[key] != getattr(target, key)
+                for key in ("icon_url", "display_name")
+            )
             if update.columns:
                 await self.agent_store.update(
                     session, target_agent_id, **update.columns
@@ -4280,6 +4308,8 @@ class AgentCore:
                 await session.commit()
                 if {"description", "display_name"} & update.columns.keys():
                     await self.update_bridge_identities(target_agent_id)
+            if profile_changed:
+                await self._agent_profile_changed(target_agent_id)
 
             refreshed = await self.agent_store.get(session, target_agent_id)
             assert refreshed is not None
