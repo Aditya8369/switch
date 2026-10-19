@@ -11,32 +11,18 @@ import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame'
 import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
 import { firstNameOf, isBuddy } from './buddy-identity';
-import { type BuddyProvider, buddyProviders } from './buddy-providers';
+import { buddyProviders, startButtons } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
 import { MeetBuddyIntro } from './meet-buddy-intro';
 import { ProviderSetup } from './provider-setup';
 import { useThisComputer } from './use-this-computer';
 
-/** How many providers the page offers to start with outright; the rest are a click further. */
-const START_BUTTONS = 2;
-
 /**
- * How long the page waits for every provider's check before offering what is
+ * How long the page waits for the provider checks before offering what is
  * ready anyway: a provider whose check never comes back must not hold the rest.
  */
 const CHECK_PATIENCE_MS = 45_000;
-
-/** The order the "Start with …" buttons go in: the most used first. */
-const PREFERRED = ['claude', 'codex'];
-
-function startOrder(providers: BuddyProvider[]): BuddyProvider[] {
-  const rank = (id: string) => {
-    const at = PREFERRED.indexOf(id);
-    return at === -1 ? PREFERRED.length : at;
-  };
-  return [...providers].sort((a, b) => rank(a.id) - rank(b.id));
-}
 
 /**
  * Meet switch-buddy: who it is, in its own short lines, and the quickest way
@@ -76,20 +62,18 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     const timer = setTimeout(() => setOutOfPatience(true), CHECK_PATIENCE_MS);
     return () => clearTimeout(timer);
   }, [machineReady]);
-  // The Start buttons appear once, with every check back, rather than one at
-  // a time as each returns: the row would change under the eye, and whichever
-  // answered first would hold the main button until the preferred one came.
-  const checked =
-    machineReady && (outOfPatience || providers.every((provider) => provider.state !== 'checking'));
+  // The Start buttons appear once, together, and stay as they first were:
+  // the row would change under the eye if each were added as its check came
+  // back.
+  const decided = machineReady ? startButtons(providers, outOfPatience) : null;
+  const [firstDecided, setFirstDecided] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (decided && firstDecided === null) setFirstDecided(decided.map((provider) => provider.id));
+  }, [decided, firstDecided]);
+  const checked = firstDecided !== null;
   const ready = useMemo(
-    () =>
-      checked
-        ? startOrder(providers.filter((provider) => provider.state === 'ready')).slice(
-            0,
-            START_BUTTONS
-          )
-        : [],
-    [checked, providers]
+    () => (firstDecided ?? []).flatMap((id) => providers.filter((provider) => provider.id === id)),
+    [firstDecided, providers]
   );
   const existing = useManagedAgents(serverId).data?.find(isBuddy) ?? null;
   const [starting, setStarting] = useState<string | null>(null);
