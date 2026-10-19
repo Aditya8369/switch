@@ -154,23 +154,14 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
   return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
 }
 
-/**
- * The tool calls a turn shows. Assistant text is left out: what the agent
- * means the room to read it posts there, and the room message is the copy
- * shown. Switch's own tools (connecting, reading context, posting) are split
- * off — they are how the agent talks to the room, not work done for it.
- */
-export function turnTools(turn: TurnActivity): {
-  work: ChatActivityItem[];
-  switchActions: ChatActivityItem[];
-} {
-  const work: ChatActivityItem[] = [];
-  const switchActions: ChatActivityItem[] = [];
-  for (const item of turn.items) {
-    if (item.kind !== 'tool-activity') continue;
-    (item.title.startsWith(SWITCH_TOOL_PREFIX) ? switchActions : work).push(item);
-  }
-  return { work, switchActions };
+/** Switch's own tools and Claude Code's tool loading are how the agent works, not work shown. */
+export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
+  return item.title.startsWith(SWITCH_TOOL_PREFIX) || /^ToolSearch(\s|$)/.test(item.title);
+}
+
+/** The tool calls a turn shows. Assistant text is left out: the room message is the copy shown. */
+export function turnTools(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
 }
 
 /** Whether the turn is running with no tool currently running and no reply streaming. */
@@ -178,7 +169,10 @@ export function isThinking(turn: TurnActivity): boolean {
   return (
     (turn.status === 'queued' || turn.status === 'running') &&
     !turn.items.some(
-      (item) => item.kind === 'tool-activity' && toolState(item, turn.status) === 'running'
+      (item) =>
+        item.kind === 'tool-activity' &&
+        !isHiddenTool(item) &&
+        toolState(item, turn.status) === 'running'
     ) &&
     !turn.items.some((item) => item.kind === 'assistant-message' && item.status === 'in-progress')
   );
