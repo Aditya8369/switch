@@ -1,5 +1,5 @@
 import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { buddyIntroStore } from '@renderer/features/switch-buddy/buddy-intro-store';
 import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
 import { openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
@@ -184,7 +184,10 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
 
   return (
     <WizardChromeProvider chrome="page" exit={exit}>
-      {currentPage(server, cloudChoice, goTo, finish, finishWithBuddy)}
+      {/* Keyed by page, so each one opens afresh, with its entrance. */}
+      <Fragment key={page}>
+        {currentPage(server, cloudChoice, goTo, finish, finishWithBuddy)}
+      </Fragment>
     </WizardChromeProvider>
   );
 });
