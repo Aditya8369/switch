@@ -102,17 +102,25 @@ function ChatCode({
   );
 }
 
-/** A messaging app's logo where the message asks for one, inline in the text; any other image as usual. */
+/**
+ * A messaging app where the message names one with its logo: the logo and the
+ * app's name (the image's alt text) in bold, inline and on one line; any other
+ * image as usual.
+ */
 function ChatImage(props: React.ComponentProps<'img'> & ExtraProps) {
   const platform = platformOfLogoUrl(props.src);
   if (platform === null) {
     const DefaultImage = defaultComponents.img;
     return <DefaultImage {...props} />;
   }
-  if (!hasBridgeIcon(platform)) return null;
   return (
-    <span role="img" aria-label={props.alt} className="inline-flex align-[-2px]">
-      <BridgeIcon bridgeType={platform} size={14} />
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+      {hasBridgeIcon(platform) && (
+        <span aria-hidden className="translate-y-[2px]">
+          <BridgeIcon bridgeType={platform} size={14} />
+        </span>
+      )}
+      <strong className="font-semibold">{props.alt}</strong>
     </span>
   );
 }

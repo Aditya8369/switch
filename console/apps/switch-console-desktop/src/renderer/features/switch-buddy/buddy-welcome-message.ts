@@ -9,10 +9,7 @@ const PLATFORMS: { type: string; name: string }[] = [
 ];
 
 function platformList(): string {
-  // A no-break space, so a logo never ends a line with its name on the next.
-  const named = PLATFORMS.map(
-    ({ type, name }) => `${platformLogoMarkdown(type, name)}\u00a0**${name}**`
-  );
+  const named = PLATFORMS.map(({ type, name }) => platformLogoMarkdown(type, name));
   return `${named.slice(0, -1).join(', ')} and ${named.at(-1)}`;
 }
 
