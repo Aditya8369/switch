@@ -9,7 +9,8 @@ of what to ask and what to fold away, and every fallback order is written in
 the template.
 
 This page is the reference. `switch-expert/template.yaml` at the repository
-root is the worked example, and `examples/` holds more.
+root is the worked example, and `examples/` holds more, all in
+[Version 2](#version-2).
 
 ## Contents
 
@@ -441,7 +442,8 @@ room:
 The same shape `POST /rooms/from-yaml` accepts and `GET /rooms/{id}/yaml`
 exports, so an exported room is a valid template once you add `params:`.
 `examples/room-templates/red-blue-workroom.template.yaml` documents every
-field in place.
+field in place, written as a version 2 room resource (see
+[Version 2](#version-2)).
 
 `agents:` names agents that exist on the server, plus the ones this
 document creates by the text written as their `name`. `users:` names people
