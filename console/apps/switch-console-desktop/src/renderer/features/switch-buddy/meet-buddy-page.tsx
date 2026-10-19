@@ -1,8 +1,10 @@
 import { observer } from 'mobx-react-lite';
+import { motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
@@ -28,11 +30,12 @@ const CHECK_PATIENCE_MS = 45_000;
  * Meet switch-buddy: who it is, in its own short lines, and the quickest way
  * to start it.
  *
- * A provider already installed and signed in on this computer is offered as
- * "Start with …" straight away, for the first two; the others, and providers
- * still to set up, are behind "Use another provider". It can be skipped, for
- * the chat to open without the buddy, asking for a provider there. Someone who
- * already has a buddy (replaying these pages) is offered to open it instead.
+ * A provider already installed and signed in on this computer is offered
+ * straight away, for the first two; the others, and providers still to set
+ * up, are behind "Use other AI providers". With none signed in it can be
+ * skipped, for the chat to open without the buddy, asking for a provider
+ * there. Someone who already has a buddy (replaying these pages) is offered
+ * to open it instead.
  *
  * This computer starts running agents for the workspace as the page opens, so
  * what its providers are ready for is known by the time it has been read.
@@ -142,7 +145,6 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
       </OnboardingSurface>
     );
 
-  const busy = starting !== null;
   return (
     <OnboardingSurface
       exit={exit}
@@ -157,37 +159,14 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             Open switch-buddy
           </Button>
         ) : (
-          <div className="relative flex gap-2">
-            <Button variant="outline" onClick={skip} disabled={busy}>
-              Skip
-            </Button>
-            {ready.map((provider, index) => (
-              <Button
-                key={provider.id}
-                variant={index === 0 ? 'default' : 'outline'}
-                onClick={() => void startWith(provider.id)}
-                disabled={busy}
-              >
-                {starting === provider.id && <Spinner className="size-3.5" />}
-                Start with {provider.name}
-              </Button>
-            ))}
-            <Button
-              variant={ready.length === 0 ? 'default' : 'outline'}
-              onClick={openSetup}
-              disabled={busy}
-            >
-              {ready.length === 0 ? 'Set up AI provider' : 'Use another provider'}
-            </Button>
-            {/* Beside the buttons, not between them: the row stays where it is
-                while this computer is still being checked. */}
-            {computer.kind !== 'failed' && !checked && (
-              <span className="absolute top-1/2 left-full ml-3 flex -translate-y-1/2 items-center gap-1.5 text-xs whitespace-nowrap text-foreground-muted">
-                <Spinner className="size-3" />
-                Checking AI providers…
-              </span>
-            )}
-          </div>
+          <StartChoices
+            checking={computer.kind !== 'failed' && !checked}
+            ready={ready}
+            starting={starting}
+            onStart={(providerId) => void startWith(providerId)}
+            onSetUp={openSetup}
+            onSkip={skip}
+          />
         )
       }
     >
@@ -211,3 +190,77 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     </OnboardingSurface>
   );
 });
+
+/**
+ * How to start the buddy, once this computer's providers are known. With a
+ * provider already signed in, those are the way, beside another provider; no
+ * Skip, though the flow's own way out stays at the top. With none, set one up
+ * or skip.
+ */
+export function StartChoices({
+  checking,
+  ready,
+  starting,
+  onStart,
+  onSetUp,
+  onSkip,
+}: {
+  checking: boolean;
+  ready: { id: string; name: string }[];
+  starting: string | null;
+  onStart: (providerId: string) => void;
+  onSetUp: () => void;
+  onSkip: () => void;
+}) {
+  const busy = starting !== null;
+  const shown = checking ? 'checking' : ready.length > 0 ? 'signed-in' : 'none';
+  return (
+    <motion.div
+      key={shown}
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+      className="flex flex-col items-center gap-3"
+    >
+      {shown === 'checking' ? (
+        <span className="flex h-9 items-center gap-1.5 text-xs text-foreground-muted">
+          <Spinner className="size-3" />
+          Checking AI providers…
+        </span>
+      ) : shown === 'signed-in' ? (
+        <>
+          <p className="text-sm text-foreground-muted">How’d you like to power switch-buddy?</p>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="text-sm text-foreground-muted">Already signed in:</span>
+            {ready.map((provider) => (
+              <Button
+                key={provider.id}
+                variant="outline"
+                onClick={() => onStart(provider.id)}
+                disabled={busy}
+              >
+                {starting === provider.id ? (
+                  <Spinner className="size-3.5" />
+                ) : (
+                  <AgentIcon id={provider.id} size={16} />
+                )}
+                {provider.name}
+              </Button>
+            ))}
+            <span className="text-sm text-foreground-muted">or</span>
+            <Button variant="outline" onClick={onSetUp} disabled={busy}>
+              Use other AI providers
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onSkip}>
+            Skip
+          </Button>
+          <Button onClick={onSetUp}>Set up AI provider</Button>
+        </div>
+      )}
+    </motion.div>
+  );
+}
