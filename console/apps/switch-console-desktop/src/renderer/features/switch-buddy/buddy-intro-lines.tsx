@@ -29,7 +29,7 @@ export function IntroBubbles({ children }: { children: ReactNode }) {
 }
 
 export const INTRO_BUBBLE_CLASS =
-  'rounded-2xl bg-background px-4 py-3 text-sm text-foreground shadow-sm';
+  'rounded-2xl bg-background px-4 py-3 text-sm text-foreground shadow-sm emdark:bg-background-2';
 
 function IntroBubble({ children }: { children: ReactNode }) {
   return <p className={INTRO_BUBBLE_CLASS}>{children}</p>;

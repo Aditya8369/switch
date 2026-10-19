@@ -152,7 +152,7 @@ export function MeetBuddyIntro({
       >
         <span
           data-intro="tile"
-          className="relative inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary"
+          className="relative inline-flex shrink-0 items-center justify-center rounded-[22%] bg-[linear-gradient(180deg,rgb(231_246_249/0.2),rgb(136_145_147/0.2))] emdark:bg-[linear-gradient(180deg,rgb(231_246_249/0.12),rgb(136_145_147/0.07))]"
           style={{
             width: TILE,
             height: TILE,

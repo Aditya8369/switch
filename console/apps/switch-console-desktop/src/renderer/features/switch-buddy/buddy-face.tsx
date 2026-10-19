@@ -22,41 +22,51 @@ const BLINK_OPEN = { duration: 0.12, ease: [0, 0, 0.2, 1] } as const;
 const SMILE_SPRING = { type: 'spring', stiffness: 260, damping: 18 } as const;
 
 export function BuddyFace({ size, expression }: { size: number; expression: Expression }) {
-  const eyeScaleY = expression.blink ? 0.08 : expression.smile ? 0.78 : 1;
+  // A smile is the eyes alone: each round eye gives way to a curved, happy one.
+  const smiling = expression.smile && !expression.blink;
   return (
     <svg width={size} height={size} viewBox="0 0 256 256" aria-hidden className="block">
       <g transform={`rotate(${TILT} 128 128)`}>
         <rect x={48} y={48} width={160} height={160} rx={38} fill={BODY} />
         {EYES.map((eye) => (
-          <motion.g
-            key={eye.x}
-            initial={false}
-            animate={{ scaleY: eyeScaleY, y: expression.smile && !expression.blink ? -2 : 0 }}
-            transition={
-              expression.blink
-                ? BLINK_CLOSE
-                : eyeScaleY === 1 && !expression.smile
-                  ? BLINK_OPEN
-                  : SMILE_SPRING
-            }
-          >
-            <circle cx={eye.x} cy={eye.y} r={EYE_RADIUS} fill={INK} />
-            <circle cx={eye.glintX} cy={eye.glintY} r={4} fill="#fff" />
-          </motion.g>
+          <g key={eye.x}>
+            <motion.g
+              initial={false}
+              animate={{
+                scaleY: expression.blink ? 0.08 : smiling ? 0.3 : 1,
+                opacity: smiling ? 0 : 1,
+              }}
+              transition={
+                expression.blink
+                  ? BLINK_CLOSE
+                  : smiling
+                    ? { ...SMILE_SPRING, opacity: { duration: 0.1 } }
+                    : { ...BLINK_OPEN, opacity: { duration: 0.12, delay: 0.04 } }
+              }
+            >
+              <circle cx={eye.x} cy={eye.y} r={EYE_RADIUS} fill={INK} />
+              <circle cx={eye.glintX} cy={eye.glintY} r={4} fill="#fff" />
+            </motion.g>
+            <motion.path
+              d={`M${eye.x - 12} ${eye.y + 4} Q${eye.x} ${eye.y - 14} ${eye.x + 12} ${eye.y + 4}`}
+              fill="none"
+              stroke={INK}
+              strokeWidth={7}
+              strokeLinecap="round"
+              initial={false}
+              animate={{
+                pathLength: smiling ? 1 : 0,
+                opacity: smiling ? 1 : 0,
+                y: smiling ? 0 : 4,
+              }}
+              transition={{
+                pathLength: SMILE_SPRING,
+                y: SMILE_SPRING,
+                opacity: { duration: smiling ? 0.08 : 0.14 },
+              }}
+            />
+          </g>
         ))}
-        <motion.path
-          d="M114 149 Q128 161 143 150"
-          fill="none"
-          stroke={INK}
-          strokeWidth={6.5}
-          strokeLinecap="round"
-          initial={false}
-          animate={{ pathLength: expression.smile ? 1 : 0, opacity: expression.smile ? 1 : 0 }}
-          transition={{
-            pathLength: SMILE_SPRING,
-            opacity: { duration: expression.smile ? 0.08 : 0.18 },
-          }}
-        />
       </g>
     </svg>
   );
