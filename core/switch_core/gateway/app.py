@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -17,10 +18,12 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.service import ChatError, ChatService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters.github import load_github_app
 from switch_core.connections.flows import ServiceFlows
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
@@ -38,6 +41,8 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.chats import chat_error_response
+from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connectors import router as connectors_router
@@ -88,7 +93,7 @@ def create_gateway_app(
     connector_lifecycle: ServerSideConnectorLifecycleService,
     connector_store: ServerConnectorStore,
     event_buffer: EventBuffer,
-    session_factory: object,
+    session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
@@ -101,6 +106,7 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    chat_service: ChatService,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -131,6 +137,7 @@ def create_gateway_app(
     )
 
     app = FastAPI(title="Switch Gateway API")
+    app.state.chat_service = chat_service
     app.state.hosted_controller_settings = (
         HostedControllerSettings.model_validate_json(
             Path(config.hosted_controller_config_path).read_text()
@@ -154,7 +161,12 @@ def create_gateway_app(
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
     app.include_router(providers_router, tags=["agent providers"])
-    app.state.service_flows = ServiceFlows(config.gateway_public_url)
+    # Sign-ins under way, GitHub's and the catalog's, in Postgres so that any
+    # switch-core process can take any step of one.
+    app.state.sign_in_flows = SignInFlows(session_factory, config.keyring)
+    app.state.service_flows = ServiceFlows(
+        config.gateway_public_url, app.state.sign_in_flows
+    )
     if config.service_connections_enabled:
         app.include_router(service_connections_router, tags=["service-connections"])
         app.include_router(service_flows_router, tags=["service-connections"])
@@ -176,6 +188,7 @@ def create_gateway_app(
         register_oidc_client(config)
 
     app.add_exception_handler(SessionError, session_error_response)
+    app.add_exception_handler(ChatError, chat_error_response)
     app.include_router(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
@@ -183,6 +196,7 @@ def create_gateway_app(
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
     app.include_router(

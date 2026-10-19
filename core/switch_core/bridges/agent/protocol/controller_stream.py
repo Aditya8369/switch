@@ -21,6 +21,8 @@ of its agents' watchers exactly the stream it would have had from Switch:
 - `agent.session_command {agent_id, room_id, command}`: an in-room command
   (`!reset`, `!compact`, `!interrupt`, a Stop press) for the session working in
   `room_id`, which the controller routes. `command` is today's frame.
+- `agent.warm {agent_id, room_id}`: someone is typing to the agent in
+  `room_id`; start the session a message there would start. A hint only.
 - `agent.approval_outcome {agent_id, outcome}`.
 - `agent.rooms {agent_id, rooms}`: its room membership changed.
 - `agent.detached {agent_id, reason}`: `unassigned` or `deleted`.
@@ -205,6 +207,11 @@ class _ControllerStream:
                     yield frame(
                         "agent.session_command",
                         {"agent_id": agent_id, "room_id": room_id, "command": command},
+                    )
+
+                for agent_id, room_id in self._presence.take_warms(conn):
+                    yield frame(
+                        "agent.warm", {"agent_id": agent_id, "room_id": room_id}
                     )
 
                 for raw in await self._owed_outcomes():
@@ -430,14 +437,20 @@ class _ControllerStream:
             attached.cursor = max(attached.cursor, bound)
             self._conn.sent_cursors[agent_id] = attached.cursor
             return []
+        # The unread counts sent with the events below, counted for the whole
+        # batch at once, so that catching up on a few hundred events costs a
+        # few statements per room rather than several per event.
+        missed = await self._buffer.unread_batch(
+            self._tenant,
+            agent_id,
+            [(item.room_id, item.room_seq) for item in pending if item.notifiable],
+        )
         frames: list[ControllerFrame] = []
         for item in pending:
             data = item.event.model_dump(mode="json")
             data["sequence"] = item.seq
             if item.notifiable:
-                unread = await self._buffer.unread(
-                    self._tenant, agent_id, item.room_id, item.room_seq
-                )
+                unread = missed[(item.room_id, item.room_seq)]
                 data["missed"] = {"count": unread.count, "reason": unread.reason}
             attached.cursor = item.seq
             self._conn.sent_cursors[agent_id] = item.seq
@@ -454,7 +467,12 @@ class _ControllerStream:
         if (
             conn.closure is not None
             or conn.stream_token != self._token
-            or bool(conn.detached or conn.rooms_changed or conn.session_commands)
+            or bool(
+                conn.detached
+                or conn.rooms_changed
+                or conn.session_commands
+                or conn.warms
+            )
             or self._presence.agents_of(conn.controller_id) != set(self._attached)
             or any(a.outcomes or a.resync for a in self._attached.values())
         ):

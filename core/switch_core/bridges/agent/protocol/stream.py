@@ -242,6 +242,10 @@ async def _event_stream(
     # `agent_room_reads`. Each pass of the loop calls it only for rooms not in
     # this set, so it does not write to the database for every room each time.
     counted: set[str] = set()
+    # A new row in a room whose conversation this stream reads rings no
+    # doorbell of the agent's, so the stream asks each such room's own
+    # announcement (`EventBuffer.rooms`) to wake it.
+    rooms = _ConversationBells(buffer)
     last_keepalive = time.monotonic()
     try:
         if conn.reads_conversation:
@@ -348,6 +352,9 @@ async def _event_stream(
                 conversation_rooms = await _place_in_conversation(
                     conn, registry, buffer, tenant
                 )
+            # Before the read, so a row written while it runs wakes the wait
+            # below rather than being left for the keepalive.
+            rooms.watch(conversation_rooms)
 
             try:
                 pending, looked = await buffer.read(
@@ -376,26 +383,46 @@ async def _event_stream(
 
             # Room coverage is evaluated per event rather than up front: a
             # sibling claiming a room must take effect immediately, without
-            # tearing the stream down. One of the agent's own events for a room
-            # this connection does not cover is not sent, but the position
-            # still moves past it, in order: only once every event before it
-            # has gone out, so the position never says the client was sent
-            # an event that is still to come. Room messages need no check
-            # here, because `_conversation_rooms` only returned rooms this
-            # connection covers.
+            # tearing the stream down. An event for a room this connection does
+            # not cover is not sent, but the position still moves past it, in
+            # order: only once every event before it has gone out, so the
+            # position never says the client was sent an event that is still
+            # to come. `covered` is the plan when the batch is read, which the
+            # tickets are minted for: room messages are in it because
+            # `_conversation_rooms` only returned rooms this connection covers.
+            # Each event is checked again just before it is sent, because the
+            # loop suspends at every yield and a sibling can claim the room
+            # while it does. The check reads the registry in memory, so it
+            # costs no query.
             covered = [
                 item.source != OWN_EVENTS or registry.covers(conn, item.room_id)
                 for item in pending
             ]
             tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
+            # The unread counts sent with the events below, counted for the
+            # whole batch at once, so that catching up on a few hundred events
+            # costs a few statements per room rather than several per event.
+            missed = await buffer.unread_batch(
+                tenant,
+                agent_id,
+                [
+                    (item.room_id, item.room_seq)
+                    for item, send in zip(pending, covered, strict=True)
+                    if send and item.notifiable
+                ],
+            )
             delivered = False
             index = -1
             for item, send in zip(pending, covered, strict=True):
-                if not send:
-                    if item.seq > conn.position.get(OWN_EVENTS, -1):
-                        conn.position[OWN_EVENTS] = item.seq
+                if send:
+                    # Counted before the re-check below, so a ticket stays
+                    # with the event it was minted for even when an event
+                    # before it in the batch is no longer sent.
+                    index += 1
+                if not send or not registry.covers(conn, item.room_id):
+                    if item.seq > conn.position.get(item.source, -1):
+                        conn.position[item.source] = item.seq
                     continue
-                index += 1
                 payload = item.event.model_dump(mode="json")
                 frame_seq = _number_for(conn, item, tickets, index)
                 if frame_seq is not None:
@@ -407,9 +434,7 @@ async def _event_stream(
                     # woken for anyway. A count of its own would be a wake
                     # spent on "you may have missed something you may not care
                     # about".
-                    unread = await buffer.unread(
-                        tenant, agent_id, item.room_id, item.room_seq
-                    )
+                    unread = missed[(item.room_id, item.room_seq)]
                     payload["missed"] = {
                         "count": unread.count,
                         "reason": unread.reason,
@@ -459,25 +484,13 @@ async def _event_stream(
             ):
                 continue
 
-            # New room messages do not ring the doorbell; only the agent's own
-            # events do. A room message newer than the newest of the agent's
-            # own events in that room is read only once it is `settle_seconds`
-            # old, which gives the agent's consumer time to add it to the
-            # agent's own events first if it is for the agent. A stream that
-            # receives every room message therefore wakes every
-            # `settle_seconds` to read messages that have settled, instead of
-            # sleeping for the whole keepalive interval.
-            timeout = (
-                buffer.settle_seconds
-                if conn.reads_conversation
-                else KEEPALIVE_INTERVAL_SECONDS
-            )
-            if await _wait_for_work(bell, conn, timeout):
+            if await _wait_for_work(bell, conn, rooms.moved):
                 continue
             if time.monotonic() - last_keepalive >= KEEPALIVE_INTERVAL_SECONDS:
                 last_keepalive = time.monotonic()
                 yield KEEPALIVE
     finally:
+        rooms.watch(set())
         if unsubscribe_outcomes is not None:
             unsubscribe_outcomes()
         registry.detach_stream(conn, generation)
@@ -771,26 +784,54 @@ async def _wait_for_wake(conn: AgentConnection) -> bool:
 
 
 async def _wait_for_work(
-    bell: asyncio.Event,
-    conn: AgentConnection,
-    timeout: float = KEEPALIVE_INTERVAL_SECONDS,
+    bell: asyncio.Event, conn: AgentConnection, moved: asyncio.Event
 ) -> bool:
-    """Wait for a new event or a change to the connection itself.
+    """Wait for a new event, a new row in a room whose conversation the
+    stream reads, or a change to the connection itself.
 
-    Returns False when neither happened within `timeout`, so the caller can
-    read again or send a keepalive.
+    Returns False when none happened within the keepalive interval, so the
+    caller can read again or send a keepalive.
     """
     waiters = [
         asyncio.ensure_future(bell.wait()),
         asyncio.ensure_future(conn.wake.wait()),
+        asyncio.ensure_future(moved.wait()),
     ]
     try:
         done, _ = await asyncio.wait(
             waiters,
-            timeout=timeout,
+            timeout=KEEPALIVE_INTERVAL_SECONDS,
             return_when=asyncio.FIRST_COMPLETED,
         )
         return bool(done)
     finally:
         for waiter in waiters:
             waiter.cancel()
+
+
+class _ConversationBells:
+    """The rooms whose new rows wake one stream, kept to the rooms whose
+    conversation it reads.
+
+    `moved` is set when any of them is announced, and cleared each time the
+    rooms are given again, just before the stream reads: an announcement that
+    lands during the read leaves it set, so the stream reads once more rather
+    than sleeping on a row it has not seen. The rows themselves are read from
+    the stream's own position, as everything here is.
+    """
+
+    def __init__(self, buffer: EventBuffer) -> None:
+        self._rooms = buffer.rooms
+        self._watched: set[str] = set()
+        self.moved = asyncio.Event()
+
+    async def _moved(self, _room_id: str) -> None:
+        self.moved.set()
+
+    def watch(self, rooms: set[str]) -> None:
+        self.moved.clear()
+        for room_id in rooms - self._watched:
+            self._rooms.subscribe(room_id, self._moved)
+        for room_id in self._watched - rooms:
+            self._rooms.unsubscribe(room_id, self._moved)
+        self._watched = set(rooms)
