@@ -1,0 +1,71 @@
+/**
+ * Checks this computer's providers as onboarding opens, before it is enrolled
+ * as a machine anywhere, with the controller's own `precheck`: the same
+ * checks its controller runs, on the same binary and environment. The
+ * controller started later takes the results (`--provider-seed`), so its
+ * first report already says what is signed in, rather than checking from
+ * scratch once enrolled.
+ */
+export type ProviderPrecheckDeps = {
+  execPath: string;
+  bundles: { controller: () => string; sharedHost: () => string };
+  env: () => NodeJS.ProcessEnv;
+  /** Where the results go, written as each check comes back. */
+  seedFile: () => string;
+  /** Where the checks run, and the CLIs keep what they write when asked their version. */
+  probeDir: () => string;
+  /** Runs the check to its end; rejects, saying why, when it fails. */
+  execute: (executable: string, args: string[], env: NodeJS.ProcessEnv) => Promise<void>;
+  log: { warn: (message: string, fields?: Record<string, unknown>) => void };
+  now: () => number;
+};
+
+/** A check older than this is made again when asked; the controller takes none older either. */
+const FRESH_MS = 10 * 60 * 1000;
+
+export class ProviderPrecheck {
+  private running: Promise<void> | null = null;
+  private startedAt: number | null = null;
+
+  constructor(private readonly deps: ProviderPrecheckDeps) {}
+
+  /** Starts the checks, unless they are running or ran a short while ago. */
+  start(): void {
+    if (this.running) return;
+    if (this.startedAt !== null && this.deps.now() - this.startedAt < FRESH_MS) return;
+    this.startedAt = this.deps.now();
+    this.running = this.deps
+      .execute(
+        this.deps.execPath,
+        [
+          this.deps.bundles.controller(),
+          'precheck',
+          '--out',
+          this.deps.seedFile(),
+          '--probe-dir',
+          this.deps.probeDir(),
+          '--shared-host-bundle',
+          this.deps.bundles.sharedHost(),
+        ],
+        { ...this.deps.env(), ELECTRON_RUN_AS_NODE: '1', SWITCH_CONTROLLER_LOG_LEVEL: 'warn' }
+      )
+      .catch((error: unknown) => {
+        // The controller checks every provider itself, as it did before.
+        this.deps.log.warn('Could not check the providers ahead of the controller', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        this.running = null;
+      });
+  }
+
+  /**
+   * The file of checks for a controller starting now, or null when none were
+   * started in this session. Results still coming in are fine: the controller
+   * takes those already written and checks the rest itself.
+   */
+  seedFile(): string | null {
+    return this.startedAt === null ? null : this.deps.seedFile();
+  }
+}

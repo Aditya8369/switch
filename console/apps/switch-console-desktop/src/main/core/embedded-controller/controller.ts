@@ -6,7 +6,7 @@ import type {
 } from '@shared/core/embedded-controller/embedded-controller';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { defaultWorkspacePath, serverWorkspacesDir } from './controller-files';
-import { embeddedControllerService } from './embedded-controllers';
+import { embeddedControllerService, providerPrecheck } from './embedded-controllers';
 
 /** "Run managed agents on this computer", per Switch server. */
 export const embeddedControllerController = createRPCController({
@@ -27,6 +27,12 @@ export const embeddedControllerController = createRPCController({
   /** Checks every provider on this computer again now, and reports it to the server. */
   recheckProviders: (serverId: string): Promise<void> =>
     embeddedControllerService.recheckProviders(serverId),
+
+  /**
+   * Checks this computer's providers now, ahead of any controller, for the
+   * one started later to take; as onboarding opens. Returns at once.
+   */
+  precheckProviders: (): void => providerPrecheck.start(),
 
   /** Renames this computer as a machine and/or changes its description, on the server. */
   updateDetails: (params: { serverId: string; changes: MachineDetailsChange }): Promise<void> =>
