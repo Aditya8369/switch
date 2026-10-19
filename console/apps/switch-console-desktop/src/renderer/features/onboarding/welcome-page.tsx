@@ -58,6 +58,8 @@ export function WelcomePage({
   return (
     <OnboardingSurface
       exit={onLeave ? { label: 'Back to the app', onExit: onLeave } : exit}
+      // Its pieces stage their own entrance, one after another.
+      enter={false}
       footer={
         <Enter order={7}>
           <Button onClick={onContinue}>Get started</Button>
