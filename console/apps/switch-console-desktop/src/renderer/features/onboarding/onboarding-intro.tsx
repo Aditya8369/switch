@@ -16,7 +16,7 @@ import { IntroSequence } from './intro/IntroSequence';
 import { STAGE, THEMES } from './intro/timeline';
 
 /** How long the last frame holds before the intro gives way to Welcome. */
-const HOLD_S = 0.7;
+const HOLD_S = 0.5;
 /**
  * The way out, at the end or on a skip: the chat rises and fades, the glow
  * behind it fades, and Welcome comes in after.
