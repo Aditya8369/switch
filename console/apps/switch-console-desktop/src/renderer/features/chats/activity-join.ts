@@ -4,7 +4,6 @@ import {
   TURN_ITEM_ID,
 } from '@shared/core/chats/activity';
 import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
-import { SWITCH_TOOL_PREFIX } from './tool-presentation';
 
 /**
  * Joining an agent's turns, as Switch's activity feed stores them, to the
@@ -154,9 +153,13 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
   return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
 }
 
-/** Switch's own tools and Claude Code's tool loading are how the agent works, not work shown. */
+/** Tool calls whose only output is the room message the user already sees. */
 export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
-  return item.title.startsWith(SWITCH_TOOL_PREFIX) || /^ToolSearch(\s|$)/.test(item.title);
+  return (
+    /^mcp__switch__post_message(\s|$)/.test(item.title) ||
+    /^mcp__switch__send_targeted_message(\s|$)/.test(item.title) ||
+    /^ToolSearch(\s|$)/.test(item.title)
+  );
 }
 
 /** The tool calls a turn shows. Assistant text is left out: the room message is the copy shown. */
@@ -164,7 +167,7 @@ export function turnTools(turn: TurnActivity): ChatActivityItem[] {
   return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
 }
 
-/** Whether the turn is running with no tool currently running and no reply streaming. */
+/** Whether the turn is running with no visible tool currently running. */
 export function isThinking(turn: TurnActivity): boolean {
   return (
     (turn.status === 'queued' || turn.status === 'running') &&
@@ -173,7 +176,6 @@ export function isThinking(turn: TurnActivity): boolean {
         item.kind === 'tool-activity' &&
         !isHiddenTool(item) &&
         toolState(item, turn.status) === 'running'
-    ) &&
-    !turn.items.some((item) => item.kind === 'assistant-message' && item.status === 'in-progress')
+    )
   );
 }

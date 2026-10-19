@@ -306,29 +306,37 @@ describe('bindTurns', () => {
     expect(isThinking(turn)).toBe(true);
   });
 
-  it('thinks between tools and not while a tool runs or a reply streams', () => {
+  it('thinks between tools and not while a visible tool runs', () => {
     const tool = row('t1', 'tool', { status: 'in-progress' });
     expect(isThinking(turnOf([tool], 'running'))).toBe(false);
     const done = { ...tool, status: 'completed' };
     expect(isThinking(turnOf([done], 'running'))).toBe(true);
     expect(isThinking(turnOf([done], 'completed'))).toBe(false);
     const streaming = row('t1', 'msg', { kind: 'assistant-message', status: 'in-progress' });
-    expect(isThinking(turnOf([streaming], 'running'))).toBe(false);
+    expect(isThinking(turnOf([streaming], 'running'))).toBe(true);
   });
 
   it('is thinking when only hidden tools are running', () => {
-    const switchTool = row('t1', 'switch', {
-      title: 'mcp__switch__read_context',
+    const postMessage = row('t1', 'post', {
+      title: 'mcp__switch__post_message',
       status: 'in-progress',
     });
-    expect(isThinking(turnOf([switchTool], 'running'))).toBe(true);
+    expect(isThinking(turnOf([postMessage], 'running'))).toBe(true);
+    const sendTargeted = row('t1', 'send', {
+      title: 'mcp__switch__send_targeted_message',
+      status: 'in-progress',
+    });
+    expect(isThinking(turnOf([sendTargeted], 'running'))).toBe(true);
     const toolSearch = row('t1', 'search', { title: 'ToolSearch', status: 'in-progress' });
     expect(isThinking(turnOf([toolSearch], 'running'))).toBe(true);
-    const both = [switchTool, toolSearch];
-    expect(isThinking(turnOf(both, 'running'))).toBe(true);
+    const listBridges = row('t1', 'list', {
+      title: 'mcp__switch__list_bridges',
+      status: 'in-progress',
+    });
+    expect(isThinking(turnOf([listBridges], 'running'))).toBe(false);
   });
 
-  it('returns only visible tools, filtering out Switch MCP and ToolSearch', () => {
+  it('returns only visible tools, filtering out post_message, send_targeted_message, ToolSearch and assistant text', () => {
     const turn = turnOf(
       [
         row('t1', 'a', { title: 'mcp__switch__read_context' }),
@@ -336,11 +344,17 @@ describe('bindTurns', () => {
         row('t1', 'c', { title: 'ls -la' }),
         row('t1', 'd', { kind: 'assistant-message', text: 'the answer' }),
         row('t1', 'e', { title: 'mcp__switch__post_message' }),
+        row('t1', 'f', { title: 'mcp__switch__send_targeted_message' }),
+        row('t1', 'g', { title: 'mcp__switch__list_bridges' }),
       ],
       'completed'
     );
     const work = turnTools(turn);
-    expect(work.map((each) => each.title)).toEqual(['ls -la']);
+    expect(work.map((each) => each.title)).toEqual([
+      'mcp__switch__read_context',
+      'ls -la',
+      'mcp__switch__list_bridges',
+    ]);
   });
 
   it('shows an unfinished tool of an interrupted turn as failed', () => {
@@ -348,6 +362,17 @@ describe('bindTurns', () => {
     expect(toolState(tool, 'running')).toBe('running');
     expect(toolState(tool, 'interrupted')).toBe('failed');
     expect(toolState({ ...tool, status: 'completed' }, 'running')).toBe('done');
+  });
+
+  it('keeps thinking when only hidden post_message is complete and assistant text is streaming', () => {
+    const turn = turnOf(
+      [
+        row('t1', 'post', { title: 'mcp__switch__post_message', status: 'completed' }),
+        row('t1', 'msg', { kind: 'assistant-message', status: 'in-progress' }),
+      ],
+      'running'
+    );
+    expect(isThinking(turn)).toBe(true);
   });
 });
 
