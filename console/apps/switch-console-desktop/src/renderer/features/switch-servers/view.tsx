@@ -38,6 +38,7 @@ import { GuardrailsSection } from './GuardrailsSection';
 import { localServerStore } from './local-server-store';
 import { MessagingAppsCard } from './MessagingAppsCard';
 import { remoteServerStore } from './remote-server-store';
+import { ServerAddressNotice } from './server-address-notice';
 import { serverIcon } from './server-icon';
 import { serverPlacementLabel } from './server-presentation';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -290,6 +291,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
         )}
 
         {detailsVisible && unreachable && <ServerUnreachableCard serverId={serverId} />}
+
+        {!server.managed && !unreachable && <ServerAddressNotice server={server} />}
 
         {detailsVisible && !unreachable && (
           <>

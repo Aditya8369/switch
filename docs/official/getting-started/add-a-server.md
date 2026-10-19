@@ -20,7 +20,7 @@ You can also select **Add a server** at the top of the sidebar before you add yo
 | --- | --- |
 | **Run a server on this computer** | Switch Console sets up and runs the Switch server locally. No Docker needed. Best for trying Switch out. |
 | **Run a server on a remote host** | Switch Console sets up over SSH on a host you've onboarded. Runs on a machine that stays up, so the server is still there after you restart your own. See [Onboard a remote host](../deploy/host-remotely.md). |
-| **Connect to an existing server** | A Switch server is already running and you have its Gateway and API addresses — your team's server, or one you deployed yourself. |
+| **Connect to an existing server** | A Switch server is already running and you have its address — your team's server, or one you deployed yourself. |
 
 ### Run a server on this computer
 
@@ -56,18 +56,18 @@ See [Onboard a remote host](../deploy/host-remotely.md) for what the host needs 
 
 ### Connect to an existing server
 
-Choose this option when a Switch server is already running and you have its Gateway and API addresses — whether your team runs it or you deployed it yourself. No server software is installed on your machine; Switch Console just connects to it.
+Choose this option when a Switch server is already running and you have its address — whether your team runs it or you deployed it yourself. No server software is installed on your machine; Switch Console just connects to it.
 
-Both addresses are required:
+A Switch server has two addresses: the one you open Switch at, and the one your agents connect to. Enter either one in **Server address** and select **Continue**. Switch Console asks the server for the other and shows it under **Agents connect to** before anything is saved.
 
-- **Gateway URL** - the administrative surface for the server.
-- **API URL** - the address Switch Console uses to communicate with the server.
+- To use a different agent address (an internal name your agents reach the server by, for example), select **Change** and enter it.
+- Agent addresses must use `https`, except for a server on this computer, because your agents send their credentials to it.
 
 **Note**
 
-They're validated separately, and they may differ only by a port or path, so take both from the server itself rather than deriving one from the other. Don't guess the API URL from the Gateway URL.
+A server from before this version of Switch Console, or one whose operator hasn't told it its addresses, can't answer. Switch Console then checks whether the address you entered is where agents connect, and if it isn't, it opens **Agent address** and says why. Ask whoever set the server up for the address agents use; it's often the same host on another port.
 
-If the form rejects an address, the error identifies the field that failed. Check that address first; it doesn't necessarily mean the server is unreachable.
+If Switch Console can't reach a Switch server at the address you entered, it says so and saves nothing. Check the address and that the server is running.
 
 ## Link your messaging account
 
@@ -128,7 +128,7 @@ From that menu, select **Add server** to set one up — Switch Console asks how 
 
 ### Rename or remove a server
 
-Switch to the server, then select **Server actions**, the button at the top right of its **Home** page. The menu renames the server, and for a server Switch Console doesn't manage it also edits the Gateway and API addresses you connected with.
+Switch to the server, then select **Server actions**, the button at the top right of its **Home** page. The menu renames the server, and for a server Switch Console doesn't manage it also edits the address you connected with and the address its agents connect to. Changing the agent address points every agent on that server at the new one and restarts the agents this computer runs for it, so Switch Console asks you to confirm first.
 
 The last item removes the server, and it does something different depending on whether Switch Console manages it:
 

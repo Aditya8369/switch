@@ -45,6 +45,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A server tells clients its own addresses.** `GET /gateway/discovery`
+  answers without a session with the server's public dashboard and agent
+  addresses (`FRONTEND_BASE_URL` and `GATEWAY_PUBLIC_URL`), or null for one
+  that is not set, and nothing else. It answers on either address, so Switch
+  Console can connect from whichever one a person types. Like the sign-in
+  surface it sits outside the versioned `gateway-api` contract. The Helm
+  chart now fills both in from `ingress.host` under `ingress.mode: managed`
+  when they are left empty (`https://` with `ingress.tls.enabled`); set them
+  explicitly where TLS is terminated by annotation.
 - **The server's operator sets up connector apps from the dashboard.** A
   Connectors page, beside Users and for the operator alone, sets up the
   GitHub App and Google Workspace's OAuth client (and any static client the
@@ -1767,6 +1776,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Connecting to a server takes one address.** The add-server, first-run
+  and Edit connection forms ask for a single address: either the one you open
+  Switch at or the one agents connect to. Console asks the server for the
+  other, falls back to checking whether the typed address is the agent
+  bridge, and only then asks. The agent address is shown before saving and
+  can be changed; agent addresses must be https except on this computer.
+  Servers saved before keep both their addresses unchanged. When a saved
+  server later advertises a different agent address, its page says so and
+  offers to switch, confirming first because switching re-points its agents.
+- **Join a workspace from an invite link at first run.** "How do you want to
+  run Switch?" offers **Join with an invite link**: paste it, sign in to the
+  server it names, and the invitation is accepted.
 - **The server's operator sets up connector apps in Console.** For the
   operator, the Admin page has a Connector apps section under Server, below
   the workspace's switches: the GitHub App and Google Workspace's OAuth

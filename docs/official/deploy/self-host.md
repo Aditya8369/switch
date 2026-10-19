@@ -12,7 +12,7 @@ This page covers what you need to choose, what the deployment exposes, and how t
 
 **Note**
 
-If a server is already running and somebody can give you its Gateway URL and API URL, you don't need to deploy anything. Go to [Add a server](../getting-started/add-a-server.md) and choose **Connect to an existing server**.
+If a server is already running and somebody can give you its address, you don't need to deploy anything. Go to [Add a server](../getting-started/add-a-server.md) and choose **Connect to an existing server**.
 
 ## Before you begin
 
@@ -87,17 +87,28 @@ The chart renders the same stack for Kubernetes, and expects to fit into a clust
 
 Everyone who uses the server, including you, installs Switch Console and connects to the deployment — the server being one you deployed yourself makes no difference to this part.
 
-### Collect the two addresses
+### Tell the server its own addresses
 
-The **Gateway URL** is the administrative surface for the server. The **API URL** is the address Switch Console uses to communicate with it. On a Compose deployment they are the gateway and API ports above; on Kubernetes they are whatever your ingress publishes them as.
+The server has two public addresses: the dashboard, where people open Switch, and the agent bridge, where agents connect. On a Compose deployment they are the gateway and API ports above; on Kubernetes they are whatever your ingress publishes them as.
+
+Set both on the server, so it can tell Switch Console about them:
+
+- `FRONTEND_BASE_URL`: the dashboard's address.
+- `GATEWAY_PUBLIC_URL`: the agent bridge's address. Despite the name, this is not the dashboard.
+
+Each is a bare origin, scheme and host with no path, for example `https://switch.example.com`. The server returns them at `GET /gateway/discovery`, and Switch Console reads them from there, so anyone connecting only has to type one address.
+
+With the Helm chart, set `switchCore.frontendBaseUrl` and `switchCore.gatewayPublicUrl`. Under `ingress.mode: managed` both default to the ingress host, so you only need to set them when TLS is terminated by annotation or the ingress is your own. On Compose, set them in `.env`.
+
+If you leave them unset, nothing breaks: Switch Console checks whether the address someone typed is the agent bridge, and asks them for the agent address when it isn't.
 
 ### Add the server in Switch Console
 
-In Switch Console, add a server and choose **Connect to an existing server**. Enter both addresses. See [Add a server](../getting-started/add-a-server.md) for what each field does and what the resulting statuses mean.
+In Switch Console, add a server, choose **Connect to an existing server**, and enter either address. Switch Console shows where agents will connect before saving. See [Add a server](../getting-started/add-a-server.md) for what the form shows and what the resulting statuses mean.
 
-### Give your colleagues the same two addresses
+### Give your colleagues the address
 
-They install Switch Console, choose the same option, and enter the same addresses. Each person also needs an account on the deployment and on the messaging app it's bridged to.
+They install Switch Console, choose the same option, and enter the same address. Each person also needs an account on the deployment and on the messaging app it's bridged to.
 
 ## What to back up
 

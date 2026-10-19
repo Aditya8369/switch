@@ -43,11 +43,14 @@ export function HowToRunPage({
   onBack,
   onLocal,
   onExternal,
+  onInvite,
 }: {
   cloud: CloudChoiceState;
   onBack: () => void;
   onLocal: () => void;
   onExternal: () => void;
+  /** Someone sent an invite link: it names the server, so there is nothing to choose. */
+  onInvite: () => void;
 }) {
   const exit = useWizardExit();
   const cloudOpen = cloud.kind === 'open';
@@ -115,6 +118,17 @@ export function HowToRunPage({
             onSelect={() => setPicked('external')}
           />
         </div>
+        <p className="text-center text-sm text-foreground-muted">
+          Were you invited to a workspace?{' '}
+          <button
+            type="button"
+            className="text-foreground underline underline-offset-2 disabled:opacity-50"
+            onClick={onInvite}
+            disabled={connecting}
+          >
+            Join with an invite link
+          </button>
+        </p>
       </div>
     </OnboardingSurface>
   );

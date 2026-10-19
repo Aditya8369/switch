@@ -19,6 +19,10 @@ import type {
   SaveConnectorAppInput,
   SaveConnectorAppResult,
 } from '@shared/core/switch-servers/connector-apps';
+import type {
+  ServerAddressCheck,
+  ServerAddressResolution,
+} from '@shared/core/switch-servers/server-address';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -41,6 +45,7 @@ import type {
   UpdateTrustSettingsParams,
   UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
+import { sameApiEndpoint, urlOrigin } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -91,6 +96,7 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
+import { advertisedApiUrl, resolveServerAddress } from './resolve-server-address';
 import {
   addServer,
   deleteSessionCookie,
@@ -228,6 +234,29 @@ async function forgetSession(serverId: string): Promise<void> {
   resetChatStream(serverId);
 }
 
+/**
+ * Each saved server's last address check, for this run of the app. A
+ * mismatch is rare and slow to change, and the server page asks on every
+ * visit, so the server is asked once per run; saving the server clears it.
+ */
+const addressChecks = new Map<string, Promise<ServerAddressCheck>>();
+
+function forgetAddressCheck(serverId: string): void {
+  addressChecks.delete(serverId);
+}
+
+async function checkAddresses(server: SwitchServer): Promise<ServerAddressCheck> {
+  // Switch Cloud's and a managed server's addresses are Console's own to
+  // assign, so there is nothing to second-guess.
+  const cloud = switchCloudEndpoint();
+  const isCloud = cloud !== null && urlOrigin(cloud.url) === urlOrigin(server.gatewayUrl);
+  if (server.managed || isCloud) return { status: 'unknown' };
+  const advertised = await advertisedApiUrl(server.gatewayUrl);
+  if (advertised === null) return { status: 'unknown' };
+  if (sameApiEndpoint(server.apiUrl, advertised)) return { status: 'match' };
+  return { status: 'mismatch', savedApiUrl: server.apiUrl, advertisedApiUrl: advertised };
+}
+
 export const switchServersController = createRPCController({
   /** The icons the server generates for an agent called `name`, one page at a time. */
   agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
@@ -279,6 +308,31 @@ export const switchServersController = createRPCController({
     return server;
   },
 
+  /**
+   * A server's dashboard and agent-bridge origins, from the one address a
+   * person typed: what the server says, else whether the agent bridge answers
+   * at that address, else nothing (the person is asked). Saves nothing.
+   */
+  resolveServerAddress: async (address: string): Promise<ServerAddressResolution> =>
+    resolveServerAddress(z.string().parse(address)),
+
+  /**
+   * Whether a saved server's agent address still matches what the server
+   * advertises. Asked once per run of the app and server; never changes
+   * anything (accepting a suggestion goes through `updateServer`).
+   */
+  checkServerAddresses: async (serverId: string): Promise<ServerAddressCheck> => {
+    const server = await requireServer(serverId);
+    let check = addressChecks.get(server.id);
+    if (!check) {
+      check = checkAddresses(server);
+      addressChecks.set(server.id, check);
+      // A failed check is not remembered; the next visit asks again.
+      check.catch(() => forgetAddressCheck(server.id));
+    }
+    return check;
+  },
+
   /** Where Switch Cloud is, or null when this build or run has not been told. */
   switchCloud: async (): Promise<SwitchCloudEndpoint | null> => switchCloudEndpoint(),
 
@@ -291,9 +345,12 @@ export const switchServersController = createRPCController({
    *
    * A server already registered here is handed back as it is. Switch Cloud is
    * registered on the spot when the link is for it, since its addresses are the
-   * build's and there is nothing to ask. Any other server is unknown: an invite
-   * link names the server's web address and nothing else, and where its agents
-   * connect is not something to guess, so the caller has to ask.
+   * build's and there is nothing to ask. Any other server is resolved the way
+   * the connect form resolves a typed address: an invite link names the
+   * server's web address and nothing else, so the server is asked where its
+   * agents connect. That is offered to the caller (`resolvable`), never
+   * registered here; when nothing settles it the server is `unknown` and the
+   * caller has to ask, because where agents connect is not something to guess.
    */
   serverForInvite: async (origin: string): Promise<InviteServer> => {
     const cloud = switchCloudEndpoint();
@@ -302,12 +359,22 @@ export const switchServersController = createRPCController({
     }
     const existing = await findServerByGatewayUrl(origin);
     if (existing) return { kind: 'known', server: existing, via: 'external' };
+    const resolution = await resolveServerAddress(origin);
+    if (resolution.kind === 'resolved' && resolution.apiUrl !== null) {
+      return {
+        kind: 'resolvable',
+        origin,
+        gatewayUrl: resolution.gatewayUrl,
+        apiUrl: resolution.apiUrl,
+      };
+    }
     return { kind: 'unknown', origin };
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
     const previous = await requireServer(params.id);
     const server = await updateServer(params);
+    forgetAddressCheck(server.id);
 
     // The API URL is what an agent's SWITCH_API_ENDPOINT points at. When it
     // changes, cascade it to every member agent's stored config so they don't
@@ -330,6 +397,7 @@ export const switchServersController = createRPCController({
     // While the session and the workspace rows still exist to revoke it with.
     await embeddedControllerService.forgetServer(serverId);
     await removeServer(serverId);
+    forgetAddressCheck(serverId);
   },
 
   getConnectionCatalog: (serverId: string) =>

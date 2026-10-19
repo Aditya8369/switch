@@ -152,6 +152,24 @@ supply `secretName`, or add a cert-manager annotation and let it create the
 Secret. If your controller configures TLS by annotation instead (AWS ALB, for
 example), leave `tls.enabled` false and annotate.
 
+### The server's public addresses
+
+switch-core tells clients where it can be reached at `GET /gateway/discovery`,
+so a person connecting Switch Console types one address and Console fills in
+the other. The answer comes from two values:
+
+- `switchCore.frontendBaseUrl`: the dashboard's origin.
+- `switchCore.gatewayPublicUrl`: the **agent bridge's** origin (agents, MCP,
+  controllers), despite its name.
+
+Under `ingress.mode: managed` both are served on `ingress.host`, so when either
+is left empty it defaults to `https://<ingress.host>` if `ingress.tls.enabled`
+is set, otherwise `http://<ingress.host>`. A value you set always wins. Set
+both explicitly when TLS is terminated by annotation (the default would then
+say `http://`), and under `ingress.mode: existing`, where the chart cannot know
+your hosts. Left empty there, Console falls back to probing the address a
+person typed, then to asking for the agent address.
+
 ---
 
 ## Constraints you cannot configure away

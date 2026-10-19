@@ -106,6 +106,10 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # A deployment-wide constant — the agent types this build knows about.
     # Nothing tenant-specific to scope it to.
     ("GET", "/known-types"),
+    # The server's two public addresses, from its own configuration, read before
+    # any session exists so a client can find the server (`discovery_routes.py`).
+    # Deployment-wide; no tenant, user or data behind it.
+    ("GET", "/discovery"),
     # A caller with several memberships and no selection cannot reach
     # `get_current_user` by construction, and these are the routes such a
     # caller needs: list the workspaces, make one, pick one.

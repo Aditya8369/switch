@@ -41,6 +41,9 @@ const {
   addServer,
   assertManagedServerUrlFree,
   ensureManagedServer,
+  findServerByGatewayUrl,
+  getServer,
+  listServers,
   removeServer,
   renameServer,
   setActiveServerId,
@@ -569,5 +572,74 @@ describe('selecting a server', () => {
 
   it('refuses a server with no workspace at all', async () => {
     await expect(setActiveServerId('srv-1')).rejects.toThrow('no workspace');
+  });
+});
+
+/**
+ * Single-address connection changed how a server is added, not how one is
+ * stored: a server saved under the two-address form carries on exactly as it
+ * was, and its Gateway URL is the address the forms show for it.
+ */
+describe('a server saved before single-address connection', () => {
+  let fixture: Awaited<ReturnType<typeof openFixture>>;
+
+  beforeEach(async () => {
+    fixture = await openFixture('empty');
+    mocks.db = fixture.db;
+  });
+
+  afterEach(() => {
+    fixture.close();
+    mocks.db = undefined;
+  });
+
+  it('loads with both of its addresses unchanged', async () => {
+    // Written straight to the table, the way an older Console left it.
+    await fixture.db.insert(switchServers).values({
+      id: 'legacy',
+      name: 'Pilot',
+      gatewayUrl: 'https://switch-gateway.example.com',
+      apiUrl: 'https://switch-api.example.com',
+    });
+
+    const loaded = await getServer('legacy');
+    expect(loaded).toMatchObject({
+      gatewayUrl: 'https://switch-gateway.example.com',
+      apiUrl: 'https://switch-api.example.com',
+      managed: false,
+    });
+    expect((await listServers()).map((s) => [s.gatewayUrl, s.apiUrl])).toEqual([
+      ['https://switch-gateway.example.com', 'https://switch-api.example.com'],
+    ]);
+  });
+
+  it('is found by its Gateway URL, which is the address it is shown under', async () => {
+    await fixture.db.insert(switchServers).values({
+      id: 'legacy',
+      name: 'Pilot',
+      gatewayUrl: 'https://switch-gateway.example.com',
+      apiUrl: 'https://switch-api.example.com',
+    });
+
+    await expect(
+      findServerByGatewayUrl('https://switch-gateway.example.com')
+    ).resolves.toMatchObject({
+      id: 'legacy',
+      apiUrl: 'https://switch-api.example.com',
+    });
+  });
+
+  it('can still be added with two different addresses, as the manual fallback does', async () => {
+    const added = await addServer({
+      name: 'Pilot',
+      gatewayUrl: 'https://switch.example.com/',
+      apiUrl: 'https://switch-api.example.com/',
+    });
+
+    const row = fixture.db.select().from(switchServers).where(eq(switchServers.id, added.id)).get();
+    expect(row).toMatchObject({
+      gatewayUrl: 'https://switch.example.com',
+      apiUrl: 'https://switch-api.example.com',
+    });
   });
 });

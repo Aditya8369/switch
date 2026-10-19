@@ -839,8 +839,8 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}
-{{- if not $.Values.switchCore.frontendBaseUrl }}
-{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin." }}
+{{- if not ($.Values.switchCore.frontendBaseUrl | default (include "switch.managedIngressOrigin" $)) }}
+{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled (or a managed ingress host it can default to) — invitation e-mails link to the dashboard at that origin." }}
 {{- end }}
 {{- if not (has .tls (list "starttls" "tls" "none")) }}
 {{- fail (printf "switchCore.smtp.tls must be one of starttls, tls, none. Got %q." .tls) }}
@@ -935,13 +935,16 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 # in-cluster Host (e.g. switch-switch-core:8000) with a 421.
 - name: FASTMCP_HTTP_HOST_ORIGIN_PROTECTION
   value: "false"
-{{- if .Values.switchCore.frontendBaseUrl }}
+{{- $ingressOrigin := include "switch.managedIngressOrigin" . }}
+{{- $frontendBaseUrl := .Values.switchCore.frontendBaseUrl | default $ingressOrigin }}
+{{- if $frontendBaseUrl }}
 - name: FRONTEND_BASE_URL
-  value: {{ .Values.switchCore.frontendBaseUrl | quote }}
+  value: {{ $frontendBaseUrl | quote }}
 {{- end }}
-{{- if .Values.switchCore.gatewayPublicUrl }}
+{{- $gatewayPublicUrl := .Values.switchCore.gatewayPublicUrl | default $ingressOrigin }}
+{{- if $gatewayPublicUrl }}
 - name: GATEWAY_PUBLIC_URL
-  value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
+  value: {{ $gatewayPublicUrl | quote }}
 {{- end }}
 {{- if or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled .Values.switchCore.teamsApp.enabled .Values.switchCore.telegramApp.enabled }}
 - name: MESSAGING_PUBLIC_URL
@@ -1060,6 +1063,20 @@ releases took, so an existing Slack or Discord deployment keeps working.
 */}}
 {{- define "switch.messagingPublicUrl" -}}
 {{- coalesce .Values.switchCore.messagingPublicUrl .Values.switchCore.slackApp.messagingPublicUrl .Values.switchCore.discordApp.messagingPublicUrl | default "" -}}
+{{- end }}
+
+{{/*
+The one public origin of a managed Ingress (ingress.mode=managed), or "".
+
+That Ingress serves the dashboard and the agent bridge on one host, so it is
+both FRONTEND_BASE_URL and GATEWAY_PUBLIC_URL, which is what lets
+`GET /gateway/discovery` tell Switch Console both addresses when the operator
+set neither. An explicit switchCore value always wins over this.
+*/}}
+{{- define "switch.managedIngressOrigin" -}}
+{{- if and (eq .Values.ingress.mode "managed") .Values.ingress.host -}}
+{{- printf "%s://%s" (ternary "https" "http" .Values.ingress.tls.enabled) .Values.ingress.host -}}
+{{- end -}}
 {{- end }}
 
 {{/*

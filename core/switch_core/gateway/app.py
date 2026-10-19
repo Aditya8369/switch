@@ -48,6 +48,7 @@ from switch_core.gateway.connection_catalog import router as connection_catalog_
 from switch_core.gateway.connector_apps import router as connector_apps_router
 from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
+from switch_core.gateway.discovery_routes import router as discovery_router
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
 from switch_core.gateway.feature_flags import router as feature_flags_router
@@ -198,6 +199,7 @@ def create_gateway_app(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
     app.include_router(auth_router, tags=["auth"])
+    app.include_router(discovery_router, tags=["discovery"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])

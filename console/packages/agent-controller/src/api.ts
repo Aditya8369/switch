@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { checkAgentEndpoint } from '@switch-console/shared';
 import type { z } from 'zod';
 import { ConfigurationError } from './errors';
 import type { Logger } from './log';
@@ -118,24 +119,22 @@ export function isCredentialRefused(error: unknown): boolean {
  * its endpoint: HTTPS, or plain HTTP to a loopback server only.
  */
 export function normalizeServerUrl(raw: string): string {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new ConfigurationError(
-      `'${raw}' is not a URL. Pass the Switch agent bridge URL, e.g. https://switch.example.com.`
-    );
+  const checked = checkAgentEndpoint(raw);
+  if (checked.ok) return checked.endpoint;
+  switch (checked.problem) {
+    case 'not_a_url':
+      throw new ConfigurationError(
+        `'${raw}' is not a URL. Pass the Switch agent bridge URL, e.g. https://switch.example.com.`
+      );
+    case 'insecure':
+      throw new ConfigurationError(
+        `The server URL must use https (plain http is accepted only for a loopback server): ${raw}`
+      );
+    case 'has_extras':
+      throw new ConfigurationError(
+        'The server URL must not contain credentials, a query or a fragment.'
+      );
   }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
-    throw new ConfigurationError(
-      `The server URL must use https (plain http is accepted only for a loopback server): ${raw}`
-    );
-  if (url.username || url.password || url.search || url.hash)
-    throw new ConfigurationError(
-      'The server URL must not contain credentials, a query or a fragment.'
-    );
-  return url.href.replace(/\/+$/, '');
 }
 
 async function failure(response: Response): Promise<ControllerApiError> {

@@ -16,9 +16,12 @@ export type SwitchCloudEndpoint = {
 
 /**
  * The server an invite link points at: one this install can already sign in
- * to, and how it was reached — or one it has never heard of, named by the web
- * address the link carries and nothing more.
+ * to, and how it was reached; one it has never registered but whose two
+ * addresses it worked out from the link's (`resolvable`, offered to the person
+ * to connect, never registered on their behalf); or one it could not work out,
+ * named by the web address the link carries and nothing more.
  */
 export type InviteServer =
   | { kind: 'known'; server: SwitchServer; via: 'external' | 'cloud' }
+  | { kind: 'resolvable'; origin: string; gatewayUrl: string; apiUrl: string }
   | { kind: 'unknown'; origin: string };

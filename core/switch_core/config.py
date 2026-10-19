@@ -559,7 +559,9 @@ class SwitchConfig(BaseSettings):
     # that only linkify http(s) (Discord, and any future http-only bridge). When
     # unset, the raw `switchdash://` deeplink is posted as-is. Also the
     # `--server` an agents controller enrolls against, which the gateway's Add
-    # machine dialog shows; unset, it shows no enrollment command.
+    # machine dialog shows; unset, it shows no enrollment command. Returned with
+    # `frontend_base_url` by the public `GET /gateway/discovery`, which is how
+    # Switch Console learns where agents connect from one typed address.
     gateway_public_url: str | None = None
 
     # Credentials of the distributed Slack app *we* registered — the one a

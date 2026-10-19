@@ -22,7 +22,7 @@ Switch supports the following server setups. Choose the one that fits your needs
 | :-- | :-- | :-- |
 | **This computer** | The quickest way to try Switch. | Nothing extra. Switch Console downloads what it needs. Docker is only needed for the optional built-in Mattermost. |
 | **A remote host** | Runs on a machine that stays up, so the server is still there after you restart your own. | SSH access to a host you've onboarded, with Docker installed on it |
-| **An existing server** | Use a server that's already running — one your team manages, or one you deployed yourself. | The Gateway URL and API URL for that server, an account on it, and an account on the messaging app it's bridged to |
+| **An existing server** | Use a server that's already running — one your team manages, or one you deployed yourself. | The server's address, an account on it, and an account on the messaging app it's bridged to |
 
 **Tip**
 
@@ -30,7 +30,7 @@ When setting up on a remote host, Switch Console sets up the server for you and 
 
 You'll configure your option in Switch Console when you [add a server](add-a-server.md).
 
-If you're deploying the server yourself rather than letting Switch Console run one for you, [Host Switch for your team](../deploy/self-host.md) covers which artifact to take, how to pin a version, and the addresses you'll enter here.
+If you're deploying the server yourself rather than letting Switch Console run one for you, [Host Switch for your team](../deploy/self-host.md) covers which artifact to take, how to pin a version, and the address you'll enter here.
 
 ### Install Node.js
 

@@ -11,6 +11,7 @@ const selection = vi.hoisted(() => ({ serverId: null as string | null }));
 const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const connectToSwitchCloud = vi.hoisted(() => vi.fn());
+const serverForInvite = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -25,6 +26,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       removeServer,
       addServer,
       connectToSwitchCloud,
+      serverForInvite,
     },
     onboarding: { installIsEmpty },
   },
@@ -737,5 +739,28 @@ describe('the error banner', () => {
     await store.recoverStale();
 
     expect(store.error).toBe('Invalid email or password');
+  });
+});
+
+describe('serverForInvite', () => {
+  beforeEach(() => {
+    serverForInvite.mockReset();
+    listServers.mockReset();
+  });
+
+  it.each([
+    {
+      kind: 'resolvable',
+      origin: 'https://switch.example.org',
+      gatewayUrl: 'https://switch.example.org',
+      apiUrl: 'https://switch-api.example.org',
+    },
+    { kind: 'unknown', origin: 'https://switch.example.org' },
+  ])('hands back a $kind server as it is, with no list to refresh', async (found) => {
+    serverForInvite.mockResolvedValue(found);
+    const store = new SwitchServersStore();
+
+    await expect(store.serverForInvite('https://switch.example.org')).resolves.toEqual(found);
+    expect(listServers).not.toHaveBeenCalled();
   });
 });

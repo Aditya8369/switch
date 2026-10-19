@@ -25,6 +25,8 @@ const followServerApiUrl = vi.hoisted(() => vi.fn());
 const listCloudMachines = vi.hoisted(() => vi.fn());
 const ensureCloudMachine = vi.hoisted(() => vi.fn());
 const serverFlags = vi.hoisted(() => ({ hosted_agents: true }));
+const resolveServerAddress = vi.hoisted(() => vi.fn());
+const advertisedApiUrl = vi.hoisted(() => vi.fn());
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
@@ -89,6 +91,8 @@ vi.mock('./gateway-client', () => ({
   registerKnownAgent: vi.fn(),
   GatewayError: class GatewayError extends Error {},
 }));
+// Reaches the network; what it answers is its own test's business.
+vi.mock('./resolve-server-address', () => ({ resolveServerAddress, advertisedApiUrl }));
 vi.mock('./servers-store', () => ({
   getServer,
   addServer,
@@ -709,6 +713,7 @@ describe('finding the server an invite link is for', () => {
     vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
     addServer.mockReset();
     findServerByGatewayUrl.mockReset();
+    resolveServerAddress.mockReset();
   });
 
   it('registers Switch Cloud when the link is for it', async () => {
@@ -730,18 +735,69 @@ describe('finding the server an invite link is for', () => {
     expect(addServer).not.toHaveBeenCalled();
   });
 
-  it('says a server it has never heard of is unknown, and registers nothing', async () => {
+  it('says a server it cannot work out is unknown, and registers nothing', async () => {
     findServerByGatewayUrl.mockResolvedValue(null);
+    // An older server reached through its dashboard: nothing settles the agents.
+    resolveServerAddress.mockResolvedValue({
+      kind: 'resolved',
+      gatewayUrl: 'https://switch.example.org',
+      apiUrl: null,
+      apiSource: 'manual',
+      manualReason: 'not_advertised',
+      refusedApiUrl: null,
+    });
 
     await expect(
       switchServersController.serverForInvite('https://switch.example.org')
     ).resolves.toEqual({ kind: 'unknown', origin: 'https://switch.example.org' });
+    expect(resolveServerAddress).toHaveBeenCalledWith('https://switch.example.org');
     expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it.each(['discovered', 'probed'] as const)(
+    'offers a server whose agent address was %s, with both addresses, and registers nothing',
+    async (apiSource) => {
+      findServerByGatewayUrl.mockResolvedValue(null);
+      resolveServerAddress.mockResolvedValue({
+        kind: 'resolved',
+        gatewayUrl: 'https://switch.example.org',
+        apiUrl: 'https://switch-api.example.org',
+        apiSource,
+        manualReason: null,
+        refusedApiUrl: null,
+      });
+
+      await expect(
+        switchServersController.serverForInvite('https://switch.example.org')
+      ).resolves.toEqual({
+        kind: 'resolvable',
+        origin: 'https://switch.example.org',
+        gatewayUrl: 'https://switch.example.org',
+        apiUrl: 'https://switch-api.example.org',
+      });
+      expect(addServer).not.toHaveBeenCalled();
+    }
+  );
+
+  it('says an unreachable server is unknown', async () => {
+    findServerByGatewayUrl.mockResolvedValue(null);
+    resolveServerAddress.mockResolvedValue({
+      kind: 'unreachable',
+      address: 'https://x.example.org',
+    });
+
+    await expect(switchServersController.serverForInvite('https://x.example.org')).resolves.toEqual(
+      { kind: 'unknown', origin: 'https://x.example.org' }
+    );
   });
 
   it('does not treat a link as the Cloud when this build names none', async () => {
     vi.stubEnv('SWITCH_CLOUD_URL', undefined);
     findServerByGatewayUrl.mockResolvedValue(null);
+    resolveServerAddress.mockResolvedValue({
+      kind: 'unreachable',
+      address: 'https://cloud.example.com',
+    });
 
     await expect(
       switchServersController.serverForInvite('https://cloud.example.com')
@@ -774,5 +830,160 @@ describe('cloud machines', () => {
       'does not have cloud machines turned on'
     );
     expect(ensureCloudMachine).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveServerAddress', () => {
+  beforeEach(() => {
+    resolveServerAddress.mockReset();
+    addServer.mockReset();
+  });
+
+  it('hands back what the resolver worked out, and saves nothing', async () => {
+    const resolution = {
+      kind: 'resolved',
+      gatewayUrl: 'https://switch.example.com',
+      apiUrl: 'https://switch-api.example.com',
+      apiSource: 'discovered',
+      manualReason: null,
+      refusedApiUrl: null,
+    };
+    resolveServerAddress.mockResolvedValue(resolution);
+
+    await expect(
+      switchServersController.resolveServerAddress('https://switch.example.com')
+    ).resolves.toEqual(resolution);
+    expect(resolveServerAddress).toHaveBeenCalledWith('https://switch.example.com');
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('passes an unreachable or invalid address through as a result, not an error', async () => {
+    resolveServerAddress.mockResolvedValue({
+      kind: 'unreachable',
+      address: 'https://x.example.com',
+    });
+    await expect(
+      switchServersController.resolveServerAddress('https://x.example.com')
+    ).resolves.toEqual({ kind: 'unreachable', address: 'https://x.example.com' });
+
+    resolveServerAddress.mockResolvedValue({ kind: 'invalid' });
+    await expect(switchServersController.resolveServerAddress('nope')).resolves.toEqual({
+      kind: 'invalid',
+    });
+  });
+
+  it('refuses a non-string before it reaches the network', async () => {
+    await expect(
+      switchServersController.resolveServerAddress(42 as unknown as string)
+    ).rejects.toThrow();
+    expect(resolveServerAddress).not.toHaveBeenCalled();
+  });
+});
+
+describe('checkServerAddresses', () => {
+  const SAVED = server({
+    id: 'ext',
+    gatewayUrl: 'https://switch.example.com',
+    apiUrl: 'https://switch-api.example.com',
+  });
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
+    advertisedApiUrl.mockReset();
+    getServer.mockReset();
+    updateServer.mockReset();
+    propagateServerApiUrl.mockReset();
+    propagateServerApiUrl.mockResolvedValue([]);
+  });
+
+  // Each test uses its own server id: the check is remembered per server for
+  // the life of the process, which is the point of one of the tests below.
+  function saved(id: string, overrides: Record<string, unknown> = {}) {
+    const row = { ...SAVED, id, ...overrides };
+    getServer.mockResolvedValue(row);
+    return row;
+  }
+
+  it('matches when the server advertises the saved agent address, slash or not', async () => {
+    saved('match-1', { apiUrl: 'https://switch-api.example.com/' });
+    advertisedApiUrl.mockResolvedValue('https://switch-api.example.com');
+
+    await expect(switchServersController.checkServerAddresses('match-1')).resolves.toEqual({
+      status: 'match',
+    });
+    expect(advertisedApiUrl).toHaveBeenCalledWith('https://switch.example.com');
+  });
+
+  it('reports a mismatch with both addresses, and changes nothing', async () => {
+    saved('mismatch-1', { apiUrl: 'http://10.0.0.5:8000' });
+    advertisedApiUrl.mockResolvedValue('https://switch-api.example.com');
+
+    await expect(switchServersController.checkServerAddresses('mismatch-1')).resolves.toEqual({
+      status: 'mismatch',
+      savedApiUrl: 'http://10.0.0.5:8000',
+      advertisedApiUrl: 'https://switch-api.example.com',
+    });
+    expect(updateServer).not.toHaveBeenCalled();
+    expect(propagateServerApiUrl).not.toHaveBeenCalled();
+    expect(followServerApiUrl).not.toHaveBeenCalled();
+  });
+
+  it('is unknown when the server advertises nothing or cannot be asked', async () => {
+    saved('unknown-1');
+    advertisedApiUrl.mockResolvedValue(null);
+
+    await expect(switchServersController.checkServerAddresses('unknown-1')).resolves.toEqual({
+      status: 'unknown',
+    });
+  });
+
+  it('does not ask a server Console runs, or Switch Cloud', async () => {
+    saved('managed-1', { managed: true, managementKind: 'local' });
+    await expect(switchServersController.checkServerAddresses('managed-1')).resolves.toEqual({
+      status: 'unknown',
+    });
+
+    saved('cloud-1', {
+      gatewayUrl: 'https://cloud.example.com',
+      apiUrl: 'https://cloud.example.com',
+    });
+    await expect(switchServersController.checkServerAddresses('cloud-1')).resolves.toEqual({
+      status: 'unknown',
+    });
+
+    expect(advertisedApiUrl).not.toHaveBeenCalled();
+  });
+
+  it('asks a server once per run, and again after the server is saved', async () => {
+    const row = saved('cached-1');
+    advertisedApiUrl.mockResolvedValue('https://switch-api.example.com');
+
+    await switchServersController.checkServerAddresses('cached-1');
+    await switchServersController.checkServerAddresses('cached-1');
+    expect(advertisedApiUrl).toHaveBeenCalledTimes(1);
+
+    updateServer.mockResolvedValue(row);
+    await switchServersController.updateServer({
+      id: 'cached-1',
+      name: row.name,
+      gatewayUrl: row.gatewayUrl,
+      apiUrl: row.apiUrl,
+    });
+    await switchServersController.checkServerAddresses('cached-1');
+    expect(advertisedApiUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remember a check that failed', async () => {
+    saved('failed-1');
+    advertisedApiUrl.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(switchServersController.checkServerAddresses('failed-1')).rejects.toThrow('boom');
+
+    advertisedApiUrl.mockResolvedValue('https://switch-api.example.com');
+    await expect(switchServersController.checkServerAddresses('failed-1')).resolves.toEqual({
+      status: 'match',
+    });
   });
 });

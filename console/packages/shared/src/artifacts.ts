@@ -45,7 +45,7 @@ export const CONTRACTS = {
     'switch-core': { speaks: 9, accepts: 1 },
     'agent-runtime': { speaks: 9, accepts: 1 },
   },
-  // The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
+  // The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong, and `GET /gateway/discovery` (the server's public origins), which is frozen and unversioned for the same reason: a client must always be able to find the server before it can be told anything else.
   'gateway-api': {
     'switch-core': { speaks: 1, accepts: 1 },
     'switch-console': { speaks: 1, accepts: 1 },

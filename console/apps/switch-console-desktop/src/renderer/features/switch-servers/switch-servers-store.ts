@@ -498,7 +498,9 @@ export class SwitchServersStore {
    */
   async serverForInvite(origin: string): Promise<InviteServer> {
     const found = await rpc.switchServers.serverForInvite(origin);
-    if (found.kind === 'unknown') return found;
+    // Nothing was registered for these, so there is no list to refresh: the
+    // caller connects a `resolvable` one through the connect form, prefilled.
+    if (found.kind === 'unknown' || found.kind === 'resolvable') return found;
     const [servers, installIsEmpty] = await Promise.all([
       rpc.switchServers.listServers(),
       rpc.onboarding.installIsEmpty(),

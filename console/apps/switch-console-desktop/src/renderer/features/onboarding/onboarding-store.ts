@@ -1,16 +1,19 @@
 import { makeAutoObservable } from 'mobx';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { InviteLink } from '@shared/core/workspaces/invite-link';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /** Where a fresh install is in getting its first server. */
 export type OnboardingPage =
   | 'welcome'
+  | 'invite'
   | 'howToRun'
   | 'local'
   | 'connect'
   | 'signIn'
   | 'pickWorkspace'
   | 'createWorkspace'
+  | 'acceptInvite'
   | 'meetBuddy';
 
 /**
@@ -55,6 +58,19 @@ class OnboardingStore {
    */
   registeredOn: { page: OnboardingPage; serverId: string } | null = null;
   /**
+   * The invite link the user pasted, until it has been accepted or given up on.
+   *
+   * Held across the connect and sign-in pages because accepting needs an
+   * account on the server, and the link arrives before there is one.
+   */
+  invite: InviteLink | null = null;
+  /**
+   * Both addresses of the server that link names, when it is not one this
+   * install has but the server said where its agents connect. The connect page
+   * opens with them filled in and shown rather than asking again.
+   */
+  inviteAddresses: { gatewayUrl: string; apiUrl: string } | null = null;
+  /**
    * The flow was opened on purpose from a dev or canary build that already has
    * servers, to walk through the first-run pages again. It keeps the flow on
    * screen from its welcome page, which a launch with servers would otherwise
@@ -96,6 +112,9 @@ class OnboardingStore {
       this.joinOfferCount = 0;
       this.registeredOn = null;
     }
+    // Choosing how to run Switch instead of using the link gives the link up:
+    // the server set up from there is not necessarily the one it names.
+    if (page === 'welcome' || page === 'howToRun') this.dropInvite();
     this.page = page;
   }
 
@@ -144,6 +163,21 @@ class OnboardingStore {
     return (this.serverWorkspaces?.length ?? 0) > 0 || this.joinOfferCount > 0;
   }
 
+  /** Hold the link pasted on the invite page, and what its server answered. */
+  holdInvite(
+    invite: InviteLink,
+    addresses: { gatewayUrl: string; apiUrl: string } | null = null
+  ): void {
+    this.invite = invite;
+    this.inviteAddresses = addresses;
+  }
+
+  /** The invitation was accepted, or the user went on without it. */
+  dropInvite(): void {
+    this.invite = null;
+    this.inviteAddresses = null;
+  }
+
   reset(): void {
     this.page = 'welcome';
     this.server = null;
@@ -151,6 +185,8 @@ class OnboardingStore {
     this.serverWorkspaces = null;
     this.joinOfferCount = 0;
     this.registeredOn = null;
+    this.invite = null;
+    this.inviteAddresses = null;
     this.rehearsal = false;
   }
 }

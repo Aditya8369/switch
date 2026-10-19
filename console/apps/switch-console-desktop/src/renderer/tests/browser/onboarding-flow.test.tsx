@@ -18,6 +18,7 @@ const listHosts = vi.hoisted(() => vi.fn());
 const switchCloud = vi.hoisted(() => vi.fn());
 const connectToSwitchCloud = vi.hoisted(() => vi.fn());
 const servers = vi.hoisted(() => [] as { id: string; name: string }[]);
+const resolveServerAddress = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -29,7 +30,7 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { remoteHosts: { listHosts }, switchServers: { switchCloud } },
+  rpc: { remoteHosts: { listHosts }, switchServers: { switchCloud, resolveServerAddress } },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
@@ -108,6 +109,15 @@ beforeEach(() => {
   switchCloud.mockReset();
   switchCloud.mockResolvedValue(null);
   connectToSwitchCloud.mockReset();
+  resolveServerAddress.mockReset();
+  resolveServerAddress.mockResolvedValue({
+    kind: 'resolved',
+    gatewayUrl: 'https://switch.example.com',
+    apiUrl: 'https://switch.example.com:8000',
+    apiSource: 'discovered',
+    manualReason: null,
+    refusedApiUrl: null,
+  });
   servers.length = 0;
   onboardingStore.reset();
   Object.assign(localServer, {
@@ -141,8 +151,10 @@ async function addFromConnectPage(el: HTMLElement) {
   await act(async () => button(el, 'Get started').click());
   await choose(el, 'Join an existing server');
   await act(async () => button(el, 'Continue').click());
-  await type(field(el, 'Gateway URL')!, 'https://switch.example.com');
-  await type(field(el, 'API URL')!, 'https://switch.example.com:8000');
+  await type(field(el, 'Server address')!, 'https://switch.example.com');
+  // The first press asks the server where agents connect and shows it; the
+  // second saves.
+  await act(async () => button(el, 'Continue').click());
   await choose(el, 'Sign in to this server');
 }
 
@@ -243,15 +255,29 @@ describe('the first-run flow', () => {
     expect(onboardingStore.page).toBe('local');
   });
 
-  it('asks for the addresses, and not for a name, on the connect page', async () => {
+  it('asks for one address, and not for a name, on the connect page', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
     await choose(el, 'Join an existing server');
     await act(async () => button(el, 'Continue').click());
 
-    expect(field(el, 'Gateway URL')).not.toBeNull();
-    expect(field(el, 'API URL')).not.toBeNull();
+    expect(field(el, 'Server address')).not.toBeNull();
+    expect(field(el, 'Agent address')).toBeNull();
     expect(field(el, 'Name')).toBeNull();
+  });
+
+  it('saves the server under both addresses the one typed address resolved to', async () => {
+    serverAdded('srv-1');
+    const el = await renderFlow();
+
+    await addFromConnectPage(el);
+
+    expect(resolveServerAddress).toHaveBeenCalledWith('https://switch.example.com');
+    expect(addServer).toHaveBeenCalledWith(
+      'switch.example.com',
+      'https://switch.example.com',
+      'https://switch.example.com:8000'
+    );
   });
 
   it('keeps the flow on screen after the server is added, for the sign-in still to come', async () => {

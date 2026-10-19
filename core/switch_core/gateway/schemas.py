@@ -1048,6 +1048,30 @@ class AuthConfigResponse(BaseModel):
     signup_mode: Literal["default_tenant", "invite_only", "open"]
 
 
+class DiscoveryResponse(BaseModel):
+    """Where this server can be reached, for a client that knows one address.
+
+    Served without a session (`GET /gateway/discovery`) so that a person can
+    connect Switch Console by typing either the dashboard's address or the
+    agent bridge's, and Console works out the other. Both values come from
+    configuration and are `None` when unset; they are never guessed from the
+    request, because a wrong agent address gets written into every agent.
+
+    Like the authentication surface this is frozen and outside the versioned
+    `gateway-api` contract: a client whose revision this server no longer
+    accepts must still be able to find it. Keys may be added, nullable, and
+    never renamed or removed. Nothing but the two public origins goes here: no
+    versions, revisions, flags, tenant data or internal addresses (version
+    disclosure is authenticated everywhere, CHOO-1865).
+    """
+
+    # The dashboard's public origin (`FRONTEND_BASE_URL`).
+    gateway_url: str | None
+    # The agent bridge's public origin (`GATEWAY_PUBLIC_URL`, which despite its
+    # name is the agent bridge, not the dashboard).
+    api_url: str | None
+
+
 class ContractRangeResponse(BaseModel):
     """The revisions of one contract this server implements and still handles."""
 

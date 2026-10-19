@@ -309,13 +309,21 @@ switchCore:
   thirdPartyAvatars:
     enabled: true
 
-  # Public base URL the gateway is served on (used for links / OIDC redirects).
+  # The two public origins, each scheme + host with no path. Switch Console
+  # reads both from GET /gateway/discovery, so a person connecting it types one
+  # address instead of two; leave one empty and Console has to work it out or
+  # ask. With ingress.mode=managed and ingress.host set, an empty value
+  # defaults to that host (https:// when ingress.tls.enabled, else http://),
+  # since the managed Ingress serves both on it. A value set here always wins.
+  #
+  # The dashboard (operator UI): where people land, invitation e-mail links,
+  # the OIDC post-login redirect.
   frontendBaseUrl: ""
-  # Public origin (scheme + host, no path) of the gateway HTTP API itself, used
-  # to build the switchdash:// deeplink HTTP redirect so the "Open in Switch
-  # Console" link is clickable on Discord, Telegram and other http-only
-  # platforms. Leave empty to
-  # post the raw switchdash:// deeplink.
+  # The agent bridge (agent API, MCP, controllers), despite the name: not the
+  # dashboard. It is where agents and agents controllers connect, the --server
+  # the Add machine dialog shows, and the base of the switchdash:// deeplink
+  # HTTP redirect that makes "Open in Switch Console" clickable on Discord,
+  # Telegram and other http-only platforms (empty posts the raw deeplink).
   gatewayPublicUrl: ""
   # Set the Secure flag on the switch_auth session cookie. True here because the
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP

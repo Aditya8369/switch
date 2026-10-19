@@ -10,13 +10,23 @@ Published at <https://docs.switchagents.ai/flintai/switch/resources/troubleshoot
 
 ### Which address is wrong?
 
-The form asks for two addresses — a Gateway URL and an API URL — and checks them separately, so either one can be wrong on its own. They often differ only in port or path, which is exactly what makes a guessed second value look like a working one.
+You enter one address, and Switch Console asks the server where its agents connect. Two things can go wrong, and the form tells them apart:
 
-Both addresses come from the server administrator. Don't derive one from the other. Only a malformed address is flagged against its field. One that's well formed but wrong is accepted without complaint: a bad Gateway URL surfaces later as the server being unreachable, and a bad API URL isn't checked at all, so it surfaces when an agent can't reach the server. See [Add a server](../getting-started/add-a-server.md).
+- **Could not reach a Switch server at this address.** Nothing answering at that address responds like a Switch server. Check the address for typos, and that the server is running. Nothing is saved.
+- **The Agent address field opens.** The server was reached, but it didn't say where agents connect (an older server, or one whose operator hasn't set its addresses), or it named an address agents can't use. The text under the field says which. Ask the server administrator for the agent address; it's often the same host on another port.
+
+The agent address is shown under **Agents connect to** before you save. If agents later can't reach the server, check that address first: it's what every agent on the server uses. See [Add a server](../getting-started/add-a-server.md).
+
+### This server says agents connect somewhere else now
+
+The server's page shows this when the server now gives a different agent address from the one saved in Switch Console, usually because its operator moved it or set it for the first time. Nothing has changed yet. The notice names both addresses:
+
+- **Use suggested address**, then **Switch agents to it**, saves the new address. Every agent on that server is pointed at it, and the agents this computer runs for the server restart. Running sessions pick it up when they restart.
+- **Dismiss** keeps the current address and hides the notice until Switch Console restarts. Use it when you set a different agent address on purpose (an internal name your agents reach the server by, for example).
 
 ### Server unreachable
 
-You get the same message whether the address is wrong or the server is genuinely down, so it sends people to investigate a server that turns out to be fine. Confirm both addresses first, and only then go looking at the server.
+You get the same message whether the address is wrong or the server is genuinely down, so it sends people to investigate a server that turns out to be fine. Confirm the address first, and only then go looking at the server.
 
 **Note**
 

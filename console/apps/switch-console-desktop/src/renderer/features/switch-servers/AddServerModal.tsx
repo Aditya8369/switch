@@ -39,6 +39,19 @@ import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
 import { type RemoteSetupAction, remoteSetupAction } from './remote-setup-action';
 import {
+  type AddressFormState,
+  initialAddressFormState,
+  manualReasonText,
+  type ShownAgentAddressSource,
+  viewAddressForm,
+  withAddress,
+  withApiFieldOpened,
+  withApiOverride,
+  withConfirming,
+  withResolution,
+  withResolving,
+} from './server-address-form';
+import {
   machineUnavailableReason,
   type SignedIn,
   ServerSignInFields,
@@ -53,7 +66,7 @@ import { useSwitchCloud } from './use-switch-cloud';
  * agents were re-pointed (and that running sessions need a restart), and flag
  * any that failed so the edit never looks cleanly done when it wasn't.
  */
-function notifyPropagation(propagation: ServerApiUrlPropagation): void {
+export function notifyPropagation(propagation: ServerApiUrlPropagation): void {
   if (!propagation.apiUrlChanged) return;
   const updated = propagation.agents.filter((a) => a.outcome === 'updated');
   const failed = propagation.agents.filter((a) => a.outcome === 'failed');
@@ -1196,15 +1209,6 @@ export function RemoteStackNotice({
 // Step 2c — external server form (connect by URL; also the edit form)
 // ---------------------------------------------------------------------------
 
-function looksLikeUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 /**
  * A name for a server the user was never asked to name.
  *
@@ -1222,6 +1226,23 @@ function nameFromGatewayUrl(gatewayUrl: string): string {
   return new URL(gatewayUrl).host;
 }
 
+/** Plain words for where a shown agent address came from. */
+function agentAddressSourceText(source: ShownAgentAddressSource): string {
+  switch (source) {
+    case 'discovered':
+      return 'This server says agents connect here.';
+    case 'probed':
+      return 'Agents connect to the address you entered.';
+    case 'saved':
+      return 'The address saved for this server.';
+  }
+}
+
+/**
+ * The connect form: one address, from which Console works out the server's
+ * dashboard and agent addresses (see `server-address-form.ts` for the rules).
+ * The same form adds a server, runs on first launch, and edits a connection.
+ */
 export const ExternalServerStep = observer(function ExternalServerStep({
   onSuccess,
   onClose,
@@ -1252,45 +1273,71 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   onConnected: (server: SwitchServer) => void;
 }) {
   const [name, setName] = useState(initialName ?? existing?.name ?? '');
-  const [gatewayUrl, setGatewayUrl] = useState(initialGatewayUrl ?? existing?.gatewayUrl ?? '');
-  const [apiUrl, setApiUrl] = useState(initialApiUrl ?? existing?.apiUrl ?? '');
+  const [form, setForm] = useState<AddressFormState>(() => {
+    // The addresses already saved for this row: the server being edited, or
+    // the one the wizard created before the person stepped back.
+    const saved = existing
+      ? { gatewayUrl: existing.gatewayUrl, apiUrl: existing.apiUrl }
+      : isEdit && initialGatewayUrl && initialApiUrl
+        ? { gatewayUrl: initialGatewayUrl, apiUrl: initialApiUrl }
+        : null;
+    const state = initialAddressFormState(saved, initialGatewayUrl);
+    // A new server handed both addresses (an invite already resolved them)
+    // starts resolved rather than asking the server again.
+    if (!saved && initialGatewayUrl && initialApiUrl) {
+      return withResolution(state, initialGatewayUrl.trim(), {
+        kind: 'resolved',
+        gatewayUrl: initialGatewayUrl,
+        apiUrl: initialApiUrl,
+        apiSource: 'discovered',
+        manualReason: null,
+        refusedApiUrl: null,
+      });
+    }
+    return state;
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const view = viewAddressForm(form);
   const trimmedName = name.trim();
-  const trimmedGateway = gatewayUrl.trim();
-  const trimmedApi = apiUrl.trim();
-  const gatewayValid = looksLikeUrl(trimmedGateway);
-  const apiValid = looksLikeUrl(trimmedApi);
   // In edit mode the name is owned by the separate Rename action, and on first
   // run it comes from the gateway, so neither shows the field or requires it.
   const asksForName = !isEdit && !firstRun;
-  const isValid = (!asksForName || trimmedName.length > 0) && gatewayValid && apiValid;
-  const submittedName = firstRun && gatewayValid ? nameFromGatewayUrl(trimmedGateway) : trimmedName;
-
-  const gatewayMessage =
-    trimmedGateway.length > 0 && !gatewayValid
-      ? 'Enter a full URL, e.g. https://switch-gateway.example.com'
-      : undefined;
-  const apiMessage =
-    trimmedApi.length > 0 && !apiValid
-      ? 'Enter a full URL, e.g. https://switch-api.example.com'
-      : undefined;
+  const nameOk = !asksForName || trimmedName.length > 0;
+  const submittedName =
+    firstRun && view.gatewayUrl ? nameFromGatewayUrl(view.gatewayUrl) : trimmedName;
 
   // The row this form writes to, when one already exists: the server being
   // edited, or the one the wizard created before the user stepped back.
   const savedId = isEdit ? serverId : existing?.id;
 
-  const handleSubmit = useCallback(async () => {
-    if (!isValid) return;
+  const resolve = useCallback(async () => {
+    const address = form.address.trim();
+    if (viewAddressForm(form).next !== 'resolve') return;
+    setError(null);
+    setForm((state) => withResolving(state));
+    try {
+      const result = await rpc.switchServers.resolveServerAddress(address);
+      setForm((state) => withResolution(state, address, result));
+    } catch (cause) {
+      setForm((state) => ({ ...state, resolving: false }));
+      const failure = describeFailure(cause, 'Could not check that address.');
+      setError(failure.detail ? `${failure.headline} ${failure.detail}` : failure.headline);
+    }
+  }, [form]);
+
+  const save = useCallback(async () => {
+    const { gatewayUrl, apiUrl } = viewAddressForm(form);
+    if (!gatewayUrl || !apiUrl || !nameOk) return;
     setSubmitting(true);
     setError(null);
     if (savedId) {
       const result = await switchServersStore.updateServer(
         savedId,
         submittedName,
-        trimmedGateway,
-        trimmedApi
+        gatewayUrl,
+        apiUrl
       );
       if (!result) {
         setError(switchServersStore.errorText ?? 'Could not save the server.');
@@ -1303,7 +1350,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
     } else {
-      const saved = await switchServersStore.addServer(submittedName, trimmedGateway, trimmedApi);
+      const saved = await switchServersStore.addServer(submittedName, gatewayUrl, apiUrl);
       if (!saved) {
         setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
@@ -1313,20 +1360,42 @@ export const ExternalServerStep = observer(function ExternalServerStep({
       return;
     }
     onSuccess();
-  }, [isValid, isEdit, savedId, submittedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
+  }, [form, nameOk, isEdit, savedId, submittedName, onSuccess, onConnected]);
+
+  const handleSubmit = useCallback(async () => {
+    switch (view.next) {
+      case 'resolve':
+        return resolve();
+      case 'confirm':
+        setForm((state) => withConfirming(state, true));
+        return;
+      case 'save':
+        return save();
+      case 'none':
+        return;
+    }
+  }, [view.next, resolve, save]);
 
   // First run is asked before the saved row, because a page that goes on to the
   // sign-in must not offer "Save changes" — the user stepped back to fix an
   // address, and the button still takes them forward rather than closing.
-  const submitLabel = submitting
-    ? savedId
-      ? 'Saving…'
-      : 'Adding…'
-    : firstRun
-      ? 'Sign in to this server'
-      : savedId
-        ? 'Save changes'
-        : 'Add server';
+  const submitLabel = form.resolving
+    ? 'Checking…'
+    : submitting
+      ? savedId
+        ? 'Saving…'
+        : 'Adding…'
+      : view.next === 'resolve'
+        ? 'Continue'
+        : form.confirmingApiChange
+          ? 'Save and reconfigure agents'
+          : firstRun
+            ? 'Sign in to this server'
+            : savedId
+              ? 'Save changes'
+              : 'Add server';
+  const canPress =
+    !submitting && !form.resolving && view.next !== 'none' && (view.next === 'resolve' || nameOk);
 
   // The footer's Back and the pager's back arrow are the same move, so they
   // read one const. Shut while the form is submitting: the write registers a
@@ -1342,7 +1411,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
             ? 'Connect to your server'
             : 'Connect to an existing server'
       }
-      subtitle={firstRun ? 'Whoever set it up can give you these addresses.' : null}
+      subtitle={firstRun ? 'Whoever set it up can give you its address.' : null}
       /* Editing a connection is one dialog rather than a flow, and a pager on
          it would invent pages either side that do not exist. */
       pager={
@@ -1363,7 +1432,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
           >
             {onBack ? 'Back' : 'Cancel'}
           </Button>
-          <ConfirmButton onClick={() => void handleSubmit()} disabled={!isValid || submitting}>
+          <ConfirmButton onClick={() => void handleSubmit()} disabled={!canPress}>
             {submitLabel}
           </ConfirmButton>
         </>
@@ -1382,37 +1451,85 @@ export const ExternalServerStep = observer(function ExternalServerStep({
           </Field>
         )}
         <Field>
-          <FieldLabel>Gateway URL</FieldLabel>
+          <FieldLabel>Server address</FieldLabel>
           <Input
-            value={gatewayUrl}
-            onChange={(e) => setGatewayUrl(e.target.value)}
-            placeholder="https://switch-gateway.example.com"
-            autoFocus={isEdit || firstRun}
-          />
-          {firstRun && (
-            <p className="mt-1 text-xs text-foreground-muted">Where the app and its chat live.</p>
-          )}
-          {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
-        </Field>
-        <Field>
-          <FieldLabel>API URL</FieldLabel>
-          <Input
-            value={apiUrl}
-            onChange={(e) => setApiUrl(e.target.value)}
-            placeholder="https://switch-api.example.com"
+            value={form.address}
+            onChange={(e) => setForm((state) => withAddress(state, e.target.value))}
+            onBlur={() => void resolve()}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void handleSubmit();
             }}
+            placeholder="https://switch.example.com"
+            autoFocus={isEdit || firstRun}
           />
-          {firstRun && (
-            <p className="mt-1 text-xs text-foreground-muted">
-              Where agents connect. Often the same host on a different port — whoever set the server
-              up knows which.
-            </p>
+          <p className="mt-1 text-xs text-foreground-muted">
+            The address you open Switch at, or the one agents connect to. Either works.
+          </p>
+          {view.addressMessage && (
+            <p className="mt-1 text-xs text-destructive">{view.addressMessage}</p>
           )}
-          {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
-          {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         </Field>
+        {form.resolving && (
+          <p className="flex items-center gap-2 text-xs text-foreground-muted">
+            <Spinner className="size-3" /> Asking the server where agents connect…
+          </p>
+        )}
+        {view.shownApiUrl && view.shownApiSource && (
+          <Field>
+            <FieldLabel>Agents connect to</FieldLabel>
+            <div className="flex items-center justify-between gap-2">
+              <code className="truncate text-sm">{view.shownApiUrl}</code>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setForm((state) => withApiFieldOpened(state, view.shownApiUrl))}
+              >
+                Change
+              </Button>
+            </div>
+            <p className="mt-1 text-xs text-foreground-muted">
+              {agentAddressSourceText(view.shownApiSource)}
+            </p>
+          </Field>
+        )}
+        {view.showApiField && (
+          <Field>
+            <FieldLabel>Agent address</FieldLabel>
+            <Input
+              value={form.apiOverride ?? ''}
+              onChange={(e) => setForm((state) => withApiOverride(state, e.target.value))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleSubmit();
+              }}
+              placeholder="https://switch-api.example.com"
+              autoFocus
+            />
+            {view.manualReason && (
+              <p className="mt-1 text-xs text-foreground-muted">
+                {manualReasonText(view.manualReason, view.refusedApiUrl)}
+              </p>
+            )}
+            {view.apiMessage && <p className="mt-1 text-xs text-destructive">{view.apiMessage}</p>}
+          </Field>
+        )}
+        {form.confirmingApiChange && (
+          <Alert>
+            <TriangleAlert className="size-4" />
+            <AlertTitle>Your agents on this server will be reconfigured</AlertTitle>
+            <AlertDescription>
+              Saving points every agent on this server at {view.apiUrl} and restarts the agents this
+              computer runs for it.{' '}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => setForm((state) => withConfirming(state, false))}
+              >
+                Keep the current address
+              </button>
+            </AlertDescription>
+          </Alert>
+        )}
+        {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         {firstRun && (
           <Alert>
             <Info className="size-4" />

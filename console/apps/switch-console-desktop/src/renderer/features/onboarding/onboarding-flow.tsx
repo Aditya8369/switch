@@ -23,6 +23,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { CreateWorkspacePage } from './create-workspace-page';
 import { type CloudChoiceState, HowToRunPage } from './how-to-run-page';
+import { AcceptInvitePage, InvitePage } from './invite-pages';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
 import { WelcomePage } from './welcome-page';
@@ -39,12 +40,14 @@ import { WelcomePage } from './welcome-page';
  */
 const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
   welcome: null,
+  invite: null,
   howToRun: 'choose',
   local: 'local',
   connect: 'external',
   signIn: 'signIn',
   pickWorkspace: null,
   createWorkspace: null,
+  acceptInvite: null,
   meetBuddy: null,
 };
 
@@ -55,12 +58,14 @@ const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
  */
 const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
   welcome: 'none',
+  invite: 'none',
   howToRun: 'none',
   local: 'local',
   connect: 'external',
   signIn: 'external',
   pickWorkspace: 'external',
   createWorkspace: 'external',
+  acceptInvite: 'external',
   meetBuddy: 'external',
 };
 
@@ -74,21 +79,30 @@ const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
  * connection form and the sign-in cannot drift from what the rest of the app
  * does.
  */
-/** Each page as the first-run funnel names it. */
-const FUNNEL_PAGE: Record<OnboardingPage, RendererTelemetryEvents['onboarding_page']['page']> = {
+/**
+ * Each page as the first-run funnel names it. The invite pages are not
+ * reported: the funnel's page names are a closed list the consent copy
+ * discloses, and adding to it is a consent decision rather than a code change.
+ */
+const FUNNEL_PAGE: Record<
+  OnboardingPage,
+  RendererTelemetryEvents['onboarding_page']['page'] | null
+> = {
   welcome: 'welcome',
+  invite: null,
   howToRun: 'how_to_run',
   local: 'local_setup',
   connect: 'server_address',
   signIn: 'sign_in',
   pickWorkspace: 'choose_workspace',
   createWorkspace: 'create_workspace',
+  acceptInvite: null,
   meetBuddy: 'meet_buddy',
 };
 
 /** How the install runs Switch, once the page on screen says. */
 function funnelPath(page: OnboardingPage): RendererTelemetryEvents['onboarding_page']['path'] {
-  if (page === 'welcome' || page === 'howToRun') return 'none';
+  if (page === 'welcome' || page === 'howToRun' || page === 'invite') return 'none';
   if (page === 'local') return 'local';
   if (page === 'connect') return 'external';
   return onboardingStore.via;
@@ -103,7 +117,9 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     // The workspace picker says so itself: it often moves straight on, and a
     // page the person never saw must not count as reached.
     if (page === 'pickWorkspace') return;
-    report('onboarding_page', { page: FUNNEL_PAGE[page], path: funnelPath(page) });
+    const funnelPage = FUNNEL_PAGE[page];
+    if (funnelPage === null) return;
+    report('onboarding_page', { page: funnelPage, path: funnelPath(page) });
   }, [page]);
 
   const goTo = (page: OnboardingPage) => {
@@ -202,7 +218,7 @@ function pageServerId(): string | null {
 function connectedTo(server: SwitchServer, via: 'external' | 'cloud'): void {
   onboardingStore.connected(server, via);
   if (switchServersStore.isConnected(server.id)) {
-    onboardingStore.goTo('pickWorkspace');
+    onboardingStore.goTo(onboardingStore.invite !== null ? 'acceptInvite' : 'pickWorkspace');
     return;
   }
   reportPage('signIn');
@@ -246,6 +262,23 @@ function currentPage(
           onBack={() => goTo('welcome')}
           onLocal={() => goTo('local')}
           onExternal={() => goTo('connect')}
+          onInvite={() => goTo('invite')}
+        />
+      );
+    case 'invite':
+      return (
+        <InvitePage
+          onBack={() => goTo('howToRun')}
+          onResolved={(invite, found) => {
+            onboardingStore.holdInvite(
+              invite,
+              found.kind === 'resolvable'
+                ? { gatewayUrl: found.gatewayUrl, apiUrl: found.apiUrl }
+                : null
+            );
+            if (found.kind === 'known') connectedTo(found.server, found.via);
+            else goTo('connect');
+          }}
         />
       );
     case 'local':
@@ -270,9 +303,21 @@ function currentPage(
       return (
         <SignInStep
           server={server}
-          onBack={() => goTo(onboardingStore.via === 'cloud' ? 'howToRun' : 'connect')}
+          // An invite link names its server, so the page it was pasted on is
+          // where a different one is chosen.
+          onBack={() =>
+            goTo(
+              onboardingStore.invite !== null
+                ? 'invite'
+                : onboardingStore.via === 'cloud'
+                  ? 'howToRun'
+                  : 'connect'
+            )
+          }
           onClose={null}
-          onSignedIn={() => goTo('pickWorkspace')}
+          onSignedIn={() =>
+            goTo(onboardingStore.invite !== null ? 'acceptInvite' : 'pickWorkspace')
+          }
         />
       );
     case 'pickWorkspace':
@@ -296,6 +341,24 @@ function currentPage(
           onCreated={() => goTo('meetBuddy')}
         />
       );
+    case 'acceptInvite': {
+      const invite = onboardingStore.invite;
+      if (server === null || invite === null) break;
+      return (
+        <AcceptInvitePage
+          server={server}
+          invite={invite}
+          onAccepted={() => {
+            onboardingStore.dropInvite();
+            goTo('meetBuddy');
+          }}
+          onSkip={() => {
+            onboardingStore.dropInvite();
+            goTo('pickWorkspace');
+          }}
+        />
+      );
+    }
     case 'meetBuddy': {
       if (server === null) break;
       const workspaceId = workspacesStore.idOnServerInScope(server.id);
@@ -323,17 +386,23 @@ function currentPage(
       break;
   }
 
+  // An invite link for a server this install does not know gives its address.
+  // When the server said where its agents connect, both are filled in and
+  // shown; otherwise the form works the agent address out from the link's.
+  const inviteOrigin = onboardingStore.invite?.origin ?? null;
+  const inviteAddresses = onboardingStore.inviteAddresses;
+  const backTo = inviteOrigin === null ? 'howToRun' : 'invite';
   return (
     <ExternalServerStep
-      initialGatewayUrl={null}
-      initialApiUrl={null}
+      initialGatewayUrl={inviteAddresses?.gatewayUrl ?? inviteOrigin}
+      initialApiUrl={inviteAddresses?.apiUrl ?? null}
       initialName={null}
       serverId={null}
       isEdit={false}
       firstRun
       existing={server}
-      onBack={() => goTo('howToRun')}
-      onClose={() => goTo('howToRun')}
+      onBack={() => goTo(backTo)}
+      onClose={() => goTo(backTo)}
       onSuccess={() => finish(server?.id ?? null)}
       onConnected={(added) => connectedTo(added, 'external')}
     />

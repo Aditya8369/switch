@@ -27,6 +27,7 @@
   "dependencies": {
     "@switch-console/agent-providers": "workspace:*",
     "@switch-console/plugins": "workspace:*",
+    "@switch-console/shared": "workspace:*",
     "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
