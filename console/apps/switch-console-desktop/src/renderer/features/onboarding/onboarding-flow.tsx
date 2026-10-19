@@ -24,6 +24,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { CreateWorkspacePage } from './create-workspace-page';
 import { type CloudChoiceState, HowToRunPage } from './how-to-run-page';
+import { OnboardingIntro } from './onboarding-intro';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
 import { WelcomePage } from './welcome-page';
@@ -240,6 +241,8 @@ function currentPage(
 ) {
   switch (onboardingStore.page) {
     case 'welcome':
+      if (onboardingStore.introPending)
+        return <OnboardingIntro onDone={() => onboardingStore.introPlayed()} />;
       return (
         <WelcomePage
           onContinue={() => goTo('howToRun')}
