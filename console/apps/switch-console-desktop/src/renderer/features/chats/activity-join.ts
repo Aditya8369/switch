@@ -173,10 +173,13 @@ export function turnTools(turn: TurnActivity): {
   return { work, switchActions };
 }
 
-/** Whether the turn is under way with no tool run yet. */
+/** Whether the turn is running with no tool currently running and no reply streaming. */
 export function isThinking(turn: TurnActivity): boolean {
   return (
     (turn.status === 'queued' || turn.status === 'running') &&
-    !turn.items.some((item) => item.kind === 'tool-activity')
+    !turn.items.some(
+      (item) => item.kind === 'tool-activity' && toolState(item, turn.status) === 'running'
+    ) &&
+    !turn.items.some((item) => item.kind === 'assistant-message' && item.status === 'in-progress')
   );
 }

@@ -304,7 +304,16 @@ describe('bindTurns', () => {
       'running'
     );
     expect(isThinking(turn)).toBe(true);
-    expect(isThinking({ ...turn, items: [row('t1', 'tool')] })).toBe(false);
+  });
+
+  it('thinks between tools and not while a tool runs or a reply streams', () => {
+    const tool = row('t1', 'tool', { status: 'in-progress' });
+    expect(isThinking(turnOf([tool], 'running'))).toBe(false);
+    const done = { ...tool, status: 'completed' };
+    expect(isThinking(turnOf([done], 'running'))).toBe(true);
+    expect(isThinking(turnOf([done], 'completed'))).toBe(false);
+    const streaming = row('t1', 'msg', { kind: 'assistant-message', status: 'in-progress' });
+    expect(isThinking(turnOf([streaming], 'running'))).toBe(false);
   });
 
   it("shows tools only, with Switch's own tools set apart", () => {

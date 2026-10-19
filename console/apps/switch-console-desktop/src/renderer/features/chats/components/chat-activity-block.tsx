@@ -78,7 +78,7 @@ function ToolGroup({
   );
 }
 
-/** Switch's own tools for the turn, folded into a count until asked for. */
+/** Switch's own tools for the turn, folded into a count once the turn completes. */
 function SwitchActions({
   items,
   turn,
@@ -201,7 +201,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const reasoning = activity.reasoning.get(turn.turnId) ?? null;
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const { work, switchActions } = turnTools(turn);
-  const thinking = isThinking(turn) && !label;
+  const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
   if (!turnShown(activity, turn)) return null;
@@ -225,9 +225,12 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
       ) : (
         <ToolRows items={work} turn={turn} activity={activity} />
       )}
-      {switchActions.length > 0 && (
-        <SwitchActions items={switchActions} turn={turn} activity={activity} />
-      )}
+      {switchActions.length > 0 &&
+        (running ? (
+          <ToolRows items={switchActions} turn={turn} activity={activity} />
+        ) : (
+          <SwitchActions items={switchActions} turn={turn} activity={activity} />
+        ))}
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
