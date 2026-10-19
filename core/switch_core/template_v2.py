@@ -351,15 +351,6 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
     def fill(node: Any) -> Any:
         return interpolate(_choose(node, values), filled)
 
-    for key, spec in nested.items():
-        name = str(fill(spec.get("name") or "")).strip()
-        if not name or PLACEHOLDER_RE.search(name) or _NAME_REF.search(name):
-            raise TemplateError(
-                f"resource '{key}' has no name yet: give it a 'name' whose "
-                "inputs have values."
-            )
-        names[key] = name
-
     def name_of(key: str, spec: dict[str, Any]) -> str:
         if spec["type"] == "agent":
             written = spec.get("name") or ""
@@ -400,11 +391,20 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
             return [resolve(item, where) for item in node]
         return node
 
-    # Agents first: a room's name may read an agent's, never the reverse.
+    # Agents first: a template's or a room's name may read an agent's, never
+    # the reverse.
     for key, spec in resources.items():
         if spec["type"] == "agent":
             names[key] = name_of(key, spec)
     resources = {key: resolve(spec, key) for key, spec in resources.items()}
+    for key, spec in nested.items():
+        name = str(resolve(fill(spec.get("name") or ""), key)).strip()
+        if not name or PLACEHOLDER_RE.search(name) or _NAME_REF.search(name):
+            raise TemplateError(
+                f"resource '{key}' has no name yet: give it a 'name' whose "
+                "inputs have values."
+            )
+        names[key] = name
     for key, spec in resources.items():
         if spec["type"] != "agent":
             names[key] = name_of(key, spec)
