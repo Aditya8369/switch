@@ -78,7 +78,6 @@ function ToolGroup({
   );
 }
 
-
 /** How a turn ended, with the host's reason for it muted after it. */
 export function turnEndLabel(label: string, reason: string | null): ReactNode {
   if (!reason) return label;
