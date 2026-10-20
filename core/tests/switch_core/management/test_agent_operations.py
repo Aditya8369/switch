@@ -758,6 +758,33 @@ class TestUpdateAgentDetail:
         assert row is not None
         assert row.addressing_policy is None
 
+    async def test_an_agent_cannot_change_itself(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        for change in (
+            {"auto_approve": True},
+            {"addressing": "anyone"},
+            {"description": "Mine now"},
+        ):
+            response = await _call(
+                client,
+                helper_id,
+                "update_agent_detail",
+                bearer(key),
+                {"agent_id": helper_id, **change},
+            )
+
+            assert response.status_code == 403, response.text
+            assert "can't change its own settings" in response.json()["detail"]
+        row = await _agent_row(harness, "helper")
+        assert row is not None
+        assert row.description != "Mine now"
+
     async def test_a_definition_edit_bumps_the_revision_and_reaches_the_machine(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:

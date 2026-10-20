@@ -446,6 +446,27 @@ class TestGivingAgentsServices:
         assert "no agent named" in refused.text
         assert await _grants(harness, "bobs-agent") == []
 
+    async def test_an_agent_cannot_give_itself_a_service(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        harness.protocol.service_broker = harness.broker
+        buddy_id, key, ada_id = await _setup(harness)
+        async with harness.session_factory() as session:
+            await connect_github(session, ada_id, TEST_KEYRING)
+            await session.commit()
+
+        refused = await _op(
+            client,
+            buddy_id,
+            key,
+            "set_agent_service",
+            {"agent_name": "switch-buddy-ada", "service": "github"},
+        )
+
+        assert refused.status_code == 403, refused.text
+        assert "can't change its own settings" in refused.text
+        assert await _grants(harness, "switch-buddy-ada") == []
+
     async def test_says_what_is_missing_before_a_service_is_connected(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:

@@ -101,6 +101,16 @@ async def management_permission() -> Permitted | str:
     return Permitted(tenant_id=require_tenant_id(), owner=owner)
 
 
+def refuse_managing_self(agent_id: str) -> None:
+    """Refuse an agent changing itself: its settings, permissions and services
+    are its owner's to change, never its own."""
+    if agent_id == get_agent_id():
+        raise PermissionError(
+            "An agent can't change its own settings, permissions or services. "
+            "Your owner changes them on your page in Switch Console."
+        )
+
+
 async def permitted_to_manage() -> Permitted:
     """The calling agent's owner, once the agent is allowed to act on the
     owner's agent management; a clear refusal otherwise."""

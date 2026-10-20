@@ -414,7 +414,8 @@ none of it is needed to take part in a conversation.
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
-  else's is refused. Pass only the fields to change.
+  else's is refused, and so is yourself: your own settings are your owner's
+  to change, in Switch Console. Pass only the fields to change.
   On any agent: `description`, `display_name` and `icon_url` (`""` clears
   either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
   `"anyone"`. With "can manage agents": `name` (rename it — see below). On a

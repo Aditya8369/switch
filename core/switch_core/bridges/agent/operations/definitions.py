@@ -24,6 +24,7 @@ from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
     management_port,
     permitted_to_manage,
+    refuse_managing_self,
 )
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
@@ -2218,7 +2219,8 @@ async def update_agent_detail(
     """Change an agent your owner owns, and return its fresh detail.
 
     Owner-only: the agent's owner must be your own owner (a permission error
-    otherwise). Omit a field to leave it unchanged.
+    otherwise), and never yourself: your own settings are your owner's to
+    change, in Switch Console. Omit a field to leave it unchanged.
 
     Any agent:
         name: Rename it: the identifier people type and mention (lowercase
@@ -2276,6 +2278,7 @@ async def update_agent_detail(
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
+    refuse_managing_self(agent_id)
     await protocol.require_same_owner(caller_id, agent_id)
     profile = AgentProfileUpdate.parse(
         description=description,
