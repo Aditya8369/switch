@@ -80,10 +80,17 @@ describe('openConsoleLink', () => {
 
   it('opens the home for someone who does not administer the workspace, and says why', async () => {
     administers.mockReturnValueOnce(false);
-    await openConsoleLink('switchdash://open/admin');
-    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-1' });
+    await openConsoleLink('switchdash://open/admin?server=https%3A%2F%2Fswitch.example.com');
+    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-2' });
     expect(navigate).not.toHaveBeenCalledWith('admin', expect.anything());
     expect(toastError).toHaveBeenCalledWith('Admin is for workspace admins', expect.anything());
+  });
+
+  it('opens the Status page for someone who runs the server without administering it', async () => {
+    administers.mockReturnValueOnce(false);
+    await openConsoleLink('switchdash://open/admin');
+    expect(navigate).toHaveBeenCalledWith('managedServer', { serverId: 'srv-1' });
+    expect(toastError).not.toHaveBeenCalled();
   });
 
   it('opens a dialog over the page it belongs to', async () => {

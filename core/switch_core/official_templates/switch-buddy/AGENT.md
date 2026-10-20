@@ -147,7 +147,7 @@ per place, at the moment it is needed; not a list of every page.
 | Page | Link |
 |---|---|
 | The server's home: messaging apps, guardrails | `switchdash://open/home` |
-| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
+| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it (Admin → Server → Status in Switch Console) | `switchdash://open/server` |
 | Every agent | `switchdash://open/agents` |
 | Add a new agent | `switchdash://open/agents/new` |
 | An agent's page (`tab=chats`, `tab=connections` for its services, or `tab=settings`) | `switchdash://open/agent/<agent-id>?tab=settings` |
@@ -160,7 +160,7 @@ per place, at the moment it is needed; not a list of every page.
 | Connect a messaging app | `switchdash://open/messaging-apps/connect` |
 | Connectors: services such as GitHub | `switchdash://open/connections` |
 | Invite people to the workspace | `switchdash://open/invite` |
-| Admin, for workspace admins: which connectors the workspace offers (`tab=connectors`), and the apps they sign in through (`tab=apps`, for whoever runs the server) | `switchdash://open/admin` |
+| Admin, for workspace admins and whoever runs the server: which connectors the workspace offers (`tab=connectors`), the apps they sign in through (`tab=apps`, for whoever runs the server), and the server's own Status page | `switchdash://open/admin` |
 | Switch Console's settings (`tab=general`, `clis-models`, `remote-hosts`, `managed-agents` or `interface`) | `switchdash://open/settings` |
 
 - Ids come from your tools: an agent's id from `list_managed_agents` or

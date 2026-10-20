@@ -154,9 +154,16 @@ function openServerSettings(serverId: string): void {
   });
 }
 
-/** Admin is for the workspace's admins; anyone else lands on the home and is told why. */
+/**
+ * Admin is for the workspace's admins, and for whoever runs the server, who
+ * finds its Status page there; anyone else lands on the home and is told why.
+ */
 function openAdmin(serverId: string, tab: string | null): void {
   if (!administersWorkspaceInScope(serverId)) {
+    if (switchServersStore.servers.find((listed) => listed.id === serverId)?.managed) {
+      appState.navigation.navigate('managedServer', { serverId });
+      return;
+    }
     appState.navigation.navigate('server', { serverId });
     toast.error('Admin is for workspace admins', {
       description: 'Ask an owner or admin of this workspace to change these.',
