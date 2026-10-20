@@ -135,7 +135,7 @@ describe('connectionStates', () => {
     );
     expect(states.map((s) => [s.name, s.ready, s.note])).toEqual([
       ['GitHub', true, null],
-      ['Atlassian', false, 'Connect Atlassian under Connections first.'],
+      ['Atlassian', false, 'Connect Atlassian under Connectors first.'],
       ['nope', false, 'This server has no such connection.'],
     ]);
   });

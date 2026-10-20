@@ -23,6 +23,7 @@ import {
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
+  defaultConnectorsTab,
 } from './connectors-catalog';
 import { useConnectorCatalog, useServerFeatureFlags } from './connectors-queries';
 import { offersAddAgent } from './grant-agents';
@@ -87,7 +88,13 @@ function Connectors({
   administers: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  const [tab, setTab] = useState<ConnectorsTab>('yours');
+  // Null until the person picks a tab or the catalog first arrives; from then
+  // on it stays put, so a connection made on Discover does not move them.
+  const [chosenTab, setTab] = useState<ConnectorsTab | null>(null);
+  const tab = chosenTab ?? (catalog.data ? defaultConnectorsTab(catalog.data) : 'yours');
+  useEffect(() => {
+    if (chosenTab === null && catalog.data) setTab(defaultConnectorsTab(catalog.data));
+  }, [chosenTab, catalog.data]);
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
@@ -156,16 +163,19 @@ function Connectors({
         )
       }
     >
-      <div className="flex items-center gap-3">
-        <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
-        <SearchInput
-          containerClassName="flex-1"
-          aria-label="Search connectors"
-          placeholder="Search by name, category or description"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </div>
+      {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
+      {catalog.data && (
+        <div className="flex items-center gap-3">
+          <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
+          <SearchInput
+            containerClassName="flex-1"
+            aria-label="Search connectors"
+            placeholder="Search by name, category or description"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      )}
       {catalog.isError ? (
         <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
       ) : !catalog.data ? (

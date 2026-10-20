@@ -16,6 +16,7 @@ import {
   connectedAsLine,
   connectorsInTab,
   connectorsPageAccess,
+  defaultConnectorsTab,
   keyAccessText,
   profileConnectAction,
   signInLabel,
@@ -160,6 +161,15 @@ describe('the Yours and Discover tabs', () => {
       'Linear',
       'Notion',
     ]);
+  });
+
+  it('opens on Yours once the person has a connection, working or not, and on Discover before', () => {
+    expect(defaultConnectorsTab(catalog)).toBe('yours');
+    expect(defaultConnectorsTab([entry({ status: 'needs_reauthorization' })])).toBe('yours');
+    expect(
+      defaultConnectorsTab([entry({ status: 'not_connected' }), entry({ status: 'coming_soon' })])
+    ).toBe('discover');
+    expect(defaultConnectorsTab([])).toBe('discover');
   });
 
   it('searches within the tab by name, category or description', () => {
@@ -425,15 +435,15 @@ describe('the agents on a connector page', () => {
     expect(OPEN_AGENT_NOTE).toBe('Others can address it; it would act as you.');
   });
 
-  it("sends the person to the agent's Connections where the server cannot list agents", () => {
+  it("sends the person to the agent's Connectors where the server cannot list agents", () => {
     expect(agentsUnlistedText('Example')).toBe(
-      "This server can't list your agents here. Turn Example on for an agent from the agent's Connections."
+      "This server can't list your agents here. Turn Example on for an agent from the agent's Connectors."
     );
   });
 
   it('says so when the person has no agents yet', () => {
     expect(noAgentsText('Example')).toBe(
-      "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connections."
+      "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connectors."
     );
   });
 });

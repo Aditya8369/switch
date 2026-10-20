@@ -33,7 +33,7 @@ import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
 
 const NAV_ITEMS = [
-  { section: 'connections', label: 'Connections', icon: Plug },
+  { section: 'connections', label: 'Connectors', icon: Plug },
   { section: 'settings', label: 'Agent settings', icon: Settings },
 ] as const satisfies readonly { section: AgentSection; label: string; icon: typeof Settings }[];
 
@@ -133,7 +133,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const { params, setParams } = useParams('managedAgent');
   const { serverId, workspaceId, agentId } = agent;
   useEffect(() => {
-    void switchRoomsStore.fetchAgentRooms(workspaceId, agentId);
+    return switchRoomsStore.watchMembership(workspaceId, agentId);
   }, [workspaceId, agentId]);
 
   const { agentRooms, direct, rooms } = conversationsOf(agent);
@@ -228,6 +228,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           <ManagedAgentPage agent={agent} serviceGrants={!sections.includes('connections')} />
         ) : section === 'connections' ? (
           <AgentConnectionsTab
+            serverId={serverId}
             workspaceId={workspaceId}
             agentId={agentId}
             agentName={managedAgentLabel(agent)}

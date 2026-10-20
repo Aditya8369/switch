@@ -125,8 +125,8 @@ export function connectionStates(
         ready: false,
         note:
           entry.status === 'needs_reauthorization'
-            ? `Reconnect ${entry.name} under Connections.`
-            : `Connect ${entry.name} under Connections first.`,
+            ? `Reconnect ${entry.name} under Connectors.`
+            : `Connect ${entry.name} under Connectors first.`,
       };
     return { ...base, ready: true, note: null };
   });

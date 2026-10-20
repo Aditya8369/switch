@@ -49,7 +49,7 @@ vi.mock('@renderer/lib/modal/modal-provider', async (importOriginal) => ({
 }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
-    fetchAgentRooms: async () => {},
+    watchMembership: () => () => {},
     roomsFor: () => [],
     errorFor: () => null,
   },
@@ -128,11 +128,11 @@ const navRows = () =>
 const navLabels = () => navRows().map(({ label }) => label);
 const navItem = (label: string) => navRows().find((entry) => entry.label === label)!.row;
 
-it("puts Connections in the agent's column, above Agent settings, and opens it there", async () => {
+it("puts Connectors in the agent's column, above Agent settings, and opens it there", async () => {
   await act(async () => root.render(<AgentChats agent={AGENT} />));
-  expect(navLabels()).toEqual(['Connections', 'Agent settings']);
+  expect(navLabels()).toEqual(['Connectors', 'Agent settings']);
 
-  await act(async () => navItem('Connections').click());
+  await act(async () => navItem('Connectors').click());
   expect(navigation.params().section).toBe('connections');
   expect(container.querySelector('[data-testid="connections"]')?.textContent).toBe(
     'Connections for pm-agent (agent-1)'

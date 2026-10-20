@@ -228,6 +228,24 @@ it("shows the workspace's catalog, what the person has on Yours and everything o
   expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
 });
 
+it('opens on Discover when nothing is connected yet, and stays on the tab the person picks', async () => {
+  const unconnected = CATALOG.map((item) =>
+    item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
+  );
+  workspaces.getServiceConnections.mockResolvedValue(unconnected);
+  const page = await render();
+
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  const pressed = (name: string) =>
+    page.querySelector(`button[aria-label="${name}"]`)?.getAttribute('aria-pressed');
+  expect(pressed('Discover')).toBe('true');
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed('Yours')).toBe('true'));
+  expect(page.textContent).toContain('You have not connected anything yet.');
+});
+
 it('marks a service the server cannot use with its reason, without offering to connect it', async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
