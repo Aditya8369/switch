@@ -138,9 +138,9 @@ Most tools in this space want to become the place your team works. Switch does n
 
 Getting humans and agents to work as one team is the part nobody has solved yet. That is where our effort goes, rather than into rebuilding chat apps and coding agents that already work well.
 
-## Getting started
+## Docs
 
-### Let an agent walk you through the onboarding
+### Let an agent walk you through them
 
 
 Rather than working through the documentation yourself, connect an agent to it
@@ -176,105 +176,10 @@ opencode mcp add
 ```
 Then follow the procedure and provide `https://docs.switchagents.ai/mcp` as the MCP server URL.
 
+### Read them yourself
 
-
-### I want to try it out myself
-
-[Install Switch Console](#get-started-in-two-steps) and talk to switch-buddy, as above. The [getting started guide](https://docs.switchagents.ai/switch-rooms/getting-started) covers the whole path, from your first agent to your first channel.
-
-### I want to deploy Switch for my team
-
-Read [hosting remotely](https://docs.switchagents.ai/switch-rooms/deploy/host-remotely).
-
-
-## Architecture at a glance
-
-
-### Switch Core
-
-```mermaid
-flowchart LR
-  subgraph people["People"]
-    slack["Slack"]
-    teams["Teams"]
-    discord["Discord"]
-    telegram["Telegram"]
-    mattermost["Mattermost"]
-  end
-
-  subgraph core["Switch Core"]
-    collab["Collaboration Bridge"]
-    rooms[("Rooms in PostgreSQL<br/>messages · media · LISTEN/NOTIFY")]
-    agentbridge["Agent Bridge<br/>HTTP + SSE · MCP"]
-    gateway["Gateway API"]
-  end
-
-  subgraph agents["Agents"]
-    cli["CLI agents<br/>via Switch Console"]
-    custom["Custom agents<br/>via Agent Protocol"]
-  end
-
-  dashboard["Operator Dashboard"]
-
-  slack --- collab
-  teams --- collab
-  discord --- collab
-  telegram --- collab
-  mattermost --- collab
-
-  collab <--> rooms
-  rooms <--> agentbridge
-  rooms --- gateway
-  gateway --- dashboard
-
-  agentbridge <--> cli
-  agentbridge <--> custom
-```
-
-Switch Core is the infrastructure that joins your agents and your collaboration
-apps together.
-
-At its centre are rooms, held in PostgreSQL, where everyone meets. Every
-participant is a client of that store: people arriving through a bridged
-channel, agents connected through the Agent Bridge, and Switch's own services.
-
-**Agent Bridge.** Agents speak the Switch Agent Protocol: HTTP for what they
-send, SSE for what Switch pushes back, so they hear about a message as it
-happens. [Switch Console](console/) and the sidecar it deploys to remote hosts
-speak it for every CLI-based agent session they start: each session gets the
-Switch tools as a local MCP server and a skill that teaches it the room
-workflow.
-
-**Collaboration Bridge.** Each chat platform connects through its own adapter,
-with its own transport: Socket Mode for Slack, an HTTP listener for Teams, the
-gateway websocket for Discord, long polling for Telegram, a websocket for
-Mattermost. It relays both ways,
-maps each channel to a room, and gives every agent its own name and avatar in
-the channel.
-
-**Room Service and Gateway API.** The management layer: rooms, roles,
-instructions, permissions, attached knowledge and connected messaging apps. The
-Gateway API is the control plane behind the operator dashboard, and PostgreSQL
-holds the state.
-
-### Switch Console
-
-Switch Console is the desktop app on the other side of the Agent Bridge. It does
-three jobs.
-
-**It runs your agents.** Define an agent once with its name, working directory
-and provider, and Console handles its identity, credentials and sessions,
-including starting one automatically when somebody addresses it in a channel.
-Run it on your own machine, or on a remote host you own so it is there for your
-team around the clock.
-
-**It manages the everyday.** Connect your messaging apps, create channels and
-configure who and what is in them, without leaving the app. The operator
-dashboard covers the rest.
-
-**It runs your server.** Point it at your team's Switch server, or have it stand
-one up for you, on this machine or on a host you own, without you writing any
-Compose or Helm configuration.
+- [Getting started](https://docs.switchagents.ai/switch-rooms/getting-started): from your first agent to your first channel.
+- [Hosting remotely](https://docs.switchagents.ai/switch-rooms/deploy/host-remotely): deploy Switch for your team.
 
 ## Telemetry
 
