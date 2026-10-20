@@ -2928,9 +2928,9 @@ describe('agent management calls', () => {
       [
         'reported',
         [
-          { provider: 'claude', installed: true, auth: 'ok' },
-          { provider: 'codex', installed: true, auth: 'unknown' },
-          { provider: 'opencode', installed: false, auth: 'unknown' },
+          { provider: 'claude', installed: true, auth: 'ok', problem: null },
+          { provider: 'codex', installed: true, auth: 'unknown', problem: null },
+          { provider: 'opencode', installed: false, auth: 'unknown', problem: null },
         ],
       ],
       ['silent', []],

@@ -20,20 +20,24 @@ function controller(patch: Partial<ManagementController> & { id: string }): Mana
 
 describe('machineProvider', () => {
   it('is ready only when installed and logged in', () => {
-    expect(machineProvider({ provider: 'claude', installed: true, auth: 'ok' })).toEqual({
+    expect(
+      machineProvider({ provider: 'claude', installed: true, auth: 'ok', problem: null })
+    ).toEqual({
       provider: 'claude',
       ready: true,
       problem: null,
+      detail: null,
     });
   });
 
   it('says why a provider is not ready', () => {
     const problem = (installed: boolean, auth: 'ok' | 'expired' | 'missing' | 'unknown') =>
-      machineProvider({ provider: 'codex', installed, auth });
+      machineProvider({ provider: 'codex', installed, auth, problem: null });
     expect(problem(false, 'ok')).toEqual({
       provider: 'codex',
       ready: false,
       problem: 'not installed',
+      detail: null,
     });
     expect(problem(true, 'missing').problem).toBe('not logged in');
     expect(problem(true, 'expired').problem).toBe('login expired');
@@ -41,6 +45,23 @@ describe('machineProvider', () => {
       provider: 'codex',
       ready: false,
       problem: 'login not checked yet',
+      detail: null,
+    });
+  });
+
+  it('stops waiting on a login the machine could not check, and says why', () => {
+    expect(
+      machineProvider({
+        provider: 'claude',
+        installed: true,
+        auth: 'unknown',
+        problem: 'Claude Code did not say whether it is signed in. It may be too old.',
+      })
+    ).toEqual({
+      provider: 'claude',
+      ready: false,
+      problem: 'login could not be checked',
+      detail: 'Claude Code did not say whether it is signed in. It may be too old.',
     });
   });
 });
@@ -52,7 +73,7 @@ describe('ownedMachines', () => {
         controller({
           id: 'laptop',
           kind: 'console',
-          providers: [{ provider: 'claude', installed: true, auth: 'ok' }],
+          providers: [{ provider: 'claude', installed: true, auth: 'ok', problem: null }],
           workspacesDir: '/data/workspaces',
           os: null,
         }),
@@ -68,7 +89,7 @@ describe('ownedMachines', () => {
         name: 'laptop',
         kind: 'console',
         state: 'online',
-        providers: [{ provider: 'claude', ready: true, problem: null }],
+        providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
         workspacesDir: '/data/workspaces',
         os: null,
         local: { kind: 'this-computer' },

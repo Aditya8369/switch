@@ -66,6 +66,8 @@ export type MachineProvider = {
   ready: boolean;
   /** Why it is not ready, in a few words; null when it is. */
   problem: string | null;
+  /** What the machine said about it, when it said more than `problem` does. */
+  detail: string | null;
 };
 
 /**

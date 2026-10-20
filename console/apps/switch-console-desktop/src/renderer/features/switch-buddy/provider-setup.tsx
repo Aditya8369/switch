@@ -340,6 +340,9 @@ function SelectedPanel({
                 ? 'Finish signing in in your browser. This page moves on by itself once it’s done.'
                 : 'It opens your browser to sign in with your own account.'}
             </p>
+            {provider.detail && !running && (
+              <p className="text-xs text-foreground-warning">{provider.detail}</p>
+            )}
           </div>
           {login && <LogTail lines={login.lines} placeholder="Starting the sign-in…" />}
           {links.length > 0 && (

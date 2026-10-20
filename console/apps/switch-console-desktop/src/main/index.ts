@@ -57,7 +57,7 @@ import { registerLogEnrichment } from './lib/log-enrichment';
 import { log } from './lib/logger';
 import { withRPCLogContext } from './lib/rpc-logging';
 import { rpcRouter } from './rpc';
-import { resolveUserEnv } from './utils/userEnv';
+import { ensureUserBinDirsInPath, resolveUserEnv } from './utils/userEnv';
 
 if (import.meta.env.DEV) {
   dotenvConfig({ path: '.env.local', override: false });
@@ -112,6 +112,7 @@ app.on('activate', () => {
 
 void app.whenReady().then(async () => {
   await resolveUserEnv();
+  ensureUserBinDirsInPath();
 
   try {
     await initializeDatabase();

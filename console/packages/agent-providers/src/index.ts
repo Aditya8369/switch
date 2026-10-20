@@ -166,6 +166,7 @@ export { readSharedCredentials, sharedConfigSchema } from './host/shared-config'
 export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './readiness';
+export { verifyClaudeSignIn } from './claude/sign-in';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';
 export {
   acpProviderRuntime,

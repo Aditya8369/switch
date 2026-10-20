@@ -24,8 +24,15 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
         ? 'not logged in'
         : report.auth === 'expired'
           ? 'login expired'
-          : 'login not checked yet';
-  return { provider: report.provider, ready: problem === null, problem };
+          : report.problem
+            ? 'login could not be checked'
+            : 'login not checked yet';
+  return {
+    provider: report.provider,
+    ready: problem === null,
+    problem,
+    detail: problem === null ? null : report.problem,
+  };
 }
 
 /** The owner's machines an agent can be placed on: every controller but the revoked ones. */
