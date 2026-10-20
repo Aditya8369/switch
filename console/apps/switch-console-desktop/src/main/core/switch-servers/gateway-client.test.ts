@@ -1223,7 +1223,8 @@ describe('GitHub connection transport', () => {
         connectable: true,
         status: 'needs_reauthorization',
         unavailable_reason: entry.unavailable_reason,
-        // A server that predates them says neither.
+        // A server that predates them says none of these.
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -1244,6 +1245,41 @@ describe('GitHub connection transport', () => {
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/service-connections');
   });
+  it('reads why a service cannot be used as a code, dropping one it does not know', async () => {
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: false,
+      configured: false,
+      unavailable_reason: "GitHub can't be used on this server.",
+      unavailable_code: 'needs_https',
+      status: 'not_connected',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            entry,
+            { ...entry, slug: 'example', unavailable_code: 'some_later_reason' },
+            { ...entry, slug: 'jira', enabled: false, unavailable_code: 'coming_soon' },
+          ],
+        })
+      )
+    );
+    const catalog = await getConnectionCatalog(SERVER);
+    expect(
+      catalog.map((item) => [item.slug, item.unavailable_code, item.unavailable_reason])
+    ).toEqual([
+      ['github', 'needs_https', entry.unavailable_reason],
+      // A newer server's code this Console doesn't know: its reason is shown as it is.
+      ['example', null, entry.unavailable_reason],
+      ['jira', null, null],
+    ]);
+  });
   it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
@@ -1262,6 +1298,7 @@ describe('GitHub connection transport', () => {
         ...github,
         connectable: true,
         unavailable_reason: null,
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,

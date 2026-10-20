@@ -87,8 +87,13 @@ async def get_my_context() -> dict[str, Any]:
         platform and paste its tokens. `who` is "admins" or "anyone".
 
         `services`: what agents can be given access to (GitHub and the like),
-        each {slug, name, available, unavailable_reason, connection,
-        agents_using}. `available` is whether this server has it set up;
+        each {slug, name, available, unavailable_reason, unavailable_code,
+        connection, agents_using}. `available` is whether this server has it
+        set up; `unavailable_code` says why not, one of "switched_off" (its
+        operator turned it off), "needs_https" (it can't work on this
+        server), "app_not_set_up" (its operator can set it up under Admin →
+        Connector apps in Switch Console), "not_set_up" or
+        "not_fully_set_up";
         `connection` is your owner's: "not_connected", "active",
         "needs_reauthorization" or "error". `agents_using` names your owner's
         agents granted it. Empty when this server has service connections off.
@@ -272,14 +277,17 @@ def _services(
         definition = entry.definition
         if not definition.enabled:
             continue
-        unavailable = broker.availability(definition.slug)
+        unavailable = broker.unavailable(definition.slug)
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
                 "available": unavailable is None
                 and broker.connectable(definition.slug),
-                "unavailable_reason": unavailable,
+                "unavailable_reason": None
+                if unavailable is None
+                else unavailable.reason,
+                "unavailable_code": None if unavailable is None else unavailable.code,
                 "connection": connections.get(definition.slug, "not_connected"),
                 "agents_using": sorted(
                     names[agent_id]

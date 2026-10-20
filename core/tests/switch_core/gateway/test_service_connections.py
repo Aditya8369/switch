@@ -117,6 +117,7 @@ class TestConnections:
             for key in (
                 "configured",
                 "unavailable_reason",
+                "unavailable_code",
                 "status",
                 "consent",
                 "external_identity",
@@ -124,6 +125,7 @@ class TestConnections:
         } == {
             "configured": True,
             "unavailable_reason": None,
+            "unavailable_code": None,
             "status": "active",
             "consent": "read",
             "external_identity": "login-1001",
@@ -135,6 +137,7 @@ class TestConnections:
         asana = entries["asana"]
         assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
         assert asana["configured"] is False
+        assert asana["unavailable_code"] == "coming_soon"
         assert asana["enabled"] is False
         assert asana["connectable"] is False
         assert asana["status"] == "not_connected"
@@ -449,6 +452,7 @@ class TestMemberRemoval:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
 
         token = _token(admin_id, "svc-admin@example.invalid", TENANT_A)

@@ -1296,6 +1296,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         token_retention=timedelta(days=config.service_token_retention_days),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
+        public_url=config.gateway_public_url,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker

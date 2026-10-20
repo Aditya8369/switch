@@ -26,6 +26,7 @@ function service(
     connectable: true,
     status: 'connected',
     unavailable_reason: null,
+    unavailable_code: null,
     pass_through: true,
     token_lifetime: null,
     loopback_ports: null,

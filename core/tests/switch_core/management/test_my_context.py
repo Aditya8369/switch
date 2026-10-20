@@ -380,6 +380,14 @@ class TestGivingAgentsServices:
         )
         assert github["connection"] == "active"
         assert github["agents_using"] == ["reviewer"]
+        assert (github["unavailable_reason"], github["unavailable_code"]) == (
+            None,
+            None,
+        )
+        datadog = next(
+            entry for entry in context["services"] if entry["slug"] == "datadog"
+        )
+        assert datadog["unavailable_code"] == "not_set_up"
 
         taken = await _op(
             client,
