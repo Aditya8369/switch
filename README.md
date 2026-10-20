@@ -42,15 +42,14 @@ Switch is the underlying infrastructure and framework that allows you to build t
 1. **Install Switch Console**, the desktop app, for your platform.
 2. **Open it and talk to switch-buddy**, your own assistant in Switch. Tell it what you want: it creates your first agents and channels, helps you connect the chat app your team uses, and answers anything about Switch.
 
-| Platform | Download |
-|---|---|
-| macOS (Apple Silicon) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) |
-| macOS (Intel) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
-| Linux (x64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
-| Linux (arm64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
-| Windows (x64) — **early access** | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
+| Platform | Install |
+| --- | --- |
+| macOS | [Apple Silicon](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) · [Intel](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
+| Windows | [Installer](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
+| Linux x64 | [AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [DEB](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
+| Linux ARM64 | [AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [DEB](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
 
-**Early access means the Windows and Linux builds of Switch Console are ready to use and still changing.** Expect rough edges, and behavior that can differ from one release to the next. When you hit one, [open an issue](https://github.com/sandbox-quantum/switch/issues) — a report is what moves it up the list. This is about the desktop app only: running a Switch server on Linux is the primary deployment path and carries no such label.
+See the [latest release](https://github.com/sandbox-quantum/switch/releases/latest) for all desktop builds.
 
 ## Watch it work
 
