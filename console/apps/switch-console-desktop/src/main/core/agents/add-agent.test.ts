@@ -129,6 +129,7 @@ function params(overrides: Record<string, unknown> = {}) {
     displayName: null,
     iconUrl: null,
     autoApprove: false,
+    autoMode: true,
     instructions: '',
     definitionAttributes: {},
     entryPoint: 'unknown' as const,
@@ -324,6 +325,14 @@ describe('addAgent', () => {
     expect(h.registerAgentIdentity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ iconUrl: agentAvatarUrlForName('codex-hoot') })
+    );
+  });
+
+  it('creates the row with the permission settings the form chose', async () => {
+    await addAgent(params({ autoApprove: true, autoMode: false }));
+
+    expect(h.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ autoApprove: true, autoMode: false })
     );
   });
 

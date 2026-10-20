@@ -504,6 +504,31 @@ async def test_a_template_says_whether_its_agent_can_manage_agents(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("written", "expected"), [(None, True), ("false", False), ("true", True)]
+)
+async def test_a_template_agent_runs_in_auto_mode_unless_it_says_not(
+    managed, written, expected
+):
+    line = f"  auto_mode: {written}\n" if written else ""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: helper\n"
+        "  instructions: Help.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/helper\n" + line,
+        kind="agent",
+    )
+
+    await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    (created,) = managed["management"].created
+    assert (created.auto_mode, created.auto_approve) == (expected, False)
+
+
+@pytest.mark.asyncio
 async def test_switch_buddy_is_created_under_its_name_and_can_manage_agents(managed):
     result = await _as(
         managed["agent_id"],
@@ -560,6 +585,14 @@ def test_can_manage_agents_must_be_true_or_false():
         "  machine: laptop\n  directory: /srv/a\n  can_manage_agents: maybe\n"
     )
     assert _codes(template) == {"invalid_can_manage_agents"}
+
+
+def test_auto_mode_must_be_true_or_false():
+    template = (
+        "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
+        "  machine: laptop\n  directory: /srv/a\n  auto_mode: maybe\n"
+    )
+    assert _codes(template) == {"invalid_auto_mode"}
 
 
 def test_a_location_names_a_machine_only_when_it_is_one():

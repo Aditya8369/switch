@@ -2209,6 +2209,7 @@ async def update_agent_detail(
     model: str | None = None,
     advanced_config: dict[str, Any] | None = None,
     instructions: str | None = None,
+    auto_mode: bool | None = None,
     auto_approve: bool | None = None,
     directory: str | None = None,
     isolation: str | None = None,
@@ -2250,7 +2251,12 @@ async def update_agent_detail(
             lists, e.g. {"effort": "high"}; {} clears them. When changing
             `provider`, pass the new provider's settings (or {}) too.
         instructions: Its system prompt (at most 32 KiB).
-        auto_approve: Bypass mode: run tools without asking for approval.
+        auto_mode: Auto mode: the provider's own automatic review lets safe
+            actions run without asking and still asks a person before risky
+            ones. On by default for new agents.
+        auto_approve: Bypass mode: run every tool without any permission
+            check; overrides `auto_mode`. Unsafe; turn it on only when the
+            person explicitly asks.
         directory: Working directory on its machine; "" for the machine's
             own workspace for the agent, whose path Switch fills in.
         isolation: "shared" (inside the machine's controller) or "isolated"
@@ -2267,7 +2273,8 @@ async def update_agent_detail(
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
-        advanced_config, machine, desired_state, actual, revision); null when
+        advanced_config, auto_mode, auto_approve, machine, desired_state,
+        actual, revision); null when
         the agent is not managed or you cannot manage agents. Plus `renamed`
         when `name` changed it: `{old_name, bridge_failures,
         templates_mentioning_old_name}` — each chat platform that could not be
@@ -2289,6 +2296,7 @@ async def update_agent_detail(
         model=model,
         advanced_config=advanced_config,
         instructions=instructions,
+        auto_mode=auto_mode,
         auto_approve=auto_approve,
         directory=directory,
         isolation=isolation,
