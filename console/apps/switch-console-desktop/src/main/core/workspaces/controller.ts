@@ -730,11 +730,12 @@ export const workspacesController = createRPCController({
     ),
 
   /** Delete a room and everything in it, resolving to what became of its
-   * platform channel (see `deleteRoom` in the gateway client). The gateway
-   * enforces who may. */
+   * platform channel (see `deleteRoom` in the gateway client). The channel is
+   * kept unless `retireChannel` is true. The gateway enforces who may. */
   deleteRoom: async (params: {
     workspaceId: string;
     roomId: string;
+    retireChannel?: boolean;
   }): Promise<RetireOutcome | null> => {
     const known = await workspaceServer(params.workspaceId);
     const report = (outcome: TelemetryOutcome) =>
@@ -751,7 +752,9 @@ export const workspacesController = createRPCController({
     return withWorkspaceSession(params.workspaceId, async (server) => {
       let channel: RetireOutcome | null;
       try {
-        channel = await deleteRoom(server, params.roomId);
+        channel = await deleteRoom(server, params.roomId, {
+          retireChannel: params.retireChannel ?? false,
+        });
       } catch (error) {
         report('failure');
         throw error;

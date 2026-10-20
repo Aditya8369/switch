@@ -175,12 +175,17 @@ class RoomObserveRequest(BaseModel):
 
 class BulkDeleteRequest(BaseModel):
     room_ids: list[str]
+    # Also archive, delete or leave each room's platform channel, as its
+    # platform allows. Off unless asked: deleting a room is often about taking
+    # the agents out of a channel people keep using.
+    retire_channel: bool = False
 
 
 class RoomDeleteResponse(BaseModel):
     ok: bool
-    # What became of the room's platform channel; null when the room had none.
-    # `failed` means it is still there and needs removing by hand.
+    # What became of the room's platform channel; null when the room had none
+    # or the caller kept it. `failed` means it is still there and needs
+    # removing by hand.
     channel: RetireOutcome | None
 
 

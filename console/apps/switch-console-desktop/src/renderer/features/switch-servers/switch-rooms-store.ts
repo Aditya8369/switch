@@ -237,14 +237,24 @@ export class SwitchRoomsStore {
 
   /**
    * Delete a room in its workspace, then re-read what is left. Resolves to
-   * what became of its platform channel, null when it had none.
+   * what became of its platform channel: null when it had none or it was kept,
+   * which it is unless `retireChannel` asks for it to be archived, deleted or
+   * left as its platform allows.
    *
    * Throws on refusal rather than reporting a boolean: the caller is a
    * confirmation dialog, and a delete that quietly did nothing would leave the
    * room on screen with no account of why.
    */
-  async deleteRoom(workspaceId: string, roomId: string): Promise<RetireOutcome | null> {
-    const channel = await rpc.workspaces.deleteRoom({ workspaceId, roomId });
+  async deleteRoom(
+    workspaceId: string,
+    roomId: string,
+    options: { retireChannel: boolean }
+  ): Promise<RetireOutcome | null> {
+    const channel = await rpc.workspaces.deleteRoom({
+      workspaceId,
+      roomId,
+      retireChannel: options.retireChannel,
+    });
     await this.refreshRoomState();
     return channel;
   }

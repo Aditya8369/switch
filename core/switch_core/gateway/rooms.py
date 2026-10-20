@@ -1242,10 +1242,14 @@ async def delete_room(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    # Also archive, delete or leave the room's platform channel. Off unless
+    # asked: people often delete a room to take the agents out of a channel
+    # they keep using.
+    retire_channel: Annotated[bool, Query()] = False,
 ) -> RoomDeleteResponse:
     await _require_room_released(session, room_store, room_id, user, "delete", is_admin)
     try:
-        channel = await room_service.delete_room(room_id, retire_channel=True)
+        channel = await room_service.delete_room(room_id, retire_channel=retire_channel)
     except ValueError:
         raise HTTPException(status_code=404, detail="Room not found")
     return RoomDeleteResponse(ok=True, channel=channel)
@@ -1275,7 +1279,9 @@ async def bulk_delete_rooms(
             continue
         # See `_require_room_released`.
         await session.commit()
-        channel = await room_service.delete_room(room_id, retire_channel=True)
+        channel = await room_service.delete_room(
+            room_id, retire_channel=req.retire_channel
+        )
         if channel is not None:
             channels[room_id] = channel
         deleted += 1

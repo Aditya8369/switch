@@ -9,6 +9,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
+import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
@@ -16,7 +17,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { channelCleanupText, channelOnDeleteText } from './room-delete-wording';
+import {
+  channelCleanupText,
+  channelKeptText,
+  channelOnDeleteText,
+  isRetirable,
+  retireChannelLabel,
+} from './room-delete-wording';
 
 type Props = BaseModalProps<void> & {
   workspaceId: string;
@@ -27,11 +34,14 @@ type Props = BaseModalProps<void> & {
 /**
  * Confirm deleting a room.
  *
- * Deleting is not leaving: the room stops existing for everyone in it, and on a
- * bridged room its channel is retired as far as the platform allows — archived,
- * deleted, left by the bot, or left where it is. Both are things you cannot find
- * out by trying, so they are said before rather than reported after: the
- * platform's outcome comes from the room's own detail (`channelOnDelete`).
+ * Deleting is not leaving: the room stops existing for everyone in it. On a
+ * bridged room its channel is kept — people often delete a room to take the
+ * agents out of a channel they keep using — unless the person ticks the box to
+ * retire it as far as the platform allows: archived, deleted, or left by the
+ * bot. Where retiring does nothing (Teams) there is no box, only a word on
+ * removing it there. What retiring would do is something you cannot find out
+ * by trying, so it is said before rather than reported after: the platform's
+ * outcome comes from the room's own detail (`channelOnDelete`).
  *
  * A channel the server could not retire does not stop the room being deleted,
  * so that one is reported after, in place of closing, with what is left to do
@@ -48,6 +58,7 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [retireChannel, setRetireChannel] = useState(false);
   const [cleanup, setCleanup] = useState<string | null>(null);
   // Once the room is gone only Close may end this, so the caller still hears it
   // succeeded and can leave the deleted room's page.
@@ -65,14 +76,28 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
   });
   // Unread or unreadable, the outcome is unknown, which has wording of its own.
   const planned = detail.data?.channelOnDelete;
-  const channelText = platform && !detail.isPending ? channelOnDeleteText(platform, planned) : null;
+  const known = platform !== null && !detail.isPending;
+  const retirable = known && isRetirable(planned) ? planned : null;
+  // Off whenever there is no box to tick, so a choice made against one read of
+  // the room cannot ride along on another.
+  const retire = retirable !== null && retireChannel;
+  const channelText =
+    platform === null || !known
+      ? null
+      : retirable
+        ? retire
+          ? channelOnDeleteText(platform, retirable)
+          : channelKeptText(platform, retirable)
+        : channelOnDeleteText(platform, planned);
 
   const handleDelete = useCallback(async () => {
     setIsDeleting(true);
     setCloseGuard(true);
     setError(null);
     try {
-      const channel = await switchRoomsStore.deleteRoom(workspaceId, roomId);
+      const channel = await switchRoomsStore.deleteRoom(workspaceId, roomId, {
+        retireChannel: retire,
+      });
       const notice = platform ? channelCleanupText(platform, planned, channel) : null;
       if (notice) {
         setCleanup(notice);
@@ -86,7 +111,7 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
     } finally {
       setCloseGuard(false);
     }
-  }, [workspaceId, roomId, platform, planned, onSuccess, setCloseGuard]);
+  }, [workspaceId, roomId, platform, planned, retire, onSuccess, setCloseGuard]);
 
   if (cleanup) {
     return (
@@ -119,7 +144,22 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
         <p className="text-sm text-foreground-muted">
           This deletes the room for everyone in it, along with its conversation. It can’t be undone.
         </p>
-        {channelText && <p className="text-sm text-foreground-muted">{channelText}</p>}
+        {platform && retirable ? (
+          <label className="group/field flex cursor-pointer items-start gap-2.5">
+            <Checkbox
+              checked={retireChannel}
+              disabled={isDeleting}
+              onCheckedChange={(checked) => setRetireChannel(checked === true)}
+              className="mt-0.5"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">{retireChannelLabel(platform, retirable)}</span>
+              <span className="text-xs text-foreground-muted">{channelText}</span>
+            </span>
+          </label>
+        ) : (
+          channelText && <p className="text-sm text-foreground-muted">{channelText}</p>
+        )}
         {agentCount > 0 && (
           <p className="text-sm text-foreground-muted">
             {agentCount} {agentCount === 1 ? 'agent leaves' : 'agents leave'} the room. The agents

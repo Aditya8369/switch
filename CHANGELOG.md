@@ -142,13 +142,15 @@ version of their own to them without also giving them a release of their own.
   Switch Console. A server with no public address (`GATEWAY_PUBLIC_URL`) sends
   the link's label and the page's name instead. Mattermost servers that allow
   the `switchdash` scheme get the link unchanged.
-- **Deleting a room retires its channel.** Deleting a bridged room archives
-  its Slack or Mattermost channel, deletes its Discord channel and has the bot
-  leave its Telegram chat; Teams channels and direct messages stay. The delete
-  responses say what happened (`channel`), and room detail says what will
-  (`channel_on_delete`). A channel that could not be retired is reported, and
-  the room is still deleted. Disconnecting a messaging app leaves channels as
-  they are.
+- **Deleting a room can retire its channel.** `DELETE /gateway/rooms/{id}`
+  and bulk delete take `retire_channel` (default false). When it is set,
+  Switch archives the room's Slack or Mattermost channel, deletes its Discord
+  channel, or has the bot leave its Telegram chat; Teams channels and direct
+  messages stay. Without it, the channel is left as it is. The delete
+  responses say what happened (`channel`), and room detail says what retiring
+  would do (`channel_on_delete`). A channel that could not be retired is
+  reported, and the room is still deleted. Disconnecting a messaging app
+  leaves channels as they are.
 - **The Switch expert is offered only where switch-buddy is not.** A server
   with agent management and switch-buddy on serves switch-buddy alone; every
   other server keeps the official Switch expert. Agents made from it are
@@ -1839,11 +1841,12 @@ version of their own to them without also giving them a release of their own.
   connecting an app, including a Console link from switch-buddy, now ends by
   offering to link your own account on it (Telegram explains how instead).
   The server's Home page keeps a **Link your … account** prompt until you do.
-- **The delete-room dialog says what happens to the channel.** It names the
-  outcome for the room's platform (archived, deleted, the bot leaving, or the
-  channel staying) instead of saying the channel is always deleted, and shows
-  what to clean up by hand when the server could not retire it. Needs a
-  server from this release; an older one gets "the channel may remain".
+- **The delete-room dialog asks about the channel.** Deleting a room keeps
+  its channel unless you tick **Also archive the … channel** (or delete it on
+  Discord, or have the bot leave on Telegram); the dialog says what will
+  happen either way, and shows what to clean up by hand when the server could
+  not retire it. Teams channels always stay. Needs a server from this
+  release; an older one gets "the channel may remain".
 - **A new agent starts on "Me and my agents".** "Who can talk to your agent"
   now opens on **Me and my agents (default)**: you and any agent you own.
   **Only me** is still one choice away, and agents that already exist keep

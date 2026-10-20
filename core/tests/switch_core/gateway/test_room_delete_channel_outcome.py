@@ -105,6 +105,29 @@ async def _room(session: AsyncSession) -> str:
     return room.id
 
 
+async def test_delete_keeps_the_channel_unless_asked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        admin = await _admin(session)
+        room_id = await _room(session)
+        await session.commit()
+    room_service = _RoomService({room_id: None})
+
+    async with session_factory() as session:
+        response = await delete_room(
+            room_id,
+            session,
+            room_service,  # type: ignore[arg-type]
+            _ROOM_STORE,
+            admin,
+            True,
+        )
+
+    assert room_service.calls == [(room_id, False)]
+    assert response.model_dump() == {"ok": True, "channel": None}
+
+
 async def test_delete_returns_the_channel_outcome(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -123,6 +146,7 @@ async def test_delete_returns_the_channel_outcome(
             _ROOM_STORE,
             admin,
             True,
+            retire_channel=True,
         )
 
     assert room_service.calls == [(room_id, True)]
@@ -146,7 +170,7 @@ async def test_bulk_delete_returns_each_rooms_channel_outcome(
 
     async with session_factory() as session:
         response = await bulk_delete_rooms(
-            BulkDeleteRequest(room_ids=[bridged, internal]),
+            BulkDeleteRequest(room_ids=[bridged, internal], retire_channel=True),
             session,
             room_service,  # type: ignore[arg-type]
             _ROOM_STORE,
@@ -157,3 +181,26 @@ async def test_bulk_delete_returns_each_rooms_channel_outcome(
     assert room_service.calls == [(bridged, True), (internal, True)]
     assert response.deleted == 2
     assert response.channels == {bridged: RetireOutcome(outcome="archived")}
+
+
+async def test_bulk_delete_keeps_channels_unless_asked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        admin = await _admin(session)
+        bridged = await _room(session)
+        await session.commit()
+    room_service = _RoomService({bridged: None})
+
+    async with session_factory() as session:
+        response = await bulk_delete_rooms(
+            BulkDeleteRequest(room_ids=[bridged]),
+            session,
+            room_service,  # type: ignore[arg-type]
+            _ROOM_STORE,
+            admin,
+            True,
+        )
+
+    assert room_service.calls == [(bridged, False)]
+    assert response.channels == {}

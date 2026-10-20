@@ -27,7 +27,7 @@ import type {
   RemoteAgentSummary,
   RemoteRoomDetail,
 } from '@shared/core/switch-servers/switch-servers';
-import { channelOnDeleteText } from './room-delete-wording';
+import { channelOnDeleteSummary } from './room-delete-wording';
 import { membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
 
@@ -138,7 +138,7 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
           <p className="text-xs text-foreground-muted">
             Removes the room and its conversation for everyone in it.
             {room.bridgeType
-              ? ` ${channelOnDeleteText(bridgePlatformLabel(room.bridgeType), room.channelOnDelete) ?? ''}`
+              ? ` ${channelOnDeleteSummary(bridgePlatformLabel(room.bridgeType), room.channelOnDelete) ?? ''}`
               : ''}
           </p>
         </div>
