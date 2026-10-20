@@ -416,19 +416,6 @@ function ManagedAgentPageContent({
             </div>
           </div>
 
-          <section className="relative flex w-full flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <SectionLabel>Sessions</SectionLabel>
-              <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                <Button variant="ghost" size="icon-xs" aria-label="New session" disabled>
-                  <Plus className="size-4" />
-                </Button>
-              </WithReason>
-            </div>
-            <p className="py-2 text-sm text-foreground-muted">
-              Sessions of agents on a machine are not listed here yet.
-            </p>
-          </section>
           {chatsOn && (
             <section className="flex flex-col gap-6">
               <SectionLabel>Danger zone</SectionLabel>
