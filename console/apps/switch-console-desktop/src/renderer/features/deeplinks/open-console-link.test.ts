@@ -4,6 +4,7 @@ const navigate = vi.hoisted(() => vi.fn());
 const showModal = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
 const list = vi.hoisted(() => vi.fn());
+const administers = vi.hoisted(() => vi.fn(() => true));
 const servers = vi.hoisted(() => ({
   activeServerId: 'srv-1' as string | null,
   servers: [
@@ -34,6 +35,9 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({ showModal }));
 vi.mock('@renderer/lib/ipc', () => ({ rpc: { managedAgents: { list } } }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: servers,
+}));
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceInScope: administers,
 }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'ws-1' },
@@ -66,6 +70,20 @@ describe('openConsoleLink', () => {
       'This server has no Server page here',
       expect.anything()
     );
+  });
+
+  it('opens Admin on the section its tab names', async () => {
+    await openConsoleLink('switchdash://open/admin?tab=apps');
+    expect(navigate).toHaveBeenCalledWith('admin', { serverId: 'srv-1', section: 'apps' });
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens the home for someone who does not administer the workspace, and says why', async () => {
+    administers.mockReturnValueOnce(false);
+    await openConsoleLink('switchdash://open/admin');
+    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-1' });
+    expect(navigate).not.toHaveBeenCalledWith('admin', expect.anything());
+    expect(toastError).toHaveBeenCalledWith('Admin is for workspace admins', expect.anything());
   });
 
   it('opens a dialog over the page it belongs to', async () => {

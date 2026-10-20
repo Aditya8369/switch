@@ -52,6 +52,11 @@ export const CONSOLE_PAGES = {
   },
   connections: { description: 'Connectors: services such as GitHub, for you and your agents.' },
   invite: { description: 'Invite people to the workspace.' },
+  admin: {
+    description:
+      "Admin, for the workspace's admins: which connectors the workspace offers, and the apps they sign in through.",
+    tabs: ['connectors', 'apps'],
+  },
   settings: {
     description: "Switch Console's settings.",
     tabs: ['general', 'clis-models', 'remote-hosts', 'managed-agents', 'interface'],
