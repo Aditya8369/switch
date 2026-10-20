@@ -80,10 +80,16 @@ class OnboardingStore {
    */
   rehearsal = false;
   /**
+   * Whether this install has ever played the intro, here or over the app. Unlike
+   * `introPending`, a rehearsal does not take it back: an install onboarded
+   * before the intro existed is offered it once over the app on this alone.
+   */
+  introSeen = localStorage.getItem(INTRO_PLAYED_KEY) !== null;
+  /**
    * The intro still to play before Welcome: on the first run of this install,
    * and again when the pages are rehearsed.
    */
-  introPending = localStorage.getItem(INTRO_PLAYED_KEY) === null;
+  introPending = !this.introSeen;
 
   constructor() {
     makeAutoObservable(this);
@@ -141,9 +147,13 @@ class OnboardingStore {
     this.introPending = true;
   }
 
-  /** The intro has played, or was skipped: Welcome is next, and it does not play again. */
+  /**
+   * The intro has played, or was skipped: what it stood in front of — Welcome,
+   * or the app — is next, and it does not play again.
+   */
   introPlayed(): void {
     localStorage.setItem(INTRO_PLAYED_KEY, new Date().toISOString());
+    this.introSeen = true;
     this.introPending = false;
   }
 

@@ -21,13 +21,23 @@ import { onboardingStore, type OnboardingPage } from './onboarding-store';
 describe('the first-run intro', () => {
   it('plays on a fresh install, then not again until the pages are replayed', () => {
     expect(onboardingStore.introPending).toBe(true);
+    expect(onboardingStore.introSeen).toBe(false);
     onboardingStore.introPlayed();
     expect(onboardingStore.introPending).toBe(false);
+    expect(onboardingStore.introSeen).toBe(true);
     expect(localStorage.getItem('onboarding.introPlayed')).not.toBeNull();
     onboardingStore.reset();
     expect(onboardingStore.introPending).toBe(false);
     onboardingStore.rehearse();
     expect(onboardingStore.introPending).toBe(true);
+  });
+
+  it('stays seen through a rehearsal, so the app does not offer it again', () => {
+    onboardingStore.introPlayed();
+    onboardingStore.rehearse();
+    onboardingStore.reset();
+
+    expect(onboardingStore.introSeen).toBe(true);
   });
 });
 
