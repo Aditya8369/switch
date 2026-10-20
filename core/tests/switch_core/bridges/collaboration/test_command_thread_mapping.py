@@ -68,7 +68,9 @@ def _fake_bridge(
     bridge = SimpleNamespace(
         _bridge_id="bridge-1",
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
-        _adapter=SimpleNamespace(translate_inbound=translate),
+        _adapter=SimpleNamespace(
+            translate_inbound=translate, in_room_command_access=lambda: "everyone"
+        ),
         _ensure_human_in_room=_ensure_human_in_room,
         _event_for_external_post=_event_for_external_post,
         _record_message_map=_record_message_map,
@@ -78,6 +80,7 @@ def _fake_bridge(
         sent_content=sent_content,
         pending=pending,
     )
+    bridge._command_refusal = MethodType(CollaborationCore._command_refusal, bridge)
     return bridge
 
 
@@ -238,7 +241,9 @@ class TestCommandResultThreadingRace:
 
         bridge = SimpleNamespace(
             _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
-            _adapter=SimpleNamespace(translate_inbound=lambda s: s),
+            _adapter=SimpleNamespace(
+                translate_inbound=lambda s: s, in_room_command_access=lambda: "everyone"
+            ),
             _pending_message_maps={},
             _bridge_id="b",
             _bridge_message_map_store=SimpleNamespace(
@@ -251,6 +256,7 @@ class TestCommandResultThreadingRace:
         bridge._prerecord_message_map = MethodType(
             CollaborationCore._prerecord_message_map, bridge
         )
+        bridge._command_refusal = MethodType(CollaborationCore._command_refusal, bridge)
         bridge._external_post_for_event = MethodType(
             CollaborationCore._external_post_for_event, bridge
         )

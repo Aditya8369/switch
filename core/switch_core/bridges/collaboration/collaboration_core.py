@@ -1222,6 +1222,24 @@ class CollaborationCore:
             )
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
+        refusal = await self._command_refusal(cmd)
+        if refusal is not None:
+            logger.warning(
+                "Refused in-room command %s from %s (%s) on bridge %s: %s",
+                cmd.command,
+                cmd.sender_name,
+                cmd.sender_id,
+                self._bridge_id,
+                refusal,
+            )
+            await self._adapter.admin_message(
+                cmd.channel_id,
+                f"⚠️ `{cmd.command}` was not run: {refusal}",
+                cmd.root_id or cmd.message_ref,
+                message_type=AdminMessageType.COMMAND_RESULT.value,
+            )
+            return
+
         room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
@@ -1316,6 +1334,30 @@ class CollaborationCore:
                 )
             finally:
                 self._pending_message_maps.pop(event_id, None)
+
+    async def _command_refusal(self, cmd: InboundCommand) -> str | None:
+        """Why this sender may not run in-room commands here, or None if they may."""
+        access = self._adapter.in_room_command_access()
+        if access == "everyone":
+            return None
+        if access == "off":
+            return "in-room commands are turned off on this server."
+        with tenant_scope(self._bridge_tenant_id):
+            async with self._session_factory() as session:
+                known = await self._external_user_store.get_by_external_id(
+                    session, self._bridge_id, cmd.sender_id
+                )
+                claimants = (
+                    []
+                    if known is None
+                    else await self._external_user_store.claimant_ids(session, known.id)
+                )
+        if not claimants:
+            return (
+                "only accounts linked to a Switch user may run in-room commands "
+                "on this server."
+            )
+        return None
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())

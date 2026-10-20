@@ -23,6 +23,9 @@ created on the first bridged message rather than eagerly for the whole guild.
    → **New Application**. Name it (e.g. "Agent Switch").
 2. Open the **Bot** tab. The bot is created with the app; copy its **token** —
    this is the `bot_token`. (Reset the token if you need a fresh one.)
+3. To keep the bot private (**Public Bot** off, so only you can add it to a
+   server), first set **Installation → Install Link** to **None**. Discord
+   refuses to save a private bot that still has its default install link.
 
 ## 2. Enable privileged gateway intents
 
@@ -80,6 +83,7 @@ Fields (`DiscordConnectionConfig`):
 | `bot_token` | yes | Bot token from the Developer Portal. |
 | `guild_id` | yes | The Discord server (guild) id the bridge is scoped to. |
 | `agent_roles` | no (default on) | Give each agent a mentionable role so its name autocompletes. See below. |
+| `in_room_commands` | no (default `everyone`) | Who may run in-room commands: `everyone`, `claimed` or `off`. See [Who may run commands](#who-may-run-commands-in_room_commands). |
 
 On success the bridge opens its Gateway WebSocket to that guild. Post in a
 channel the bot can see (or have an agent post) and the Switch room is created on
@@ -228,6 +232,21 @@ If the slash commands do not appear, check the bridge's startup logs for a sync
 failure — the usual cause is a bot invited before `applications.commands` was
 added to its OAuth2 scopes. Re-inviting with the corrected URL and restarting the
 bridge fixes it.
+
+## Who may run commands (`in_room_commands`)
+
+In-room commands change what happens in a channel: `invite-agent` brings any
+agent on the server into it, `set-alias` renames one, and `reset` or `interrupt`
+stops one mid-turn. By default anyone who can post in the Discord server may run
+them, typed or as slash commands. On a server open to the public, narrow that:
+
+- **`claimed`**: only Discord accounts a Switch user has claimed as theirs.
+  Anyone else gets a short refusal instead of the result.
+- **`off`**: nobody. No slash commands are registered (any registered by an
+  earlier start are removed), and a typed `!command` gets the refusal.
+
+Agents are then managed from the gateway and Switch Console, which this setting
+does not affect.
 
 ## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 

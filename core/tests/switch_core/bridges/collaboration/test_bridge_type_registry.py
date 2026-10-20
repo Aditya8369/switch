@@ -85,7 +85,12 @@ def test_discord_adapter_registers_with_expected_required_fields() -> None:
     # under Discord's 250-role cap, so a connection stays valid without it.
     # event_delivery is hidden (SkipJsonSchema): it is written by the install
     # flow, not chosen on the form.
-    assert set(schema["properties"]) == {"bot_token", "guild_id", "agent_roles"}
+    assert set(schema["properties"]) == {
+        "bot_token",
+        "guild_id",
+        "agent_roles",
+        "in_room_commands",
+    }
     # bot_token is offered but not required by the schema: a shared-connection
     # bridge (the distributed app) has none. What enforces it for a self-
     # registered bridge — which opens its own connection and receives nothing

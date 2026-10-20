@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InRoomCommandAccess,
     OutboundAttachment,
     WebhookDeliveryUnsupported,
 )
@@ -985,6 +986,14 @@ class PlatformAdapter(ABC):
         platform reads.
         """
         return f"<@{token}>"
+
+    def in_room_command_access(self) -> InRoomCommandAccess:
+        """Who may run in-room commands on this bridge.
+
+        Everyone, unless the platform's connection config offers a narrower
+        setting and the operator chose it.
+        """
+        return "everyone"
 
     def slash_invite_hint(self) -> str | None:
         """How to run `invite-agent` as a native slash command here, if at all.

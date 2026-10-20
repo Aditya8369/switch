@@ -15,6 +15,14 @@ once, rather than in each adapter.
 
 ChannelType = Literal["lobby", "channel_public", "channel_private", "group", "direct"]
 
+InRoomCommandAccess = Literal["everyone", "claimed", "off"]
+"""Who on a platform may run in-room commands (`!reset`, `/invite-agent`, …).
+
+`everyone` is anyone who can post in a bridged channel. `claimed` is only a
+platform account some Switch user has claimed as theirs. `off` is nobody; a
+platform that registers native slash commands registers none.
+"""
+
 
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.

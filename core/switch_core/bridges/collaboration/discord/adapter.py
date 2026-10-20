@@ -58,6 +58,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InRoomCommandAccess,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -471,6 +472,15 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
             "when you type @. Needs Manage Roles."
         ),
     )
+    in_room_commands: InRoomCommandAccess = Field(
+        default="everyone",
+        title="Who may run in-room commands",
+        description=(
+            "everyone: anyone who can post in the server. claimed: only Discord "
+            "accounts a Switch user has claimed. off: nobody, and no slash "
+            "commands are registered. Use claimed or off on a public server."
+        ),
+    )
 
     @model_validator(mode="after")
     def _token_matches_delivery(self) -> DiscordConnectionConfig:
@@ -695,7 +705,11 @@ class DiscordAdapter(PlatformAdapter):
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
         await conn.connect(
-            commands=build_app_commands(self._handle_slash_command),
+            commands=(
+                []
+                if self._config.in_room_commands == "off"
+                else build_app_commands(self._handle_slash_command)
+            ),
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",
@@ -1042,7 +1056,12 @@ class DiscordAdapter(PlatformAdapter):
                 thread_root_id,
             )
 
-    def slash_invite_hint(self) -> str:
+    def in_room_command_access(self) -> InRoomCommandAccess:
+        return self._config.in_room_commands
+
+    def slash_invite_hint(self) -> str | None:
+        if self._config.in_room_commands == "off":
+            return None
         # Discord declares each argument as its own named field, so the option
         # name is part of the invocation. Read from the registry the commands
         # are registered from, so a renamed argument cannot leave this stale.

@@ -1,4 +1,4 @@
-import { Checkbox, FormControlLabel, TextField } from "@mui/material";
+import { Checkbox, FormControlLabel, MenuItem, TextField } from "@mui/material";
 
 interface JsonSchemaProperty {
   type?: string;
@@ -10,6 +10,8 @@ interface JsonSchemaProperty {
   // Pydantic emits `str | None` as { anyOf: [{type:"string"}, {type:"null"}] }
   // instead of a top-level `type`. Inspect this when `type` is absent.
   anyOf?: { type?: string }[];
+  // A closed set of choices (a Python `Literal`), offered as a menu.
+  enum?: string[];
 }
 
 /** Whether a string field holds a secret and should be masked on input.
@@ -119,6 +121,28 @@ export function renderOptionFields(
                 </>
               }
             />
+          );
+        }
+        if (kind === "string" && prop.enum) {
+          return (
+            <TextField
+              key={key}
+              select
+              label={label}
+              value={(values[key] as string | undefined) ?? ""}
+              onChange={(e) =>
+                setValues((prev) => ({ ...prev, [key]: e.target.value }))
+              }
+              fullWidth
+              required={requiredFields.includes(key)}
+              helperText={prop.description}
+            >
+              {prop.enum.map((choice) => (
+                <MenuItem key={choice} value={choice}>
+                  {choice}
+                </MenuItem>
+              ))}
+            </TextField>
           );
         }
         if (kind === "string") {
