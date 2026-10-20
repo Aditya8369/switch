@@ -119,29 +119,53 @@ afterEach(() => {
   container.remove();
 });
 
-/** The agent column's rows above the chats, by their labels. */
-const navRows = () =>
-  [...container.querySelectorAll<HTMLElement>('nav[aria-label="Agent"] > div')].map((row) => ({
-    label: row.textContent?.trim() ?? '',
-    row,
-  }));
-const navLabels = () => navRows().map(({ label }) => label);
-const navItem = (label: string) => navRows().find((entry) => entry.label === label)!.row;
+/** The section buttons under the agent's profile, by their labels. */
+const navButtons = () => [
+  ...container.querySelectorAll<HTMLButtonElement>('[role="toolbar"][aria-label="Agent"] button'),
+];
+const navLabels = () => navButtons().map((button) => button.getAttribute('aria-label'));
+const navItem = (label: string) =>
+  navButtons().find((button) => button.getAttribute('aria-label') === label)!;
 
-it("puts Connectors in the agent's column, above Agent settings, and opens it there", async () => {
+it("puts Connectors under the agent's profile, before Agent settings, and opens it there", async () => {
   await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Connectors', 'Agent settings']);
+  expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('false');
 
   await act(async () => navItem('Connectors').click());
   expect(navigation.params().section).toBe('connections');
+  expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('true');
   expect(container.querySelector('[data-testid="connections"]')?.textContent).toBe(
     'Connections for pm-agent (agent-1)'
   );
 
   await act(async () => navItem('Agent settings').click());
+  expect(navItem('Agent settings').getAttribute('aria-pressed')).toBe('true');
+  expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('false');
   expect(container.querySelector('[data-testid="settings"]')?.textContent).toBe(
     'Settings, service access not shown'
   );
+});
+
+it("shows the agent's name and where it runs at the top of its column", async () => {
+  await act(async () =>
+    root.render(
+      <AgentChats
+        agent={{
+          ...AGENT,
+          displayName: 'PM agent',
+          machine: { id: 'machine-1', name: 'Max’s computer', kind: 'local', state: 'online' },
+        }}
+      />
+    )
+  );
+  expect(container.querySelector('h2')?.textContent).toBe('PM agent');
+  expect(container.textContent).toContain('Max’s computer');
+});
+
+it('says so when the agent has no machine', async () => {
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  expect(container.textContent).toContain('No machine');
 });
 
 it("leaves Connections out for an agent whose grants aren't yours, keeping service access in settings", async () => {
