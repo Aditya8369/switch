@@ -33,11 +33,6 @@ More than a single AI bot you ask questions to: Switch turns each channel into a
 - 🏠 **Self-hosted, and the context is yours**. Run Switch on your own servers. Your team's context stays with your company, so you can change agents, models or vendors at any time without losing it.
 - 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
 
-
-<div align="center">
-<img src="assets/switch-overview.jpg" alt="Switch architecture — agents and platforms connected through Switch" width="860">
-</div>
-
 ## Get started in two steps
 
 1. **Install Switch Console**, the desktop app, for your platform.
