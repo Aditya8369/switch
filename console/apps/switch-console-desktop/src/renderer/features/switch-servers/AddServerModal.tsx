@@ -581,7 +581,9 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <p className="text-sm font-medium text-foreground">Switch server</p>
             {store.status?.version && (
               <p className="truncate text-xs text-foreground-muted">
-                Version {store.status.version}
+                {store.status.checkoutBuild?.enabled
+                  ? 'Built from this checkout'
+                  : `Version ${store.status.version}`}
               </p>
             )}
           </div>

@@ -368,12 +368,14 @@ const ManagedServerPage = observer(function ManagedServerPage({
                 <span className="font-mono break-all">{checkout.root}</span> on every start instead
                 of {native ? 'the' : 'pulling'} switch-core {status.version}
                 {native ? ' release' : ''}.
+                {checkout.forcedBy !== null &&
+                  ` ${checkout.enabled ? 'On' : 'Off'} for this run: ${checkout.forcedBy} is set.`}
                 {answering && checkout.enabled !== runsCheckout && ' Restart the server to apply.'}
               </p>
             </div>
             <Switch
               checked={checkout.enabled}
-              disabled={working}
+              disabled={working || checkout.forcedBy !== null}
               onCheckedChange={(enabled) => void localServerStore.setCheckoutBuild(enabled)}
               aria-label="Build switch-core from this checkout"
             />
