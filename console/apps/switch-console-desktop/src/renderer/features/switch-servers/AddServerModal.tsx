@@ -17,7 +17,6 @@ import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { Switch } from '@renderer/lib/ui/switch';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import {
   lockHolderSentence,
@@ -594,6 +593,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
               <SetupStepItem>Run them in the background on this computer</SetupStepItem>
+              <SetupStepItem>{mattermostStep(docker, store.mattermost)}</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -619,15 +619,6 @@ export const LocalSetupStep = observer(function LocalSetupStep({
         )}
 
         {idle && <UsageDataToggle />}
-
-        {!running && native && (
-          <MattermostOption
-            enabled={store.mattermost}
-            docker={docker}
-            disabled={starting}
-            onChange={(enabled) => void store.setMattermost(enabled)}
-          />
-        )}
 
         {running && (
           <p className="flex items-center gap-2 text-sm text-foreground">
@@ -722,42 +713,20 @@ function StartOver({ disabled, onConfirm }: { disabled: boolean; onConfirm: () =
 }
 
 /**
- * The choice to run Mattermost beside a server that otherwise needs no Docker.
- * Mattermost only ships as a container image, so it is offered only where
- * Docker answers; without it the server still works, with no chat bridge.
+ * What starting does about Mattermost beside a server that otherwise needs no
+ * Docker. Mattermost only ships as a container image, so it runs wherever
+ * Docker answers, unless it was turned off for this server, and the list says
+ * which, so chat being there or not is never a surprise.
  */
-function MattermostOption({
-  enabled,
-  docker,
-  disabled,
-  onChange,
-}: {
-  enabled: boolean;
-  docker: { available: true } | { available: false; detail: string } | null;
-  disabled: boolean;
-  onChange: (enabled: boolean) => void;
-}) {
-  const available = docker?.available ?? false;
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
-      <div className="min-w-0 space-y-0.5">
-        <p className="text-sm text-foreground">Also run Mattermost</p>
-        <p className="text-xs text-foreground-muted">
-          {docker === null
-            ? 'Checking for Docker…'
-            : available
-              ? 'Team chat for your rooms, in Switch Console. Runs in Docker.'
-              : `Team chat for your rooms needs Docker. ${docker.available ? '' : docker.detail} The server works without it.`}
-        </p>
-      </div>
-      <Switch
-        checked={enabled && available}
-        disabled={disabled || !available}
-        onCheckedChange={onChange}
-        aria-label="Also run Mattermost"
-      />
-    </div>
-  );
+function mattermostStep(
+  docker: { available: true } | { available: false; detail: string } | null,
+  enabled: boolean
+): string {
+  if (docker === null) return 'Run Mattermost for team chat if Docker is available';
+  if (!docker.available)
+    return 'Skip Mattermost for team chat, which needs Docker. You can connect a messaging app later';
+  if (!enabled) return 'Skip Mattermost, which is turned off for this server';
+  return 'Run Mattermost in Docker for team chat, downloading its image the first time';
 }
 
 /**
