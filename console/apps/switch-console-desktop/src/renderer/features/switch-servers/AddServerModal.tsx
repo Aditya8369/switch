@@ -614,9 +614,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           </div>
         )}
 
-        {!running && needsDocker && (
-          <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
-        )}
+        {!running && needsDocker && <DockerProblem unavailable={dockerUnavailable} />}
 
         {idle && <UsageDataToggle />}
 
@@ -769,45 +767,23 @@ function BackOrClose({
   );
 }
 
-function DockerStatus({
-  ready,
+function DockerProblem({
   unavailable,
-  checking,
 }: {
-  ready: boolean;
   unavailable: { reason: 'not-installed' | 'daemon-down'; detail: string } | null;
-  checking: boolean;
 }) {
-  if (checking) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-foreground-muted">
-        <Spinner className="size-3.5" />
-        <span>Checking Docker…</span>
-      </div>
-    );
-  }
-  if (unavailable) {
-    return (
-      <Alert variant="destructive">
-        <TriangleAlert className="size-4" />
-        <AlertTitle>
-          {unavailable.reason === 'not-installed'
-            ? 'Docker is not installed'
-            : 'Docker is not running'}
-        </AlertTitle>
-        <AlertDescription>{unavailable.detail}</AlertDescription>
-      </Alert>
-    );
-  }
-  if (ready) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-foreground">
-        <CircleCheck className="size-4 text-green-500" />
-        <span>Docker is ready.</span>
-      </div>
-    );
-  }
-  return null;
+  if (!unavailable) return null;
+  return (
+    <Alert variant="destructive">
+      <TriangleAlert className="size-4" />
+      <AlertTitle>
+        {unavailable.reason === 'not-installed'
+          ? 'Docker is not installed'
+          : 'Docker is not running'}
+      </AlertTitle>
+      <AlertDescription>{unavailable.detail}</AlertDescription>
+    </Alert>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,13 +1009,7 @@ export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
               </div>
             )}
 
-            {sshHost && !running && (
-              <DockerStatus
-                ready={dockerReady}
-                unavailable={dockerUnavailable}
-                checking={!docker}
-              />
-            )}
+            {sshHost && !running && <DockerProblem unavailable={dockerUnavailable} />}
 
             {running && (
               <Alert>
