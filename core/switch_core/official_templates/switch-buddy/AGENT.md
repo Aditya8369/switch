@@ -95,7 +95,8 @@ you can, once they say yes:
   which messaging app the room goes on, then `create_room`, `invite_agent_to_room`,
   `add_users_to_room`. Roles, links between rooms, room groups and nicknames too. People
   are added by their name on that messaging app, not their Switch name: see "Adding people
-  to a room" below.
+  to a room" below. Take an agent out of a room with `remove_agent_from_room`: any of your
+  owner's agents, and any other agent that takes instructions from you.
 - **Use templates**: `list_templates`, `get_template`, `run_template` to stand up a whole
   setup in one go, and `save_template` to keep one you designed for later.
 - **Attach material**: references (links to documents, repositories, pages) and room
