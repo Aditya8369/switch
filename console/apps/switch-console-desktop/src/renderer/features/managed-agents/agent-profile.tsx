@@ -22,19 +22,26 @@ export type AgentMachineLine = {
   title: string;
 };
 
-/** The machine a managed agent runs on, and how the agent is doing there when not running. */
-export function managedAgentMachineLine(agent: ManagedAgentView): AgentMachineLine {
+/**
+ * The machine a managed agent runs on, and how the agent is doing there when
+ * not running. This computer goes by that name, with its own in the hover text.
+ */
+export function managedAgentMachineLine(
+  agent: ManagedAgentView,
+  thisComputer: boolean
+): AgentMachineLine {
   const machine = agent.machine;
   if (!machine)
     return { icon: ServerOff, text: 'No machine', title: 'It has no machine to run on.' };
   const cloud = isCloudMachine(machine);
   const name = machine.name;
+  const shown = thisComputer && !cloud ? 'This computer' : name;
   const state = managedAgentState(agent);
   const directory = agent.definition.directory;
   return {
     icon: cloud ? Cloud : Laptop,
-    text: state.tone === 'ok' ? name : `${name} · ${state.label}`,
-    title: `Runs on ${name}${directory ? ` · ${directory}` : ''}${state.detail ? `\n${state.label}: ${state.detail}` : ''}`,
+    text: state.tone === 'ok' ? shown : `${shown} · ${state.label}`,
+    title: `Runs on ${shown === name ? name : `this computer (${name})`}${directory ? ` · ${directory}` : ''}${state.detail ? `\n${state.label}: ${state.detail}` : ''}`,
   };
 }
 
@@ -63,7 +70,7 @@ export function AgentProfile({
   const MachineIcon = machine.icon;
   return (
     <div className="flex flex-col items-center px-2 pt-4 pb-6 text-center">
-      <span className="flex size-24 shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary">
+      <span className="flex size-24 shrink-0 items-center justify-center rounded-[22%] bg-background-2">
         <AgentAvatar name={name} iconUrl={iconUrl} serverId={serverId} size={76} />
       </span>
       <h2 className="mt-4 max-w-full truncate text-base font-semibold text-foreground">{name}</h2>
@@ -88,8 +95,8 @@ export function AgentProfile({
                     disabled={onSelect === null}
                     onClick={() => onSelect?.(item.section)}
                     className={cn(
-                      'flex size-9 items-center justify-center rounded-lg bg-background-tertiary text-foreground-muted transition-colors hover:bg-[var(--sel)] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
-                      active && 'bg-[var(--sel)] text-foreground'
+                      'flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
+                      active && 'bg-background-3 text-foreground ring-1 ring-border-1 ring-inset'
                     )}
                   >
                     <item.icon className="size-4" />

@@ -37,7 +37,7 @@ function roomDetailKey(workspaceId: string, roomId: string) {
 }
 
 /** One room read from its server; `workspaceId` is null until the room list has loaded. */
-export function useRoomDetail(roomId: string) {
+function useRoomDetail(roomId: string) {
   const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
   const query = useQuery({
     queryKey: roomDetailKey(workspaceId ?? '', roomId),
@@ -384,7 +384,7 @@ const ParticipantsSection = observer(function ParticipantsSection({
 });
 
 /** The room's members as cards, agents first. */
-export const ParticipantList = observer(function ParticipantList({
+const ParticipantList = observer(function ParticipantList({
   workspaceId,
   room,
 }: {

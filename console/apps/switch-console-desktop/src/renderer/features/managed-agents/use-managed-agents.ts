@@ -111,6 +111,15 @@ export function useOwnedMachines(serverId: string) {
   });
 }
 
+/** Whether the agent's machine is this computer, as its owner's machine list says. */
+export function useRunsOnThisComputer(agent: ManagedAgentView): boolean {
+  const machines = useOwnedMachines(agent.serverId);
+  return (
+    machines.data?.find((machine) => machine.id === agent.machine?.id)?.local?.kind ===
+    'this-computer'
+  );
+}
+
 /** The owner's machines on the server, with what each last reported. Null without agent management. */
 export function useManagedMachines(serverId: string) {
   return useQuery({
