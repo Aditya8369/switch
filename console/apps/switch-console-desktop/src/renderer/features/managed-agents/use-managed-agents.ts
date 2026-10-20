@@ -120,6 +120,17 @@ export function useRunsOnThisComputer(agent: ManagedAgentView): boolean {
   );
 }
 
+/**
+ * How an agent's machine is named to the person: "This computer" for this
+ * one, otherwise the machine's own name, which for a laptop is its hostname.
+ * Null when the agent has no machine.
+ */
+export function useMachineLabel(agent: ManagedAgentView): string | null {
+  const thisComputer = useRunsOnThisComputer(agent);
+  if (!agent.machine) return null;
+  return thisComputer ? 'This computer' : agent.machine.name;
+}
+
 /** The owner's machines on the server, with what each last reported. Null without agent management. */
 export function useManagedMachines(serverId: string) {
   return useQuery({
