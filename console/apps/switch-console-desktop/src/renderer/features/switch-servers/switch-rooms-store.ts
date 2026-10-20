@@ -6,6 +6,7 @@ import {
   dashboardOrigin,
   type RemoteAgentRoom,
   type RemoteRoomSummary,
+  type RetireOutcome,
 } from '@shared/core/switch-servers/switch-servers';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
@@ -235,15 +236,17 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * Delete a room in its workspace, then re-read what is left.
+   * Delete a room in its workspace, then re-read what is left. Resolves to
+   * what became of its platform channel, null when it had none.
    *
    * Throws on refusal rather than reporting a boolean: the caller is a
    * confirmation dialog, and a delete that quietly did nothing would leave the
    * room on screen with no account of why.
    */
-  async deleteRoom(workspaceId: string, roomId: string): Promise<void> {
-    await rpc.workspaces.deleteRoom({ workspaceId, roomId });
+  async deleteRoom(workspaceId: string, roomId: string): Promise<RetireOutcome | null> {
+    const channel = await rpc.workspaces.deleteRoom({ workspaceId, roomId });
     await this.refreshRoomState();
+    return channel;
   }
 
   /**

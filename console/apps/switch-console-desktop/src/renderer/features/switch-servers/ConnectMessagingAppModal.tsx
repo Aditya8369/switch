@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useMemo, useState } from 'react';
@@ -34,12 +34,14 @@ import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-serv
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
+import { offerAccountLinkAfterConnect } from './offer-account-link';
 import {
   GUIDE_FILLED_FIELDS,
   GUIDE_REQUIRED_FIELDS,
   isGuidedPlatform,
   OwnAppGuide,
 } from './own-app-guide';
+import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { WebhookAddressStep } from './webhook-address-step';
 import { administersWorkspaceInScope } from './workspace-admin';
@@ -53,8 +55,8 @@ type ConnectMessagingAppModalArgs = {
   onClosed: () => void;
 };
 
-/** What the caller needs to decide what to do next. `directorySearchSupported`
- * says whether there is any point offering the link-your-account step: on a
+/** The app just connected. `directorySearchSupported` says whether there is
+ * any point offering the link-your-account step the dialog ends with: on a
  * platform without a directory, a connection nobody has used yet knows nobody,
  * so the search would be a form that cannot be filled in. */
 type ConnectedApp = {
@@ -101,6 +103,21 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     webhookUrl: string | null;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const queryClient = useQueryClient();
+  // Every way of adding an app ends here, whoever opened the dialog: the
+  // bridge list is re-read wherever it is shown (the server page, the
+  // room-creation picker and the link step share the query key), and the
+  // person is offered to link their own account on the new app.
+  const finish = useCallback(
+    (app: ConnectedApp) => {
+      void queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] });
+      void switchRoomsStore.refreshRoomState();
+      onSuccess(app);
+      if (workspaceId !== null) offerAccountLinkAfterConnect(workspaceId, app);
+    },
+    [onSuccess, queryClient, workspaceId]
+  );
 
   const typesQuery = useQuery({
     queryKey: bridgeTypesQueryKey(workspaceId),
@@ -241,7 +258,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
         });
         return;
       }
-      onSuccess(app);
+      finish(app);
     } catch (cause) {
       setError(failureText(cause, 'Could not connect the messaging app.'));
     } finally {
@@ -257,13 +274,13 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     setAsDefault,
     channelCreationSupported,
     channelCreationEnabled,
-    onSuccess,
+    finish,
     setCloseGuard,
   ]);
 
   const handleInstalled = useCallback(
     (platform: string, bridge: { bridgeId: string; displayName: string }) => {
-      onSuccess({
+      finish({
         ...bridge,
         // Unknown only if the type list failed to load; offering the link step
         // then costs a search that finds nothing, where skipping it would hide
@@ -272,7 +289,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
           types.find((t) => t.key === platform)?.directorySearchSupported ?? true,
       });
     },
-    [onSuccess, types]
+    [finish, types]
   );
 
   return (
@@ -293,7 +310,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
             />
           </DialogContentArea>
           <DialogFooter>
-            <ConfirmButton onClick={() => onSuccess(awaitingWebhookSetup.app)}>Done</ConfirmButton>
+            <ConfirmButton onClick={() => finish(awaitingWebhookSetup.app)}>Done</ConfirmButton>
           </DialogFooter>
         </>
       ) : (

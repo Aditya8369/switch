@@ -213,7 +213,8 @@ class TestGrants:
         ("policy", "warned"),
         [
             (owner_only_policy([]), False),
-            (owner_and_owner_agents_policy(), True),
+            (owner_and_owner_agents_policy(), False),
+            (AddressingPolicy(), True),
             (
                 AddressingPolicy(
                     rules=[
@@ -224,7 +225,7 @@ class TestGrants:
                 True,
             ),
         ],
-        ids=["owner-alone", "owner-and-their-agents", "anyone-in-one-room"],
+        ids=["owner-alone", "owner-and-their-agents", "anyone", "anyone-in-one-room"],
     )
     async def test_the_warning_follows_who_else_can_address_the_agent(
         self, harness: Harness, policy: AddressingPolicy, warned: bool
@@ -609,7 +610,7 @@ class TestYourAgents:
             },
         ]
 
-    async def test_an_agent_its_owners_agents_can_address_is_open(
+    async def test_an_agent_only_its_owners_agents_can_address_is_not_open(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -620,7 +621,7 @@ class TestYourAgents:
 
         assert response.status_code == 200, response.text
         assert [(a["agent_id"], a["addressing_open"]) for a in response.json()] == [
-            (agent_id, True)
+            (agent_id, False)
         ]
 
     async def test_a_member_with_no_agents_gets_an_empty_list(

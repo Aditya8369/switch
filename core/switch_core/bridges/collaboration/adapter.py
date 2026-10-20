@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.install import InboundWebhook, WebhookReq
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
+    ChannelRetirement,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -31,6 +32,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
     WebhookDeliveryUnsupported,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -42,6 +44,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.deeplinks import rewrite_console_links
 from switch_core.messaging_platforms import MessagingPlatform
 from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
@@ -477,7 +480,9 @@ class PlatformAdapter(ABC):
     #: where this is False that link cannot work as written, and the deployment
     #: needs `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to the https
     #: redirect. Declared here so the lifecycle can say so once at startup
-    #: instead of each bridge discovering it in its own way.
+    #: instead of each bridge discovering it in its own way. Where it is
+    #: False, `translate_outbound` also rewrites links an agent writes to
+    #: Switch Console pages (`switchdash://open/…`).
     renders_custom_url_schemes: ClassVar[bool] = True
 
     #: Whether `find_request_card` can actually search this platform.
@@ -541,6 +546,14 @@ class PlatformAdapter(ABC):
     # listens wherever it runs, so its platform delivers to every process.
     keeps_quiet_unless_listening: ClassVar[bool] = False
 
+    #: What `retire_channel` does to a deleted room's channel when it works.
+    #:
+    #: Console reads it, through room detail, to tell the person deleting a
+    #: room what will become of its channel before they confirm, so it has to
+    #: say what this adapter's `retire_channel` actually does. `kept` here
+    #: because the base leaves the channel alone.
+    channel_on_delete: ClassVar[ChannelRetirement] = "kept"
+
     def __init__(self) -> None:
         # Whether this process holds the bridge: see
         # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
@@ -598,6 +611,8 @@ class PlatformAdapter(ABC):
         # Set by the lifecycle (`set_holder_relay`): hands a request to the
         # process that holds the bridge, for work only the holder does.
         self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
+        # Set by the lifecycle (`set_gateway_public_url`).
+        self._gateway_public_url: str | None = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -637,6 +652,13 @@ class PlatformAdapter(ABC):
         """Whether this adapter may hand platforms an icon drawn by an outside
         avatar service (`agent_icon.is_third_party_avatar`)."""
         self._third_party_avatars = enabled
+
+    def set_gateway_public_url(self, gateway_public_url: str | None) -> None:
+        """The server's public address (`GATEWAY_PUBLIC_URL`), which a link to
+        a Switch Console page is rewritten to on a platform that cannot open
+        `switchdash://`. None where the server has none, and those links are
+        then named in words (`rewrite_console_links`)."""
+        self._gateway_public_url = gateway_public_url
 
     @classmethod
     def describe(cls, key: str) -> MessagingPlatform:
@@ -1558,6 +1580,20 @@ class PlatformAdapter(ABC):
     @abstractmethod
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
 
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        """Retire a deleted room's channel as far as this platform allows.
+
+        Called when a person deletes the room, never when a connection is
+        removed — by then the bot may have lost its access. Returns what
+        happened, matching `channel_on_delete` when it works. A refusal from
+        the platform comes back as `RetireOutcome.failed` carrying what the
+        platform said rather than being raised: the room is deleted either
+        way, and the person is told the channel needs cleaning up by hand.
+
+        The base leaves the channel where it is.
+        """
+        return RetireOutcome(outcome="kept")
+
     @final
     def translate_outbound(self, content: str) -> str:
         """Render a Switch body in this platform's markup, unable to page.
@@ -1566,7 +1602,13 @@ class PlatformAdapter(ABC):
         `_render_outbound`, and nothing a body says can then page a channel.
         Only `render_room_wide_mention` does that, for a message the server
         marked.
+
+        A Markdown link to a Switch Console page is rewritten first, on a
+        platform that cannot open `switchdash://` (`rewrite_console_links`),
+        so the platform renders an https link like any other.
         """
+        if not self.renders_custom_url_schemes:
+            content = rewrite_console_links(content, self._gateway_public_url)
         return self.defuse_mass_mentions(self._render_outbound(content))
 
     @abstractmethod

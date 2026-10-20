@@ -67,6 +67,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -300,6 +301,7 @@ def _ephemeral(text: str) -> dict[str, Any]:
 
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
+    channel_on_delete = "archived"
     docs_slug: ClassVar[str | None] = "mattermost"
     # A quiet Mattermost bridge opens no websocket and mints no bot token: it
     # knows each agent's bot by id, for mentions, and calls the API as the
@@ -1922,6 +1924,21 @@ class MattermostAdapter(PlatformAdapter):
 
         await self._add_default_member(channel_id)
         return channel_id
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        """Archive the channel: Mattermost's channel DELETE archives unless
+        asked to delete permanently."""
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError("Mattermost client not connected")
+        try:
+            await self._main_loop.run_in_executor(
+                None, self._admin_driver.channels.delete_channel, external_channel_id
+            )
+        except Exception as e:
+            return RetireOutcome.failed(
+                f"Mattermost refused to archive the channel: {e}"
+            )
+        return RetireOutcome(outcome="archived")
 
     async def _add_default_member(self, channel_id: str) -> None:
         """Add the deployment's human account to a channel we just created.

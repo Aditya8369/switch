@@ -14,7 +14,11 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingPolicy
-from switch_core.bridges.collaboration.models import BridgeInstallLink
+from switch_core.bridges.collaboration.models import (
+    BridgeInstallLink,
+    ChannelRetirement,
+    RetireOutcome,
+)
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
@@ -100,6 +104,9 @@ class RoomDetail(RoomSummary):
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
+    # What deleting the room will do to its platform channel ("archived",
+    # "deleted", "left", "kept"), or null when the room has no channel.
+    channel_on_delete: ChannelRetirement | None = None
 
 
 class RoomCreateRequest(BaseModel):
@@ -170,8 +177,18 @@ class BulkDeleteRequest(BaseModel):
     room_ids: list[str]
 
 
+class RoomDeleteResponse(BaseModel):
+    ok: bool
+    # What became of the room's platform channel; null when the room had none.
+    # `failed` means it is still there and needs removing by hand.
+    channel: RetireOutcome | None
+
+
 class BulkDeleteResponse(BaseModel):
     deleted: int
+    # Per deleted room id, what became of its platform channel. Rooms without
+    # one are absent.
+    channels: dict[str, RetireOutcome]
 
 
 class BulkArchiveRequest(BaseModel):

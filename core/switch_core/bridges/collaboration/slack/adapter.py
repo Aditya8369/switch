@@ -49,6 +49,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
     STREAM_SLOTS,
@@ -388,6 +389,8 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
 
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
+    # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
+    channel_on_delete = "archived"
     docs_slug: ClassVar[str | None] = "slack"
     # A quiet Slack bridge opens no Socket Mode connection. One over the
     # Events API opens none anywhere: Slack posts each event to one process.
@@ -420,6 +423,10 @@ class SlackAdapter(PlatformAdapter):
     #: metadata, so a status is as findable as a card despite printing no
     #: handle of its own.
     carries_publication_marker: ClassVar[bool] = True
+
+    #: Slack writes a `switchdash://` link as `<switchdash://…|label>`, which
+    #: its clients do not open, so it needs the https redirect too.
+    renders_custom_url_schemes: ClassVar[bool] = False
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -2199,6 +2206,25 @@ class SlackAdapter(PlatformAdapter):
             )
 
         return channel_id
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            await self._web_client.conversations_archive(channel=external_channel_id)
+        except SlackApiError as e:
+            error = e.response.get("error")
+            if error == "already_archived":
+                return RetireOutcome(outcome="archived")
+            if error == "not_in_channel":
+                return RetireOutcome.failed(
+                    "The Switch app is no longer in this Slack channel, so it "
+                    "cannot archive it"
+                )
+            return RetireOutcome.failed(
+                f"Slack refused to archive the channel: {error}"
+            )
+        return RetireOutcome(outcome="archived")
 
     async def create_dm_channel(
         self,

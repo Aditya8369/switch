@@ -325,6 +325,24 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   /** Display names of the people in the room, via the messaging app it is
    * bridged to. Empty for an unbridged room, which has no people in it. */
   connectedUserNames: string[];
+  /** What deleting the room does to its platform channel; null when it has
+   * none. Undefined from a server that predates the field, which says nothing
+   * about the channel either way. */
+  channelOnDelete?: ChannelRetirement | null;
+};
+
+/** What deleting a room does to its platform channel when all goes to plan
+ * (mirrors the gateway's `ChannelRetirement`): archived on Slack and
+ * Mattermost, deleted on Discord, left by the bot on Telegram, and kept on
+ * Teams, where Switch may not remove it. */
+export type ChannelRetirement = 'archived' | 'deleted' | 'left' | 'kept';
+
+/** What deleting a room did to its platform channel (mirrors the gateway's
+ * `RetireOutcome`). `failed` means the channel is still there and someone has
+ * to remove it by hand; `reason` says why. */
+export type RetireOutcome = {
+  outcome: ChannelRetirement | 'failed';
+  reason: string | null;
 };
 
 /** The room fields Switch Console can change. Anything omitted is left alone;

@@ -766,6 +766,9 @@ class TeamsAdapter(PlatformAdapter):
     """
 
     display_name: ClassVar[str] = "Microsoft Teams"
+    # Switch is not granted Channel.Delete.All, so a deleted room's channel
+    # stays for someone to remove in Teams.
+    channel_on_delete = "kept"
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.

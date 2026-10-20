@@ -66,6 +66,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -93,7 +94,10 @@ from switch_core.bridges.collaboration.telegram.chunking import (
     chunk_message,
 )
 from switch_core.bridges.collaboration.telegram.commands import command_menu
-from switch_core.bridges.collaboration.telegram.install import is_connect_press
+from switch_core.bridges.collaboration.telegram.install import (
+    ALREADY_OUT,
+    is_connect_press,
+)
 from switch_core.observability.catalogue import BRIDGE_THROTTLE_HELD
 from switch_core.observability.metrics import metrics
 from switch_core.room_wide_mention import (
@@ -523,6 +527,8 @@ class TelegramAdapter(PlatformAdapter):
     """
 
     display_name: ClassVar[str] = "Telegram"
+    # The Bot API has no call to delete or archive a chat.
+    channel_on_delete = "left"
     docs_slug: ClassVar[str | None] = "telegram"
     # A quiet self-registered bridge does not poll: Telegram hands each update
     # to a single getUpdates caller, so a poller in every process would split
@@ -2143,6 +2149,24 @@ class TelegramAdapter(PlatformAdapter):
             "'Add to a chat' link on the bridge in the operator dashboard — and "
             "Switch adopts it as a room as the bot lands."
         )
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        """Leave the chat. One the bot is already out of is refused with a
+        message saying so, which is the outcome wanted."""
+        bot = self._require_bot()
+        try:
+            await bot.leave_chat(chat_id=self._chat_id(external_channel_id))
+        except (BadRequest, Forbidden) as refused:
+            if any(phrase in str(refused).lower() for phrase in ALREADY_OUT):
+                return RetireOutcome(outcome="left")
+            return RetireOutcome.failed(
+                f"Telegram refused to let the bot leave the chat: {refused}"
+            )
+        except TelegramError as e:
+            return RetireOutcome.failed(
+                f"Telegram did not let the bot leave the chat: {e}"
+            )
+        return RetireOutcome(outcome="left")
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
         """A link that opens this chat in Telegram, or None when it has none.

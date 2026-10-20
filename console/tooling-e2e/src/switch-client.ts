@@ -382,7 +382,7 @@ export class SwitchClient {
 
   /**
    * Long-poll `GET /agents/{id}/notifications?timeout=` as the agent. Returns
-   * only *notifiable* events (addressed messages, task events, listened-for
+   * only *notifiable* events (addressed messages and listened-for
    * joins) and never drains the per-room queues a live session polls, so the
    * harness can watch the same stream Switch Console's auto-session watcher
    * watches without stealing a running session's events.

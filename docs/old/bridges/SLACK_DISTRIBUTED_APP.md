@@ -108,7 +108,6 @@ the same job once installed — the differences are all in `settings` and
             "always_online": false
         },
         "slash_commands": [
-            { "command": "/admin", "url": "https://HOST/messaging/slack/commands", "description": "Toggle admin mode on/off for this room", "should_escape": false },
             { "command": "/help", "url": "https://HOST/messaging/slack/commands", "description": "Show the list of available in-room commands", "should_escape": false },
             { "command": "/reset", "url": "https://HOST/messaging/slack/commands", "description": "Reset a targeted agent's session (clears context, then reconnects)", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
             { "command": "/reset-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Reset EVERY agent's session in this room", "should_escape": false },

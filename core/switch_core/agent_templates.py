@@ -748,7 +748,7 @@ class _Planner:
                 continue
             join.append(j)
 
-        addressing = str(entry.get("addressing") or "owner")
+        addressing = str(entry.get("addressing") or "owner-agents")
         if addressing not in _AGENT_ADDRESSING:
             self.problem(
                 slot,

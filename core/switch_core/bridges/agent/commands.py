@@ -1145,7 +1145,7 @@ def _format_status_lines(
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
     shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, task capabilities, and a Switch Console deeplink to its session
+    agent_type, and a Switch Console deeplink to its session
     when one is known.
 
     The deeplink is shown only for an agent whose session is LIVE in this room:
@@ -1162,14 +1162,6 @@ def _format_status_lines(
         if runtime is not None:
             head += f" · {runtime}"
         parts = [head, agent.agent_type]
-        task_protocol = (agent.integration_profile or {}).get("task_protocol", {})
-        caps = []
-        if task_protocol.get("can_delegate"):
-            caps.append("delegate")
-        if task_protocol.get("can_accept"):
-            caps.append("accept")
-        if caps:
-            parts.append("+".join(caps))
         deeplink = deeplinks.get(agent.id)
         if deeplink and status == AgentStatus.LIVE:
             parts.append(f"[Open in Switch Console]({deeplink})")
@@ -1691,9 +1683,6 @@ COMMANDS: list[Command] = [
         # Only the first @token targets; a second @token is the role to assume,
         # not an address — so it doesn't pull in whoever else holds that role.
         addressed=_addressed_by_first_mention,
-    ),
-    Command(
-        "admin", "Toggle admin mode on/off for this room.", handler=None, hidden=True
     ),
 ]
 

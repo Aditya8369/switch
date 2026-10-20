@@ -69,6 +69,7 @@ import {
   type AddTeamsTeamResult,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
   type DeleteBridgeResult,
@@ -85,6 +86,7 @@ import {
   type RemoteRoomRole,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
+  type RetireOutcome,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -2910,6 +2912,9 @@ type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
   agent_ids?: string[];
   connected_user_names?: string[];
+  /** Absent from a server that predates it; kept absent rather than read as
+   * "no channel", so the delete dialog can say it does not know. */
+  channel_on_delete?: ChannelRetirement | null;
 };
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -2918,6 +2923,7 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     instructions: r.instructions ?? null,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
+    channelOnDelete: r.channel_on_delete,
   };
 }
 
@@ -2998,18 +3004,33 @@ export async function removeRoomAgent(
 }
 
 /**
- * Delete a room outright (`DELETE /rooms/{id}`), taking its history and its
- * bridged channel with it.
+ * Delete a room outright (`DELETE /rooms/{id}`), taking its history with it,
+ * and resolve to what became of its platform channel.
+ *
+ * The server retires the channel as far as the platform allows — archived on
+ * Slack and Mattermost, deleted on Discord, left by the bot on Telegram, kept on
+ * Teams — and reports it. A channel it could not retire comes back `failed`
+ * with the reason: the room is deleted regardless, and the channel needs
+ * removing by hand. Null when the room had no channel, or the server predates
+ * the report.
  *
  * The gateway decides who may: its owner, or an admin. Switch Console hides the
  * action from anyone else, but that is a courtesy — a refusal here is the
  * authoritative answer and is surfaced rather than swallowed.
  */
-export async function deleteRoom(server: SwitchServer, roomId: string): Promise<void> {
-  await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
+export async function deleteRoom(
+  server: SwitchServer,
+  roomId: string
+): Promise<RetireOutcome | null> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'DELETE',
   });
+  const json = (await res.json()) as {
+    channel?: { outcome: RetireOutcome['outcome']; reason?: string | null } | null;
+  };
+  if (!json.channel) return null;
+  return { outcome: json.channel.outcome, reason: json.channel.reason ?? null };
 }
 
 /**

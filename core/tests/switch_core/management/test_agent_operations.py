@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.addressing import owner_only_policy
+from switch_core.addressing import default_agent_policy, parse_policy
 from switch_core.bridges.agent.mcp.server import mcp
 from switch_core.bridges.agent.operations import all_operations, definitions
 from switch_core.bridges.agent.operations import context as op_context
@@ -403,7 +403,17 @@ class TestCreateAgent:
         assert created.owner_id == owner.id
         assert created.display_name == "Builder"
         assert created.can_manage_agents is False
-        assert created.addressing_policy == owner_only_policy([]).model_dump()
+        assert created.addressing_policy == default_agent_policy().model_dump()
+        # The agent that made it, which has the same owner, can address it.
+        assert parse_policy(created.addressing_policy).allows(
+            room_id="any-room",
+            group_id=None,
+            sender_kind="agent",
+            sender_id=agent_id,
+            sender_user_ids=[],
+            sender_owner_user_id=owner.id,
+            owner_user_id=owner.id,
+        )
         async with harness.session_factory() as session:
             row = (
                 await session.execute(

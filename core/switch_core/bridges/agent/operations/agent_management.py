@@ -184,8 +184,9 @@ async def create_agent(
 
     Requires the "can manage agents" capability, which your owner turns on for
     you. The new agent is owned by your owner (not by you), runs on the
-    machine you name, and only your owner can address it until they say
-    otherwise. It does not get the "can manage agents" capability itself.
+    machine you name, and can be addressed by your owner and your owner's
+    other agents (you included) until they say otherwise. It does not get the
+    "can manage agents" capability itself.
     Confirm the name, machine and provider with the person asking before you
     call this: it creates a real agent on their computer.
 

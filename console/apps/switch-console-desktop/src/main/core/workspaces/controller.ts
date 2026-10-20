@@ -133,6 +133,7 @@ import type {
   RemoteRoomRole,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
+  RetireOutcome,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
@@ -728,8 +729,13 @@ export const workspacesController = createRPCController({
       removeRoomAgent(server, params.roomId, params.agentId)
     ),
 
-  /** Delete a room and everything in it. The gateway enforces who may. */
-  deleteRoom: async (params: { workspaceId: string; roomId: string }): Promise<void> => {
+  /** Delete a room and everything in it, resolving to what became of its
+   * platform channel (see `deleteRoom` in the gateway client). The gateway
+   * enforces who may. */
+  deleteRoom: async (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RetireOutcome | null> => {
     const known = await workspaceServer(params.workspaceId);
     const report = (outcome: TelemetryOutcome) =>
       trackEvent('room_deleted', { server_kind: serverKindOf(known), outcome });
@@ -742,14 +748,16 @@ export const workspacesController = createRPCController({
       throw unreachable;
     }
 
-    await withWorkspaceSession(params.workspaceId, async (server) => {
+    return withWorkspaceSession(params.workspaceId, async (server) => {
+      let channel: RetireOutcome | null;
       try {
-        await deleteRoom(server, params.roomId);
+        channel = await deleteRoom(server, params.roomId);
       } catch (error) {
         report('failure');
         throw error;
       }
       report('success');
+      return channel;
     });
   },
 
