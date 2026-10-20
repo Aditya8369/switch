@@ -1890,6 +1890,10 @@ version of their own to them without also giving them a release of their own.
   by, and its refresh asks the controller to check again. Console's own check
   is used only when there is no such report. Install and update still run
   through Console's own check.
+- **A failed agent install says why.** Installing Claude Code, Codex or another
+  provider from Switch buddy showed only "Install command failed." It now says
+  when the disk is full, and otherwise adds the line of the install output that
+  says what failed.
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
   authorize step at its public address, the API's host, where the vendor
