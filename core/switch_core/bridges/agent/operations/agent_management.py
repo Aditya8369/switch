@@ -262,8 +262,9 @@ async def list_managed_agents() -> list[dict[str, Any]]:
 
     Returns:
         A list of managed agents, each {agent_id, name, display_name,
-        description, provider, model, advanced_config, directory, machine,
-        desired_state, actual, revision}.
+        description, provider, model, advanced_config, auto_approve,
+        directory, machine, desired_state, actual, revision}.
+        `auto_approve` is whether it runs its tools without asking anyone.
         `directory` is the working directory the definition names (null only
         when its machine has not said where it keeps workspaces).
         `machine` is {id, name, state} (null when the agent is not placed on

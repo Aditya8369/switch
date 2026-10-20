@@ -669,6 +669,7 @@ class TestListManagedAgents:
             "provider": "claude",
             "model": None,
             "advanced_config": {},
+            "auto_approve": False,
             "directory": f"{WORKSPACES_DIR}/builder",
             "machine": {
                 "id": controller.controller_id,

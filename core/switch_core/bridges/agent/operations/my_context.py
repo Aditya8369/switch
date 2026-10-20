@@ -68,13 +68,18 @@ async def get_my_context() -> dict[str, Any]:
         this server turned on.
 
         `messaging_apps`: {connected, how_to_add}.
-        `connected` lists the workspace's messaging apps, each {platform,
-        name, status, is_default, installed_with, your_account_linked}.
+        `connected` lists the workspace's messaging apps, each {id, platform,
+        name, status, is_default, installed_with, your_account_linked,
+        your_usernames}. `id` is the `bridge_id` that `create_room` takes.
         `installed_with` is "official_app" (the Switch app, added with one
         click) or "own_app" (an app someone created and pasted tokens from).
         `your_account_linked` is whether your owner's account on that platform
         is linked to their Switch user; until it is, agents that answer only
         their owner do not recognise them there.
+        `your_usernames` are your owner's usernames on that app, empty until
+        their account is linked. People are named by these, never by their
+        Switch name, in `create_room`'s and `add_users_to_room`'s `user_names`
+        on a room on that app.
         `how_to_add` lists every platform this server can connect, each
         {platform, name, path, who}. `path` is "official_app" when this server
         offers the Switch app for it (Add to Slack, or adding the bot to a
@@ -92,7 +97,8 @@ async def get_my_context() -> dict[str, Any]:
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
         is "owner_only", "owner_and_owner_agents", "anyone" or "custom".
         `managed` is null for an agent Switch does not run on a machine, else
-        {machine, desired_state, process}.
+        {machine, desired_state, auto_approve, process}. `auto_approve` is
+        whether it runs its tools without asking anyone for approval.
 
         `machines`: your owner's machines as `list_machines` reports them, or
         null when this server does not run agent management.
@@ -115,12 +121,13 @@ async def get_my_context() -> dict[str, Any]:
         role = await protocol.user_store.tenant_role(session, tenant_id, owner.id)
         members = await session.scalar(select(func.count()).select_from(TenantMember))
         agents = await protocol.agent_store.get_by_owner(session, owner.id)
-        linked_bridges = {
-            identity.bridge_id
-            for identity in await protocol.external_user_store.get_by_user(
-                session, owner.id
+        usernames_by_bridge: dict[str, list[str]] = {}
+        for identity in await protocol.external_user_store.get_by_user(
+            session, owner.id
+        ):
+            usernames_by_bridge.setdefault(identity.bridge_id, []).append(
+                identity.external_username
             )
-        }
         installed_bridges = set(
             await session.scalars(
                 select(MessagingInstall.bridge_id).where(
@@ -180,6 +187,7 @@ async def get_my_context() -> dict[str, Any]:
         "messaging_apps": {
             "connected": [
                 {
+                    "id": bridge.id,
                     "platform": bridge.type,
                     "name": bridge.display_name,
                     "status": bridge.status,
@@ -187,7 +195,8 @@ async def get_my_context() -> dict[str, Any]:
                     "installed_with": (
                         "official_app" if bridge.id in installed_bridges else "own_app"
                     ),
-                    "your_account_linked": bridge.id in linked_bridges,
+                    "your_account_linked": bridge.id in usernames_by_bridge,
+                    "your_usernames": sorted(usernames_by_bridge.get(bridge.id, [])),
                 }
                 for bridge in bridges
             ],
@@ -206,6 +215,7 @@ async def get_my_context() -> dict[str, Any]:
                     {
                         "machine": managed[agent.id].get("machine"),
                         "desired_state": managed[agent.id].get("desired_state"),
+                        "auto_approve": managed[agent.id].get("auto_approve"),
                         "process": (managed[agent.id].get("actual") or {}).get(
                             "process"
                         ),

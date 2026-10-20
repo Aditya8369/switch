@@ -479,9 +479,14 @@ carrying a display name addresses no one.
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
   the bot asks for the one it needs and runs when you reply with it.
-- **`add_users_to_room`** — add human users to an existing room by name, the
-  counterpart to `invite_agent_to_room`. Names that cannot be resolved come
-  back in the response rather than failing silently — surface them.
+- **`add_users_to_room`** — add human users to an existing room, the
+  counterpart to `invite_agent_to_room`. Name each person by their username on
+  the room's messaging app, or the e-mail address of their account there (not
+  on Discord); a Switch name does not resolve. Your owner's usernames are in
+  `get_my_context`; for anyone else, ask. Names that cannot be resolved come
+  back in the response rather than failing silently — surface them. The same
+  goes for `create_room`'s `user_names`, whose misses come back in
+  `failed_attachments`.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.
@@ -787,7 +792,7 @@ ui-avatars.com is not accepted.
     runs, or self-hosted;
   - the messaging apps, and how each platform would be added here: the official
     Switch app or an app they create themselves;
-  - whether their own chat account is linked;
+  - whether their own chat account is linked, and their username on each app;
   - the services they connected and which agents use them;
   - their agents and machines.
 

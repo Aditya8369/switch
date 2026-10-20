@@ -1121,8 +1121,12 @@ async def create_room(
         agent_names: Names of agents to add to the room at creation. The
             calling agent is not added automatically — include its name here
             if it should join. Names must already exist in the registry.
-        user_names: Optional list of human user names to add. Only meaningful
-            for bridged rooms.
+        user_names: Optional list of people to add, each named by their
+            username on the room's messaging app, or by the e-mail address of
+            their account there (not on Discord, which never shares e-mail
+            addresses); their Switch name does not resolve. Your
+            owner's usernames are in `get_my_context` (`messaging_apps`,
+            `your_usernames`). Only meaningful for bridged rooms.
         channel_type: One of "channel_public", "channel_private", or "direct".
             Required when `bridge_id` is set; ignored for internal-only rooms.
             Use "direct" to open a 1:1 DM room — exactly one entry in
@@ -1606,7 +1610,11 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
     Args:
         room_id: The Switch room id (UUID string).
-        user_names: Registry names of the users to add.
+        user_names: The people to add, each named by their username on the
+            room's messaging app, or by the e-mail address of their account
+            there (not on Discord, which never shares e-mail addresses); their
+            Switch name does not resolve. Your owner's usernames
+            are in `get_my_context` (`messaging_apps`, `your_usernames`).
 
     Returns:
         `{"ok": bool, "added": [...], "unresolved": [...]}`. `unresolved`

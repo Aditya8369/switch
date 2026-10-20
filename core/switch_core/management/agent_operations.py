@@ -305,6 +305,7 @@ class ManagementAgentOperations:
             "provider": row.definition.get("provider"),
             "model": row.definition.get("model"),
             "advanced_config": row.definition.get("advanced_config", {}),
+            "auto_approve": row.definition.get("auto_approve", False),
             "directory": row.definition.get("directory"),
             "machine": None
             if controller is None
