@@ -145,13 +145,24 @@ export function OnboardingSurface({
       className="relative flex h-full flex-col overflow-hidden bg-background text-foreground [-webkit-app-region:drag]"
       style={{ backgroundImage: ONBOARDING_BACKDROP }}
     >
-      {exit && (
-        <div className="flex justify-end px-3 pt-3 [-webkit-app-region:no-drag]">
-          <Button variant="ghost" size="sm" onClick={exit.onExit}>
+      {/* The title bar of a frameless window: the page column below opts its
+          whole height out of the drag region, so this row is what the window
+          is moved by, with or without a way out in it. */}
+      <div
+        data-slot="onboarding-titlebar"
+        className="flex h-11 shrink-0 items-center justify-end px-3 [-webkit-app-region:drag]"
+      >
+        {exit && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="[-webkit-app-region:no-drag]"
+            onClick={exit.onExit}
+          >
             {exit.label}
           </Button>
-        </div>
-      )}
+        )}
+      </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {/* The entrance starts the page lower than where it lands, and a page
             that exactly fills the scroller would overflow it by that much and
