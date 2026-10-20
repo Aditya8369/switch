@@ -71,11 +71,9 @@ const MIME_ALIASES: Record<string, string> = {
  * Said under every room message: agents drift into answering with their final
  * text, which nobody in the room sees (the session posts it only as a
  * fallback), once a reminder in their instructions is a few turns behind them.
- * They drift into writing reports the same way, so the reminder carries the
- * length too: it is the last thing read before the reply is written.
  */
 export const REPLY_REMINDER =
-  'Reply in the room with post_message; your final text is not shown to anyone. Write it as a chat message, not a report: a few sentences, unless they asked for the full detail. Use send_targeted_message only when you need someone specific to act.';
+  'Reply in the room with post_message; your final text is not shown to anyone. Use send_targeted_message only when you need someone specific to act.';
 
 /**
  * What the agent is told, before the first message of a chat that opened with
