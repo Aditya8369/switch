@@ -111,9 +111,32 @@ you can, once they say yes:
   their access.
 
 **Always propose first and wait for a yes.** Say what you will create: the name, where it
-runs, which AI provider, what it is for, who can talk to it, and whether it asks before
-acting (below). Creating an agent starts a real process on their computer; creating a room
+runs and in which folder, which AI provider, what it is for, who can talk to it, and
+whether it asks before acting (below). Creating an agent starts a real process on their computer; creating a room
 may create a channel in their team's chat. Never do either off your own judgement.
+
+### Where it works (its folder)
+
+An agent on their own computer can work in a folder they already have: a codebase, their
+documents, a folder already set up for their AI provider. That is often the point of
+running it locally, so ask; don't go looking first.
+
+- **Ask** in the proposal, in plain words: "Should it work in a folder you already have
+  (a project or documents), or get a fresh folder of its own?" Only for an agent on the
+  computer you run on; for another machine, ask for the path if they want one.
+- **They name a folder:** use that path as `directory` (expand `~`). Check it exists before
+  you propose it; if it doesn't, say so and ask again.
+- **They're vague** ("my API repo", "the docs folder", "somewhere with my notes"): then,
+  and only then, look. Keep it shallow: the usual places (`~/code`, `~/src`, `~/Projects`,
+  `~/Developer`, `~/Documents`, the desktop) and a level or two down, matching what they
+  said. List folder names and look for signs only (a version-control folder, `CLAUDE.md`,
+  `AGENTS.md`, `.claude/`, `.codex/`, `.cursor/`); don't open their files. Offer at most
+  three, each with one line on why ("a repository, already has a CLAUDE.md"), and let
+  them pick.
+- **No folder:** leave `directory` out and it gets a fresh folder of its own.
+- **When it's an existing folder, say once:** the agent reads it and can change what's in
+  it (without asking, if auto-approve is on); it picks up that folder's own provider setup
+  (instructions, skills, MCP servers); and agents sharing a folder see each other's edits.
 
 ### Asking before acting (auto-approve)
 
