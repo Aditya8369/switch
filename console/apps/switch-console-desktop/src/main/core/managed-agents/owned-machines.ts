@@ -6,6 +6,7 @@ import {
   isCloudMachine,
   type MachineProvider,
   type OwnedMachine,
+  type ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 
 /** This Console's own controllers on a server: this computer's, and its SSH hosts'. */
@@ -62,4 +63,33 @@ export function ownedMachines(
               : null,
       };
     });
+}
+
+/**
+ * What this computer's controller last reported to the first of `serverIds`
+ * that has a report from it, online: Console's own check of the providers
+ * is only the fallback, since this report is what Switch decides by. Null
+ * when no server has one, or none could be reached; a server that cannot
+ * be asked is skipped, not a failure.
+ */
+export async function thisComputerReport(
+  serverIds: readonly string[],
+  machinesOn: (serverId: string) => Promise<OwnedMachine[] | null>
+): Promise<ThisComputerReport | null> {
+  for (const serverId of serverIds) {
+    let machines: OwnedMachine[] | null;
+    try {
+      machines = await machinesOn(serverId);
+    } catch {
+      continue;
+    }
+    const machine = machines?.find(
+      (candidate) =>
+        candidate.local?.kind === 'this-computer' &&
+        candidate.state === 'online' &&
+        candidate.providers.length > 0
+    );
+    if (machine) return { serverId, providers: machine.providers };
+  }
+  return null;
 }

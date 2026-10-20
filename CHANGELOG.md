@@ -1884,6 +1884,12 @@ version of their own to them without also giving them a release of their own.
   installers put their CLI, at start and on every refresh, as this computer's
   agents controller already did. Before, a Claude Code installed by hand showed
   "CLI not installed" there while Switch buddy was using it.
+- **Settings → Agent providers and Switch buddy agree on this computer's
+  providers.** When this computer's agents controller has reported to a
+  signed-in server, Settings shows that report, the one buddy and Switch go
+  by, and its refresh asks the controller to check again. Console's own check
+  is used only when there is no such report. Install and update still run
+  through Console's own check.
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
   authorize step at its public address, the API's host, where the vendor

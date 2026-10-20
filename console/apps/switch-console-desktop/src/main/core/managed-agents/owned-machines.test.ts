@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagementController } from '@main/core/switch-servers/gateway-client';
-import { machineProvider, ownedMachines } from './owned-machines';
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import { machineProvider, ownedMachines, thisComputerReport } from './owned-machines';
 
 function controller(patch: Partial<ManagementController> & { id: string }): ManagementController {
   return {
@@ -129,5 +130,48 @@ describe('ownedMachines', () => {
       sshHosts: [],
     });
     expect(cloud?.cloud).toBe(true);
+  });
+});
+
+describe('thisComputerReport', () => {
+  const claude = { provider: 'claude', ready: true, problem: null, detail: null };
+  function machine(patch: Partial<OwnedMachine>): OwnedMachine {
+    return {
+      id: 'mac',
+      name: 'mac',
+      kind: 'daemon',
+      state: 'online',
+      providers: [claude],
+      acceptsLogins: false,
+      cloud: false,
+      workspacesDir: null,
+      os: null,
+      local: { kind: 'this-computer' },
+      ...patch,
+    };
+  }
+
+  it('takes what this computer reported to the first server that has a report', async () => {
+    const machines: Record<string, OwnedMachine[] | null> = {
+      'no-management': null,
+      'not-reported': [machine({ providers: [] })],
+      reported: [machine({ id: 'other', local: null }), machine({})],
+    };
+    expect(
+      await thisComputerReport(Object.keys(machines), (id) => Promise.resolve(machines[id]!))
+    ).toEqual({ serverId: 'reported', providers: [claude] });
+  });
+
+  it('skips a server it cannot ask, and an offline report that may be stale', async () => {
+    const report = await thisComputerReport(['down', 'offline'], (id) =>
+      id === 'down'
+        ? Promise.reject(new Error('signed out'))
+        : Promise.resolve([machine({ state: 'offline' })])
+    );
+    expect(report).toBeNull();
+  });
+
+  it('is null when this computer runs no controller', async () => {
+    expect(await thisComputerReport([], () => Promise.resolve([machine({})]))).toBeNull();
   });
 });

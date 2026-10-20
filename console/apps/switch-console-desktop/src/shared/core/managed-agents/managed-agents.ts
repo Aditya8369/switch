@@ -71,6 +71,13 @@ export type MachineProvider = {
 };
 
 /**
+ * This computer's providers as its agents controller last reported them to a
+ * server: what Switch goes by when it creates an agent here, so what every
+ * screen about this computer's providers shows when there is one.
+ */
+export type ThisComputerReport = { serverId: string; providers: MachineProvider[] };
+
+/**
  * A provider login to give a machine: a key or token typed in, this
  * computer's own sign-in for the provider, read from its file, or (Claude
  * only) Google Vertex AI, with a service account key pasted or picked, or this
