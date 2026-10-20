@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Literal
 
 import discord
 from discord.http import Route
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
@@ -440,6 +440,11 @@ class _WebhookIdentity:
 
 
 class DiscordConnectionConfig(BridgeConnectionConfig):
+    # The token is required on the registration form, which only ever creates
+    # a self-registered bridge. The model allows it absent because the install
+    # flow writes shared bridges without one; the validator below decides.
+    model_config = ConfigDict(json_schema_extra={"required": ["bot_token", "guild_id"]})
+
     #: Optional because it depends on `event_delivery`, which the validator
     #: below enforces: the self-registered bridge opens its own connection and
     #: needs a token; the distributed bridge routes through the one shared

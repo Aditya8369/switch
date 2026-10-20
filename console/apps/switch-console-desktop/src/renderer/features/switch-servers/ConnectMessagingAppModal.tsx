@@ -32,6 +32,7 @@ import {
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
+import { connectFormFields, isMissingRequired, missingFieldsMessage } from './connect-form-fields';
 import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import {
@@ -131,13 +132,12 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   // is filled in for the person, not asked of them.
   // The guide asks for its tokens as required, whatever the schema says (a
   // token a shared app leaves optional is not, on a server's own app).
-  const guidedFields = (selectedType?.fields ?? []).map((field) =>
-    isGuidedPlatform(selectedType?.key) &&
-    GUIDE_REQUIRED_FIELDS[selectedType.key].includes(field.key)
-      ? { ...field, required: true }
-      : field
+  const formFields = connectFormFields(
+    selectedType?.key ?? '',
+    selectedType?.fields ?? [],
+    isGuidedPlatform(selectedType?.key) ? GUIDE_REQUIRED_FIELDS[selectedType.key] : []
   );
-  const visibleFields = guidedFields.filter(
+  const visibleFields = formFields.filter(
     (field) =>
       !isGuidedPlatform(selectedType?.key) ||
       !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
@@ -176,13 +176,10 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   );
 
   const trimmedName = displayName.trim();
-  const missingRequired = guidedFields.some((f) => {
-    if (!f.required) return false;
-    const value = config[f.key];
-    // `false` is an answer, not an omission — only a blank string is missing.
-    if (typeof value === 'boolean') return false;
-    return !(value ?? '').trim();
-  });
+  const missingRequired = formFields.some((field) => isMissingRequired(field, config));
+  // Only what the person can type is named: a field the guide fills in itself
+  // is reported by the guide.
+  const missingMessage = missingFieldsMessage(visibleFields, config);
   const canSubmit =
     showForm &&
     workspaceId !== null &&
@@ -552,6 +549,10 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                     </div>
                   )}
                 </>
+              )}
+
+              {showForm && selectedType && missingMessage && (
+                <p className="text-xs text-foreground-muted">{missingMessage}</p>
               )}
 
               {error && <p className="text-xs text-destructive">{error}</p>}
