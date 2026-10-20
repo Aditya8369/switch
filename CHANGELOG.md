@@ -1886,10 +1886,11 @@ version of their own to them without also giving them a release of their own.
   "CLI not installed" there while Switch buddy was using it.
 - **Settings → Agent providers and Switch buddy agree on this computer's
   providers.** When this computer's agents controller has reported to a
-  signed-in server, Settings shows that report, the one buddy and Switch go
-  by, and its refresh asks the controller to check again. Console's own check
-  is used only when there is no such report. Install and update still run
-  through Console's own check.
+  signed-in server (the one Console is on first), Settings shows that report,
+  the one buddy and Switch go by, rereads it while open, and its refresh asks
+  the controller to check again. Console's own check is used only when there
+  is no such report. Install and update still run through Console's own
+  check, and the sheet says so when the two disagree.
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
   authorize step at its public address, the API's host, where the vendor
@@ -3696,9 +3697,10 @@ tags; see RELEASING.md.
   signed in.** `claude auth status` only says a login or key is present, so a
   key left by an old install read as signed in while every session failed.
   When setting up, on a recheck, and whenever a login was not yet known to
-  work, the controller now sends Claude Code one short test prompt and reports
-  what it said if it fails. A Claude Code too old to have `auth status` is
-  reported as such instead of as a check that never finished.
+  work, the controller now sends Claude Code one short test prompt, with the
+  person's hooks off and stdin closed, and reports what it said if it fails,
+  from its result, its `errors` or its stderr. A Claude Code too old to have
+  `auth status` is reported as such instead of as a check that never finished.
 - **A controller updates to the release Switch names while sessions sit idle.**
   It waited until no session existed on the machine, and a session connected to
   a room counted even with nothing to do, so a machine with long-lived sessions
