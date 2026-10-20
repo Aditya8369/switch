@@ -484,6 +484,7 @@ def definition(provider_name: str = "claude", **overrides: Any) -> dict[str, Any
         "provider": provider_name,
         "model": None,
         "instructions": "",
+        "auto_mode": True,
         "auto_approve": False,
         "directory": None,
         "isolation": "shared",

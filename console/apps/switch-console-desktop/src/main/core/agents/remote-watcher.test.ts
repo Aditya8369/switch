@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { initializeRemoteDiscovery, pushRemoteAutoApprove } from './remote-watcher';
+import { initializeRemoteDiscovery, pushRemotePermissions } from './remote-watcher';
 
 const mocks = vi.hoisted(() => ({
   start: vi.fn(),
@@ -42,7 +42,7 @@ it('discovers existing and newly onboarded agents and stops removed identities',
 });
 
 it('rewrites the watcher with this Console’s auto-approve, not the host’s, then follows its sessions', async () => {
-  await pushRemoteAutoApprove('agent-1');
+  await pushRemotePermissions('agent-1');
 
   expect(mocks.applyControllerState).toHaveBeenCalledWith('agent-1', 'restore', 'this-console');
   expect(mocks.start).toHaveBeenCalledWith('agent-1');

@@ -3774,7 +3774,8 @@ class AgentDefinition(TenantScoped, Base):
     nowhere. `revision` bumps on every change to the definition, its desired
     state or its placement; controllers use it to fence out stale revisions.
     `definition` is the v1 definition document (provider, model, instructions,
-    auto_approve, directory).
+    auto_mode, auto_approve, directory); a document stored before `auto_mode`
+    existed lacks it, which reads as off.
     """
 
     __tablename__ = "agent_definitions"

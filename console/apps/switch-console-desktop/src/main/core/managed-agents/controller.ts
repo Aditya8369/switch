@@ -114,6 +114,7 @@ export const managedAgentsController = createRPCController({
             model: agent.model,
             advancedConfig: agent.advancedConfig,
             instructions: agent.instructions,
+            autoMode: agent.autoMode,
             autoApprove: agent.autoApprove,
             directory: agent.directory,
             isolation: agent.isolation,
@@ -250,6 +251,7 @@ function definitionBody(changes: ManagedAgentChanges['definition']): Record<stri
   if (changes.model !== undefined) body.model = changes.model;
   if (changes.advancedConfig !== undefined) body.advanced_config = changes.advancedConfig;
   if (changes.instructions !== undefined) body.instructions = changes.instructions;
+  if (changes.autoMode !== undefined) body.auto_mode = changes.autoMode;
   if (changes.autoApprove !== undefined) body.auto_approve = changes.autoApprove;
   if (changes.directory !== undefined) body.directory = changes.directory;
   if (changes.isolation !== undefined) body.isolation = changes.isolation;

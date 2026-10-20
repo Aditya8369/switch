@@ -525,6 +525,8 @@ class TemplateAgentBody(BaseModel):
     model: str | None
     advanced_config: dict[str, Any]
     isolation: Literal["shared", "isolated"]
+    # Older Consoles do not send it; a new agent runs in auto mode.
+    auto_mode: bool = True
     auto_approve: bool
     directory: str | None
     addressing: Literal["owner", "owner-agents", "anyone"]
@@ -545,6 +547,7 @@ class TemplateAgentBody(BaseModel):
             model=self.model,
             advanced_config=self.advanced_config,
             isolation=self.isolation,
+            auto_mode=self.auto_mode,
             auto_approve=self.auto_approve,
             directory=self.directory,
             addressing=self.addressing,

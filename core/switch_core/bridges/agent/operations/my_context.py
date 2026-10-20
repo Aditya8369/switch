@@ -102,8 +102,10 @@ async def get_my_context() -> dict[str, Any]:
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
         is "owner_only", "owner_and_owner_agents", "anyone" or "custom".
         `managed` is null for an agent Switch does not run on a machine, else
-        {machine, desired_state, auto_approve, process}. `auto_approve` is
-        whether it runs its tools without asking anyone for approval.
+        {machine, desired_state, auto_mode, auto_approve, process}.
+        `auto_mode` is whether the provider's automatic review decides which
+        actions need approval; `auto_approve` is bypass, running every tool
+        without asking anyone whatever `auto_mode` says.
 
         `machines`: your owner's machines as `list_machines` reports them, or
         null when this server does not run agent management.
@@ -220,6 +222,7 @@ async def get_my_context() -> dict[str, Any]:
                     {
                         "machine": managed[agent.id].get("machine"),
                         "desired_state": managed[agent.id].get("desired_state"),
+                        "auto_mode": managed[agent.id].get("auto_mode"),
                         "auto_approve": managed[agent.id].get("auto_approve"),
                         "process": (managed[agent.id].get("actual") or {}).get(
                             "process"

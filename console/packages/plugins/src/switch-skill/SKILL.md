@@ -423,8 +423,10 @@ none of it is needed to take part in a conversation.
   agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing
   the current ones whole: e.g. `{"effort": "high"}`, `{}` clears them; see
-  `get_advanced_config`), `instructions` (its system prompt), `auto_approve`
-  (bypass mode),
+  `get_advanced_config`), `instructions` (its system prompt), `auto_mode`
+  (the provider's automatic review: safe actions run, risky ones still ask a
+  person), `auto_approve` (bypass: no permission checks at all, overriding
+  `auto_mode`; unsafe, so only when the person asks for it),
   `directory` (`""` for the machine's own workspace for the agent, whose
   path Switch fills in), `isolation` (`"shared"` or
   `"isolated"`), `machine` (move it; id or name from `list_machines`) and
@@ -764,16 +766,20 @@ does not manage agents, so say so rather than looking for another way.
   machines: `name`, `description`, `machine` (its id, or its exact name),
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
-  `get_advanced_config`), `instructions`, `directory`, `auto_approve`,
-  `display_name`, `icon_url`, and `start=false` to create it stopped. Leave
+  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
+  default: the provider's automatic review runs safe actions and asks before
+  risky ones), `auto_approve` (bypass: skips every permission check and
+  overrides `auto_mode`; off by default and unsafe, so set it only when the
+  person asks), `display_name`, `icon_url`, and `start=false` to create it
+  stopped. Leave
   `directory` null and Switch fills in the machine's own workspace for the
   agent, which the machine makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or
-  failed), and its working directory (`directory`; `actual.directory` is
-  where it runs).
+  failed), its working directory (`directory`; `actual.directory` is
+  where it runs), and its `auto_mode` and `auto_approve`.
 
 **You act for your owner, on your owner's machines only.** The agent you
 create belongs to your owner, not to you; at first only your owner and their

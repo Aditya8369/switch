@@ -70,7 +70,11 @@ An agent that answers only you has to be able to recognize you, and that comes f
 
 ### Decide whether it asks before acting
 
-**Bypass permissions** starts the agent's sessions with permission prompts turned off. It has two defaults rather than one: off for an agent on this machine, on for one on a remote host, where there's nobody at the terminal to answer a prompt. So a remote agent arrives able to act without asking. Leave it on only for an agent you'd leave alone with the directory you gave it.
+**Auto mode** is on for every new agent, on this machine or a remote host. The agent's own provider reviews each action: safe ones run without asking, risky ones still wait for you. Claude Code uses its auto mode, Codex its automatic reviewer (keeping its sandbox), OpenCode `--auto`, Cursor Smart Auto, and Antigravity approves file edits but still asks before running commands. Turn it off if you want to approve every action yourself.
+
+**Bypass permissions** starts the agent's sessions with every permission check turned off, and overrides auto mode while it's on. It's off for a new agent. It's unsafe: turn it on only for an agent you'd leave alone with the directory you gave it.
+
+An agent you registered before auto mode existed keeps the behavior it had: auto mode reads as off until you turn it on.
 
 ### Leave Advanced configuration alone
 
