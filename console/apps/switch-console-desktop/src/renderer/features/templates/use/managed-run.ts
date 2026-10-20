@@ -171,7 +171,7 @@ export function runAgent(params: {
     isolation: isolation === 'isolated' ? 'isolated' : 'shared',
     autoApprove,
     directory: directory === `${AGENTS_DIR}/${name}` ? null : directory,
-    addressing: entry.addressing ?? 'owner',
+    addressing: entry.addressing ?? 'owner-agents',
     connections: connectionsFor(entry, values),
   };
 }

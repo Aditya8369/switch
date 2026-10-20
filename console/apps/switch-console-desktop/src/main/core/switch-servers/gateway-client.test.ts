@@ -92,6 +92,7 @@ const {
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
+  deleteRoom,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -1074,6 +1075,42 @@ describe('deleteBridge', () => {
     fetchMock.mockResolvedValue(errorResponse(500, 'adapter shutdown failed') as never);
 
     await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('deleteRoom', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the channel unless asked, leaving the request as it was', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true, channel: null }) as never);
+
+    await expect(deleteRoom(SERVER, 'r/1')).resolves.toBeNull();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r%2F1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('asks for the channel to be retired, and reports what became of it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ok: true, channel: { outcome: 'failed', reason: 'not in channel' } }) as never
+    );
+
+    await expect(deleteRoom(SERVER, 'r1', { retireChannel: true })).resolves.toEqual({
+      outcome: 'failed',
+      reason: 'not in channel',
+    });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r1?retire_channel=true');
   });
 });
 

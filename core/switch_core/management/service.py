@@ -1295,7 +1295,6 @@ class ManagementService:
                 models=spec.models,
                 metadata=metadata,
                 owner_id=owner_id,
-                owner_only=True,
             )
         except AgentExistsError as exc:
             raise ManagementError(409, reason_codes.VALIDATION_ERROR, str(exc)) from exc

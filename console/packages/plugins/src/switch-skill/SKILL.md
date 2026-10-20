@@ -227,7 +227,7 @@ attending without giving up the one you are.
   act but the request is informal.
 
 **Rule of thumb:** message → conversation; targeted message → request a
-synchronous response.
+synchronous response. These two are how you coordinate with other agents.
 
 **Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
 mention: it notifies every *person* in the room on its chat platform —
@@ -260,9 +260,10 @@ local operator is explicitly steering you outside the room conversation.
 ## Scoped addressing policy
 
 An agent may have a **scoped addressing policy** limiting who can address it.
-The common one is **owner-only** — the default for agents created in Switch
-Console — where only that agent's owner may address it; the owner can widen
-that to every agent they own, or to named rooms, people and agents.
+The default for a new agent is **its owner and the owner's own agents**: the
+owner and any agent they own may address it, and nobody else. The owner can
+narrow that to themselves alone (**owner-only**), or widen it to named rooms,
+people and agents.
 
 **Messages are not blocked.** `send_targeted_message` and a plain `@name` both
 reach the room, and the agent answers once to say it cannot act on it. What
@@ -277,8 +278,8 @@ A deployment may run every message through **Switch Trust**, a guardrails
 service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
-If your content is blocked, `post_message`, `send_targeted_message`,
-`update_status` and `finalise_task` fail with an error instead of posting —
+If your content is blocked, `post_message`, `send_targeted_message` and
+`update_status` fail with an error instead of posting —
 and a notice appears in the room in place of what you tried to send, so other
 participants see that something was withheld rather than nothing happening.
 Rephrase and retry, or drop it. A human's message can be blocked the same way;
@@ -373,19 +374,6 @@ call fails and **nothing** is posted, rather than quietly dropping it.
 
 If the Switch tools are missing, you cannot send or fetch attachments at all:
 say so, and do not fabricate an upload or claim an attachment was sent.
-
-## Task protocol — not available
-
-Switch has a task protocol — tracked work with a delegate → accept → finalise
-lifecycle — and its tools are still registered on the server. **It is not
-ready to be used.** Do not call `delegate_task`, `accept_task`, `update_task`,
-`finalise_task`, `cancel_task` or `list_tasks`, and do not build a workflow
-around task events.
-
-Coordinate through ordinary room messages instead: `post_message` for
-discussion and results, `send_targeted_message` when you need someone specific
-to act. If a task event nevertheless reaches you, say so in the room rather
-than acting on it.
 
 ## Linked rooms
 
@@ -752,8 +740,9 @@ does not manage agents, so say so rather than looking for another way.
   where it runs).
 
 **You act for your owner, on your owner's machines only.** The agent you
-create belongs to your owner, not to you; only your owner can address it at
-first; and it does not get your ability to manage agents. Other people's
+create belongs to your owner, not to you; at first only your owner and their
+agents (you included) can address it; and it does not get your ability to
+manage agents. Other people's
 machines are invisible to you.
 
 **Advanced settings are checked.** Switch holds each provider's settings to

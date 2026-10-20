@@ -25,7 +25,6 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
@@ -575,14 +574,13 @@ async def register_other_agent(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     # External agent registered without a known profile — give it a conservative
-    # default profile (session_passive, no task capabilities).
+    # default profile (session_passive).
     default_profile = IntegrationProfile(
         connection_model="session_passive",
         message_exchange=True,
         pre_invocation_mediation=[],
         post_invocation_mediation=[],
         event_reporting=[],
-        task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
     )
 
     try:

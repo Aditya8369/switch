@@ -109,7 +109,7 @@ function settingsRow(el: HTMLElement): HTMLElement {
 }
 
 describe('the add-agent Settings fold', () => {
-  it('opens itself when the owner-only default reaches nobody', async () => {
+  it('opens itself when the default policy cannot recognise its owner anywhere', async () => {
     remote.bridges = [{ id: 'b-slack', displayName: 'Slack' }];
     remote.identities = [];
 

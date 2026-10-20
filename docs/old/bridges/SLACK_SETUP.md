@@ -57,7 +57,6 @@ You need one Slack app for the whole bridge. There are two ways to create it —
             "agent_description": "Switch agents. Mention one by name in a channel and it answers there; its progress appears on the message while it works."
         },
         "slash_commands": [
-            { "command": "/admin", "description": "Toggle admin mode on/off for this room", "should_escape": false },
             { "command": "/help", "description": "Show the list of available in-room commands", "should_escape": false },
             { "command": "/reset", "description": "Reset a targeted agent's session (clears context, then reconnects)", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
             { "command": "/reset-all-agents", "description": "Reset EVERY agent's session in this room", "should_escape": false },

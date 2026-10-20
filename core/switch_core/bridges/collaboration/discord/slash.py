@@ -211,11 +211,12 @@ def build_app_commands(
     """Build one Discord application command per registered in-room command.
 
     Hidden commands are skipped: they are absent from `!help` for a reason, and
-    Discord rejects the empty description they carry anyway.
+    Discord rejects the empty description they carry anyway. So is a command
+    with no handler, which would answer nothing.
     """
     built: list[app_commands.Command[Any, ..., Any]] = []
     for command in COMMANDS:
-        if command.hidden:
+        if command.hidden or command.handler is None:
             continue
         if not command.description:
             logger.warning(

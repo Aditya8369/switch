@@ -3,7 +3,7 @@ import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-set
 import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import { defaultAgentPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 
 export function usePickMode() {
@@ -57,10 +57,11 @@ export function useConfigureAgentForm(serverId: string | null) {
   const [instructions, setInstructions] = useState('');
   const [autoApprove, setAutoApproveRaw] = useState(false);
   const [autoApproveTouched, setAutoApproveTouched] = useState(false);
-  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts
-  // owner-scoped (CHOO-2137). Applied via a follow-up PUT after creation.
+  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
+  // the default, its owner and the owner's agents. Applied via a follow-up PUT
+  // after creation.
   const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(() =>
-    ownerOnlyPolicy()
+    defaultAgentPolicy()
   );
   // The agent's icon (CHOO-2171). A new agent opens on a random bot rather than
   // one drawn from its name: the name is empty at that point, so a name-derived

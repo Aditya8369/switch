@@ -58,6 +58,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -517,6 +518,7 @@ class DiscordAdapter(PlatformAdapter):
     """
 
     display_name: ClassVar[str] = "Discord"
+    channel_on_delete = "deleted"
     docs_slug: ClassVar[str | None] = "discord"
     # Quiet, a bridge with its own token logs in for the API alone and opens
     # no Gateway socket. A shared-delivery bridge opens none either way: it
@@ -2303,6 +2305,25 @@ class DiscordAdapter(PlatformAdapter):
             ),
         )
         return str(channel.id)
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        try:
+            channel = await self._get_channel(int(external_channel_id))
+        except discord.NotFound:
+            return RetireOutcome(outcome="deleted")
+        except discord.HTTPException as e:
+            return RetireOutcome.failed(f"Discord would not find the channel: {e}")
+        if getattr(channel, "guild", None) is None:
+            return RetireOutcome.failed(
+                "This Discord chat is a direct message, which a bot cannot delete"
+            )
+        try:
+            await channel.delete(reason="Its Switch room was deleted")
+        except discord.NotFound:
+            return RetireOutcome(outcome="deleted")
+        except discord.HTTPException as e:
+            return RetireOutcome.failed(f"Discord refused to delete the channel: {e}")
+        return RetireOutcome(outcome="deleted")
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find guild members whose username or nickname starts with `query`.

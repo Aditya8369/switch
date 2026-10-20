@@ -107,8 +107,8 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
   const ownerUnreachable =
     policyNamesOwner(form.addressingPolicy) && unlinkedApps !== null && unlinkedApps.length > 0;
 
-  // Folded is right until the defaults are wrong. The owner-only default admits
-  // nobody in an app with no account linked, and a warning nothing on screen
+  // Folded is right until the defaults are wrong. The default policy admits no
+  // person in an app with no account linked, and a warning nothing on screen
   // hints at is a warning nobody reads — so the section opens itself the first
   // time that is true. Once only: closing it again is an answer, not an
   // oversight, and the queries behind `unlinkedApps` settle after mount.
@@ -180,7 +180,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
                   Who can talk to your agent
                   <InfoTooltip
                     label="More info about addressing"
-                    content="Talking to an agent means an @mention, a targeted message, or a delegated task. A new agent answers only you; grant other agents to let them delegate to it. You can change this later from the agent's settings."
+                    content="Talking to an agent means an @mention or a targeted message. A new agent answers you and your own agents; choose Only me to shut your agents out, or let others in. You can change this later from the agent's settings."
                   />
                 </span>
               </FieldTitle>

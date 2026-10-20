@@ -1392,8 +1392,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           // policy failure does not create a second agent.
           setSlot(i, { createdName: result.agent.name, createdSwitchAgentId: switchAgentId });
         }
-        // A new agent answers only its owner by default. The template's `anyone`
-        // must be written as the open policy; leaving the default would keep it closed.
+        // A new agent answers its owner and the owner's agents by default. The
+        // template's `anyone` must be written as the open policy, and `owner` as
+        // owner-only; leaving the default would keep either one wrong.
         if (switchAgentId && slot.entry.addressing) {
           setSlot(i, { step: 'policy' });
           await rpc.workspaces.updateAddressingPolicy({

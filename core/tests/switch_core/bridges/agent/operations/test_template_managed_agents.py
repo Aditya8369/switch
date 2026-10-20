@@ -280,7 +280,14 @@ async def test_a_team_template_creates_its_agents_then_the_room(managed):
         created = (
             await session.execute(select(Agent).where(Agent.name == "red-lead"))
         ).scalar_one()
+        unspecified = (
+            await session.execute(select(Agent).where(Agent.name == "red-helper"))
+        ).scalar_one()
     assert created.addressing_policy == addressing_policy_for("owner_and_owner_agents")
+    # An agent whose entry says nothing about addressing gets the default.
+    assert unspecified.addressing_policy == addressing_policy_for(
+        "owner_and_owner_agents"
+    )
     (room,) = await _rooms(managed)
     assert room.name == "red-room"
     assert managed["admin"].sent[-1]["body"].startswith("@red-lead start.")
@@ -431,7 +438,8 @@ async def test_agents_are_deleted_again_when_the_room_fails(managed):
 @pytest.mark.asyncio
 async def test_a_kickoff_to_a_new_agent_that_would_ignore_it_is_refused_first(managed):
     template_id = await _stored(
-        managed, TEAM.replace("    addressing: owner-agents\n", "")
+        managed,
+        TEAM.replace("    addressing: owner-agents\n", "    addressing: owner\n"),
     )
 
     with pytest.raises(AgentRefused) as e:
