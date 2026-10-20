@@ -19,7 +19,7 @@ function machine(overrides: Partial<OwnedMachine>): OwnedMachine {
     name: 'laptop',
     kind: 'console',
     state: 'online',
-    providers: [{ provider: 'claude', ready: true, problem: null }],
+    providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
     acceptsLogins: true,
     cloud: false,
     workspacesDir: '/home/me/.switch/agents',
@@ -74,7 +74,7 @@ describe('machineFor', () => {
     const coder = machine({
       id: 'm4',
       name: 'cluster',
-      providers: [{ provider: 'codex', ready: true, problem: null }],
+      providers: [{ provider: 'codex', ready: true, problem: null, detail: null }],
     });
     // "local" or an SSH host is this Console's idea: the server's $first stands in.
     expect(machineFor([BOX, coder, LAPTOP], 'local', 'claude', true)).toBe(LAPTOP);
@@ -94,7 +94,9 @@ describe('machineProblem', () => {
     expect(machineProblem(LAPTOP, 'codex', 'a')).toBe('codex is not installed on laptop.');
     expect(
       machineProblem(
-        machine({ providers: [{ provider: 'claude', ready: false, problem: 'not logged in' }] }),
+        machine({
+          providers: [{ provider: 'claude', ready: false, problem: 'not logged in', detail: null }],
+        }),
         'claude',
         'a'
       )

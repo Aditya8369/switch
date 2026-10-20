@@ -207,7 +207,7 @@ export const providerStatusSchema = z.object({
   reason: reasonCode.optional(),
   /** Why no version was read from an installed CLI. */
   version_problem: z.string().max(300).optional(),
-  /** Why a login given to the machine is not used, in the controller's words. */
+  /** Why the provider's login does not work, or a login given to the machine is not used, in so many words. */
   auth_problem: z.string().max(300).optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;

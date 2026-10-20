@@ -38,10 +38,31 @@ import type {
   MachineLoginOutcome,
   ManagedMachine,
   OwnedMachine,
+  ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { ownedMachines } from './owned-machines';
+import { ownedMachines, thisComputerReport } from './owned-machines';
+
+async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+  const [thisComputer, hosts] = await Promise.all([
+    embeddedControllerService.enrolledControllerId(serverId),
+    hostControllerService.recordsOn(serverId),
+  ]);
+  return withReachableServerWorkspaceSession(serverId, async (server) => {
+    let controllers;
+    try {
+      controllers = await fetchManagementControllers(server);
+    } catch (error) {
+      if (error instanceof AgentManagementUnavailableError) return null;
+      throw error;
+    }
+    return ownedMachines(controllers, {
+      thisComputer,
+      sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
+    });
+  });
+}
 
 /**
  * The signed-in user's managed agents on a server, as the server holds them:
@@ -107,25 +128,15 @@ export const managedAgentsController = createRPCController({
    * The owner's machines an agent can be placed on, with the providers each
    * last reported. Null when the server does not run agent management.
    */
-  machines: async (serverId: string): Promise<OwnedMachine[] | null> => {
-    const [thisComputer, hosts] = await Promise.all([
-      embeddedControllerService.enrolledControllerId(serverId),
-      hostControllerService.recordsOn(serverId),
-    ]);
-    return withReachableServerWorkspaceSession(serverId, async (server) => {
-      let controllers;
-      try {
-        controllers = await fetchManagementControllers(server);
-      } catch (error) {
-        if (error instanceof AgentManagementUnavailableError) return null;
-        throw error;
-      }
-      return ownedMachines(controllers, {
-        thisComputer,
-        sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
-      });
-    });
-  },
+  machines: (serverId: string): Promise<OwnedMachine[] | null> => machinesOn(serverId),
+
+  /**
+   * This computer's providers as its controller last reported them to a
+   * server it runs for; null when it runs for none, or none has a report,
+   * and Console's own check is what there is to go by.
+   */
+  thisComputerProviders: async (): Promise<ThisComputerReport | null> =>
+    thisComputerReport(await embeddedControllerService.runningServerIds(), machinesOn),
 
   /**
    * Gives one of the owner's machines a provider login, sealed here to the

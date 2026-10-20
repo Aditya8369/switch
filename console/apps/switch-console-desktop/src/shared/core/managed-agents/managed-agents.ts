@@ -66,7 +66,16 @@ export type MachineProvider = {
   ready: boolean;
   /** Why it is not ready, in a few words; null when it is. */
   problem: string | null;
+  /** What the machine said about it, when it said more than `problem` does. */
+  detail: string | null;
 };
+
+/**
+ * This computer's providers as its agents controller last reported them to a
+ * server: what Switch goes by when it creates an agent here, so what every
+ * screen about this computer's providers shows when there is one.
+ */
+export type ThisComputerReport = { serverId: string; providers: MachineProvider[] };
 
 /**
  * A provider login to give a machine: a key or token typed in, this
