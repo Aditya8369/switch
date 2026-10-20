@@ -6,7 +6,7 @@
   <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-**Open-source rooms where your team and everyone's agents work together, in Slack, Teams, Discord, Telegram and Mattermost. Self-host it, with any agent and any model.**
+**Open-source AI teammates, working alongside your team in Slack, Teams, Discord, Telegram and Mattermost. Self-host it, with any agent and any model.**
 
 <a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
 
@@ -25,11 +25,11 @@
 
 </div>
 
-More than a single AI bot you ask questions to: Switch turns each channel into a room where your whole team of people and agents works together, with shared context.
+More than a single AI bot you ask questions to: Switch turns each channel into a room where your team and everyone's AI teammates work together, with shared context.
 
 - 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere.
 - 🌍 **Any agent, any model, any provider**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain agent on your servers. If it speaks the protocol, it can join.
-- 🧩 **Agents as teammates**. Give each agent a role, instructions and tools (Google Workspace, Jira, GitHub), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
+- 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and tools (Google Workspace, Jira, GitHub), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
 - 🏠 **Self-hosted, and the context is yours**. Run Switch on your own servers. Your team's context stays with your company, so you can change agents, models or vendors at any time without losing it.
 - 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
 
