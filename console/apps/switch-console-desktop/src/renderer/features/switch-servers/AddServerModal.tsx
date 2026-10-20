@@ -33,6 +33,7 @@ import {
   urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
+import { recheckDocker } from './docker-recheck';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
@@ -538,31 +539,12 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
 
   // People install or start Docker while this step is open, so keep asking
-  // until it answers, and at once when they come back to the window. A check
-  // can take seconds while Docker boots, so they never overlap. Leaving the
-  // step, starting the server or Docker answering ends it all.
+  // until it answers. Leaving the step, starting the server or Docker
+  // answering ends it.
   const waitingForDocker = dockerUnavailable !== null && idle;
   useEffect(() => {
     if (!waitingForDocker) return;
-    let stopped = false;
-    let checking = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const check = () => {
-      if (stopped || checking) return;
-      checking = true;
-      clearTimeout(timer);
-      void store.checkDocker().finally(() => {
-        checking = false;
-        if (!stopped) timer = setTimeout(check, DOCKER_RECHECK_MS);
-      });
-    };
-    timer = setTimeout(check, DOCKER_RECHECK_MS);
-    window.addEventListener('focus', check);
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-      window.removeEventListener('focus', check);
-    };
+    return recheckDocker(() => store.checkDocker(), window, DOCKER_RECHECK_MS);
   }, [store, waitingForDocker]);
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
