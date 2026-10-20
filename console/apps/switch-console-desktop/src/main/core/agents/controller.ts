@@ -33,7 +33,7 @@ import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-co
 import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
 import { renameLocalAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
-import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';
+import { setAgentPermission, type AgentPermissionParams } from './setAgentPermission';
 
 export const agentsController = createRPCController({
   addAgent: (params: AddAgentParams) => addAgent(params),
@@ -96,6 +96,5 @@ export const agentsController = createRPCController({
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
   assignServer: (params: { agentId: string; serverId: string }): Promise<AgentVerifyResult> =>
     assignAgentServer(params),
-  setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
-    setAgentAutoApprove(params),
+  setAgentPermission: (params: AgentPermissionParams): Promise<void> => setAgentPermission(params),
 });

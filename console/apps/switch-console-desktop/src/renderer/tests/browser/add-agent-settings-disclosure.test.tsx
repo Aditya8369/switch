@@ -149,3 +149,20 @@ describe('the add-agent Settings fold', () => {
     expect(settingsRow(el).getAttribute('aria-expanded')).toBe('false');
   });
 });
+
+describe('the add-agent permission settings', () => {
+  it('start a new agent in auto mode, with bypass off and marked unsafe', async () => {
+    const el = await renderPanel();
+    await act(async () => settingsRow(el).click());
+
+    const toggle = (label: string) => {
+      const found = el.querySelector<HTMLElement>(`[role="switch"][aria-label="${label}"]`);
+      expect(found, `no ${label} switch`).not.toBeNull();
+      return found!;
+    };
+    expect(toggle('Auto mode').getAttribute('aria-checked')).toBe('true');
+    expect(toggle('Bypass permissions').getAttribute('aria-checked')).toBe('false');
+    expect(el.textContent).toContain('Safe actions run on their own; risky ones ask you first.');
+    expect(el.textContent).toContain('Unsafe');
+  });
+});

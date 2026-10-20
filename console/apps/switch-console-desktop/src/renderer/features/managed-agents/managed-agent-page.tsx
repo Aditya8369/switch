@@ -22,8 +22,12 @@ import {
   AdvancedConfigDisclosure,
   summariseValues,
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
-import { AutoApproveRow } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import {
+  AutoApproveRow,
+  AutoModeRow,
+  PERMISSION_COPY,
+} from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
@@ -313,10 +317,20 @@ function ManagedAgentPageContent({
             />
             <section className="flex flex-col gap-6">
               <SectionLabel>General</SectionLabel>
+              <AutoModeRow
+                overridden={draft.autoApprove}
+                control={
+                  <Switch
+                    aria-label={PERMISSION_COPY.autoMode.title}
+                    checked={draft.autoMode}
+                    onCheckedChange={(checked) => setValue('autoMode', checked)}
+                  />
+                }
+              />
               <AutoApproveRow
                 control={
                   <Switch
-                    aria-label="Bypass permissions"
+                    aria-label={PERMISSION_COPY.autoApprove.title}
                     checked={draft.autoApprove}
                     onCheckedChange={(checked) => setValue('autoApprove', checked)}
                   />

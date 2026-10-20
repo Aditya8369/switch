@@ -90,6 +90,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: { effort: 'high', tools: ['Read'] },
     instructions: 'Be brief.',
     autoApprove: false,
+    autoMode: false,
     directory: '/work/pm',
     isolation: 'shared',
   },
@@ -191,6 +192,7 @@ it('lays out the agent the way a Console agent’s page does', () => {
   for (const heading of ['General', 'Sessions'])
     expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain(heading);
   for (const row of [
+    'Auto mode',
     'Bypass permissions',
     'Can manage agents',
     'Who can talk to your agent',

@@ -44,6 +44,7 @@ function entry(overrides: Partial<ParsedAgentEntry>): ParsedAgentEntry {
     model: null,
     advancedConfig: {},
     isolation: null,
+    autoMode: null,
     autoApprove: null,
     connections: [],
     directory: null,
@@ -163,6 +164,7 @@ describe('runAgent', () => {
         model: '{model}',
         advancedConfig: { effort: '{effort}' },
         isolation: 'isolated',
+        autoMode: false,
         autoApprove: '{yolo}',
         addressing: 'owner-agents',
         repoUrl: 'https://github.com/acme/widgets',
@@ -179,6 +181,7 @@ describe('runAgent', () => {
       model: 'sonnet',
       advancedConfig: { effort: 'high' },
       isolation: 'isolated',
+      autoMode: false,
       autoApprove: true,
       directory: null,
       addressing: 'owner-agents',
@@ -199,5 +202,19 @@ describe('runAgent', () => {
       directoryText: '{$agents_dir}/red-a',
     });
     expect(agent.addressing).toBe('owner-agents');
+  });
+
+  it('runs a new agent in auto mode with bypass off unless its entry says otherwise', () => {
+    const agent = runAgent({
+      slot: 'red-a',
+      name: 'red-a',
+      entry: entry({}),
+      values: {},
+      displayName: null,
+      provider: 'claude',
+      machine: LAPTOP,
+      directoryText: '{$agents_dir}/red-a',
+    });
+    expect(agent).toMatchObject({ autoMode: true, autoApprove: false });
   });
 });

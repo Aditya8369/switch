@@ -2363,6 +2363,7 @@ export type TemplateRunAgent = {
   model: string | null;
   advancedConfig: Record<string, unknown>;
   isolation: 'shared' | 'isolated';
+  autoMode: boolean;
   autoApprove: boolean;
   /** May start with `{$agents_dir}`, the machine's own folder for agents; null for the agent's own workspace there. */
   directory: string | null;
@@ -2433,6 +2434,7 @@ export async function runTemplateWithAgents(
       model: a.model,
       advanced_config: a.advancedConfig,
       isolation: a.isolation,
+      auto_mode: a.autoMode,
       auto_approve: a.autoApprove,
       directory: a.directory,
       addressing: a.addressing,
@@ -3716,6 +3718,8 @@ export type ManagedAgent = {
    * workspace for the agent; null only when the machine has not said where that is.
    */
   directory: string | null;
+  /** Off for a definition saved before auto mode existed, as the server reports it. */
+  autoMode: boolean;
   autoApprove: boolean;
   status: {
     process: string;
@@ -3760,6 +3764,7 @@ type ManagedAgentJson = {
     advanced_config?: unknown;
     instructions?: unknown;
     directory?: unknown;
+    auto_mode?: unknown;
     auto_approve?: unknown;
     isolation?: unknown;
   } | null;
@@ -3973,6 +3978,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
       typeof json.definition?.instructions === 'string' ? json.definition.instructions : '',
     isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
+    autoMode: json.definition?.auto_mode === true,
     autoApprove: json.definition?.auto_approve === true,
     status: json.status
       ? {
@@ -4107,6 +4113,7 @@ export type ManagedAgentDefinitionBody = {
   /** Keyed by the provider's advanced configuration fields; unset fields are absent. */
   advanced_config: Record<string, AdvancedConfigValue>;
   instructions: string;
+  auto_mode: boolean;
   auto_approve: boolean;
   directory: string | null;
 };

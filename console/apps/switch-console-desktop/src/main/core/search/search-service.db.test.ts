@@ -34,6 +34,7 @@ function agentRecord(over: Partial<Agent> & Pick<Agent, 'id' | 'name'>): Agent {
     serverId: null,
     status: null,
     autoApprove: false,
+    autoMode: false,
     providerConfig: null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',

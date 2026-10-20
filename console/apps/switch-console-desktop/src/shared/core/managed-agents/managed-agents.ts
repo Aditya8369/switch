@@ -26,6 +26,9 @@ export type ManagedAgentView = {
     /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
     advancedConfig: Record<string, AdvancedConfigValue>;
     instructions: string;
+    /** The provider's own automatic review: safe actions run, risky ones ask. */
+    autoMode: boolean;
+    /** Bypass: every permission check skipped. Wins over `autoMode`. */
     autoApprove: boolean;
     /**
      * The working directory on its machine. The server fills in the machine's
