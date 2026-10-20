@@ -507,7 +507,13 @@ export class ProviderStatuses {
 }
 
 function fingerprintProvider(status: ProviderStatus): string {
-  return JSON.stringify([status.installed, status.version, status.auth, status.reason ?? null]);
+  return JSON.stringify([
+    status.installed,
+    status.version,
+    status.auth,
+    status.reason ?? null,
+    status.auth_problem ?? null,
+  ]);
 }
 
 /** An agent host that stopped because its token was refused (by the relay, now). */
@@ -716,7 +722,14 @@ export class StatusCollector {
 export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
   return JSON.stringify({
     revision: report.controller.assignment_revision,
-    providers: report.providers.map((p) => [p.provider, p.installed, p.version, p.auth, p.reason]),
+    providers: report.providers.map((p) => [
+      p.provider,
+      p.installed,
+      p.version,
+      p.auth,
+      p.reason,
+      p.auth_problem,
+    ]),
     tools: report.tools.map((t) => [t.tool, t.state, t.reason]),
     agents: report.agents.map((a) => [
       a.agent_id,

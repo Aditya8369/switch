@@ -806,3 +806,27 @@ describe('StatusCollector', () => {
     expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
   });
 });
+
+describe('statusFingerprint', () => {
+  it('changes when only a provider’s auth problem changes', () => {
+    const report = (authProblem?: string) =>
+      ({
+        controller: { assignment_revision: 1 },
+        providers: [
+          {
+            provider: 'claude',
+            installed: true,
+            version: '2.1.0',
+            auth: 'missing',
+            ...(authProblem ? { auth_problem: authProblem } : {}),
+          },
+        ],
+        tools: [],
+        agents: [],
+      }) as unknown as Parameters<typeof statusFingerprint>[0];
+    expect(statusFingerprint(report('Invalid API key'))).not.toBe(
+      statusFingerprint(report('Not logged in'))
+    );
+    expect(statusFingerprint(report())).not.toBe(statusFingerprint(report('Invalid API key')));
+  });
+});

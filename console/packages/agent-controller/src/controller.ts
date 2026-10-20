@@ -504,14 +504,16 @@ export async function runController(
             );
           },
           recheckProvider: async (provider) => {
-            const status = await providers.check(provider);
+            // Asked for by someone fixing a login, like the Console recheck,
+            // so the login is tried for real.
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
             // Agents move onto a login given since, or off one withdrawn.
             void reconcileLocally();
             return status;
           },
           takeUpLogin: async (provider) => {
-            const status = await providers.check(provider);
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
             void reconcileLocally();
             return { status, problem: providers.loginProblem(provider) };
