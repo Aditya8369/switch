@@ -95,6 +95,19 @@ export type SwitchServer = {
   updatedAt: string;
 };
 
+/**
+ * Whether Switch Console runs this server on this computer. Its stack listens
+ * on loopback only, so nobody on another computer can reach it, and an
+ * invitation would hand them a link to this machine's `localhost`. A server
+ * Console runs on an SSH host is not one: other Consoles with access to that
+ * host open the same stack.
+ */
+export function runsOnThisComputer(
+  server: Pick<SwitchServer, 'managed' | 'managementKind'>
+): boolean {
+  return server.managed && server.managementKind !== 'remote';
+}
+
 export type AddServerParams = {
   name: string;
   url: string;
