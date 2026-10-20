@@ -153,6 +153,9 @@ const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   linkAccounts: null,
 };
 
+/** How often the local setup step asks again for a Docker that wasn't answering. */
+const DOCKER_RECHECK_MS = 3000;
+
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;
   const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
@@ -533,6 +536,28 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const native = store.runtime === 'native';
   const needsDocker = store.runtime === 'docker';
   const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
+
+  // People install or start Docker while this step is open, so keep asking
+  // until it answers instead of only when the step opened. Each check can take
+  // seconds while Docker boots, so the next one waits for the last to finish.
+  const waitingForDocker = dockerUnavailable !== null && idle;
+  useEffect(() => {
+    if (!waitingForDocker) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const next = () => {
+      timer = setTimeout(() => {
+        void store.checkDocker().then(() => {
+          if (!stopped) next();
+        });
+      }, DOCKER_RECHECK_MS);
+    };
+    next();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [store, waitingForDocker]);
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
   // one const. Open during the install too: the store is a singleton the main

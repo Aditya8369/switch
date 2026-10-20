@@ -1874,6 +1874,10 @@ version of their own to them without also giving them a release of their own.
   the same as it resumes, so it does not look for tools it no longer has.
 
 #### Fixed
+- **Setting up a server notices Docker once it starts.** "Set up a server on
+  this computer" checked for Docker only when the step opened, so installing or
+  starting Docker meanwhile left "Also run Mattermost" off until you went back.
+  It now checks again every few seconds while Docker isn't answering.
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
   authorize step at its public address, the API's host, where the vendor
