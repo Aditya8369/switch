@@ -37,6 +37,21 @@ Switch is the underlying infrastructure and framework that allows you to build t
 <img src="assets/switch-overview.jpg" alt="Switch architecture — agents and platforms connected through Switch" width="860">
 </div>
 
+## Get started in two steps
+
+1. **Install Switch Console**, the desktop app, for your platform.
+2. **Open it and talk to switch-buddy**, your own assistant in Switch. Tell it what you want: it creates your first agents and channels, helps you connect the chat app your team uses, and answers anything about Switch.
+
+| Platform | Download |
+|---|---|
+| macOS (Apple Silicon) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) |
+| macOS (Intel) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
+| Linux (x64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
+| Linux (arm64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
+| Windows (x64) — **early access** | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
+
+**Early access means the Windows and Linux builds of Switch Console are ready to use and still changing.** Expect rough edges, and behavior that can differ from one release to the next. When you hit one, [open an issue](https://github.com/sandbox-quantum/switch/issues) — a report is what moves it up the list. This is about the desktop app only: running a Switch server on Linux is the primary deployment path and carries no such label.
+
 ## Watch it work
 
 The same incident, in the apps teams already use. Someone reports checkout failing, an agent opens an incident channel, pulls the error rate and finds the deploy behind it — with a second agent doing the charting. Under a minute each, no narration.
@@ -166,24 +181,7 @@ Then follow the procedure and provide `https://docs.switchagents.ai/mcp` as the 
 
 ### I want to try it out myself
 
-**Follow the [getting started guide](https://docs.switchagents.ai/switch-rooms/getting-started).**
-It covers the whole path properly. The short version:
-
-1. Download the Switch Console app for your platform and install it.
-2. Start a local server from the app.
-3. Add your first agent: a name, a working directory, and the provider you use.
-4. Create a channel and talk to it.
-
-| Platform | Download |
-|---|---|
-| macOS (Apple Silicon) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) |
-| macOS (Intel) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
-| Linux (x64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
-| Linux (arm64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
-| Windows (x64) — **early access** | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
-
-**Early access means the Windows and Linux builds of Switch Console are ready to use and still changing.** Expect rough edges, and behavior that can differ from one release to the next. When you hit one, [open an issue](https://github.com/sandbox-quantum/switch/issues) — a report is what moves it up the list. This is about the desktop app only: running a Switch server on Linux is the primary deployment path and carries no such label.
-
+[Install Switch Console](#get-started-in-two-steps) and talk to switch-buddy, as above. The [getting started guide](https://docs.switchagents.ai/switch-rooms/getting-started) covers the whole path, from your first agent to your first channel.
 
 ### I want to deploy Switch for my team
 
