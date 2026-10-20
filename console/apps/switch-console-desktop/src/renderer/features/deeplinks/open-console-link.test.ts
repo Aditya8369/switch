@@ -7,9 +7,14 @@ const list = vi.hoisted(() => vi.fn());
 const servers = vi.hoisted(() => ({
   activeServerId: 'srv-1' as string | null,
   servers: [
-    { id: 'srv-1', url: 'http://localhost:8000', dashboardUrl: null },
-    { id: 'srv-2', url: 'https://switch.example.com', dashboardUrl: null },
-    { id: 'srv-3', url: 'https://old-api.example.com', dashboardUrl: 'https://old.example.com' },
+    { id: 'srv-1', url: 'http://localhost:8000', dashboardUrl: null, managed: true },
+    { id: 'srv-2', url: 'https://switch.example.com', dashboardUrl: null, managed: false },
+    {
+      id: 'srv-3',
+      url: 'https://old-api.example.com',
+      dashboardUrl: 'https://old.example.com',
+      managed: false,
+    },
   ],
   setActive: vi.fn(async (id: string) => {
     servers.activeServerId = id;
@@ -45,6 +50,22 @@ describe('openConsoleLink', () => {
   it('opens a page on the server on screen', async () => {
     await openConsoleLink('switchdash://open/rooms');
     expect(navigate).toHaveBeenCalledWith('serverRooms', { serverId: 'srv-1' });
+  });
+
+  it('opens the Server page of a server this Console runs', async () => {
+    await openConsoleLink('switchdash://open/server');
+    expect(navigate).toHaveBeenCalledWith('managedServer', { serverId: 'srv-1' });
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens the home of a server someone else runs, and says it has no Server page', async () => {
+    await openConsoleLink('switchdash://open/server?server=https%3A%2F%2Fswitch.example.com');
+    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-2' });
+    expect(navigate).not.toHaveBeenCalledWith('managedServer', expect.anything());
+    expect(toastError).toHaveBeenCalledWith(
+      'This server has no Server page here',
+      expect.anything()
+    );
   });
 
   it('opens a dialog over the page it belongs to', async () => {

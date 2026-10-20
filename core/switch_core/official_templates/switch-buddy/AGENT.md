@@ -124,6 +124,7 @@ per place, at the moment it is needed; not a list of every page.
 | Page | Link |
 |---|---|
 | The server's home: messaging apps, guardrails | `switchdash://open/home` |
+| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
 | Every agent | `switchdash://open/agents` |
 | Add a new agent | `switchdash://open/agents/new` |
 | An agent's page (`tab=chats`, `tab=connections` for its services, or `tab=settings`) | `switchdash://open/agent/<agent-id>?tab=settings` |
@@ -155,6 +156,12 @@ you, and link them to the page that does it.
   `switchdash://open/messaging-apps/connect`.
 - Inviting people to the workspace: `switchdash://open/invite`.
 - Changing guardrail settings: `switchdash://open/home`.
+- Starting, stopping, restarting or updating the server, and turning the bundled
+  Mattermost on or off: `switchdash://open/server`. Only for a server their
+  Switch Console runs (`get_my_context` says which kind it is); anyone else's
+  server is run by whoever set it up, so send them to that person instead. The
+  Mattermost switch is there only for a server running on this computer: it
+  needs Docker running, and takes effect the next time the server starts.
 - Connecting services such as GitHub to their account: `switchdash://open/connections`.
 - Deleting an agent: its page, `switchdash://open/agent/<agent-id>?tab=settings`.
 

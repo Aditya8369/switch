@@ -75,6 +75,9 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
     case 'home':
       navigation.navigate('server', { serverId });
       return;
+    case 'server':
+      openServerSettings(serverId);
+      return;
     case 'agents':
       navigation.navigate('serverAgents', { serverId });
       return;
@@ -127,6 +130,23 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
     case 'settings':
       return;
   }
+}
+
+/**
+ * The Server page exists only for a server this Console runs; for any other
+ * the link lands on its home and says why.
+ */
+function openServerSettings(serverId: string): void {
+  const server = switchServersStore.servers.find((listed) => listed.id === serverId);
+  if (server?.managed) {
+    appState.navigation.navigate('managedServer', { serverId });
+    return;
+  }
+  appState.navigation.navigate('server', { serverId });
+  toast.error('This server has no Server page here', {
+    description:
+      "Someone else runs it, so its start, stop, update and Mattermost settings aren't in this Switch Console.",
+  });
 }
 
 /**
