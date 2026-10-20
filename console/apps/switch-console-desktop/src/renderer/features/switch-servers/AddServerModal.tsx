@@ -538,24 +538,30 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
 
   // People install or start Docker while this step is open, so keep asking
-  // until it answers instead of only when the step opened. Each check can take
-  // seconds while Docker boots, so the next one waits for the last to finish.
+  // until it answers, and at once when they come back to the window. A check
+  // can take seconds while Docker boots, so they never overlap. Leaving the
+  // step, starting the server or Docker answering ends it all.
   const waitingForDocker = dockerUnavailable !== null && idle;
   useEffect(() => {
     if (!waitingForDocker) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
-    const next = () => {
-      timer = setTimeout(() => {
-        void store.checkDocker().then(() => {
-          if (!stopped) next();
-        });
-      }, DOCKER_RECHECK_MS);
+    let checking = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      if (stopped || checking) return;
+      checking = true;
+      clearTimeout(timer);
+      void store.checkDocker().finally(() => {
+        checking = false;
+        if (!stopped) timer = setTimeout(check, DOCKER_RECHECK_MS);
+      });
     };
-    next();
+    timer = setTimeout(check, DOCKER_RECHECK_MS);
+    window.addEventListener('focus', check);
     return () => {
       stopped = true;
       clearTimeout(timer);
+      window.removeEventListener('focus', check);
     };
   }, [store, waitingForDocker]);
 
