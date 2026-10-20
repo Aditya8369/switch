@@ -402,9 +402,25 @@ function installFailure(name: string, error: AgentInstallError): string {
     case 'no-install-command':
     case 'unknown-dependency':
       return `Switch Console can’t install ${name} on this computer. Install it yourself, then press Check again.`;
+    case 'command-failed': {
+      const last = lastOutputLine(error.output);
+      return last
+        ? `Installing ${name} failed: ${error.message} Last output: ${last}`
+        : `Installing ${name} failed: ${error.message}`;
+    }
     case 'permission-denied':
-    case 'command-failed':
     case 'process-open-failed':
       return `Installing ${name} failed: ${error.message}`;
   }
+}
+
+/** The install command's last non-empty line, capped so a long one can't fill the page. */
+function lastOutputLine(output: string): string | null {
+  const line = output
+    .split('\n')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!line) return null;
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
 }
