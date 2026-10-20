@@ -1983,8 +1983,8 @@ class AgentCore:
         for the same reason. When `GATEWAY_PUBLIC_URL` is unset the raw deeplink
         is left untouched whatever the platform.
 
-        The result is what gets persisted and emitted, so the bridged status
-        message and the `!status` command surface the same link.
+        The result is what gets persisted and emitted, so the `!status` command
+        and the command acknowledgements surface the same link.
         """
         room = await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:

@@ -299,8 +299,8 @@ that starts running releases the ⏳ before it finishes, so the hourglass going
 while an agent is still busy is the mark working, not failing. This needs
 nothing but the reaction scopes.
 
-**A status message** is posted under the agent's own name and icon, carrying the
-**Open in Switch Console** link, and edited in place as the activity changes:
+**A status message** is posted under the agent's own name and icon, and edited
+in place as the activity changes:
 "Working… 41s" while the turn runs, "Worked for 2m 14s." when it finishes. It
 stays in the channel after the turn rather than being deleted, so someone
 scrolling back can still see that the turn ran.
@@ -337,7 +337,7 @@ What a workspace still gets with it off:
 - Agents are addressed by typing `@agent-name`, exactly as before. What is lost
   is the autocomplete, not the addressing.
 - An agent's progress appears as a status message posted under its own name and
-  icon, carrying the **Open in Switch Console** link.
+  icon.
 - The message being worked on is marked with **👀** for the turn, or **⏳** while
   its prompt waits behind one already running. That needs only the reaction
   scopes, so it works on any plan and in any channel.

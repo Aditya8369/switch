@@ -59,7 +59,7 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_attention,
     render_request,
     render_turn_with_request,
-    with_session_context,
+    with_mention,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
@@ -1421,7 +1421,6 @@ class SlackAdapter(PlatformAdapter):
             content.items,
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
-            session_url=content.session_url,
             interrupt_turn_id=content.interrupt_turn_id,
         )
         blocks = drawn.blocks
@@ -1549,7 +1548,6 @@ class SlackAdapter(PlatformAdapter):
                     content.items,
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     interrupt_turn_id=content.interrupt_turn_id,
                 )
                 if not content.status_only
@@ -1560,10 +1558,8 @@ class SlackAdapter(PlatformAdapter):
                     status_only=content.status_only,
                 )
             )
-            message = with_session_context(
-                message,
-                session_url=content.session_url if content.status_only else None,
-                notify_external_id=content.notify_external_id,
+            message = with_mention(
+                message, notify_external_id=content.notify_external_id
             )
             if content.publication_token and message.blocks:
                 message.blocks[0]["block_id"] = (
@@ -1587,7 +1583,7 @@ class SlackAdapter(PlatformAdapter):
                 responder_name=responder_name,
                 unavailable_reason=content.unavailable_reason,
             )
-        return with_session_context(
+        return with_mention(
             message,
             notify_external_id=content.notify_external_id
             if content.request.state == "open"

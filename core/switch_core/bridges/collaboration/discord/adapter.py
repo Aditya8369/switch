@@ -191,7 +191,6 @@ _ACTIVITY_REFRESH_ID = f"{_ACTIVITY_PREFIX}:r"
 _INTERRUPT_PREFIX = "swstop"
 _ACTIVITY_LABEL = "View activity"
 _REFRESH_LABEL = "Refresh"
-_CONSOLE_LABEL = "Open in Switch Console"
 
 
 def _custom_id(token: str, position: int) -> str:
@@ -1233,7 +1232,6 @@ class DiscordAdapter(PlatformAdapter):
                     limit=max(1, limit - len(tail)),
                     markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
@@ -3090,12 +3088,7 @@ class DiscordAdapter(PlatformAdapter):
         if snapshot is None:
             await self._privately(interaction, ACTIVITY_GONE, ref)
             return
-        await self._privately(
-            interaction,
-            self._activity_text(snapshot),
-            ref,
-            session_url=snapshot.session_url,
-        )
+        await self._privately(interaction, self._activity_text(snapshot), ref)
 
     def _activity_text(self, snapshot: ActivitySnapshot) -> str:
         """The tool log, and when it was read.
@@ -3113,7 +3106,6 @@ class DiscordAdapter(PlatformAdapter):
             limit=max(1, MAX_MESSAGE - len(stamp) - 1),
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
-            session_url=None,
             heading=True,
         )
         return f"{body}\n{stamp}"
@@ -3123,8 +3115,6 @@ class DiscordAdapter(PlatformAdapter):
         interaction: discord.Interaction,
         text: str,
         ref: str,
-        *,
-        session_url: str | None = None,
     ) -> None:
         """Answer the press in the private message it has already deferred.
 
@@ -3142,10 +3132,6 @@ class DiscordAdapter(PlatformAdapter):
                 style=discord.ButtonStyle.secondary,
             )
         )
-        if session_url and session_url.startswith(("https://", "http://")):
-            view.add_item(
-                discord.ui.Button(label=_CONSOLE_LABEL, url=session_url),
-            )
         view.stop()
         try:
             await interaction.edit_original_response(content=text, view=view)

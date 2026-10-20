@@ -792,7 +792,6 @@ class MattermostAdapter(PlatformAdapter):
             limit=max(1, self.rich_fallback_limit() - len(stamp) - 1),
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
-            session_url=snapshot.session_url,
             heading=True,
         )
         return f"{body}\n{stamp}"
@@ -1159,7 +1158,6 @@ class MattermostAdapter(PlatformAdapter):
                     limit=max(1, limit - len(tail)),
                     markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,

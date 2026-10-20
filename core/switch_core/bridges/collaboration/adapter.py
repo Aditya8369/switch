@@ -111,7 +111,6 @@ class TurnActivity:
     status_only: bool = False
     # Stable recovery marker for a reserved platform post, not an answer token.
     publication_token: str | None = None
-    session_url: str | None = None
     notify_external_id: str | None = None
     # There was someone who should be told and nobody here to name: the agent
     # has no owner, or an owner who has claimed no account on this platform.
@@ -148,7 +147,6 @@ class ActivitySnapshot:
     items: list[Item]
     turn: TurnUpsert
     elapsed_seconds: float | None
-    session_url: str | None
     read_at: datetime
 
 

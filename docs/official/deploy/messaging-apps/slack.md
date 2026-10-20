@@ -238,7 +238,7 @@ If the bot is refused, make the groups by hand: one whose handle or name is exac
 
 ### Progress on the message being worked on
 
-Switch posts a compact status with the elapsed time and a **Console app** link in the agent's thread. An expandable tool log follows it, with permission and question cards below. The Console link appears when the server has a configured public URL.
+Switch posts a compact status with the elapsed time in the agent's thread. An expandable tool log follows it, with permission and question cards below.
 
 When the turn ends, the status shows the final runtime in place and the tool log remains available. The message that asked is marked with 👀 during the turn. Use `!interrupt @agent-name` to interrupt the agent.
 

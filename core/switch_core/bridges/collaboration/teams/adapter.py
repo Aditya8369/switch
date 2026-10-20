@@ -142,8 +142,7 @@ about how much a reader wants in front of them, not about what Teams accepts.
 It is also what keeps the fold rendering as one block to a line — past roughly
 this much, split into lines this short, `cards.body_blocks` runs out of its
 structural budget and sets the whole log as one double-spaced block instead.
-The log says how many calls it left out, and the status above it links Console,
-which has all of them.
+The log says how many calls it left out.
 """
 
 _THROTTLE_BACKOFF = 5.0
@@ -2048,7 +2047,6 @@ class TeamsAdapter(PlatformAdapter):
                     limit=max(1, limit - len(tail)),
                     markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
@@ -2175,9 +2173,8 @@ class TeamsAdapter(PlatformAdapter):
         "No activity." under a status line that already says the same is not
         something anyone pressed for.
 
-        The status above carries the Console link, so the log does not repeat
-        it, and it does not repeat the state line either — it would sit
-        directly under the copy of itself the card already shows.
+        The log does not repeat the state line: it would sit directly under the
+        copy of itself the card already shows.
         """
         if content.turn.status not in TURN_ENDED:
             return []
@@ -2191,7 +2188,6 @@ class TeamsAdapter(PlatformAdapter):
                 limit=_DETAIL_LIMIT,
                 markup=self.rich_markup(),
                 elapsed_seconds=content.elapsed_seconds,
-                session_url=None,
                 heading=False,
             )
         )

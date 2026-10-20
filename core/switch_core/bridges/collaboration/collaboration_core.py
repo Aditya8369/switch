@@ -236,7 +236,6 @@ class CollaborationCore:
         connections: AgentConnectionRegistry,
         active: bool,
         trust_client: TrustClient = NullTrustClient(),
-        gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
         # Whether this process holds the bridge (`ownership.py`): it listens to
@@ -334,7 +333,6 @@ class CollaborationCore:
                 listener=session_activity_listener,
                 session_factory=session_factory,
                 agent_online=connections.is_live,
-                gateway_public_url=gateway_public_url,
             )
             if adapter.draws_session_activity
             else None

@@ -1209,7 +1209,6 @@ class CollaborationBridgeLifecycleService:
                 id_server_name=self._config.id_server_name,
                 workspace_consumer_transport_user_id=workspace_consumer_record.transport_user_id,
                 max_attachment_bytes=self._config.agent_media_max_bytes,
-                gateway_public_url=self._config.gateway_public_url,
                 session_activity_listener=self._session_activity_listener,
                 session_activity_service=self._session_activity_service,
                 connections=self._connections,

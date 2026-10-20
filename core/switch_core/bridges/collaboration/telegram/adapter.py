@@ -391,21 +391,6 @@ class _TelegramMarkup(Markup):
     def code(self, text: str) -> str:
         return f"<code>{text}</code>"
 
-    def link(self, label: str, url: str) -> str:
-        """An anchor, or the address as tap-to-copy text where one would vanish.
-
-        Telegram renders `<a>` only for the schemes it knows, and the neutral
-        renderer's one link may be a `switchdash://` deeplink. An anchor
-        carrying that is not rendered as written — the API rejects the whole
-        message with "unsupported URL protocol", or the client keeps the label
-        and silently drops the address — so the degradation is made here and
-        made visible: the reader gets the address itself, in a span Telegram
-        makes tap-to-copy, instead of a label that goes nowhere.
-        """
-        if not url.lower().startswith(_LINKABLE_SCHEMES):
-            return f"<code>{html.escape(url, quote=False)}</code>"
-        return f'<a href="{html.escape(url, quote=True)}">{label}</a>'
-
 
 TELEGRAM_HTML = _TelegramMarkup()
 
@@ -1472,7 +1457,6 @@ class TelegramAdapter(PlatformAdapter):
                 limit=max(1, limit - len(tail)),
                 markup=markup,
                 elapsed_seconds=content.elapsed_seconds,
-                session_url=content.session_url,
                 mention=mention,
                 error_summary=content.error_summary,
                 tool_detail=False,
@@ -1517,8 +1501,7 @@ class TelegramAdapter(PlatformAdapter):
         fold shares that message rather than taking one of its own, so
         Telegram's limit is already the cap and a smaller number invented here
         would drop calls there was room to print. What does not fit is reported
-        by the log itself, and the status above it links the Console, which has
-        all of them.
+        by the log itself.
         """
         if content.turn.status not in TURN_ENDED:
             return ""
@@ -1531,7 +1514,6 @@ class TelegramAdapter(PlatformAdapter):
             limit=max(0, budget - len(_FOLD_OPEN) - len(_FOLD_CLOSE) - 1),
             markup=self.rich_markup(),
             elapsed_seconds=content.elapsed_seconds,
-            session_url=None,
             heading=False,
         )
         if not log:
