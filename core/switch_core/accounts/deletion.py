@@ -21,6 +21,12 @@ ahead would strand something nobody else could reach:
 A workspace the person is alone in is left empty rather than deleted: the
 schema cannot delete a workspace yet.
 
+A workspace the person has left, or been removed from, can still hold rows
+that name them: removing a member deletes their keys and connections but not
+what they own there. Those workspaces are found too (`with_former_workspaces`)
+and cleared the same way, or the final `DELETE FROM users` would fail on a
+foreign key after the other workspaces were already done.
+
 `USER_REFERENCES` names every column that points at a user and how this module
 deals with it; a test holds it to the database, so a new column that points at
 a user cannot be added without saying what happens to it here.
@@ -32,11 +38,12 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import Select, delete, exists, func, or_, select, update
 
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
 from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.base import Base
 from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
@@ -59,12 +66,15 @@ from switch_core.db.models import (
     ServiceTokenIssuance,
     Skill,
     Template,
+    Tenant,
     TenantJoinDomain,
     TenantMember,
     User,
     WorkspaceServiceSetting,
 )
+from switch_core.db.rls_ddl import GLOBAL_TABLES
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
@@ -132,6 +142,30 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
 }
 
 
+# The role recorded for a workspace the person is no longer a member of.
+FORMER_MEMBER = "former member"
+
+
+def _holds_rows_in_workspace(tenant_id: str, user_id: str) -> Select[tuple[bool]]:
+    """Whether any row this module deals with in `tenant_id` names `user_id`.
+
+    The columns come from `USER_REFERENCES`, so a column added there is
+    probed here too. Membership is left out: a former member has none. Names
+    its tenant as well as relying on the policy, so a connection the policy
+    does not apply to cannot find another workspace's rows."""
+    probes = [
+        exists().where(
+            Base.metadata.tables[table].c.tenant_id == tenant_id,
+            Base.metadata.tables[table].c[column] == user_id,
+        )
+        for (table, column), handling in USER_REFERENCES.items()
+        if table not in GLOBAL_TABLES
+        and table != "tenant_members"
+        and handling not in ("database cascades", "database clears")
+    ]
+    return select(or_(*probes))
+
+
 class ControllerRevoker(Protocol):
     """Revokes a machine, as removing it in Switch Console does. Agent
     management's, handed over by the wiring: core does not import it."""
@@ -167,6 +201,29 @@ class AccountDeletion:
     api_keys: ApiKeyStore
     templates: TemplateStore
     admin_email: str
+
+    async def with_former_workspaces(
+        self, user_id: str, workspaces: list[Workspace]
+    ) -> list[Workspace]:
+        """`workspaces`, the person's memberships, plus every other workspace
+        that still holds a row naming them, as `FORMER_MEMBER`."""
+        member_of = {workspace.id for workspace in workspaces}
+        former: list[Workspace] = []
+        for tenant_id in sorted(await all_tenant_ids(self.session_factory)):
+            if tenant_id in member_of:
+                continue
+            async with tenant_session(self.session_factory, tenant_id) as session:
+                if not await session.scalar(
+                    _holds_rows_in_workspace(tenant_id, user_id)
+                ):
+                    continue
+                tenant = await session.get(Tenant, tenant_id)
+                if tenant is None:
+                    raise RuntimeError(f"Workspace {tenant_id} vanished during lookup")
+                former.append(
+                    Workspace(id=tenant_id, name=tenant.name, role=FORMER_MEMBER)
+                )
+        return [*workspaces, *former]
 
     async def refusal(
         self, session: AsyncSession, user: User, workspaces: list[Workspace]

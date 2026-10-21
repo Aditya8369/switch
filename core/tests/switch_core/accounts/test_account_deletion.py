@@ -462,3 +462,70 @@ async def test_an_account_with_a_cloud_machine_is_refused(
         await session.commit()
         reason = await deletion.refusal(session, user, [])
     assert reason is not None and "cloud machine" in reason
+
+
+async def test_a_workspace_the_person_was_removed_from_is_cleared_too(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Removing a member leaves what they own in that workspace; deleting
+    their account later finds it there and deletes it, rather than failing on
+    the foreign keys it holds."""
+    deletion, _, _ = _deletion(session_factory)
+    left = f"left-{uuid.uuid4().hex[:6]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=left, slug=left, name="Left"))
+        await session.flush()
+        owner = await _user(session, "owner")
+        removed = await _user(session, "removed")
+        ids = {"owner": owner.id, "removed": removed.id}
+        await session.commit()
+    async with tenant_session(session_factory, left) as session:
+        await _member(session, left, owner, "owner")
+        invitation = await _invitation(session, left, removed)
+        reference = Reference(
+            tenant_id=left,
+            owner_id=removed.id,
+            read_visibility="public",
+            write_visibility="private",
+            type="url",
+            name="kept",
+            description="",
+            instructions="",
+            value={"url": "https://example.test"},
+        )
+        session.add(reference)
+        await session.commit()
+        ids["invitation"] = invitation.id
+        ids["reference"] = reference.id
+
+    async with session_factory() as session:
+        user = await session.get(User, ids["removed"])
+        assert user is not None
+        workspaces = await deletion.with_former_workspaces(user.id, [])
+        assert [(w.id, w.role) for w in workspaces] == [(left, "former member")]
+        assert await deletion.refusal(session, user, workspaces) is None
+        await deletion.delete(session, user, workspaces)
+
+    async with session_factory() as session:
+        assert await session.get(User, ids["removed"]) is None
+    async with tenant_session(session_factory, left) as session:
+        assert await session.get(Reference, ids["reference"]) is None
+        assert (
+            await session.scalar(
+                select(Invitation.created_by).where(Invitation.id == ids["invitation"])
+            )
+        ) == ids["owner"]
+
+
+async def test_a_workspace_holding_nothing_of_the_person_is_not_touched(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    deletion, _, _ = _deletion(session_factory)
+    other = f"other-{uuid.uuid4().hex[:6]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=other, slug=other, name="Other"))
+        await session.flush()
+        stranger = await _user(session, "stranger")
+        await session.commit()
+        workspaces = await deletion.with_former_workspaces(stranger.id, [])
+    assert all(w.id != other for w in workspaces)
