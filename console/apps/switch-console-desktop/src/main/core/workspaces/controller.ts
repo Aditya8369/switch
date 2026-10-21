@@ -560,7 +560,9 @@ export const workspacesController = createRPCController({
    * connection may create channels. Admin-only, like registering one; see
    * `updateBridgeOnServer` for the recoverable-failure mapping.
    */
-  updateBridge: (params: UpdateBridgeParams): Promise<UpdateBridgeResult> =>
+  updateBridge: (
+    params: Omit<UpdateBridgeParams, 'connectionConfig'>
+  ): Promise<UpdateBridgeResult> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateBridgeOnServer(server, {
         bridgeId: params.bridgeId,
