@@ -1296,7 +1296,8 @@ class RoomYamlService:
                             f"{len(matches)} matches; attach by 'id' instead"
                         )
                     attached_ids.append(matches[0])
-        return attached_ids
+        # A package named twice (by id and by name, say) is attached once.
+        return list(dict.fromkeys(attached_ids))
 
     async def _create_inline_references(
         self,
