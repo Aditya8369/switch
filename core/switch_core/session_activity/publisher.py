@@ -591,7 +591,9 @@ class AgentSessionActivityPublisher:
                 return
             post = recovered
         if row.state != "open":
-            await self._tell_thread(row, post, target)
+            await self._tell_thread(
+                row, post, target, answered_here=responder is not None
+            )
         if getattr(self._adapter, "removes_answered_cards", False) and decided(
             approval_request(row, decided_by)
         ):
@@ -663,7 +665,12 @@ class AgentSessionActivityPublisher:
         )
 
     async def _tell_thread(
-        self, row: ApprovalRequest, post: ApprovalRequestPost, target: _Target
+        self,
+        row: ApprovalRequest,
+        post: ApprovalRequestPost,
+        target: _Target,
+        *,
+        answered_here: bool,
     ) -> None:
         """Say once, in the thread of the turn that asked, how its card was settled.
 
@@ -676,6 +683,17 @@ class AgentSessionActivityPublisher:
             or post.thread_ref == target.thread_ref
             or post.thread_notice_at is not None
         ):
+            return
+        if target.channel_id != post.external_channel_id:
+            # The thread ref is a post in the room's current channel, not in
+            # the one the card went to.
+            logger.warning(
+                "Not telling the thread how request %s was settled: its card is "
+                "in channel %s, but the room is now bridged to channel %s.",
+                post.handle,
+                post.external_channel_id,
+                target.channel_id,
+            )
             return
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             stored = await self._card_posts.get(
@@ -692,7 +710,7 @@ class AgentSessionActivityPublisher:
         post.thread_notice_at = stored.thread_notice_at
         sent = await self._adapter.admin_message(
             post.external_channel_id,
-            _settled_note(row, post.handle),
+            _settled_note(row, post.handle, answered_here=answered_here),
             target.thread_ref,
         )
         if sent is None:
@@ -1485,17 +1503,22 @@ class AgentSessionActivityPublisher:
         return view, await self._running_turn(db, post.agent_id, post.session_id)
 
 
-def _settled_note(row: ApprovalRequest, handle: str) -> str:
-    """One line for the asking thread on how its request, carded at the root, went."""
+def _settled_note(row: ApprovalRequest, handle: str, *, answered_here: bool) -> str:
+    """One line for the asking thread on how its request, carded at the root, went.
+
+    "In the channel" only when it was answered from this bridge; an answer from
+    Console or anywhere else is not one the channel saw.
+    """
     asked = f"Request **{handle}** ({row.title})"
-    if row.state == "answered" and row.kind == "approval":
+    if row.state == "answered":
+        answered = f"{asked} was answered{' in the channel' if answered_here else ''}"
         label = next(
             (option["label"] for option in row.options if option["id"] == row.answer),
-            row.answer,
+            None,
         )
-        return f"{asked} was answered in the channel: **{label}**."
-    if row.state == "answered":
-        return f"{asked} was answered in the channel."
+        if row.kind == "approval" and label is not None:
+            return f"{answered}: **{label}**."
+        return f"{answered}."
     if row.state == "expired":
         return f"{asked} expired without an answer."
     return f"{asked} was closed without an answer."
