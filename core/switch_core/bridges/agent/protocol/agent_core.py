@@ -41,6 +41,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentProfileUpdate,
+    agent_facing_summary,
     assemble_agent_detail,
     describe_addressing,
     list_agent_summaries,
@@ -3952,7 +3953,7 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [s.model_dump() for s in summaries]
+        return [agent_facing_summary(s) for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str

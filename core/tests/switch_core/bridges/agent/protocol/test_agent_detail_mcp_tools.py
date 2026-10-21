@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -10,6 +14,14 @@ from switch_core.addressing import (
     owner_only_policy,
 )
 from switch_core.agent_icon import InvalidIconUrl, generated_icon_url
+from switch_core.bridges.agent.operations import agent_management
+from switch_core.bridges.agent.operations import context as op_context
+from switch_core.bridges.agent.operations import definitions as ops
+from switch_core.bridges.agent.operations.callctx import (
+    CallContext,
+    reset_call_context,
+    set_call_context,
+)
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
@@ -30,6 +42,8 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agents
 from switch_core.gateway.schemas import NamedEntry
+
+SECRET_ID = "someone-the-owner-let-in"
 
 
 class _NoBridges:
@@ -525,3 +539,85 @@ class TestUpdateAgentDetailReachesTheBridges:
         )
 
         assert adapter.updated == []
+
+
+def _keys(value: object) -> set[str]:
+    """Every key in a JSON-shaped value, at any depth."""
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in _keys(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in _keys(item)}
+    return set()
+
+
+class TestAgentFacingResultsKeepPoliciesPrivate:
+    """Who an agent's policy names is its owner's business: the operations
+    agents call return `addressing` and never the raw policy, for the agent,
+    its children, or a list of agents."""
+
+    @pytest.fixture
+    async def agents(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> AsyncIterator[tuple[str, str, str]]:
+        svc = _service(session_factory)
+        svc.config = SimpleNamespace(third_party_avatars_enabled=True)  # type: ignore[assignment]
+        monkeypatch.setattr(op_context, "_protocol", svc)
+        monkeypatch.setattr(agent_management, "_port", None)
+        async with session_factory() as session:
+            owner = await _make_user(session, "owner")
+            caller = await _make_agent(session, "caller", owner_id=owner.id)
+            target = await _make_agent(session, "target", owner_id=owner.id)
+            child = await _make_agent(
+                session, "child", owner_id=owner.id, parent_agent_id=target.id
+            )
+            for agent in (caller, target, child):
+                agent.addressing_policy = owner_only_policy(
+                    [SECRET_ID, f"{agent.name}-friend"]
+                ).model_dump()
+            await session.commit()
+            ids = (caller.id, target.id, child.id)
+        token = set_call_context(
+            CallContext(agent_id=ids[0], session_key=None, session=None)
+        )
+        yield ids
+        reset_call_context(token)
+
+    async def test_get_agent_detail_of_another_agent(
+        self, agents: tuple[str, str, str]
+    ) -> None:
+        _, target_id, child_id = agents
+
+        result = await ops.get_agent_detail(target_id)
+
+        assert "addressing_policy" not in _keys(result)
+        assert SECRET_ID not in json.dumps(result)
+        assert [child["id"] for child in result["children"]] == [child_id]
+        assert result["addressing"] == {"policy": "custom"}
+
+    async def test_get_agent_detail_of_itself_names_its_rules_once(
+        self, agents: tuple[str, str, str]
+    ) -> None:
+        caller_id, _, _ = agents
+
+        result = await ops.get_agent_detail(caller_id)
+
+        assert "addressing_policy" not in _keys(result)
+        assert result["addressing"]["rules"]
+
+    async def test_list_agents(self, agents: tuple[str, str, str]) -> None:
+        result = await ops.list_agents()
+
+        assert {agent["name"] for agent in result} == {"caller", "target", "child"}
+        assert "addressing_policy" not in _keys(result)
+        assert SECRET_ID not in json.dumps(result)
+
+    async def test_update_agent_detail(self, agents: tuple[str, str, str]) -> None:
+        _, target_id, _ = agents
+
+        result = await ops.update_agent_detail(target_id, description="new")
+
+        assert result["description"] == "new"
+        assert "addressing_policy" not in _keys(result)
+        assert SECRET_ID not in json.dumps(result)

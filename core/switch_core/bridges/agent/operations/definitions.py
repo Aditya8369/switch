@@ -47,7 +47,10 @@ from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
 )
-from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
+from switch_core.bridges.agent.protocol.agent_detail import (
+    AgentProfileUpdate,
+    agent_facing_detail,
+)
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
@@ -2170,7 +2173,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
     detail = await protocol.get_agent_detail(caller_id, agent_id)
     addressing = await protocol.get_agent_addressing(caller_id, agent_id)
     return {
-        **detail.model_dump(),
+        **agent_facing_detail(detail),
         "addressing": addressing.model_dump(exclude_none=True),
     }
 
@@ -2376,7 +2379,7 @@ async def update_agent_detail(
     detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
     who_may_address = await protocol.get_agent_addressing(caller_id, agent_id)
     response = {
-        **detail.model_dump(),
+        **agent_facing_detail(detail),
         "addressing": who_may_address.model_dump(exclude_none=True),
         "managed": managed,
     }
