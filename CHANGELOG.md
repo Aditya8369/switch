@@ -49,9 +49,17 @@ version of their own to them without also giving them a release of their own.
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
   person, through Airtable's MCP server. Each server's operator registers and
-  publishes an Airtable OAuth integration and names it in
-  `AIRTABLE_CLIENT_CONFIG_PATH` (Helm: `switchCore.airtableClientSecret`; see
-  `docs/old/airtable-setup.md`); without it, Airtable is listed as not set up.
+  publishes an Airtable OAuth integration and saves it under Connector apps,
+  or names it in `AIRTABLE_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.airtableClientSecret`); see `docs/old/airtable-setup.md`.
+  Without it, Airtable is listed as not set up.
+- **Connector apps fit a client that signs in through Switch Console.** An
+  app's entry in `GET /connector-apps` gains `redirect_uris` (every address
+  to register: one per loopback port where the vendor matches the port),
+  `needs_public_url` and `scopes`. An app whose sign-ins return to Switch
+  Console, such as Airtable's, is set up and checked without
+  `GATEWAY_PUBLIC_URL`, and its check sends a loopback redirect. The
+  dashboard's Connectors page walks Airtable's Builder Hub.
   Airtable offers no read-only sign-in, so every connection can write;
   changing tables and fields is not asked for, and Airtable refuses it.
   Airtable cannot revoke a sign-in, so disconnecting says so and points to

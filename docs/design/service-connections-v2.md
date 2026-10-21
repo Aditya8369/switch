@@ -460,8 +460,11 @@ needs configuring on the server. To roll back, add `atlassian` to
 Built from sign-in runs against free Airtable accounts; the operator's setup
 is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
 
-- Each server's operator registers an Airtable OAuth integration and names it
-  in `AIRTABLE_CLIENT_CONFIG_PATH`. Airtable offers dynamic registration, but
+- Each server's operator registers an Airtable OAuth integration and saves it
+  under Connector apps, or names it in `AIRTABLE_CLIENT_CONFIG_PATH`. The
+  Connector apps entry lists the five loopback redirects and the scopes the
+  integration must tick, needs no `GATEWAY_PUBLIC_URL`, and is checked with a
+  made-up code sent to the first loopback redirect. Airtable offers dynamic registration, but
   files the registered client under the Builder Hub of the first person to
   authorize it. There it stays limited to development, so Airtable refuses
   everyone else ("cannot be used outside of development"), and deleting it
@@ -494,8 +497,9 @@ is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
   tried: no Enterprise account was at hand.
 
 To connect: Settings, Connections in Switch Console, then Airtable. To roll
-back, add `airtable` to `DISABLED_SERVICES`, unset
-`AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+back, add `airtable` to `DISABLED_SERVICES`, remove its client under
+Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
 
 ## Google Workspace
 

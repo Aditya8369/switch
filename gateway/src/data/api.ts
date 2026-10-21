@@ -2359,6 +2359,12 @@ export interface ConnectorApp {
   load_error: string | null;
   /** Where the vendor sends people back to Switch; null without a GATEWAY_PUBLIC_URL it accepts. */
   redirect_uri: string | null;
+  /** Every address to register at the vendor: Core's own callback, or one per port of Switch Console's listener. */
+  redirect_uris: string[];
+  /** Whether the vendor sends people back to the server, so it needs GATEWAY_PUBLIC_URL. */
+  needs_public_url: boolean;
+  /** The scopes a sign-in asks for, where the vendor's app must list them. */
+  scopes: string[];
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
   install_url: string | null;

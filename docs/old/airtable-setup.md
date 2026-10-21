@@ -53,6 +53,31 @@ In Airtable, open **Builder Hub**, then **OAuth integrations**, then
 
 ## Give Switch the client
 
+In Switch Console, open **Admin** in the sidebar and **Connector apps** under
+Server, or in the Switch dashboard open **Connectors** beside Users. Both are
+shown to the server's operator only, and only with the server's
+`service_connections` flag on. Choose **Set up Airtable**. The dialog walks
+the steps above, with the five redirect URLs to copy and the scopes to tick;
+paste the integration's **Client ID** and **Client secret**, and choose
+**Check and save**. Switch first asks Airtable about the client, and saves it
+only if Airtable accepts it. The secret is stored encrypted, like every other
+stored credential (see [key rotation](key-rotation.md)), and is in use at
+once: nobody needs to restart anything.
+
+Airtable does not need `GATEWAY_PUBLIC_URL`: its sign-ins return to Switch
+Console on the person's own computer, so Airtable can be set up on a server
+without a public address.
+
+The card then offers **Check it works**, **Update secret**, **Use a different
+app** and **Remove**, as for Google Workspace (see
+[google-workspace-setup.md](google-workspace-setup.md)).
+
+### Or, from configuration
+
+The client can be set in the server's configuration instead. **Configuration
+wins**: while it is set, Switch uses it, a client saved in the dashboard is
+ignored, and saving from the dashboard is refused.
+
 Write the integration's client id and secret to a JSON file on the server,
 readable by switch-core alone and never committed anywhere:
 
@@ -71,7 +96,9 @@ With the Helm chart, put `client.json` in a Secret and name it in
 `switchCore.airtableClientSecret`.
 
 If the variable is set but the file cannot be read or holds anything else,
-switch-core does not start, and says why.
+switch-core does not start, and says why. To move a configured client into the
+dashboard, choose **Manage it here instead** on its card, then remove the
+variable and restart switch-core; it is the same client, so nobody reconnects.
 
 ## Airtable Enterprise
 
@@ -105,7 +132,8 @@ next token requests:
 
 - add it to `DISABLED_SERVICES`, e.g.
   `DISABLED_SERVICES='{"airtable": "Paused while we review access."}'`;
-- unset `AIRTABLE_CLIENT_CONFIG_PATH`.
+- remove its client under Connector apps;
+- unset `AIRTABLE_CLIENT_CONFIG_PATH`, where it is set from configuration.
 
 ## Limits worth knowing
 

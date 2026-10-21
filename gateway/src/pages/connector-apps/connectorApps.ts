@@ -46,6 +46,7 @@ export interface SecretField {
 }
 
 const GOOGLE = "google-workspace";
+const AIRTABLE = "airtable";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -242,6 +243,19 @@ export function audienceText(audience: Audience): string {
 
 const GOOGLE_CLOUD = "https://console.cloud.google.com";
 
+/** One step per address: a vendor that matches the port needs every one. */
+function redirectSteps(intro: string, redirects: string[]): Instruction[] {
+  if (redirects.length <= 1) return [{ text: intro, copy: redirects[0] ?? null, link: null }];
+  return [
+    { text: intro, copy: null, link: null },
+    ...redirects.map((redirect, index) => ({
+      text: `Redirect URL ${index + 1} of ${redirects.length}:`,
+      copy: redirect,
+      link: null,
+    })),
+  ];
+}
+
 /** Step 1 of setting up: creating the app at the vendor, one page at a time. */
 export function setupInstructions(
   app: ConnectorApp,
@@ -280,6 +294,38 @@ export function setupInstructions(
         link: null,
       },
     ];
+  if (app.slug === AIRTABLE)
+    return [
+      {
+        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that stops every connection.",
+        copy: null,
+        link: { label: "Open Builder Hub", href: "https://airtable.com/create/oauth" },
+      },
+      {
+        text: "Name it as people should see it on Airtable's consent page, for example Switch.",
+        copy: null,
+        link: null,
+      },
+      ...redirectSteps(
+        "Under OAuth redirect URLs, add all of these. Airtable matches the port, and Switch Console uses whichever one is free:",
+        app.redirect_uris,
+      ),
+      {
+        text: `Under Scopes, tick exactly these: ${app.scopes.join(", ")}.`,
+        copy: null,
+        link: null,
+      },
+      {
+        text: "Register the integration. On its page, generate a client secret, and copy the Client ID and the secret.",
+        copy: null,
+        link: null,
+      },
+      {
+        text: "Fill in its support email, privacy policy URL and terms of service URL. Until all three are set, Airtable lets only the owner connect.",
+        copy: null,
+        link: null,
+      },
+    ];
   if (app.slug === GOOGLE)
     return [
       {
@@ -313,13 +359,10 @@ export function setupInstructions(
         link: { label: "Open the API Library", href: `${GOOGLE_CLOUD}/apis/library` },
       },
     ];
-  return [
-    {
-      text: `Register an OAuth client for Switch at ${app.name}, with this redirect URI:`,
-      copy: redirect,
-      link: null,
-    },
-  ];
+  return redirectSteps(
+    `Register an OAuth client for Switch at ${app.name}, with ${app.redirect_uris.length > 1 ? "these redirect URIs" : "this redirect URI"}:`,
+    app.redirect_uris,
+  );
 }
 
 export const UPDATE_SECRET_NOTE = "Nobody is disconnected.";
@@ -353,6 +396,7 @@ export interface ChecklistItem {
 const HELM_VALUES: Record<string, string> = {
   github: "switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath",
   [GOOGLE]: "switchCore.googleWorkspaceClientSecret",
+  [AIRTABLE]: "switchCore.airtableClientSecret",
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
@@ -369,6 +413,16 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
 }
 
 export const sentBackTo = (publicUrl: string): string => `People are sent back to ${publicUrl}.`;
+
+/** Whether the page warns that GATEWAY_PUBLIC_URL is unset: only an app that needs it is held up. */
+export function missingPublicUrl(apps: ConnectorApp[], publicUrl: string | null): boolean {
+  return publicUrl === null && apps.some((app) => app.needs_public_url);
+}
+
+/** Whether an app can be set up or changed here now. */
+export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {
+  return (publicUrl === null && app.needs_public_url) || app.setup_blocked !== null;
+}
 
 export const PUBLIC_URL_BANNER =
   "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";

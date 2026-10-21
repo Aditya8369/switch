@@ -8,7 +8,8 @@ request it must refuse, and reads which refusal it chose.
   slug; a code exchange with a made-up code then tells a wrong client secret
   (`incorrect_client_credentials`) from a right one (`bad_verification_code`).
 - **OAuth client**: a code exchange at the token endpoint with a made-up
-  code, sent to Switch's own redirect URI. `invalid_grant` means the client
+  code, sent to a redirect URI the client registers: Core's own callback, or
+  Switch Console's first loopback one. `invalid_grant` means the client
   id and secret are right; `invalid_client` that they are not; and
   `redirect_uri_mismatch` that the redirect URI is not registered.
 

@@ -32,6 +32,7 @@ import {
   type CardAction,
   cardState,
   type CardState,
+  changeBlocked,
   configuredSentence,
   type MenuAction,
   menuActions,
@@ -172,7 +173,7 @@ export default function ConnectorAppCard({
   const primary = primaryAction(app, checkFailure);
   const actions = menuActions(app);
   const summary = secretSummary(app);
-  const blocked = publicUrl === null || app.setup_blocked !== null;
+  const blocked = changeBlocked(app, publicUrl);
 
   const check = async () => {
     setChecking(true);
