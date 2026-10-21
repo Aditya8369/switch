@@ -221,9 +221,9 @@ unaffected.
 
 Off by default. With the `follow_the_conversation` feature flag on, a person's
 message that names nobody can still reach an agent: a reply in a thread the
-agent owns, their next message after the agent answered them in the channel,
-or any message in a room whose assigned agent it is. People turn the
-follow-ups off per room with `!follow-ups off`.
+agent owns, their next channel message in an exchange with the agent that
+nobody else interrupted, or any message in a room whose assigned agent it is.
+People turn the follow-ups off per room with `!follow-ups off`.
 
 ```yaml
 switchCore:
@@ -234,8 +234,10 @@ switchCore:
 ```
 
 The chart sets `FOLLOW_THE_CONVERSATION_WINDOW_SECONDS` from `windowSeconds`
-only while the flag is on. It is how long after an agent's answer a person's
-next channel message still counts as a follow-up (1 to 3600 seconds).
+only while the flag is on (1 to 3600 seconds). A channel exchange counts only
+while every gap in it, from a person's request to the agent's answer and from
+that answer to their next message, is within the window; after a break, people
+mention the agent again.
 
 ## Agent management
 

@@ -390,12 +390,14 @@ switchCore:
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
   # Follow the conversation: a person's message that names nobody can reach the
-  # agent they are talking to (a thread it owns, a reply right after it
-  # answered, a room's assigned agent). Turned on by the
-  # "follow_the_conversation" feature flag (featureFlags.enabled below).
+  # agent they are talking to (a thread it owns, their next message in a
+  # channel exchange with it that nobody interrupted, a room's assigned agent).
+  # Turned on by the "follow_the_conversation" feature flag
+  # (featureFlags.enabled below).
   followTheConversation:
-    # How long after an agent's answer a person's next channel message still
-    # counts as a follow-up to it (FOLLOW_THE_CONVERSATION_WINDOW_SECONDS),
+    # A channel exchange counts only while every gap in it (request to answer,
+    # answer to the next message) is within this many seconds; after a break,
+    # people mention the agent again. FOLLOW_THE_CONVERSATION_WINDOW_SECONDS,
     # 1 to 3600.
     windowSeconds: 300
   # The agents controller release switch-core tells every controller to run

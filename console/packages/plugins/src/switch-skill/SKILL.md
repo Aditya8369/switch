@@ -124,9 +124,12 @@ does, and there is no polling tool to call.
 
   Where a server has "follow the conversation" switched on, a person's message
   can reach you without naming you: a reply in a thread where you spoke, or
-  were tagged, more recently than any other agent; their next message after
-  you have just answered them in the channel; or any message in a room where
-  you are the assigned agent. Only a person's text message that @-mentions
+  were tagged, more recently than any other agent; their next channel message
+  in an exchange with you that nobody else has interrupted, as long as every
+  gap in it (their request to your answer, your answer to this message) is
+  within the server's window, five minutes by default (after a break they
+  need to mention you again); or any message in a room where you are the
+  assigned agent. Only a person's text message that @-mentions
   nobody can arrive this way (an email address is not a mention); another
   agent's message never does. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
