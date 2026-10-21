@@ -15,6 +15,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -438,11 +439,44 @@ async def delete_my_account(
         raise HTTPException(
             status_code=400, detail="That email doesn't match this account."
         )
-    workspaces = [
-        Workspace(id=m.id, name=m.name, role=m.role)
-        for m in await list_tenant_memberships(session_factory, user_store, user.id)
-    ]
-    deletion = AccountDeletion(
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        config,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, user.id
+    )
+    reason = await deletion.refusal(session, user, workspaces)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
+    await deletion.delete(session, user, workspaces)
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+def _account_deletion(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    protocol: AgentCore,
+    broker: ServiceBroker,
+    resource_service: ResourceService,
+    room_service: RoomService,
+    user_store: UserStore,
+    agent_store: AgentStore,
+    api_key_store: ApiKeyStore,
+    template_store: TemplateStore,
+    config: SwitchConfig,
+) -> AccountDeletion:
+    return AccountDeletion(
         session_factory=session_factory,
         protocol=protocol,
         # Set by the wiring when agent management runs (`switch_core.main`).
@@ -457,13 +491,19 @@ async def delete_my_account(
         templates=template_store,
         admin_email=config.gateway_admin_email,
     )
-    workspaces = await deletion.with_former_workspaces(user.id, workspaces)
-    reason = await deletion.refusal(session, user, workspaces)
-    if reason is not None:
-        raise HTTPException(status_code=409, detail=reason)
-    await deletion.delete(session, user, workspaces)
-    response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+
+
+async def _workspaces_to_delete(
+    deletion: AccountDeletion,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[Workspace]:
+    memberships = [
+        Workspace(id=m.id, name=m.name, role=m.role)
+        for m in await list_tenant_memberships(session_factory, user_store, user_id)
+    ]
+    return await deletion.with_former_workspaces(user_id, memberships)
 
 
 @router.put("/auth/me/password")
@@ -530,3 +570,88 @@ async def create_user(
         role=user.role,
         created_at=str(user.created_at),
     )
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """The deployment operator deletes someone's whole account.
+
+    The same deletion, and the same refusals, as `DELETE /auth/me`: this only
+    changes who asks. The operator's own account is refused, so that leaving
+    the server is always the person's own act. Whether it went ahead or was
+    refused lands in the server's audit log, since an account spans every
+    workspace and no one workspace's history is the place for it.
+
+    `session` is bound to the operator's own workspace, like the other user
+    routes, but carries only rows that belong to no workspace: the `users`
+    row, its sign-in identities and the audit event. Each workspace the
+    account is in is left in a `tenant_session` of its own.
+    """
+    if user_id == admin.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "That's your own account. Delete it from your account settings instead."
+            ),
+        )
+    target = await user_store.get(session, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        config,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, target.id
+    )
+    reason = await deletion.refusal(session, target, workspaces)
+    if reason is not None:
+        await record_server_audit_event(
+            session,
+            actor_user_id=admin.id,
+            action=ServerAuditAction.USER_DELETION_REFUSED,
+            target_type="user",
+            target_id=target.id,
+            details={"outcome": "refused", "reason": reason},
+        )
+        await session.commit()
+        raise HTTPException(status_code=409, detail=reason)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_DELETED,
+        target_type="user",
+        target_id=target.id,
+        details={"outcome": "deleted", "workspaces": len(workspaces)},
+    )
+    # The event commits with the `users` row, so it never records a deletion
+    # that did not finish.
+    await deletion.delete(session, target, workspaces)
+    logger.info("Operator %s deleted the account of user %s", admin.id, target.id)
+    return {"ok": True}

@@ -57,6 +57,8 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    USER_DELETED = "user.deleted"
+    USER_DELETION_REFUSED = "user.deletion_refused"
 
 
 async def record_audit_event(
