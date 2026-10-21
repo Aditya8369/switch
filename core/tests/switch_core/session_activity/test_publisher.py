@@ -295,13 +295,56 @@ async def test_a_request_outside_the_bridge_is_not_posted(
     assert platform.drawn == []
 
 
-async def test_a_card_goes_into_the_thread_it_answers(
+async def test_a_card_goes_to_the_channel_root_not_the_thread_that_asked(
     service, publisher, platform, bridged, session_factory
 ):
     await _open(service, bridged.room_id, thread_id=ASKED)
     [posted] = await platform.wait_for(1)
-    assert posted.thread_ref == ASKED_POST
-    assert (await _card_post(session_factory)).thread_ref == ASKED_POST
+    assert posted.call == "post_rich"
+    assert posted.thread_ref is None
+    assert (await _card_post(session_factory)).thread_ref is None
+
+
+async def test_the_thread_that_asked_is_told_once_how_its_card_was_settled(
+    service, publisher, platform, bridged, people, session_factory
+):
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_for(1)
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
+    )
+    await platform.wait_until(lambda: len(platform.of("admin_message")) == 1)
+    [note] = platform.of("admin_message")
+    assert note.thread_ref == ASKED_POST
+    assert note.content == (
+        "Request **A1** (Run `rm -rf build`?) was answered in the channel: **Allow**."
+    )
+    assert (await _card_post(session_factory)).thread_notice_at is not None
+
+    publisher._enqueue(("approval", AGENT, SESSION, "req-1"))
+    await asyncio.sleep(0.5)
+    assert len(platform.of("admin_message")) == 1
+
+
+async def test_a_card_for_a_turn_without_a_thread_tells_no_thread(
+    service, publisher, platform, bridged, people
+):
+    await _open(service, bridged.room_id)
+    await platform.wait_for(1)
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("deny"),
+        answerer=PlatformPerson(people.owner),
+    )
+    await platform.wait_until(lambda: len(platform.of("update_rich")) == 1)
+    await asyncio.sleep(0.3)
+    assert platform.of("admin_message") == []
 
 
 async def test_a_refused_post_releases_its_handle(
