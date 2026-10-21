@@ -103,6 +103,17 @@ class _Rooms:
         self.archived.append(room_id)
 
 
+class _Clients:
+    def __init__(self) -> None:
+        self.reconciled: list[str] = []
+
+    async def reconcile_tenant(self, tenant_id: str) -> None:
+        self.reconciled.append(tenant_id)
+
+    def announce(self, tenant_id: str) -> None:
+        pass
+
+
 class _SignInFlows:
     async def discard_for_user(self, *_args: Any) -> None:
         pass
@@ -132,6 +143,7 @@ def _deletion(
         agents=AgentStore(),
         api_keys=ApiKeyStore(),
         templates=TemplateStore(),
+        clients=_Clients(),
         admin_email=ADMIN_EMAIL,
     )
     return deletion, protocol, rooms
@@ -414,7 +426,7 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
         ) == "account.deleted"
 
 
-async def test_a_workspace_left_empty_stays_with_nothing_pointing_at_the_person(
+async def test_a_workspace_left_empty_is_deleted_with_its_setup(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
@@ -437,11 +449,56 @@ async def test_a_workspace_left_empty_stays_with_nothing_pointing_at_the_person(
         assert await deletion.refusal(session, user, workspaces) is None
         await deletion.delete(session, user, workspaces, actor_id=user.id)
 
+    assert deletion.clients.reconciled == [solo]  # type: ignore[attr-defined]
     async with session_factory() as session:
         assert await session.get(User, user_id) is None
-        assert await session.get(Tenant, solo) is not None
+        assert await session.get(Tenant, solo) is None
     async with tenant_session(session_factory, solo) as session:
         assert await session.scalar(select(Invitation.id)) is None
+        actions = set(
+            await session.scalars(
+                select(AuditEvent.action).where(AuditEvent.tenant_id == solo)
+            )
+        )
+        assert actions == {"account.deleted", "tenant.deleted"}
+
+
+async def test_a_workspace_left_with_a_room_stays_empty(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Rooms outlive the person who made them, so a workspace still holding
+    one is left, with nobody in it, rather than deleted."""
+    deletion, _, _ = _deletion(session_factory)
+    solo = f"solo-{uuid.uuid4().hex[:6]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=solo, slug=solo, name="Solo"))
+        await session.flush()
+        alone = await _user(session, "alone")
+        user_id = alone.id
+        await session.commit()
+    async with tenant_session(session_factory, solo) as session:
+        await _member(session, solo, alone, "owner")
+        session.add(
+            Room(
+                tenant_id=solo,
+                transport_room_id=f"!{uuid.uuid4().hex}:test",
+                name="kept",
+                description="",
+                created_by=alone.id,
+                owner_id=alone.id,
+            )
+        )
+        await session.commit()
+
+    workspaces = [Workspace(solo, "Solo", "owner")]
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        await deletion.delete(session, user, workspaces)
+
+    async with session_factory() as session:
+        assert await session.get(Tenant, solo) is not None
+    async with tenant_session(session_factory, solo) as session:
         assert await session.scalar(select(TenantMember.user_id)) is None
 
 
