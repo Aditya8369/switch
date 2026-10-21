@@ -78,7 +78,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, canAdminTenant } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -178,7 +178,7 @@ export default function AgentDetailPage() {
         <Divider />
         <AddressingPolicySection
           agent={agent}
-          canEdit={isOwner}
+          canEdit={isOwner || canAdminTenant}
           onUpdated={refetch}
         />
         <AgentManagementSection

@@ -138,7 +138,7 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} onChanged={refetch} />
+        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
         <RoomResourcesSection roomId={room.id} />
         <Divider />
@@ -712,9 +712,11 @@ function EditableFieldsSection({
 
 function ParticipantsSection({
   room,
+  canWrite,
   onChanged,
 }: {
   room: RoomDetail;
+  canWrite: boolean;
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
@@ -859,10 +861,12 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                working ? undefined : (next) => handleToggleJoinEvents(id, next)
+                working || !canWrite
+                  ? undefined
+                  : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                isFixedMembership || working
+                isFixedMembership || working || !canWrite
                   ? undefined
                   : () => handleRemoveAgent(id)
               }
@@ -874,7 +878,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {!isFixedMembership && (
+        {!isFixedMembership && canWrite && (
           <>
             <Button
               size="small"
