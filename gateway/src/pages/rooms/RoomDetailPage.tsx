@@ -140,9 +140,9 @@ export default function RoomDetailPage() {
         <Divider />
         <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
-        <RoomResourcesSection roomId={room.id} />
+        <RoomResourcesSection roomId={room.id} canWrite={canWrite} />
         <Divider />
-        <RoomLinkedRoomsSection roomId={room.id} />
+        <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
         <Divider />
         <RoomGraphView roomId={room.id} />
         {room.bridge_id && (
@@ -925,25 +925,29 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AddIcon />}
-            onClick={() => setAddUserOpen(true)}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Add user
-          </Button>
-          <SearchablePickerDialog
-            open={addUserOpen}
-            title="Add users"
-            searchPlaceholder="Search users…"
-            submitLabel="Add"
-            options={addableUserOptions}
-            loading={bridgeUsersLoading}
-            onClose={() => setAddUserOpen(false)}
-            onSubmit={handleAddUsers}
-          />
+          {canWrite && (
+            <>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<AddIcon />}
+                onClick={() => setAddUserOpen(true)}
+                sx={{ alignSelf: "flex-start" }}
+              >
+                Add user
+              </Button>
+              <SearchablePickerDialog
+                open={addUserOpen}
+                title="Add users"
+                searchPlaceholder="Search users…"
+                submitLabel="Add"
+                options={addableUserOptions}
+                loading={bridgeUsersLoading}
+                onClose={() => setAddUserOpen(false)}
+                onSubmit={handleAddUsers}
+              />
+            </>
+          )}
         </Box>
       )}
     </Stack>
