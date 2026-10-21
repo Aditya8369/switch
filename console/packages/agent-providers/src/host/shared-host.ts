@@ -17,6 +17,7 @@ import {
   roomControlRefusal,
 } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import { postedToRoom } from './room-posts';
 import {
   planAttachments,
   roomCommand,
@@ -154,28 +155,6 @@ export function sessionBusy(
   add('reset_waiting', reset === 'holding' ? 1 : 0);
   add('room_pending', reset === 'ended' ? 0 : roomsPending);
   return { busy: reasons.length > 0, reasons };
-}
-
-/**
- * The Switch tools that put something the agent wrote in front of a room: a
- * turn that called one of them has answered. Each posts to the room the
- * session is connected to (only `send_attachment` can name another), so a
- * call counts whichever room it reached.
- */
-export const ROOM_POSTING_TOOLS = new Set([
-  'post_message',
-  'send_targeted_message',
-  'send_attachment',
-]);
-
-/** Whether a Switch tool result is a post that landed. */
-export function postedToRoom(name: string, result: unknown): boolean {
-  if (!ROOM_POSTING_TOOLS.has(name)) return false;
-  return (
-    typeof result === 'object' &&
-    result !== null &&
-    (result as { isError?: unknown }).isError !== true
-  );
 }
 
 class TransportError extends Error {}
@@ -409,8 +388,10 @@ export async function runSharedHost(
     const hosted = host;
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
-        if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        const posted = postedToRoom(name, result);
+        if (posted) hosted.agentPostedToRoom(posted.roomId);
       }) ?? null;
+    parentChannel?.setToolOrigin(() => hosted.activeOriginRoom());
 
     options.serviceNotices.attach((message) => host!.serviceFallback(message));
 
@@ -956,6 +937,7 @@ export async function runSharedHost(
     if (!signal.aborted) failure ??= error;
   } finally {
     stopHearingTools?.();
+    options.parent?.setToolOrigin(() => null);
     stopped.abort();
     await reporting;
     try {
