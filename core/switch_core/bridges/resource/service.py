@@ -13,6 +13,7 @@ from switch_core.authz import (
     can,
     can_manage,
     require,
+    require_visibility_change,
     validate_visibility_pair,
 )
 from switch_core.bridges.resource.events import ResourceLoadEntry
@@ -364,6 +365,13 @@ class ResourceService:
         if reference_type is None:
             raise ValueError(f"Reference type not found: {type_}")
         require(Principal(user_id, is_admin), "write", reference_type)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            reference_type,
+            read_visibility,
+            write_visibility,
+            "reference type",
+        )
         validate_visibility_pair(
             read_visibility
             if read_visibility is not None
@@ -620,6 +628,13 @@ class ResourceService:
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "write", ref)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            ref,
+            read_visibility,
+            write_visibility,
+            "reference",
+        )
         # Validate the *resulting* visibility pair (partial updates must not
         # leave a writable-but-unreadable resource).
         validate_visibility_pair(
@@ -1261,6 +1276,13 @@ class ResourceService:
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "write", pkg)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            pkg,
+            read_visibility,
+            write_visibility,
+            "package",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else pkg.read_visibility,
             write_visibility if write_visibility is not None else pkg.write_visibility,
