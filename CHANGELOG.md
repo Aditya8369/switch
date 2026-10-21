@@ -44,7 +44,23 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.31.0] - 2026-10-20
+
 #### Added
+- **switch-core can run as multiple replicas.** The multi-pod stack lets more
+  than one switch-core replica serve a deployment: membership and signals cross
+  pods, agent events are read from Postgres rather than an in-memory buffer so
+  any replica serves them, and cross-replica idempotency ids keep a retried
+  write from being applied twice (#886, #815, #858).
+- **One address per Switch server.** A deployment is reached at a single address
+  instead of separate gateway and API hosts, simplifying ingress and the public
+  URL configuration (#753).
+- **Agents can follow a conversation without being `@`-mentioned.** An agent can
+  be set to pick up messages in a thread it is part of without being tagged each
+  time (#869).
+- **Templates create managed agents through agent management** (#851).
+- **Event-loop stall probe.** switch-core measures event-loop stalls with a
+  100 ms probe and reports them, so a blocked loop is visible (#713).
 - **The server's operator sets up connector apps from the dashboard.** A
   Connectors page, beside Users and for the operator alone, sets up the
   GitHub App and Google Workspace's OAuth client (and any static client the
@@ -136,6 +152,27 @@ version of their own to them without also giving them a release of their own.
   agents with whether each holds a grant and whether others can address it.
 
 #### Changed
+- **A caller repeating a refused request is answered with 429 from memory,**
+  rather than re-doing the refused work each time (#750).
+- **Console links work on chat platforms.** A `switchdash://open/...` link an
+  agent posts reaches Slack, Discord, Telegram and Teams as a clickable https
+  link to the new public `GET /deeplink/open/{page}`, which opens that page in
+  Switch Console. A server with no public address (`GATEWAY_PUBLIC_URL`) sends
+  the link's label and the page's name instead. Mattermost servers that allow
+  the `switchdash` scheme get the link unchanged.
+- **Deleting a room can retire its channel.** `DELETE /gateway/rooms/{id}`
+  and bulk delete take `retire_channel` (default false). When it is set,
+  Switch archives the room's Slack or Mattermost channel, deletes its Discord
+  channel, or has the bot leave its Telegram chat; Teams channels and direct
+  messages stay. Without it, the channel is left as it is. The delete
+  responses say what happened (`channel`), and room detail says what retiring
+  would do (`channel_on_delete`). A channel that could not be retired is
+  reported, and the room is still deleted. Disconnecting a messaging app
+  leaves channels as they are.
+- **The Switch expert is offered only where switch-buddy is not.** A server
+  with agent management and switch-buddy on serves switch-buddy alone; every
+  other server keeps the official Switch expert. Agents made from it are
+  unchanged.
 - **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
   default `TELEMETRY_ENDPOINT` (Helm `switchCore.telemetry.endpoint`) was
   `https://telemetry.flintai.dev`, an older name for the same relay that is
@@ -163,6 +200,31 @@ version of their own to them without also giving them a release of their own.
   route is gone, for GitHub's flow as well; a Switch Console from before this
   release cannot finish a sign-in against this server, so update both
   together. Migration `bf016e18bc16`, expand-only.
+- **New agents answer their owner and the owner's own agents.** Every path
+  that creates an agent without an addressing choice (registration,
+  `create_agent`, template runs, switch-buddy's template) now gives it the
+  "me and my agents" policy instead of owner-only, so the agents one person
+  creates can address each other out of the box. A template agent with no
+  `addressing` gets `owner-agents`. Other people and their agents stay out,
+  an explicit owner-only choice is kept, and existing agents keep their
+  policy. The "others can use these grants" warning no longer counts the
+  owner's own agents.
+#### Removed
+- **The `/admin` command.** It did nothing and is no longer offered in rooms
+  or registered with Slack, Discord or Telegram; a command without a handler
+  is never registered.
+- **Breaking (agent-facing): the task protocol is removed.** The
+  `delegate_task`, `accept_task`, `update_task`, `finalise_task`,
+  `cancel_task` and `list_tasks` tools are gone from MCP and the operations
+  door, the `/agents/{id}/tasks…` HTTP routes answer `404`, and no task events
+  are delivered. The documentation has said not to use them since 0.9.x. Agents
+  coordinate with `post_message` and `send_targeted_message`, and the
+  instructions they receive no longer mention tasks. `connect_to_room` drops
+  each participant's `can_delegate` and `can_accept`, and neither `!status`
+  nor the dashboard shows them. Stored
+  integration profiles that still carry `task_protocol` load as before, with
+  the key ignored. Existing rows in the `tasks` table are left in place; no
+  migration.
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
   or a host with percent-encoding or non-ASCII characters, is refused: browsers
@@ -1766,7 +1828,41 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **Settings → Agent providers keeps this computer's report current.** It
+  prefers the report from the server Console is on, rereads it while open and
+  after the controller reports again, and the install section says so when
+  Console's own check disagrees with the controller's.
+
+### [0.40.1] - 2026-10-21
+
 #### Added
+- **Managed agents and template-made rooms are reported, and managed servers
+  point at the current relay** (#963).
+
+#### Fixed
+- **Search under agent management shows managed agents, not legacy ones**
+  (#975).
+- **Deleting a managed agent removes the Console agent it was moved from**
+  (#974).
+
+### [0.40.0] - 2026-10-20
+
+#### Added
+- **Chat-first Console backed by Switch rooms.** Console leads with agents and
+  rooms and a chat view, with a room summary shown in place and quieter tool
+  activity in chats (#716, #934).
+- **Guided first-run onboarding with switch-buddy.** A fresh install walks
+  through onboarding and ends in a chat with switch-buddy — an assistant that
+  knows its context and can hand you Console links — with an intro animation
+  and page entrances (#879, #915, #942, #932, #930).
+- **Run a local Switch server without Docker** (#915).
+- **Delete my account** from Console (#915).
+- **Stable ships with onboarding and the managed server's feature flags on
+  (Switch Cloud off).** A stable build now shows the first-run onboarding, and
+  the Switch server Console manages starts with agent management, agent chats,
+  switch-buddy, follow-the-conversation and service connections enabled. Switch
+  Cloud stays off in stable.
 - **The server's operator sets up connector apps in Console.** For the
   operator, the Admin page has a Connector apps section under Server, below
   the workspace's switches: the GitHub App and Google Workspace's OAuth
@@ -1793,6 +1889,21 @@ version of their own to them without also giving them a release of their own.
   before. Older versions of Console load those images whatever the server says.
 
 #### Changed
+- **Link your account right after adding a messaging app.** Every way into
+  connecting an app, including a Console link from switch-buddy, now ends by
+  offering to link your own account on it (Telegram explains how instead).
+  The server's Home page keeps a **Link your … account** prompt until you do.
+- **The delete-room dialog asks about the channel.** Deleting a room keeps
+  its channel unless you tick **Also archive the … channel** (or delete it on
+  Discord, or have the bot leave on Telegram); the dialog says what will
+  happen either way, and shows what to clean up by hand when the server could
+  not retire it. Teams channels always stay. Needs a server from this
+  release; an older one gets "the channel may remain".
+- **A new agent starts on "Me and my agents".** "Who can talk to your agent"
+  now opens on **Me and my agents (default)**: you and any agent you own.
+  **Only me** is still one choice away, and agents that already exist keep
+  their setting. A template agent with no `addressing` is created the same
+  way.
 - **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
   `telemetry.flintai.dev`, an older name for the same relay that is being
   retired. Only where it is sent changes; what is sent, and the opt-out, do not.
@@ -1886,11 +1997,14 @@ version of their own to them without also giving them a release of their own.
   "CLI not installed" there while Switch buddy was using it.
 - **Settings → Agent providers and Switch buddy agree on this computer's
   providers.** When this computer's agents controller has reported to a
-  signed-in server (the one Console is on first), Settings shows that report,
-  the one buddy and Switch go by, rereads it while open, and its refresh asks
-  the controller to check again. Console's own check is used only when there
-  is no such report. Install and update still run through Console's own
-  check, and the sheet says so when the two disagree.
+  signed-in server, Settings shows that report, the one buddy and Switch go
+  by, and its refresh asks the controller to check again. Console's own check
+  is used only when there is no such report. Install and update still run
+  through Console's own check.
+- **A failed agent install says why.** Installing Claude Code, Codex or another
+  provider from Switch buddy showed only "Install command failed." It now says
+  when the disk is full, and otherwise adds the line of the install output that
+  says what failed.
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
   authorize step at its public address, the API's host, where the vendor

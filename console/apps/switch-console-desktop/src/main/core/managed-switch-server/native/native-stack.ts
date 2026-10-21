@@ -8,11 +8,7 @@ import {
   getManagedServer,
 } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
-import {
-  COMPATIBLE_SWITCH_VERSION,
-  RELEASE_REPO_NAME,
-  RELEASE_REPO_OWNER,
-} from '@shared/app-identity';
+import { RELEASE_REPO_NAME, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type DeployedTelemetry,
@@ -20,11 +16,16 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv } from '../../telemetry/config';
+import {
+  currentFlintEnv,
+  resolveTelemetryConfig,
+  sameMachineServerTelemetryEndpointFor,
+  TELEMETRY_RELAY_ORIGIN,
+} from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
 import { detectDocker } from '../docker';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
+import { readEnvValue } from '../env-file';
 import { errorText } from '../error-text';
 import type { LocalServerPorts } from '../free-port';
 import type { ServerHost } from '../host/types';
@@ -37,7 +38,8 @@ import {
 import { registerManagedServer } from '../pipeline';
 import { clearPorts, resolvePorts } from '../ports';
 import { clearSecrets, loadOrCreateSecrets } from '../secrets';
-import { telemetryConsent } from '../telemetry-consent';
+import { managedSwitchVersion } from '../server-version';
+import { deployedTelemetryOf, telemetryConsent } from '../telemetry-consent';
 import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
 import {
   CORE_ENV_FILE,
@@ -173,7 +175,7 @@ async function backupDataDirectory(
   onMessage: (message: string) => void
 ): Promise<string> {
   onMessage(
-    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`
+    `Backing up the database before updating switch-core ${from} → ${managedSwitchVersion()}…`
   );
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const directory = path.join(layout.backups, `${stamp}-switch-core-${from}`);
@@ -182,7 +184,7 @@ async function backupDataDirectory(
   await writeFile(
     path.join(directory, 'README.txt'),
     [
-      `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${COMPATIBLE_SWITCH_VERSION}.`,
+      `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${managedSwitchVersion()}.`,
       '',
       'pgdata/   a copy of the PostgreSQL data directory, taken with the server stopped',
       '',
@@ -275,7 +277,7 @@ export async function nativeMattermostLauncher(
   checkoutRoot: string | null,
   onLog: (line: string) => void
 ): Promise<(onProgress: (message: string) => void) => Promise<void>> {
-  const install = await existingSwitchCoreInstall(layout, COMPATIBLE_SWITCH_VERSION, checkoutRoot);
+  const install = await existingSwitchCoreInstall(layout, managedSwitchVersion(), checkoutRoot);
   if (install === null) {
     throw new Error(
       'The server has not been set up yet, so there is nothing to add Mattermost to.'
@@ -327,7 +329,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     deployed.kind === 'deployed' &&
     deployed.version !== CHECKOUT_IMAGE_TAG
   ) {
-    const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
+    const drift = classifyVersionDrift(deployed.version, managedSwitchVersion());
     if (drift?.direction === 'downgrade') {
       return {
         result: { kind: 'version-downgrade', deployed: drift.deployed, expected: drift.expected },
@@ -347,7 +349,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       })
     : null;
 
-  const shipped = await readLocalServerBundle(opts.bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const shipped = await readLocalServerBundle(opts.bundleRoot, managedSwitchVersion());
   const bundle =
     shipped === null ? null : await materializeBundle(shipped, layout.toolchain, onMessage);
   const uv = await resolveUv(layout, bundle, onMessage);
@@ -356,7 +358,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     layout,
     uv,
     bundle,
-    version: COMPATIBLE_SWITCH_VERSION,
+    version: managedSwitchVersion(),
     owner: RELEASE_REPO_OWNER,
     repo: RELEASE_REPO_NAME,
     checkoutRoot,
@@ -415,6 +417,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnabled,
       telemetryEnvironment: currentFlintEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
+      telemetryEndpoint: nativeServerTelemetryEndpoint(),
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -523,7 +526,7 @@ export async function stopNativeStack(
   layout: NativeLayout,
   bundleRoot: string | null
 ): Promise<void> {
-  const bundle = await readLocalServerBundle(bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const bundle = await readLocalServerBundle(bundleRoot, managedSwitchVersion());
   const binaries = await findPostgresForCluster(layout, bundle);
   await stopProcesses(layout, binaries, () => {});
   if (binaries === null) await stopClusterByPid(layout);
@@ -580,10 +583,23 @@ export async function nativeStartedAt(layout: NativeLayout): Promise<string | nu
 
 /** What the running switch-core does about usage data, read from the
  * environment it was started with — which is what it read at boot. */
+/** The relay, or a dev run's local listener unless no server could post to it. */
+export function nativeServerTelemetryEndpoint(): string {
+  const endpoint = sameMachineServerTelemetryEndpointFor(resolveTelemetryConfig());
+  if (endpoint !== null) return endpoint;
+  log.warn(
+    'SWITCHDASH_TELEMETRY_ENDPOINT is not an http(s) URL; the local server reports to the relay',
+    {
+      event: 'telemetry_endpoint_override_ignored',
+    }
+  );
+  return TELEMETRY_RELAY_ORIGIN;
+}
+
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {
   try {
     const env = await readFile(path.join(layout.run, CORE_ENV_FILE), 'utf8');
-    return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
+    return deployedTelemetryOf((key) => readEnvValue(env, key), nativeServerTelemetryEndpoint());
   } catch (error) {
     return { known: false, reason: `${CORE_ENV_FILE}: ${errorText(error)}` };
   }

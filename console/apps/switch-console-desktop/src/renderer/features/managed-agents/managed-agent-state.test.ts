@@ -24,6 +24,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: {},
     instructions: '',
     autoApprove: false,
+    autoMode: false,
     directory: null,
     isolation: 'shared',
   },

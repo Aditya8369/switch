@@ -13,10 +13,12 @@ import { cn } from '@renderer/utils/utils';
 import type { AgentInstallError } from '@shared/core/providers/agent-payload';
 import { agentProviders, requireProvider } from '@shared/core/providers/agent-provider-registry';
 import { linksIn } from '@shared/core/providers/provider-login';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
+import { installOutputSummary } from './install-output-summary';
 import { type ThisComputer, useThisComputer } from './use-this-computer';
 
 /** How many lines of a sign-in command's output are kept on screen. */
@@ -43,10 +45,13 @@ type Login = {
 export const ProviderSetup = observer(function ProviderSetup({
   serverId,
   workspaceId,
+  entryPoint,
   onCreated,
 }: {
   serverId: string;
   workspaceId: string;
+  /** Where this card is shown: the first run, or the buddy's chat later. */
+  entryPoint: UiEntryPoint;
   onCreated: (agent: { agentId: string; name: string }) => void;
 }) {
   const { state: computer, recheck } = useThisComputer(serverId, workspaceId);
@@ -146,6 +151,7 @@ export const ProviderSetup = observer(function ProviderSetup({
           machineId: computer.machine.id,
           provider: provider.id,
           person: { name: user?.name ?? null, email: user?.email ?? null },
+          entryPoint,
         })
       );
     } catch (cause) {
@@ -405,8 +411,13 @@ function installFailure(name: string, error: AgentInstallError): string {
     case 'no-install-command':
     case 'unknown-dependency':
       return `Switch Console can’t install ${name} on this computer. Install it yourself, then press Check again.`;
+    case 'command-failed': {
+      const last = installOutputSummary(error.output);
+      return last
+        ? `Installing ${name} failed: ${error.message} Output: ${last}`
+        : `Installing ${name} failed: ${error.message}`;
+    }
     case 'permission-denied':
-    case 'command-failed':
     case 'process-open-failed':
       return `Installing ${name} failed: ${error.message}`;
   }

@@ -90,6 +90,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: { effort: 'high', tools: ['Read'] },
     instructions: 'Be brief.',
     autoApprove: false,
+    autoMode: false,
     directory: '/work/pm',
     isolation: 'shared',
   },
@@ -188,10 +189,9 @@ it('lays out the agent the way a Console agent’s page does', () => {
   expect(text).toContain('on laptop');
   expect(text).toContain('Writes PRDs');
   expect(container.querySelector('textarea')?.value).toBe('Be brief.');
-  for (const heading of ['General', 'Sessions'])
-    expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain(heading);
+  expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain('General');
   for (const row of [
-    'Auto-create a session on notify',
+    'Auto mode',
     'Bypass permissions',
     'Can manage agents',
     'Who can talk to your agent',

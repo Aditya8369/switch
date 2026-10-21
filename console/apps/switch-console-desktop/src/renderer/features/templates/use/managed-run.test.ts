@@ -44,6 +44,7 @@ function entry(overrides: Partial<ParsedAgentEntry>): ParsedAgentEntry {
     model: null,
     advancedConfig: {},
     isolation: null,
+    autoMode: null,
     autoApprove: null,
     connections: [],
     directory: null,
@@ -137,7 +138,7 @@ describe('connectionStates', () => {
     );
     expect(states.map((s) => [s.name, s.ready, s.note])).toEqual([
       ['GitHub', true, null],
-      ['Atlassian', false, 'Connect Atlassian under Connections first.'],
+      ['Atlassian', false, 'Connect Atlassian under Connectors first.'],
       ['nope', false, 'This server has no such connection.'],
     ]);
   });
@@ -163,6 +164,7 @@ describe('runAgent', () => {
         model: '{model}',
         advancedConfig: { effort: '{effort}' },
         isolation: 'isolated',
+        autoMode: false,
         autoApprove: '{yolo}',
         addressing: 'owner-agents',
         repoUrl: 'https://github.com/acme/widgets',
@@ -179,11 +181,40 @@ describe('runAgent', () => {
       model: 'sonnet',
       advancedConfig: { effort: 'high' },
       isolation: 'isolated',
+      autoMode: false,
       autoApprove: true,
       directory: null,
       addressing: 'owner-agents',
       connections: [],
     });
     expect(agent.instructions).toContain('clone https://github.com/acme/widgets into it');
+  });
+
+  it('sends the default addressing for an agent whose entry names none', () => {
+    const agent = runAgent({
+      slot: 'red-a',
+      name: 'red-a',
+      entry: entry({}),
+      values: {},
+      displayName: null,
+      provider: 'claude',
+      machine: LAPTOP,
+      directoryText: '{$agents_dir}/red-a',
+    });
+    expect(agent.addressing).toBe('owner-agents');
+  });
+
+  it('runs a new agent in auto mode with bypass off unless its entry says otherwise', () => {
+    const agent = runAgent({
+      slot: 'red-a',
+      name: 'red-a',
+      entry: entry({}),
+      values: {},
+      displayName: null,
+      provider: 'claude',
+      machine: LAPTOP,
+      directoryText: '{$agents_dir}/red-a',
+    });
+    expect(agent).toMatchObject({ autoMode: true, autoApprove: false });
   });
 });
