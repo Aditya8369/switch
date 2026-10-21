@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   runSingleStep: vi.fn(),
   runnerUpdateStep: vi.fn(),
   runnerSkip: vi.fn(),
+  checkAll: vi.fn(),
+  ensureHostBundle: vi.fn(),
 }));
 
 // The runner sequences steps and knows nothing about reporting; what it does
@@ -20,12 +22,14 @@ vi.mock('./host-setup-runner', () => ({
     runSingleStep = mocks.runSingleStep;
     updateStep = mocks.runnerUpdateStep;
     skip = mocks.runnerSkip;
-    checkAll = vi.fn();
+    checkAll = mocks.checkAll;
     checkStep = vi.fn();
   },
 }));
 
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
+
+vi.mock('@main/core/sdk-host/host-bundle', () => ({ ensureHostBundle: mocks.ensureHostBundle }));
 
 vi.mock('@main/core/dependencies/agent-update-service', () => ({
   agentUpdateService: {
@@ -76,6 +80,7 @@ import {
   checkStep,
   installSetupStep,
   readAllSetupPlans,
+  recheckSetup,
   skipSetupStep,
   updateSetupStep,
 } from './host-setup-service';
@@ -442,5 +447,79 @@ describe('what a setup step reports', () => {
       'host_setup_step',
       expect.objectContaining({ action: 'install', outcome: 'failure' })
     );
+  });
+});
+
+/**
+ * A provider's sign-in is checked through the shared host on the host. Unless
+ * setup puts it there, a host fresh from setup says every CLI's sign-in cannot
+ * be checked until an agent has run on it.
+ */
+describe('readying the shared host during setup', () => {
+  const HOST = 'fresh-vm';
+
+  function plan(nodeState: HostSetupStep['state']): HostSetupPlan {
+    return {
+      sshHost: HOST,
+      status: 'idle',
+      steps: [
+        step({
+          id: 'node',
+          kind: 'core-dependency',
+          name: 'Node.js',
+          dependsOn: [],
+          state: nodeState,
+        }),
+        step({ id: 'claude', kind: 'agent-cli', name: 'Claude Code', dependsOn: ['node'] }),
+      ],
+      currentStepId: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(getRemoteDependencyManager).mockResolvedValue(manager);
+    vi.mocked(getSetupPlan).mockResolvedValue(null);
+    mocks.ensureHostBundle.mockResolvedValue({ entrypoint: '/h/shared-host.mjs', staging: '/h' });
+  });
+
+  it('puts it on a host whose first check finds Node', async () => {
+    mocks.checkAll.mockResolvedValue(plan('satisfied'));
+
+    await recheckSetup(HOST);
+
+    expect(mocks.ensureHostBundle).toHaveBeenCalledExactlyOnceWith({
+      kind: 'ssh',
+      host: HOST,
+      dir: '',
+      connectionId: `agent-ssh:${HOST}`,
+    });
+  });
+
+  it('puts it on a host once Node has been installed', async () => {
+    mocks.runSingleStep.mockResolvedValue(plan('satisfied'));
+
+    await installSetupStep(HOST, 'node');
+
+    expect(mocks.ensureHostBundle).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a host without Node alone, since nothing there could run it', async () => {
+    mocks.checkAll.mockResolvedValue(plan('failed'));
+
+    await recheckSetup(HOST);
+
+    expect(mocks.ensureHostBundle).not.toHaveBeenCalled();
+  });
+
+  it('still returns the checked plan when the upload fails', async () => {
+    // The provider check then says Switch is not set up on the host, which is
+    // the visible signal; the check the user asked for still happened.
+    const checked = plan('satisfied');
+    mocks.checkAll.mockResolvedValue(checked);
+    mocks.ensureHostBundle.mockRejectedValue(new Error('sftp: permission denied'));
+
+    await expect(recheckSetup(HOST)).resolves.toBe(checked);
   });
 });

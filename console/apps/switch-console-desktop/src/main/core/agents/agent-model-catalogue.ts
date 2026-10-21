@@ -172,7 +172,7 @@ export async function getProviderReadiness(
       return {
         installed: true,
         status: 'unknown' as const,
-        message: `Switch is not set up on ${params.sshHost ?? 'this machine'} yet, so ${plugin.metadata.name} cannot be checked there. Start an agent on it, or press Update on one's Room watcher.`,
+        message: `Switch is not set up on ${params.sshHost ?? 'this machine'} yet, so ${plugin.metadata.name} cannot be checked there. Re-check the host on its page, or start an agent on it.`,
         models: [],
       };
     try {

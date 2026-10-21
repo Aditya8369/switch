@@ -7,7 +7,7 @@
  * plan and emits it on every transition; this hook just mirrors it.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { events, rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
@@ -15,6 +15,22 @@ import { hostSetupPlanEventChannel, type HostSetupPlan } from '@shared/core/remo
 
 export function setupPlanQueryKey(sshHost: string) {
   return ['remote-host-setup-plan', sshHost];
+}
+
+/**
+ * Take a finished check, install or update as the host's plan, and ask its
+ * providers' sign-in again.
+ *
+ * Each of these readies the host's shared host once Node is there, and the
+ * sign-in check runs through it, so an answer read before that — "cannot be
+ * checked there" — would otherwise stand for as long as it is cached.
+ */
+function settlePlan(queryClient: QueryClient, sshHost: string, plan: HostSetupPlan) {
+  queryClient.setQueryData(setupPlanQueryKey(sshHost), plan);
+  void queryClient.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey[0] === 'provider-readiness' && query.queryKey[2] === sshHost,
+  });
 }
 
 /** Live plan for one host, kept current by pushed events. */
@@ -85,7 +101,7 @@ export function useRecheckSetup(sshHost: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => rpc.remoteHosts.recheckSetup(sshHost),
-    onSuccess: (plan) => queryClient.setQueryData(setupPlanQueryKey(sshHost), plan),
+    onSuccess: (plan) => settlePlan(queryClient, sshHost, plan),
     onError: (error) => log.error('Could not re-check remote host', { sshHost, error }),
   });
 }
@@ -100,7 +116,7 @@ export function useRecheckSetupStep(sshHost: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (stepId: string) => rpc.remoteHosts.recheckSetupStep({ sshHost, stepId }),
-    onSuccess: (plan) => queryClient.setQueryData(setupPlanQueryKey(sshHost), plan),
+    onSuccess: (plan) => settlePlan(queryClient, sshHost, plan),
     onError: (error) => log.error('Could not re-check a setup step', { sshHost, error }),
   });
 }
@@ -110,7 +126,7 @@ export function useInstallSetupStep(sshHost: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (stepId: string) => rpc.remoteHosts.installSetupStep({ sshHost, stepId }),
-    onSuccess: (plan) => queryClient.setQueryData(setupPlanQueryKey(sshHost), plan),
+    onSuccess: (plan) => settlePlan(queryClient, sshHost, plan),
     onError: (error) => log.error('Could not install a setup step', { sshHost, error }),
   });
 }
@@ -120,7 +136,7 @@ export function useUpdateSetupStep(sshHost: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (stepId: string) => rpc.remoteHosts.updateSetupStep({ sshHost, stepId }),
-    onSuccess: (plan) => queryClient.setQueryData(setupPlanQueryKey(sshHost), plan),
+    onSuccess: (plan) => settlePlan(queryClient, sshHost, plan),
     onError: (error) => log.error('Could not update a setup step', { sshHost, error }),
   });
 }

@@ -75,13 +75,29 @@ export function ProviderConnectionStatus({
                 ? 'Backend connected'
                 : 'Signed in'
               : 'Sign-in not verified';
+  const reason =
+    checking || ready
+      ? null
+      : query.error
+        ? 'Could not reach this host. Check the connection and try again.'
+        : data?.status === 'unauthenticated'
+          ? 'Sign in to use this provider.'
+          : (data?.message ?? null);
+  // Only a CLI that answered "signed out" (or "no backend") is fixed by its
+  // login command. An unknown status means the check itself could not run,
+  // and the reason says what to do instead.
+  const loginMayHelp = data?.status === 'unauthenticated' || data?.status === 'unconfigured';
   const Icon = checking ? Loader2 : ready ? CheckCircle2 : CircleAlert;
   const tone = checking || ready ? 'text-foreground-muted' : 'text-foreground-warning';
   if (compact)
     return (
-      <span className={`inline-flex items-center gap-1.5 text-xs ${tone}`}>
+      <span
+        className={`inline-flex items-center gap-1.5 text-xs ${tone}`}
+        title={reason ?? undefined}
+      >
         <Icon className={`size-3.5 ${checking ? 'animate-spin' : ''}`} />
         {headline}
+        {reason && <span className="sr-only">: {reason}</span>}
       </span>
     );
   return (
@@ -107,16 +123,8 @@ export function ProviderConnectionStatus({
         {sshHost ? `On ${sshHost}` : 'On this computer'}
         {data?.installed === true ? ' · CLI installed' : ''}
       </p>
-      {!checking && !ready && (
-        <p className="mt-2 text-foreground-muted">
-          {query.error
-            ? 'Could not reach this host. Check the connection and try again.'
-            : data?.status === 'unauthenticated'
-              ? 'Sign in to use this provider.'
-              : data?.message}
-        </p>
-      )}
-      {!checking && data?.installed && !ready && provider && (
+      {reason && <p className="mt-2 text-foreground-muted">{reason}</p>}
+      {!checking && data?.installed && loginMayHelp && provider && (
         <div className="mt-2 space-y-1">
           <p>Run in a terminal {sshHost ? `on ${sshHost}` : 'on this computer'}, then Recheck:</p>
           <div className="flex items-center gap-2 rounded bg-background px-2 py-1">

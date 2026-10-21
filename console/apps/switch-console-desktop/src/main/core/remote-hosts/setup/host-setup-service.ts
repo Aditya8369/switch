@@ -14,7 +14,9 @@ import {
   getRemoteDependencyManager,
   remoteDependencyDescriptor,
 } from '@main/core/dependencies/remote-dependency-manager';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { listPlugins } from '@main/core/providers/plugin-registry';
+import { ensureHostBundle } from '@main/core/sdk-host/host-bundle';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryHostSetupAction, TelemetryOutcome } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -287,16 +289,48 @@ export async function updateStep(
 }
 
 /**
+ * Put this build's shared host on the host once Node is there to run it.
+ *
+ * Checking whether a provider is signed in runs through that file, and
+ * otherwise only starting an agent copies it over — so a host fresh from setup
+ * would say every CLI's sign-in could not be checked, however it stood.
+ * Readying the host is what setup is for; the provider check itself stays
+ * read-only. A failure here leaves that check saying Switch is not set up on
+ * the host, which is the visible signal, so it is logged rather than failing
+ * the setup action it rode in on.
+ */
+async function readySharedHost(sshHost: string, plan: HostSetupPlan): Promise<void> {
+  if (plan.steps.find((s) => s.id === 'node')?.state !== 'satisfied') return;
+  try {
+    await ensureHostBundle({
+      kind: 'ssh',
+      host: sshHost,
+      dir: '',
+      connectionId: sshConnectionIdForHost(sshHost),
+    });
+  } catch (error) {
+    log.warn('[HostSetup] could not put the shared host on the host', {
+      event: 'host-setup-shared-host-failed',
+      sshHost,
+      error: String((error as Error)?.message ?? error),
+    });
+  }
+}
+
+/**
  * Observe a host without changing it — the "Re-check" button.
  *
  * Rebuilds the plan first so newly-known dependencies are included, then probes
- * every step and installs nothing.
+ * every step and installs none of them. It does ready Switch's own shared host
+ * (`readySharedHost`): this is also the first check a newly added host gets.
  */
 export async function recheckSetup(sshHost: string): Promise<HostSetupPlan> {
   const plan = await ensureSetupPlan(sshHost);
   const manager = await getRemoteDependencyManager(sshHost);
   try {
-    return await runnerFor(sshHost, manager).checkAll(plan);
+    const next = await runnerFor(sshHost, manager).checkAll(plan);
+    await readySharedHost(sshHost, next);
+    return next;
   } catch (error) {
     log.warn('[HostSetup] re-check stopped', {
       event: 'host-setup-recheck-stopped',
@@ -316,7 +350,9 @@ export async function recheckSetupStep(sshHost: string, stepId: string): Promise
   const plan = await ensureSetupPlan(sshHost);
   const manager = await getRemoteDependencyManager(sshHost);
   try {
-    return await runnerFor(sshHost, manager).checkStep(plan, stepId);
+    const next = await runnerFor(sshHost, manager).checkStep(plan, stepId);
+    await readySharedHost(sshHost, next);
+    return next;
   } catch (error) {
     log.warn('[HostSetup] step re-check stopped', {
       event: 'host-setup-step-recheck-stopped',
@@ -375,6 +411,7 @@ export async function installSetupStep(sshHost: string, stepId: string): Promise
     const manager = await getRemoteDependencyManager(sshHost);
     const next = await runnerFor(sshHost, manager).runSingleStep(plan, stepId);
     reportSetupStep(next, stepId, 'install', stepOutcome(next, stepId));
+    await readySharedHost(sshHost, next);
     return next;
   } catch (error) {
     reportSetupStep(plan, stepId, 'install', 'failure');
@@ -396,6 +433,7 @@ export async function updateSetupStep(sshHost: string, stepId: string): Promise<
     const manager = await getRemoteDependencyManager(sshHost);
     const next = await runnerFor(sshHost, manager).updateStep(plan, stepId);
     reportSetupStep(next, stepId, 'update', stepOutcome(next, stepId));
+    await readySharedHost(sshHost, next);
     return next;
   } catch (error) {
     reportSetupStep(plan, stepId, 'update', 'failure');
