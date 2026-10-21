@@ -35,6 +35,7 @@ from switch_core.db.models import (
     MessagingInstall,
     OidcIdentity,
     Reference,
+    ReferenceType,
     Room,
     Template,
     Tenant,
@@ -529,3 +530,122 @@ async def test_a_workspace_holding_nothing_of_the_person_is_not_touched(
         await session.commit()
         workspaces = await deletion.with_former_workspaces(stranger.id, [])
     assert all(w.id != other for w in workspaces)
+
+
+def _reference_of(owner: User, slug: str, created_at: datetime) -> Reference:
+    return Reference(
+        owner_id=owner.id,
+        read_visibility="public",
+        write_visibility="private",
+        type=slug,
+        name=f"{owner.name}-{slug}",
+        description="",
+        instructions="",
+        value={"value": "x"},
+        created_at=created_at,
+    )
+
+
+@pytest.mark.parametrize("admin_has_one", [True, False])
+async def test_a_reference_type_in_use_passes_to_an_admin_else_the_oldest_reference(
+    session_factory: async_sessionmaker[AsyncSession], admin_has_one: bool
+) -> None:
+    """An owner or admin with a reference of the type inherits it before any
+    member does; with none, the owner of the oldest reference of it does."""
+    deletion, _, _ = _deletion(session_factory)
+    slug = f"ticket-{uuid.uuid4().hex[:6]}"
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    async with session_factory() as session:
+        owner = await _user(session, "owner")
+        leaving = await _user(session, "leaving")
+        early = await _user(session, "early")
+        late = await _user(session, "late")
+        admin = await _user(session, "admin-member")
+        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, leaving, "member")
+        await _member(session, TENANT_ZERO_ID, early, "member")
+        await _member(session, TENANT_ZERO_ID, late, "member")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
+        session.add(
+            ReferenceType(
+                tenant_id=TENANT_ZERO_ID,
+                type=slug,
+                owner_id=leaving.id,
+                read_visibility="public",
+                write_visibility="private",
+                display_name="Ticket",
+                instructions="",
+                value_hint="",
+            )
+        )
+        session.add(_reference_of(late, slug, start + timedelta(days=2)))
+        session.add(_reference_of(early, slug, start + timedelta(days=1)))
+        if admin_has_one:
+            session.add(_reference_of(admin, slug, start + timedelta(days=3)))
+        await session.commit()
+        expected = admin.id if admin_has_one else early.id
+        leaving_id = leaving.id
+
+    workspaces = [Workspace(TENANT_ZERO_ID, "Default", "member")]
+    async with session_factory() as session:
+        user = await session.get(User, leaving_id)
+        assert user is not None
+        await deletion.delete(session, user, workspaces)
+
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        assert (
+            await session.scalar(
+                select(ReferenceType.owner_id).where(ReferenceType.type == slug)
+            )
+        ) == expected
+
+
+async def test_the_successor_is_the_longest_standing_owner_then_the_lowest_id(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    deletion, _, _ = _deletion(session_factory)
+    joined = datetime(2026, 1, 1, tzinfo=UTC)
+    async with session_factory() as session:
+        leaving = await _user(session, "leaving")
+        session.add(
+            TenantMember(
+                tenant_id=TENANT_ZERO_ID,
+                user_id=leaving.id,
+                role="owner",
+                created_at=joined - timedelta(days=9),
+            )
+        )
+        admin = await _user(session, "admin-first")
+        session.add(
+            TenantMember(
+                tenant_id=TENANT_ZERO_ID,
+                user_id=admin.id,
+                role="admin",
+                created_at=joined - timedelta(days=5),
+            )
+        )
+        tied = [await _user(session, f"owner-{n}") for n in range(3)]
+        for owner in tied:
+            session.add(
+                TenantMember(
+                    tenant_id=TENANT_ZERO_ID,
+                    user_id=owner.id,
+                    role="owner",
+                    created_at=joined,
+                )
+            )
+        later = await _user(session, "owner-later")
+        session.add(
+            TenantMember(
+                tenant_id=TENANT_ZERO_ID,
+                user_id=later.id,
+                role="owner",
+                created_at=joined + timedelta(days=1),
+            )
+        )
+        await session.commit()
+        expected = min(owner.id for owner in tied)
+        leaving_id = leaving.id
+
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        assert await deletion._successor(session, leaving_id) == expected

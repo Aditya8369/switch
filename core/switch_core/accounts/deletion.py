@@ -38,7 +38,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from sqlalchemy import Select, delete, exists, func, or_, select, update
+from sqlalchemy import Select, case, delete, exists, func, or_, select, update
 
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
@@ -164,6 +164,32 @@ def _holds_rows_in_workspace(tenant_id: str, user_id: str) -> Select[tuple[bool]
         and handling not in ("database cascades", "database clears")
     ]
     return select(or_(*probes))
+
+
+# Who inherits first: an owner, then an admin.
+_ROLE_RANK = {"owner": 0, "admin": 1}
+
+
+def _reference_type_heir(slug: str, user_id: str) -> Select[tuple[str]]:
+    """Who a reference type in use passes to: an owner, then an admin, of the
+    workspace who has a reference of that type, else whoever owns the oldest
+    such reference; ties go to the oldest reference, then the lowest id."""
+    rank = case(
+        (TenantMember.role == "owner", 0),
+        (TenantMember.role == "admin", 1),
+        else_=2,
+    )
+    return (
+        select(Reference.owner_id)
+        .outerjoin(
+            TenantMember,
+            (TenantMember.tenant_id == Reference.tenant_id)
+            & (TenantMember.user_id == Reference.owner_id),
+        )
+        .where(Reference.type == slug, Reference.owner_id != user_id)
+        .order_by(rank, Reference.created_at, Reference.id)
+        .limit(1)
+    )
 
 
 class ControllerRevoker(Protocol):
@@ -421,18 +447,17 @@ class AccountDeletion:
 
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
         """Who takes over what the workspace still needs from this person: an
-        owner, else an admin, else nobody when they are alone in it."""
+        owner, else an admin, else nobody. Among several, the longest-standing
+        member, then the lowest id, so the same workspace always picks the
+        same person."""
         ranked = sorted(
             (
-                (membership.role, member.id)
+                (_ROLE_RANK[membership.role], membership.created_at, member.id)
                 for member, membership in await self.users.list_tenant_members(session)
-                if member.id != user_id
+                if member.id != user_id and membership.role in _ROLE_RANK
             ),
-            key=lambda entry: {"owner": 0, "admin": 1}.get(entry[0], 2),
         )
-        if not ranked or ranked[0][0] not in {"owner", "admin"}:
-            return None
-        return ranked[0][1]
+        return ranked[0][2] if ranked else None
 
     async def _revoke_controllers(
         self, tenant_id: str, user_id: str, controller_ids: list[str]
@@ -486,9 +511,12 @@ class AccountDeletion:
             except ReferenceTypeInUseError:
                 # Other people's references are of this type: it passes to one
                 # of them rather than leaving their references with no type.
-                heir = await session.scalar(
-                    select(Reference.owner_id).where(Reference.type == slug).limit(1)
-                )
+                heir = await session.scalar(_reference_type_heir(slug, user_id))
+                if heir is None:
+                    raise RuntimeError(
+                        f"Reference type {slug} is in use but has no other "
+                        "reference owner to pass to"
+                    )
                 await session.execute(
                     update(ReferenceType)
                     .where(ReferenceType.type == slug)
