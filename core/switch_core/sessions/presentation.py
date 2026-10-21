@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy import select
+from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
@@ -96,7 +96,8 @@ async def request_card_recipient(
     put through. Exactly one person or nobody: a policy that admits the whole
     room is not a reason to page the whole room. A person is named by the
     account they hold on this bridge and in this room, so somebody with no
-    account here is not named at all.
+    account here is not named at all. An owner may hold several such accounts
+    and a policy may admit only one of them, so each is tried in turn.
     """
     members = (
         select(ExternalUser.external_user_id, Client.transport_user_id)
@@ -104,22 +105,23 @@ async def request_card_recipient(
         .join(ClientRoom, ClientRoom.client_id == ExternalUser.client_id)
         .where(ExternalUser.bridge_id == bridge_id, ClientRoom.room_id == room_id)
     )
-    owner = None
+    owner_accounts: list[Row[tuple[str, str]]] = []
     if agent.owner_id is None:
         logger.info("Agent %s has no owner to name on its request card.", agent.name)
     else:
-        owner = (
-            await db.execute(
-                members.join(
-                    ExternalUserClaim,
-                    ExternalUserClaim.external_user_id == ExternalUser.id,
+        owner_accounts = list(
+            (
+                await db.execute(
+                    members.join(
+                        ExternalUserClaim,
+                        ExternalUserClaim.external_user_id == ExternalUser.id,
+                    )
+                    .where(ExternalUserClaim.user_id == agent.owner_id)
+                    .order_by(ExternalUser.id)
                 )
-                .where(ExternalUserClaim.user_id == agent.owner_id)
-                .order_by(ExternalUser.id)
-                .limit(1)
-            )
-        ).first()
-        if owner is None:
+            ).all()
+        )
+        if not owner_accounts:
             logger.info(
                 "The owner of agent %s has no linked account in room %s on "
                 "bridge %s, so its request card cannot name them.",
@@ -127,16 +129,19 @@ async def request_card_recipient(
                 room_id,
                 bridge_id,
             )
-        elif await may_answer(owner.transport_user_id):
-            return str(owner.external_user_id)
-        else:
+        for owner in owner_accounts:
+            if await may_answer(owner.transport_user_id):
+                return str(owner.external_user_id)
+        if owner_accounts:
             logger.info(
-                "The owner of agent %s may not answer in room %s, so its "
-                "request card does not name them.",
+                "The owner of agent %s may not answer in room %s from any "
+                "account linked here, so its request card does not name them.",
                 agent.name,
                 room_id,
             )
-    if actor_id is not None and (owner is None or owner.transport_user_id != actor_id):
+    if actor_id is not None and all(
+        owner.transport_user_id != actor_id for owner in owner_accounts
+    ):
         asker = (
             await db.execute(
                 members.where(Client.transport_user_id == actor_id)

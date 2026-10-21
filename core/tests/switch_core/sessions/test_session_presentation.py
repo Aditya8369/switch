@@ -173,12 +173,15 @@ ASKER_ACCOUNT = SimpleNamespace(
 
 
 def _found(*rows):
-    """A db whose successive account lookups find these rows (None: no account)."""
+    """A db whose successive account lookups find these rows (None: no account,
+    a list: several accounts)."""
     db = AsyncMock()
     results = []
     for row in rows:
         result = MagicMock()
-        result.first.return_value = row
+        accounts = row if isinstance(row, list) else [] if row is None else [row]
+        result.first.return_value = accounts[0] if accounts else None
+        result.all.return_value = accounts
         results.append(result)
     db.execute.side_effect = results
     return db
@@ -227,6 +230,49 @@ async def test_a_threaded_card_names_the_owner_who_may_answer_it():
     assert "external_user_claims.user_id = 'owner'" in query
     assert "external_users.bridge_id = 'bridge'" in query
     assert "client_rooms.room_id = 'room'" in query
+    assert db.execute.call_count == 1
+
+
+async def test_an_owner_is_named_by_the_one_linked_account_that_may_answer():
+    """A person can link several accounts on one bridge, and a policy can
+    admit just one of them, so every account is tried before giving up."""
+    other = SimpleNamespace(
+        external_user_id="UOWNER_OLD", transport_user_id="@owner-old:switch"
+    )
+    db = _found([other, OWNER_ACCOUNT])
+    may_answer = MayAnswer("@owner:switch")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        == "UOWNER"
+    )
+    assert may_answer.asked == ["@owner-old:switch", "@owner:switch"]
+    assert db.execute.call_count == 1
+
+
+async def test_an_asker_who_is_the_owner_is_not_asked_twice():
+    db = _found([OWNER_ACCOUNT])
+    may_answer = MayAnswer()
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@owner:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        is None
+    )
+    assert may_answer.asked == ["@owner:switch"]
     assert db.execute.call_count == 1
 
 
