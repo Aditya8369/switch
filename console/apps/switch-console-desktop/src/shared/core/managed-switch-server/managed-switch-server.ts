@@ -117,6 +117,10 @@ export type CheckoutBuild = {
   root: string;
   /** Whether the option is on. Applies from the next start onwards. */
   enabled: boolean;
+  /** The environment setting that decides `enabled` for this run instead of
+   * the toggle (e.g. `SWITCH_CONSOLE_SERVER_VERSION=checkout`), or null when
+   * the toggle decides. */
+  forcedBy: string | null;
 };
 
 /**
@@ -130,7 +134,13 @@ export type CheckoutBuild = {
  * unread host must not render as one that agrees.
  */
 export type DeployedTelemetry =
-  | { known: true; enabled: boolean }
+  | {
+      known: true;
+      enabled: boolean;
+      /** Whether it sends to the relay this build reports to. A stack set up by
+       * an older build may name none and run on its own version's default. */
+      endpointCurrent: boolean;
+    }
   | { known: false; reason: string };
 
 /**
@@ -194,7 +204,9 @@ export type LocalServerStatus = {
   upgrade: ManagedServerUpgrade | null;
   /** The registered server's id once the stack is up, else null. */
   serverId: string | null;
-  /** The pinned switch-core version this build runs. */
+  /** The released switch-core version this build runs: its pin, or in a dev
+   * build the one SWITCH_CONSOLE_SERVER_VERSION names. A checkout build
+   * replaces it on the local server — see {@link checkoutBuild}. */
   version: string;
   /** The version the stack on the host is actually deployed at, once observed.
    * Null when nothing is deployed yet or it could not be read. */

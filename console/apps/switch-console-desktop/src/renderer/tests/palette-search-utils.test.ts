@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyContextAffinity,
+  indexedSearchLabel,
+  instantMatchLabel,
   matchHosts,
+  matchManagedAgents,
   matchRooms,
   matchServers,
+  paletteSearchPlaceholder,
   sectionResults,
 } from '@renderer/features/command-palette/search-utils';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { SearchItem } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -248,5 +253,78 @@ describe('sectionResults', () => {
     const sections = sectionResults([item('agent', 'first'), item('agent', 'second')]);
 
     expect(sections.agent.map((i) => i.id)).toEqual(['first', 'second']);
+  });
+});
+
+// Under agent management the palette leaves sessions out, so its copy must
+// not promise them.
+describe('palette copy', () => {
+  it('names sessions only when they are searched', () => {
+    expect(paletteSearchPlaceholder(true)).toContain('sessions');
+    expect(indexedSearchLabel(true)).toContain('sessions');
+
+    expect(paletteSearchPlaceholder(false)).not.toContain('session');
+    expect(indexedSearchLabel(false)).not.toContain('session');
+  });
+
+  it('still names the kinds that stay searchable', () => {
+    expect(paletteSearchPlaceholder(false)).toBe('Search agents, rooms, servers, actions…');
+    expect(indexedSearchLabel(false)).toBe('commands');
+  });
+
+  it('names managed agents among the kinds matched from the first character', () => {
+    expect(instantMatchLabel(false)).toBe('Agents, rooms, servers and hosts');
+    expect(instantMatchLabel(true)).toBe('Rooms, servers and hosts');
+  });
+});
+
+function managedAgent(
+  over: Pick<ManagedAgentView, 'agentId' | 'name'> & Partial<ManagedAgentView>
+): ManagedAgentView {
+  return {
+    serverId: 'server-1',
+    workspaceId: 'workspace-1',
+    displayName: null,
+    iconUrl: null,
+    description: '',
+    machine: null,
+    desiredState: 'running',
+    revision: 1,
+    definition: {
+      provider: 'claude',
+      model: null,
+      advancedConfig: {},
+      instructions: '',
+      autoMode: true,
+      autoApprove: false,
+      directory: null,
+      isolation: 'shared',
+    },
+    status: null,
+    ...over,
+  };
+}
+
+describe('matchManagedAgents', () => {
+  const agents = [
+    managedAgent({ agentId: 'a-1', name: 'notes-helper', displayName: 'Notes Helper' }),
+    managedAgent({ agentId: 'a-2', name: 'switch-buddy-ada' }),
+    managedAgent({ agentId: 'a-3', name: 'release-notes' }),
+  ];
+
+  it('matches nothing for an empty query', () => {
+    expect(matchManagedAgents(agents, '  ')).toEqual([]);
+  });
+
+  it('matches the shown name and the Switch name, prefix matches first', () => {
+    expect(matchManagedAgents(agents, 'notes').map((agent) => agent.agentId)).toEqual([
+      'a-1',
+      'a-3',
+    ]);
+    expect(matchManagedAgents(agents, 'notes-help').map((agent) => agent.agentId)).toEqual(['a-1']);
+  });
+
+  it('matches queries shorter than the index needs', () => {
+    expect(matchManagedAgents(agents, 'sw').map((agent) => agent.agentId)).toEqual(['a-2']);
   });
 });
