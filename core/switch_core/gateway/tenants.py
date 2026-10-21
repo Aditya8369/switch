@@ -1414,10 +1414,9 @@ async def remove_member(
     enough, including by mistake, that it must not be the thing that makes an
     irreversible call about shared infrastructure. An admin who hits this
     deletes those agents deliberately, with the agent in front of them, then
-    removes the member. The 409 says exactly that and nothing more: there is
-    no route that reassigns an agent's owner in this phase, so offering
-    reassignment as the way out would send an admin looking for a button that
-    does not exist.
+    removes the member, or hands them to someone else first
+    (`POST /ownership/transfer`, which refuses an agent still tied to its
+    owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
     membership = await session.get(TenantMember, (tenant_id, user_id))
@@ -1435,8 +1434,8 @@ async def remove_member(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot remove: this member owns agents in this tenant — "
-                f"delete them first: {names}"
+                "Cannot remove: this member owns agents in this workspace. "
+                f"Transfer or delete them first: {names}"
             ),
         )
 
