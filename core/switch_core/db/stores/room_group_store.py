@@ -263,7 +263,11 @@ class RoomGroupStore:
         Raises `RoomGroupNameTaken` when a child would land next to a group
         with its name.
         """
-        group = await session.get(RoomGroup, group_id)
+        # Lock before reading the group: a rename or reparent committed while
+        # we wait would otherwise leave us promoting children under a parent
+        # the group no longer has.
+        await self._lock_names(session)
+        group = await session.get(RoomGroup, group_id, populate_existing=True)
         if group is None:
             return False
         await self._refuse_promotion_clash(session, group)

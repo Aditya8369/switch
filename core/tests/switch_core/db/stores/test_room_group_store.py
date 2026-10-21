@@ -210,6 +210,36 @@ class TestRoomGroupStore:
             b_refreshed = await store.get(session, b.id)
             assert b_refreshed is not None and b_refreshed.parent_group_id is None
 
+    async def test_delete_promotes_children_to_the_parent_committed_last(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            a = await store.create(
+                session, name="A", description=None, color=None, parent_group_id=None
+            )
+            b = await store.create(
+                session, name="B", description=None, color=None, parent_group_id=a.id
+            )
+            c = await store.create(
+                session, name="C", description=None, color=None, parent_group_id=b.id
+            )
+            await session.commit()
+            # This session still holds B under A when another one moves it.
+            assert (await store.get(session, b.id)) is not None
+            async with session_factory() as other:
+                await store.update_fields(
+                    other, b.id, parent_group_id=None, reparent=True
+                )
+                await other.commit()
+
+            assert await store.delete(session, b.id) is True
+            await session.commit()
+            c_refreshed = await store.get(session, c.id)
+            assert c_refreshed is not None
+            await session.refresh(c_refreshed)
+            assert c_refreshed.parent_group_id is None
+
     async def test_delete_missing_returns_false(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
