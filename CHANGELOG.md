@@ -44,6 +44,22 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Agents name room groups by path.** `create_room` and `create_room_group`
+  take a group as a path such as `Fraud/Incidents` (the top-level group, then
+  each child), so two groups called `Incidents` under different parents no
+  longer break every agent request that names one. A bare name still works
+  when only one group has it; when several do, the error lists each match by
+  its path so the agent can retry with the right one, and an unknown path
+  names the first part that was not found. A group id is accepted too.
+- **Room group names are unique among siblings.** Creating, renaming or moving
+  a group next to one with the same name (ignoring case) is refused with an
+  error naming the existing group, from the dashboard, the API and agents
+  alike. The same name under different parents is still fine. Deleting a
+  group whose subgroup would move up next to a namesake is refused too, and
+  the dashboard now shows why. Names can no longer contain `/` or be blank.
+  Existing duplicates are left as they are and can be reached by id.
+
 ### [0.31.0] - 2026-10-20
 
 #### Added
