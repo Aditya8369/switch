@@ -21,10 +21,10 @@ import io
 import logging
 import re
 import zipfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import IO, cast
-from xml.etree.ElementTree import Element, ParseError, XMLPullParser
+from typing import IO
+from xml.parsers import expat
 
 from pypdf import PdfReader
 
@@ -129,35 +129,56 @@ def _docx_part_text(stream: IO[bytes], budget: int) -> tuple[str, int, bool]:
     `stream` (a decompressing zip member) a chunk at a time. Returns the
     text, the bytes read, and whether it stopped before the end of the part
     (byte budget or text cap reached)."""
-    parser = XMLPullParser(events=("end",))
+    parser = expat.ParserCreate(namespace_separator="}")
     pieces: list[str] = []
+    in_text = False
     length = 0
+
+    def refuse_dtd(*_args: object) -> None:
+        # Word never writes a DTD; one here is a crafted file (entity
+        # expansion), not a document. Expat reports the declaration itself,
+        # so it is caught whatever the encoding or chunk boundaries.
+        raise ValueError("document declares a DTD")
+
+    def start(tag: str, _attrs: object) -> None:
+        nonlocal in_text
+        name = "{" + tag
+        if name == f"{_W}t":
+            in_text = True
+        elif name == f"{_W}tab":
+            pieces.append("\t")
+        elif name == f"{_W}br":
+            pieces.append("\n")
+
+    def end(tag: str) -> None:
+        nonlocal in_text
+        name = "{" + tag
+        if name == f"{_W}t":
+            in_text = False
+        elif name == f"{_W}p":
+            pieces.append("\n")
+
+    def text(data: str) -> None:
+        nonlocal length
+        if in_text:
+            pieces.append(data)
+            length += len(data)
+
+    parser.StartDoctypeDeclHandler = refuse_dtd
+    parser.EntityDeclHandler = refuse_dtd
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = text
     read = 0
     while True:
         chunk = stream.read(min(64 * 1024, budget - read))
         if not chunk:
             stopped_early = bool(stream.read(1))
             if not stopped_early:
-                parser.close()
+                parser.Parse(b"", True)
             return "".join(pieces), read, stopped_early
-        if b"<!DOCTYPE" in chunk or b"<!ENTITY" in chunk:
-            # Word never writes a DTD; one here is a crafted file (entity
-            # expansion), not a document.
-            raise ValueError("document declares a DTD")
         read += len(chunk)
-        parser.feed(chunk)
-        for _event, element in cast(
-            "Iterator[tuple[str, Element]]", parser.read_events()
-        ):
-            if not isinstance(element, Element):
-                continue
-            if element.tag == f"{_W}t" and element.text:
-                pieces.append(element.text)
-                length += len(element.text)
-            elif element.tag == f"{_W}tab":
-                pieces.append("\t")
-            elif element.tag in (f"{_W}p", f"{_W}br"):
-                pieces.append("\n")
+        parser.Parse(chunk, False)
         if length > TRUST_FILE_TEXT_LIMIT:
             return "".join(pieces), read, True
 
@@ -182,7 +203,7 @@ def _docx_text(data: bytes) -> FileText:
                 if stopped_early or budget <= 0:
                     stopped_early = True
                     break
-    except (zipfile.BadZipFile, ParseError, ValueError, OSError, RuntimeError):
+    except (zipfile.BadZipFile, expat.ExpatError, ValueError, OSError, RuntimeError):
         # RuntimeError is what zipfile raises for an encrypted member.
         logger.warning("Could not read text from a Word document", exc_info=True)
         return _unreadable("this Word document could not be read")

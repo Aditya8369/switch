@@ -342,3 +342,36 @@ async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note() -> None:
     assert not verdict.blocked
     [note] = verdict.notes
     assert "did not check scan.pdf" in note
+
+
+def _docx_with(document_xml: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
+
+
+def test_a_dtd_split_across_read_chunks_is_still_refused() -> None:
+    chunk = 64 * 1024
+    body = (
+        f'<w:document xmlns:w="{_W_NS}"><w:body><w:p><w:r><w:t>&a;</w:t>'
+        "</w:r></w:p></w:body></w:document>"
+    ).encode()
+    head = b'<?xml version="1.0"?>\n'
+    head += b" " * (chunk - len(head) - 4) + b"<!DOCTYPE w:document ["
+    head += b" " * (2 * chunk - len(head) - 4) + b'<!ENTITY a "secret">]>' + body
+    assert b"<!DOCTYPE" not in head[:chunk]
+    assert b"<!ENTITY" not in head[chunk : 2 * chunk]
+    file_text = extract_file_text(_docx_with(head), _DOCX_TYPE, "evil.docx")
+    assert file_text.text is None
+
+
+def test_a_dtd_in_utf16_is_still_refused() -> None:
+    document = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<!DOCTYPE w:document [<!ENTITY a "secret">]>'
+        f'<w:document xmlns:w="{_W_NS}"><w:body><w:p><w:r><w:t>&a;</w:t>'
+        "</w:r></w:p></w:body></w:document>"
+    ).encode("utf-16")
+    file_text = extract_file_text(_docx_with(document), _DOCX_TYPE, "evil.docx")
+    assert file_text.text is None
