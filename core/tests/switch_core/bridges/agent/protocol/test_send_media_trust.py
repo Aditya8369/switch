@@ -30,6 +30,8 @@ class _ContentTrustClient:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
+        if "nothing-to-cut" in content:
+            return TrustCheckResult("redacted", "p", "policy", _FINDING, content)
         if "token-123" in content:
             return TrustCheckResult(
                 "redacted",
@@ -115,6 +117,23 @@ async def test_redacted_caption_is_sent_redacted() -> None:
     assert client.sends[0]["caption"] == "here is [redacted]"
     # The agent is told its caption changed, and to what.
     assert result["trust"] == {"outcome": "redacted", "delivered": "here is [redacted]"}
+
+
+async def test_a_caption_redaction_that_changed_nothing_is_still_reported() -> None:
+    svc, client, _notices = _build(_ContentTrustClient())
+
+    result = await svc.send_media(
+        "agent-1",
+        "room-1",
+        [(b"fine", "notes.txt", "text/plain")],
+        caption="nothing-to-cut here",
+    )
+
+    assert client.sends[0]["caption"] == "nothing-to-cut here"
+    assert result["trust"] == {
+        "outcome": "redacted",
+        "delivered": "nothing-to-cut here",
+    }
 
 
 async def test_blocked_file_text_sends_nothing_and_says_which_file() -> None:

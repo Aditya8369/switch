@@ -143,8 +143,9 @@ class TrustFeedback(BaseModel):
     sent it. Only made when it did something: a message it let through
     untouched carries none.
 
-    `outcome` is `redacted` when the room received different words from the
-    ones sent, which are then in `delivered`; otherwise `alerted` (flagged and
+    `outcome` is `redacted` when Switch Trust redacted the message, with what
+    the room received in `delivered` (which can match what was sent when
+    there was nothing it could cut); otherwise `alerted` (flagged and
     delivered as sent) or `errored` (delivered as sent, not fully checked).
     `note` is the notice posted in the room under the message, when there is
     one."""

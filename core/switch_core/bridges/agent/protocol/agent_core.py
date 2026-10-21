@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 
@@ -247,25 +247,29 @@ def _coalesce_attachment_groups(
 
 
 def _trust_feedback(
-    sent: str | None,
+    verdict: TrustOutcome | None,
     delivered: str | None,
     alert: tuple[str, TrustOutcome] | None,
 ) -> TrustFeedback | None:
     """What to tell an agent Switch Trust did to the text it sent, or None
-    when the room received it untouched and unflagged."""
-    redacted = delivered != sent
-    if not redacted and alert is None:
+    when it let the text through unflagged.
+
+    `verdict` is Switch Trust's outcome for the text (None when it was not
+    checked) and `alert` the notice posted under the message, if any. A
+    redaction can leave the words as they were, so it is told from the
+    verdict rather than from the delivered text differing from the sent."""
+    if verdict == "redacted":
+        return TrustFeedback(
+            outcome="redacted",
+            delivered=delivered,
+            note=alert[0] if alert is not None else None,
+        )
+    if alert is None:
         return None
-    if redacted:
-        outcome: Literal["redacted", "alerted", "errored"] = "redacted"
-    elif alert is not None and alert[1] == "alerted":
-        outcome = "alerted"
-    else:
-        outcome = "errored"
     return TrustFeedback(
-        outcome=outcome,
-        delivered=delivered if redacted else None,
-        note=alert[0] if alert is not None else None,
+        outcome="alerted" if alert[1] == "alerted" else "errored",
+        delivered=None,
+        note=alert[0],
     )
 
 
@@ -1734,7 +1738,7 @@ class AgentCore:
         content: str,
         thread_root_id: str | None,
         client: AgentActor,
-    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
+    ) -> tuple[str, tuple[str, TrustOutcome] | None, TrustOutcome]:
         """Check agent-authored content against Switch Trust before it is
         sent. Returns the content to actually send — unchanged or redacted —
         and, on an ALERTED/ERRORED verdict, an (annotation, outcome) pair for
@@ -1742,7 +1746,8 @@ class AgentCore:
         sent (`_post_trust_alert_notice`, threaded under that send's own
         event_id rather than under this call's pre-send `thread_root_id`, so
         the notice reads as a reply to the flagged message, not to whatever
-        thread the agent happened to be posting in). Raises
+        thread the agent happened to be posting in), then the verdict itself,
+        which the caller reports back to the agent (`_trust_feedback`). Raises
         `GuardrailBlockedError` on a BLOCKED verdict, or on a REDACTED verdict
         Switch Trust gave us nothing to redact with — sending the original
         content then would be indistinguishable from not checking at all —
@@ -1765,7 +1770,7 @@ class AgentCore:
         check: TrustCheckResult,
         thread_root_id: str | None,
         client: AgentActor,
-    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
+    ) -> tuple[str, tuple[str, TrustOutcome] | None, TrustOutcome]:
         """`_enforce_trust` for a check already made, so a caller can run it
         alongside others (`send_media` checks a caption and its files at
         once)."""
@@ -1778,7 +1783,7 @@ class AgentCore:
             content = check.redacted_content
         annotation = trust_annotation(check)
         pending_alert = (annotation, check.outcome) if annotation is not None else None
-        return content, pending_alert
+        return content, pending_alert, check.outcome
 
     async def _post_trust_blocked_notice(
         self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
@@ -1920,7 +1925,7 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        delivered, pending_alert = await self._enforce_trust(
+        delivered, pending_alert, verdict = await self._enforce_trust(
             room, content, thread_root_id, client
         )
         event_id = await client.send_message(
@@ -1951,7 +1956,7 @@ class AgentCore:
             )
         return SentMessage(
             event_id=event_id,
-            trust=_trust_feedback(content, delivered, pending_alert),
+            trust=_trust_feedback(verdict, delivered, pending_alert),
         )
 
     async def send_media(
@@ -2016,7 +2021,7 @@ class AgentCore:
         # through the text it carries (`trust/attachments.py`), all before
         # anything is uploaded, so a refusal leaves nothing in the room.
         caption_text = caption if caption and caption.strip() else None
-        sent_caption = caption_text
+        caption_verdict: TrustOutcome | None = None
         trust_notes: list[str] = []
         flagged = False
         if await trust_is_active(self.trust_client):
@@ -2033,7 +2038,11 @@ class AgentCore:
                     ),
                     files_check_task,
                 )
-                caption_text, pending_alert = await self._apply_trust_check(
+                (
+                    caption_text,
+                    pending_alert,
+                    caption_verdict,
+                ) = await self._apply_trust_check(
                     room, caption_text, caption_check, thread_root_id, client
                 )
                 if pending_alert is not None:
@@ -2097,7 +2106,7 @@ class AgentCore:
             "mxc": posted[0]["mxc"],
             "attachments": posted,
         }
-        feedback = _trust_feedback(sent_caption, caption_text, media_alert)
+        feedback = _trust_feedback(caption_verdict, caption_text, media_alert)
         if feedback is not None:
             result["trust"] = feedback.to_result()
         return result
@@ -2424,7 +2433,9 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail, pending_alert = await self._enforce_trust(room, detail, None, client)
+        detail, pending_alert, _verdict = await self._enforce_trust(
+            room, detail, None, client
+        )
         event_id = await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )

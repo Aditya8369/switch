@@ -1,7 +1,7 @@
 """An agent learns from its own send what Switch Trust did to it: the result
 of `send_message` (and the `post_message` / `send_targeted_message` tools
-over it) carries `trust` when the room received different words, or a
-flagged message, and nothing when it received exactly what was sent."""
+over it) carries `trust` when Switch Trust redacted or flagged the message,
+and nothing when it let it through untouched."""
 
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high")
 
 class _ContentTrustClient:
     async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+        if "nothing-to-cut" in content:
+            return TrustCheckResult("redacted", "p", "policy", _FINDING, content)
         if "token-123" in content:
             return TrustCheckResult(
                 "redacted",
@@ -82,6 +84,19 @@ async def test_a_redacted_message_reports_what_the_room_received() -> None:
         trust=TrustFeedback(
             outcome="redacted", delivered="the key is [redacted]", note=None
         ),
+    )
+
+
+async def test_a_redaction_that_changed_nothing_is_still_reported() -> None:
+    """A redacted verdict with nothing it could cut sends the words as they
+    were; the agent is told all the same."""
+    svc, client, _ = _build()
+
+    sent = await svc.send_message("agent-1", "room-1", "nothing-to-cut here")
+
+    assert client.sent == ["nothing-to-cut here"]
+    assert sent.trust == TrustFeedback(
+        outcome="redacted", delivered="nothing-to-cut here", note=None
     )
 
 
