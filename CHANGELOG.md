@@ -53,6 +53,15 @@ version of their own to them without also giving them a release of their own.
   Capturing a room (`GET /rooms/{id}/yaml`) now lists its packages by `id`,
   so a room built again from its capture gets them back (#910).
 
+#### Fixed
+- **`!list-references` and `!list-documents` include what packages bring.**
+  They listed only what was attached to the room directly, so a room whose
+  references all came from a package answered "No references in this room."
+  while its agents were sent them. Items from attached packages now follow
+  the direct ones, each marked with the package it comes from (for example
+  `(github, via Payments service context)`); an item attached both ways is
+  listed once, as direct (#911).
+
 ### [0.31.0] - 2026-10-20
 
 #### Added
