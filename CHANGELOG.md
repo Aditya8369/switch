@@ -1852,6 +1852,11 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - **Airtable's logo on the Connections grid.**
+- **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
+  Builder Hub with the five redirect URLs to copy and the scopes to tick, and
+  an app whose sign-ins return to Switch Console can be set up on a server
+  without a public URL. A server that does not send `redirect_uris`,
+  `needs_public_url` and `scopes` is read as before.
 
 ### [0.40.1] - 2026-10-21
 

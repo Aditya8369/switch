@@ -23,6 +23,7 @@ import {
   appDetails,
   attention,
   cardState,
+  changeBlocked,
   configuredSentence,
   menuActions,
   menuLabel,
@@ -31,7 +32,7 @@ import {
   stateLabel,
   usedBy,
 } from './connector-apps';
-import { changeBlocked, useConnectorAppDialogs } from './connector-apps-tab';
+import { useConnectorAppDialogs } from './connector-apps-tab';
 import { CopyButton } from './copy-button';
 
 /**

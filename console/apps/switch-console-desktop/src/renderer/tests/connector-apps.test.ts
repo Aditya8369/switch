@@ -6,9 +6,11 @@ import {
   audienceText,
   cardOrder,
   cardState,
+  changeBlocked,
   configuredSentence,
   menuActions,
   menuLabel,
+  missingPublicUrl,
   moveChecklist,
   peopleIn,
   primaryAction,
@@ -21,7 +23,11 @@ import {
   tileAction,
   tileStanding,
 } from '@renderer/features/admin/connector-apps';
-import type { ConnectorApp } from '@shared/core/switch-servers/connector-apps';
+import {
+  connectorAppSchema,
+  redirectUris,
+  type ConnectorApp,
+} from '@shared/core/switch-servers/connector-apps';
 
 /** A connector app as the server lists it, with placeholder values. */
 function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
@@ -41,6 +47,11 @@ function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     load_error: null,
     redirect_uri:
       'https://switch.example.test/gateway/service-connections/google-workspace/flows/callback',
+    redirect_uris: [
+      'https://switch.example.test/gateway/service-connections/google-workspace/flows/callback',
+    ],
+    needs_public_url: true,
+    scopes: [],
     setup_blocked: null,
     install_url: null,
     updated_by_name: 'Ada',
@@ -319,6 +330,82 @@ describe('wording', () => {
     expect(
       links.every((href) => /^https:\/\/(console\.cloud\.google\.com|github\.com)\//.test(href))
     ).toBe(true);
+  });
+});
+
+const AIRTABLE_REDIRECTS = [39231, 39232, 39233, 39234, 39235].map(
+  (port) => `http://127.0.0.1:${port}/switch-services/callback`
+);
+
+const AIRTABLE = app({
+  slug: 'airtable',
+  name: 'Airtable',
+  source: 'none',
+  client_id: null,
+  saved_client_id: null,
+  configuration_variables: ['AIRTABLE_CLIENT_CONFIG_PATH'],
+  secrets: { client_secret: { set: false, last4: null } },
+  redirect_uri: AIRTABLE_REDIRECTS[0]!,
+  redirect_uris: AIRTABLE_REDIRECTS,
+  needs_public_url: false,
+  scopes: ['data.records:read', 'data.records:write'],
+  updated_at: null,
+  connected_members: 0,
+  workspaces: 0,
+});
+
+describe('an app that sends people back to Switch Console', () => {
+  it("walks Airtable's Builder Hub, with every redirect to paste and the scopes to tick", () => {
+    const steps = setupInstructions(AIRTABLE, 'internal', null);
+    expect(steps[0]!.link).toEqual({
+      label: 'Open Builder Hub',
+      href: 'https://airtable.com/create/oauth',
+    });
+    expect(steps[0]!.text).toMatch(/account your organization owns/);
+    expect(steps.map((s) => s.copy).filter((c) => c !== null)).toEqual(AIRTABLE_REDIRECTS);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    const texts = steps.map((s) => s.text);
+    expect(texts).toContain(
+      'Under Scopes, tick exactly these: data.records:read, data.records:write.'
+    );
+    expect(texts.at(-1)).toMatch(/support email, privacy policy URL and terms of service URL/);
+  });
+
+  it('can be set up on a server with no public URL, and does not raise the banner', () => {
+    expect(changeBlocked(AIRTABLE, null)).toBe(false);
+    expect(changeBlocked(NONE, null)).toBe(true);
+    expect(missingPublicUrl([AIRTABLE], null)).toBe(false);
+    expect(missingPublicUrl([AIRTABLE, NONE], null)).toBe(true);
+    expect(missingPublicUrl([AIRTABLE, NONE], PUBLIC_URL)).toBe(false);
+  });
+
+  it('lists every redirect, and sends people back to Switch Console', () => {
+    const details = appDetails(AIRTABLE, PUBLIC_URL, (iso) => iso);
+    const setup = details.find((section) => section.title === 'Setup')!;
+    expect(setup.rows.filter((r) => r.code).map((r) => [r.label, r.value])).toEqual(
+      AIRTABLE_REDIRECTS.map((redirect, index) => [`Redirect URI ${index + 1}`, redirect])
+    );
+    expect(details.at(-1)!.rows.map((r) => [r.label, r.value])).toEqual([
+      ['Sent back to', 'Switch Console, on their computer'],
+    ]);
+  });
+
+  it("names Airtable's Helm value when moving off configuration", () => {
+    expect(moveChecklist(app({ ...AIRTABLE, source: 'configuration' }))[1]!.text).toBe(
+      "Remove AIRTABLE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.airtableClientSecret."
+    );
+  });
+
+  it('reads a server older than these fields as it always did', () => {
+    const { redirect_uris, needs_public_url, scopes, ...older } = app();
+    void redirect_uris;
+    void needs_public_url;
+    void scopes;
+    const parsed = connectorAppSchema.parse(older);
+    expect(parsed.needs_public_url).toBe(true);
+    expect(parsed.scopes).toEqual([]);
+    expect(redirectUris(parsed)).toEqual([older.redirect_uri]);
+    expect(redirectUris({ redirect_uri: null, redirect_uris: undefined })).toEqual([]);
   });
 });
 

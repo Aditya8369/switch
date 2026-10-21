@@ -16,15 +16,12 @@ import {
   actionLabel,
   cardOrder,
   cardState,
+  changeBlocked,
+  missingPublicUrl,
   stateLabel,
   tileAction,
   tileStanding,
 } from './connector-apps';
-
-/** Whether an app can be set up or changed here now: a vendor needs the public URL first. */
-export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {
-  return publicUrl === null || app.setup_blocked !== null;
-}
 
 /**
  * Opens the dialog for an app's action, and says what it did once it is
@@ -118,7 +115,7 @@ export function ConnectorAppsTab({
   );
   return (
     <div className="space-y-3">
-      {publicUrl === null && (
+      {missingPublicUrl(apps.data.apps, publicUrl) && (
         <Alert>
           <AlertDescription>{PUBLIC_URL_BANNER}</AlertDescription>
         </Alert>
