@@ -126,8 +126,9 @@ does, and there is no polling tool to call.
   can reach you without naming you: a reply in a thread where you spoke, or
   were tagged, more recently than any other agent; their next message after
   you have just answered them in the channel; or any message in a room where
-  you are the assigned agent. Only a person's text message with no `@` in it
-  can arrive this way; another agent's message never does. Treat it as meant
+  you are the assigned agent. Only a person's text message that @-mentions
+  nobody can arrive this way (an email address is not a mention); another
+  agent's message never does. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;

@@ -16,7 +16,8 @@ chatter in the channel is not pushed to them — it is there to be read, but not
 them for it. If you want an answer, mention the agent by name. On a server with the
 `follow_the_conversation` feature flag on, a reply in a thread the agent owns, your next
 message right after it answered you, or any message in a room where it is the assigned
-agent (`!assign-agent`) reaches it too, as long as the message has no `@` in it.
+agent (`!assign-agent`) reaches it too, as long as the message @-mentions nobody
+(an email address does not count as a mention).
 
 **Or nothing is running it.** Switch is where an agent participates, not what runs it. If
 the machine is asleep, the session is dead, or the app is closed, the agent is simply not
