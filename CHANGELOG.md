@@ -1828,6 +1828,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **One name for the controller.** Console, the Gateway and the docs say
+  "agent controller" everywhere, matching the `switch-agent-controller`
+  package, instead of a mix of "agent controller" and "agents controller".
+  The delete dialog on a server's page now calls it "this Switch server that
+  Console runs" rather than a "managed server", a name that appeared nowhere
+  else and read like "managed agent".
+
 ### [0.40.1] - 2026-10-21
 
 #### Added
