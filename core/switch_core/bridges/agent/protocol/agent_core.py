@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import func, select
 
@@ -60,8 +60,10 @@ from switch_core.bridges.agent.protocol.types import (
     RoomDetailDescriptor,
     RoomWideMentionStatus,
     SendTargetedResult,
+    SentMessage,
     ToolCallReport,
     ToolSpec,
+    TrustFeedback,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
     REGISTRATION_KEY_TYPES,
@@ -242,6 +244,29 @@ def _coalesce_attachment_groups(
         ]
         absorbed.update(row.id for _, row in parts[1:])
     return [row for row in rows if row.id not in absorbed], merged
+
+
+def _trust_feedback(
+    sent: str | None,
+    delivered: str | None,
+    alert: tuple[str, TrustOutcome] | None,
+) -> TrustFeedback | None:
+    """What to tell an agent Switch Trust did to the text it sent, or None
+    when the room received it untouched and unflagged."""
+    redacted = delivered != sent
+    if not redacted and alert is None:
+        return None
+    if redacted:
+        outcome: Literal["redacted", "alerted", "errored"] = "redacted"
+    elif alert is not None and alert[1] == "alerted":
+        outcome = "alerted"
+    else:
+        outcome = "errored"
+    return TrustFeedback(
+        outcome=outcome,
+        delivered=delivered if redacted else None,
+        note=alert[0] if alert is not None else None,
+    )
 
 
 def _elided_root(root_id: str) -> dict[str, Any]:
@@ -1869,8 +1894,10 @@ class AgentCore:
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
-    ) -> str:
-        """Send a message to a room. Returns event_id.
+    ) -> SentMessage:
+        """Send a message to a room. Returns its event_id and, when Switch
+        Trust redacted or flagged it, what it did (`TrustFeedback`), so the
+        agent learns its words changed.
 
         When thread_id is set the message is posted as a reply in that thread
         (the id is normalised to the thread root). `extra_content` carries
@@ -1893,12 +1920,12 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        content, pending_alert = await self._enforce_trust(
+        delivered, pending_alert = await self._enforce_trust(
             room, content, thread_root_id, client
         )
         event_id = await client.send_message(
             room.transport_room_id,
-            content,
+            delivered,
             thread_root_id=thread_root_id,
             extra_content=extra_content,
             metered=True,
@@ -1922,7 +1949,10 @@ class AgentCore:
             logger.warning(
                 "Failed to clear typing indicator for room %s", room_id, exc_info=True
             )
-        return event_id
+        return SentMessage(
+            event_id=event_id,
+            trust=_trust_feedback(content, delivered, pending_alert),
+        )
 
     async def send_media(
         self,
@@ -1953,7 +1983,9 @@ class AgentCore:
 
         Raises GuardrailBlockedError if Switch Trust blocks the caption or any
         file's text; a notice is posted to the room and nothing is sent. A
-        file Switch Trust cannot read is sent with a notice saying so.
+        file Switch Trust cannot read is sent with a notice saying so. When it
+        redacted the caption or noted anything, the result also carries
+        `trust` (`TrustFeedback.to_result`).
         """
         if not files:
             raise ValueError("no attachments provided")
@@ -1984,6 +2016,7 @@ class AgentCore:
         # through the text it carries (`trust/attachments.py`), all before
         # anything is uploaded, so a refusal leaves nothing in the room.
         caption_text = caption if caption and caption.strip() else None
+        sent_caption = caption_text
         trust_notes: list[str] = []
         flagged = False
         if await trust_is_active(self.trust_client):
@@ -2044,12 +2077,14 @@ class AgentCore:
             posted.append(
                 {"event_id": event_id, "mxc": media_uri, "filename": filename}
             )
-        if trust_notes:
+        media_alert: tuple[str, TrustOutcome] | None = (
+            ("\n".join(trust_notes), "alerted" if flagged else "errored")
+            if trust_notes
+            else None
+        )
+        if media_alert is not None:
             await self._post_trust_alert_notice(
-                room,
-                posted[0]["event_id"],
-                "\n".join(trust_notes),
-                "alerted" if flagged else "errored",
+                room, posted[0]["event_id"], *media_alert
             )
         try:
             await self._set_typing(agent_id, room, False)
@@ -2057,11 +2092,15 @@ class AgentCore:
             logger.warning(
                 "Failed to clear typing indicator for room %s", room_id, exc_info=True
             )
-        return {
+        result: dict[str, object] = {
             "event_id": posted[0]["event_id"],
             "mxc": posted[0]["mxc"],
             "attachments": posted,
         }
+        feedback = _trust_feedback(sent_caption, caption_text, media_alert)
+        if feedback is not None:
+            result["trust"] = feedback.to_result()
+        return result
 
     async def _can_address(
         self,
@@ -2243,7 +2282,7 @@ class AgentCore:
         mention_tokens += [f"@{name}" for name in target_names]
         mention_tokens += [f"@{role}" for role in roles]
         body = f"{' '.join(mention_tokens)} {content}"
-        event_id = await self.send_message(
+        sent = await self.send_message(
             agent_id,
             room_id,
             body,
@@ -2276,7 +2315,9 @@ class AgentCore:
             target_statuses[ROOM_WIDE_TARGET] = self._room_wide_mention_status(
                 room_id, room_row.bridge_id if room_row is not None else None
             )
-        return SendTargetedResult(event_id=event_id, target_statuses=target_statuses)
+        return SendTargetedResult(
+            event_id=sent.event_id, target_statuses=target_statuses, trust=sent.trust
+        )
 
     async def _refuse_room_wide_mention_collisions(
         self, room_id: str, participants: list[ParticipantDescriptor]

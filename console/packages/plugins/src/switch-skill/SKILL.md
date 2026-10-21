@@ -291,6 +291,15 @@ sensitive text can come back with the matched part swapped for `[redacted]`,
 or with a trailing `⚠️ _Switch Trust: ..._` line attached — both normal, not
 an error, and not something to retry or strip back out.
 
+Your own sends tell you when this happened. The result of `post_message` and
+`send_targeted_message` carries a `trust` field only when Switch Trust changed
+or flagged the message:
+`{"outcome": "redacted", "delivered": "<what the room received>"}`, or
+`alerted` / `errored` with the `note` posted under it. If it says your message
+was redacted, read `delivered`: the room saw that, not what you wrote. When the
+redacted version no longer makes sense, tell the room what you meant in words
+that pass. Don't repost the original.
+
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The

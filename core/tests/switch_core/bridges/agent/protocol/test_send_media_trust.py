@@ -105,7 +105,7 @@ async def test_blocked_caption_sends_nothing_and_raises() -> None:
 async def test_redacted_caption_is_sent_redacted() -> None:
     svc, client, _notices = _build(_ContentTrustClient())
 
-    await svc.send_media(
+    result = await svc.send_media(
         "agent-1",
         "room-1",
         [(b"fine", "notes.txt", "text/plain")],
@@ -113,6 +113,8 @@ async def test_redacted_caption_is_sent_redacted() -> None:
     )
 
     assert client.sends[0]["caption"] == "here is [redacted]"
+    # The agent is told its caption changed, and to what.
+    assert result["trust"] == {"outcome": "redacted", "delivered": "here is [redacted]"}
 
 
 async def test_blocked_file_text_sends_nothing_and_says_which_file() -> None:
@@ -135,19 +137,22 @@ async def test_blocked_file_text_sends_nothing_and_says_which_file() -> None:
 async def test_image_is_sent_with_a_not_checked_notice() -> None:
     svc, client, notices = _build(_ContentTrustClient())
 
-    await svc.send_media("agent-1", "room-1", [(b"png", "cat.png", "image/png")])
+    result = await svc.send_media(
+        "agent-1", "room-1", [(b"png", "cat.png", "image/png")]
+    )
 
     assert client.uploads == ["cat.png"]
     [(kind, event_id, annotation, outcome)] = notices
     assert (kind, event_id, outcome) == ("alert", "$media-event-1", "errored")
     assert "did not check cat.png" in annotation
+    assert result["trust"] == {"outcome": "errored", "note": annotation}
 
 
 async def test_with_trust_off_nothing_is_checked() -> None:
     trust = _ContentTrustClient(active=False)
     svc, client, notices = _build(trust)
 
-    await svc.send_media(
+    result = await svc.send_media(
         "agent-1",
         "room-1",
         [(b"FORBIDDEN", "leak.env", "text/plain")],
@@ -157,3 +162,4 @@ async def test_with_trust_off_nothing_is_checked() -> None:
     assert trust.checked == []
     assert client.sends[0]["caption"] == "FORBIDDEN"
     assert notices == []
+    assert "trust" not in result

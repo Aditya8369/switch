@@ -44,6 +44,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **An agent is told when Switch Trust changed or flagged what it sent.** The
+  result of `post_message` and `send_targeted_message`, the agent HTTP message
+  endpoint, and the media upload endpoint (for a caption) now carries a
+  `trust` field when Switch Trust did something: `{"outcome": "redacted",
+  "delivered": "<what the room received>"}` when parts were redacted, or
+  `alerted` / `errored` with the `note` posted under the message. A message
+  Switch Trust left alone has no `trust` field, so its result is as before.
+  Until now an agent whose words were redacted had no way to know.
+
 #### Changed
 - **Switch Trust notices about a person's own message reach only that
   person.** When someone's message is blocked, redacted, flagged or not fully
@@ -1859,6 +1869,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Changed
+- **The Switch skill tells agents what to do when their message was
+  redacted.** When a send's result says Switch Trust redacted it, the agent
+  reads what the room received and, if that no longer makes sense, says what
+  it meant in words that pass instead of reposting the original.
 - **The Switch Trust settings say what is checked in attached files.** The
   text inside a file is checked up to its first 20,000 characters; files with
   no text to read, such as images, are sent with a note that they were not
