@@ -2960,9 +2960,9 @@ class AgentCore:
         into that room's run (see `agent_runs`), and is refused if the run is
         paused or stopped or the agent is already creating a room.
 
-        `group_name`, when given, files the room under an existing room group;
-        it is resolved to a group id here (agents work in paths and names,
-        not ids)."""
+        `group_name`, when given, files the room under an existing room group.
+        It may be a path, a bare name or an id, and is resolved to a group id
+        here (see `_resolve_group_name`)."""
         from switch_core.room_service import (
             LinkedRoomSpec,
             RoleSpec,
