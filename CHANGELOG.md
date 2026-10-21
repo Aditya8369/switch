@@ -44,6 +44,15 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Templates carry packages.** A room in a template takes `packages:`, a list
+  of packages that already exist, by `id` or by `name`, attached when the room
+  is created. The person running the template must be able to attach each one
+  by hand; a package that is missing, ambiguous or not theirs stops the run
+  before the room exists. A template never creates or changes a package.
+  Capturing a room (`GET /rooms/{id}/yaml`) now lists its packages by `id`,
+  so a room built again from its capture gets them back (#910).
+
 ### [0.31.0] - 2026-10-20
 
 #### Added
