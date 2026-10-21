@@ -1833,8 +1833,8 @@ version of their own to them without also giving them a release of their own.
   "agent controller" everywhere, matching the `switch-agent-controller`
   package, instead of a mix of "agent controller" and "agents controller".
   The delete dialog on a server's page now calls it "this Switch server that
-  Console runs" rather than a "managed server", a name that appeared nowhere
-  else and read like "managed agent".
+  Console runs" rather than a "managed server", which read like "managed
+  agent"; it was the only place Console showed that name.
 
 ### [0.40.1] - 2026-10-21
 
