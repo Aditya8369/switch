@@ -44,6 +44,18 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Switch Trust notices about a person's own message reach only that
+  person.** When someone's message is blocked, redacted, flagged or not fully
+  checked, the notice used to be posted in the channel, where everyone could
+  see what they had tried to say. Now it goes to the sender alone: an
+  ephemeral message on Slack and Mattermost, and a direct message from the bot
+  on Discord and Telegram. Microsoft Teams has no way for a bot to do either
+  unprompted, so there the notice is still posted in the channel, as it is
+  when a Discord or Telegram user does not accept direct messages from the
+  bot; switch-core logs a warning each time that happens. Notices about an
+  agent's message are still posted for the room.
+
 #### Security
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
