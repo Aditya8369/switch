@@ -1,10 +1,14 @@
-import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, mkdir, statfs } from 'node:fs/promises';
+import { mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { promisify } from 'node:util';
-import type { ProviderReadiness } from '@switch-console/agent-providers';
+import { join } from 'node:path';
+import {
+  execProvider,
+  findOnPath,
+  type ProviderReadiness,
+  providerUnsupportedReason,
+  readCliToolStatuses,
+  verifyClaudeSignIn,
+} from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
@@ -14,12 +18,15 @@ import {
   type Assignment,
   type Platform,
   type ProcessState,
+  isProvider,
   PROTOCOL_VERSION,
   type Provider,
   PROVIDERS,
   type ProviderStatus,
   type ReasonCode,
   type StatusReport,
+  type ToolStatus,
+  type UpdatedBy,
 } from './schemas';
 import type { GivenLogin, LoginProblem, SealedLogins } from './sealed-logins';
 import type { AgentRow, ControllerStore } from './store';
@@ -47,6 +54,40 @@ export type LocatedProvider = {
   versionProblem: string | null;
 };
 
+/**
+ * The tools Switch sets up for a session whose agent has a GitHub grant: `ok`
+ * when on PATH, `missing` when not. Its helpers do not run on Windows, so
+ * there both are `unsupported`, and such an agent uses the machine's own
+ * sign-in.
+ *
+ * Then each vendor command-line tool a session here has set up, from the
+ * machine's tool folder (`cliToolsBase`): `ok` once its pinned build is
+ * installed, `missing` when the last install failed, `unsupported` where the
+ * catalog has no build for this machine. A tool no session has needed yet is
+ * not named.
+ */
+export async function toolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform,
+  cliBase: string
+): Promise<ToolStatus[]> {
+  return [...(await gitHubToolStatuses(path, os)), ...(await readCliToolStatuses(cliBase))];
+}
+
+async function gitHubToolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform
+): Promise<ToolStatus[]> {
+  const tools = ['git', 'gh'];
+  if (os === 'win32') return tools.map((tool) => ({ tool, state: 'unsupported' }));
+  return Promise.all(
+    tools.map(
+      async (tool) =>
+        ({ tool, state: (await findOnPath(tool, path)) !== null ? 'ok' : 'missing' }) as const
+    )
+  );
+}
+
 /** Finds a provider's CLI on this machine. */
 export interface ProviderLocator {
   locate(provider: Provider): Promise<LocatedProvider | null>;
@@ -54,7 +95,8 @@ export interface ProviderLocator {
 
 /**
  * Looks each provider's CLI up on `PATH` under the names its plugin declares,
- * as Console's dependency detection does, and asks it for its version.
+ * as Console's dependency detection does, and asks it for its version. `path`
+ * is read on every lookup, so a PATH refreshed since start is the one used.
  */
 export class PathProviderLocator implements ProviderLocator {
   /**
@@ -64,7 +106,7 @@ export class PathProviderLocator implements ProviderLocator {
    * its first run is unpacked once.
    */
   constructor(
-    private readonly path: string | undefined,
+    private readonly path: () => string | undefined,
     private readonly probeHome: string
   ) {}
 
@@ -72,26 +114,17 @@ export class PathProviderLocator implements ProviderLocator {
     const plugin = pluginRegistry.get(provider);
     if (!plugin) throw new Error(`No provider plugin is registered for '${provider}'.`);
     const dependency = plugin.capabilities.hostDependency;
-    const directories = (this.path ?? '').split(delimiter).filter(Boolean);
-    for (const name of dependency.binaryNames)
-      for (const directory of directories) {
-        const candidate = join(directory, name);
-        try {
-          await access(candidate, constants.X_OK);
-        } catch {
-          continue;
-        }
-        if (dependency.skipVersionProbe)
-          return { path: candidate, version: null, versionProblem: null };
-        return {
-          path: candidate,
-          ...(await readVersion(
-            candidate,
-            dependency.versionArgs ?? ['--version'],
-            this.probeHome
-          )),
-        };
-      }
+    if (providerUnsupportedReason(provider, process.platform) !== null) return null;
+    for (const name of dependency.binaryNames) {
+      const candidate = await findOnPath(name, this.path());
+      if (candidate === null) continue;
+      if (dependency.skipVersionProbe)
+        return { path: candidate, version: null, versionProblem: null };
+      return {
+        path: candidate,
+        ...(await readVersion(candidate, dependency.versionArgs ?? ['--version'], this.probeHome)),
+      };
+    }
     return null;
   }
 }
@@ -104,7 +137,7 @@ async function readVersion(
 ): Promise<{ version: string | null; versionProblem: string | null }> {
   try {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    const { stdout, stderr } = await promisify(execFile)(binary, args, {
+    const { stdout, stderr } = await execProvider(binary, args, {
       timeout: VERSION_TIMEOUT_MS,
       env: {
         ...process.env,
@@ -170,14 +203,21 @@ export function providerStatusFrom(
     checked_at: checkedAt,
   };
   if (!readiness) return { ...base, auth: 'unknown', auth_source: null, reason: 'internal' };
+  const said = readiness.message ? { auth_problem: readiness.message.slice(0, 300) } : {};
   switch (readiness.status) {
     case 'authenticated':
       return { ...base, auth: 'ok', auth_source: 'local' };
     case 'unauthenticated':
     case 'unconfigured':
-      return { ...base, auth: 'missing', auth_source: null, reason: 'provider_login_missing' };
+      return {
+        ...base,
+        auth: 'missing',
+        auth_source: null,
+        reason: 'provider_login_missing',
+        ...said,
+      };
     case 'unknown':
-      return { ...base, auth: 'unknown', auth_source: null };
+      return { ...base, auth: 'unknown', auth_source: null, ...said };
   }
 }
 
@@ -185,6 +225,9 @@ export function providerStatusFrom(
  * A provider as last checked: its status, its CLI, the login Switch gave the
  * machine when that is what agents use, and why a given login is not used.
  */
+/** Provider checks made elsewhere, for {@link ProviderStatuses.seed}: each status and where its CLI was found. */
+export type ProviderSeed = { status: ProviderStatus; path: string | null }[];
+
 type ProviderEntry = {
   status: ProviderStatus;
   path: string | null;
@@ -214,6 +257,13 @@ export class ProviderStatuses {
     private readonly deps: {
       locator: ProviderLocator;
       runtime: Pick<AgentRuntime, 'probe'>;
+      /**
+       * A real test of a provider's own login (one short prompt), for those
+       * whose status command only says a login is there. Null when the
+       * provider has none. Costs a request, so `check` runs it only when
+       * asked to or when the login was not already known to work.
+       */
+      verify?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
       /** The logins Switch gives this machine; null when it cannot open any. */
       sealed: SealedLogins | null;
       probeCwd: string;
@@ -223,13 +273,62 @@ export class ProviderStatuses {
     }
   ) {}
 
-  /** Checks one provider now, its own login first, then one given to the machine. */
-  async check(provider: Provider): Promise<ProviderStatus> {
+  /**
+   * Takes provider checks made before this controller started (Switch
+   * Console's, as onboarding opens) as its own, so its first report already
+   * carries them rather than waiting on checks of its own.
+   *
+   * Only what no login given to the machine could change: a provider signed
+   * in on its own, or not installed. Any other is checked here as usual, and
+   * so is one already checked here or checked longer ago than the TTL.
+   */
+  seed(seeds: ProviderSeed): void {
+    let changed = false;
+    for (const { status, path } of seeds) {
+      if (!isProvider(status.provider) || this.entries.has(status.provider)) continue;
+      const own = status.auth === 'ok' && status.auth_source === 'local';
+      if (!own && status.installed) continue;
+      const at = Date.parse(status.checked_at);
+      if (!Number.isFinite(at) || this.deps.now() - at >= PROVIDER_TTL_MS) continue;
+      this.entries.set(status.provider, {
+        status,
+        path,
+        at,
+        login: null,
+        problem: null,
+        sequence: 0,
+      });
+      changed = true;
+    }
+    if (changed) this.deps.onChange();
+  }
+
+  /** Every check made so far, with where each provider's CLI was found: what `seed` takes. */
+  results(): ProviderSeed {
+    return PROVIDERS.flatMap((provider) => {
+      const entry = this.entries.get(provider);
+      return entry ? [{ status: entry.status, path: entry.path }] : [];
+    });
+  }
+
+  /**
+   * Checks one provider now, its own login first, then one given to the
+   * machine. With `verify`, a login the provider says it has is also tried
+   * with a test prompt; without it, only when it was not already known to work.
+   */
+  async check(provider: Provider, options: { verify?: boolean } = {}): Promise<ProviderStatus> {
     const sequence = ++this.checks;
     const at = this.deps.now();
     const checkedAt = new Date(at).toISOString();
     const located = await this.deps.locator.locate(provider);
-    const readiness = located ? await this.probe(provider, located.path, null) : null;
+    let readiness = located ? await this.probe(provider, located.path, null) : null;
+    const knownToWork = this.entries.get(provider)?.status;
+    if (
+      located &&
+      readiness?.status === 'authenticated' &&
+      (options.verify || !(knownToWork?.auth === 'ok' && knownToWork.auth_source === 'local'))
+    )
+      readiness = (await this.tryLogin(provider, located.path)) ?? readiness;
     let status = providerStatusFrom(provider, located, readiness, checkedAt);
     let login: GivenLogin | null = null;
     let problem: ProviderEntry['problem'] = null;
@@ -319,6 +418,19 @@ export class ProviderStatuses {
     return this.entries.get(provider)?.problem ?? null;
   }
 
+  /** The test prompt's answer, or null when the provider has none or it could not run. */
+  private async tryLogin(provider: Provider, path: string): Promise<ProviderReadiness | null> {
+    try {
+      return (await this.deps.verify?.(provider, path)) ?? null;
+    } catch (error) {
+      this.deps.log.warn('Could not try a provider’s login with a test prompt', {
+        provider,
+        error: errorMessage(error),
+      });
+      return null;
+    }
+  }
+
   private async probe(
     provider: Provider,
     path: string,
@@ -357,6 +469,11 @@ export class ProviderStatuses {
     }
   }
 
+  /** Checks every provider now, whatever its last check, all at once. */
+  async checkAll(options: { verify?: boolean } = {}): Promise<void> {
+    await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
+  }
+
   /** Checks every provider whose last check is older than the TTL, all at once. */
   async refreshStale(): Promise<void> {
     this.refreshing ??= Promise.all(
@@ -390,7 +507,13 @@ export class ProviderStatuses {
 }
 
 function fingerprintProvider(status: ProviderStatus): string {
-  return JSON.stringify([status.installed, status.version, status.auth, status.reason ?? null]);
+  return JSON.stringify([
+    status.installed,
+    status.version,
+    status.auth,
+    status.reason ?? null,
+    status.auth_problem ?? null,
+  ]);
 }
 
 /** An agent host that stopped because its token was refused (by the relay, now). */
@@ -484,6 +607,23 @@ export function mapAgentProcess(input: {
 }
 
 /**
+ * Whether no session here is in the middle of a turn, as each assigned
+ * agent's host last reported it: what a controller waits for before it
+ * restarts into another release. Idle sessions do not hold it back; they are
+ * restarted with it and resume their conversations. An agent host too old to
+ * report which sessions are busy holds it back while it has any session at
+ * all. An agent host not running, or whose report is not its own, has none.
+ */
+export function noSessionMidTurn(observations: AgentObservation[]): boolean {
+  return observations.every((observation) => {
+    const health = observation.alive && observation.health?.current ? observation.health : null;
+    if (!health) return true;
+    if (health.busy) return health.busy.length === 0;
+    return Object.keys(health.placements).length === 0;
+  });
+}
+
+/**
  * Builds status reports: the machine, the providers as last checked, and every
  * assigned agent as its agent host's files describe it. `since` is kept across
  * reports so it marks when an agent entered its current state.
@@ -496,12 +636,15 @@ export class StatusCollector {
       store: ControllerStore;
       runtime: AgentRuntime;
       providers: ProviderStatuses;
+      /** The tools sessions are set up with (`toolStatuses`). */
+      tools: () => Promise<ToolStatus[]>;
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
       dataDir: string;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
       version: string;
+      updatedBy: UpdatedBy;
       now: () => number;
     }
   ) {}
@@ -552,6 +695,7 @@ export class StatusCollector {
         version: this.deps.version,
         protocol: PROTOCOL_VERSION,
         assignment_revision: assignment?.revision ?? 0,
+        updated_by: this.deps.updatedBy,
       },
       machine: {
         platform: contractPlatform(),
@@ -565,7 +709,7 @@ export class StatusCollector {
         workspaces_dir: this.deps.workspacesDir,
       },
       providers: this.deps.providers.snapshot(),
-      tools: [],
+      tools: await this.deps.tools(),
       agents,
     };
   }
@@ -578,7 +722,15 @@ export class StatusCollector {
 export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
   return JSON.stringify({
     revision: report.controller.assignment_revision,
-    providers: report.providers.map((p) => [p.provider, p.installed, p.version, p.auth, p.reason]),
+    providers: report.providers.map((p) => [
+      p.provider,
+      p.installed,
+      p.version,
+      p.auth,
+      p.reason,
+      p.auth_problem,
+    ]),
+    tools: report.tools.map((t) => [t.tool, t.state, t.reason]),
     agents: report.agents.map((a) => [
       a.agent_id,
       a.applied_revision,
@@ -589,5 +741,30 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
       a.sessions.ids,
       a.directory,
     ]),
+    update: report.update
+      ? [report.update.target, report.update.state, report.update.problem]
+      : null,
   });
+}
+
+/**
+ * The test prompt for the providers that have one, run in `cwd` with this
+ * process's environment: Claude Code, whose status command only says a login
+ * is there.
+ */
+export function providerLoginTest(
+  cwd: string
+): (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null {
+  return (provider, binaryPath) =>
+    provider === 'claude'
+      ? verifyClaudeSignIn({
+          binaryPath,
+          cwd,
+          env: Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined
+            )
+          ),
+        })
+      : null;
 }

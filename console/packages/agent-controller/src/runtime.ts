@@ -1,22 +1,28 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
+  bundleIdentity,
   clearTakenOver,
+  commandLineNames,
   ensureSharedProcess,
   hostedCredentialSchema,
   inProcessSupervision,
+  killProcessTree,
   materializeHostedProvider,
   type OpenAgentStream,
   type ProviderReadiness,
+  processCommandLine,
   providerReadinessSchema,
   readTakenOver,
   readWatchFlags,
   recordWatcherHealth,
+  replaceFile,
+  requestStop,
   runAgentHost,
   SessionLinks,
   sharedConfigSchema,
@@ -31,7 +37,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
-import { ConfigurationError, ReasonedError } from './errors';
+import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
@@ -51,6 +57,13 @@ export type AgentObservation = {
   /** `supervisor/failure.json`: why the agent host stopped and was not restarted. */
   failure: string | null;
   takenOver: TakenOver | null;
+  /**
+   * The agent host outlives this controller (it runs in a process of its own)
+   * and runs another shared-host bundle than the one this controller launches
+   * agent hosts from, or one too old to say which. Read from a live agent
+   * host's current health only; false otherwise.
+   */
+  outdated: boolean;
 };
 
 /** What an agent with no agent host root at all looks like. */
@@ -62,6 +75,7 @@ export function emptyObservation(): AgentObservation {
     health: null,
     failure: null,
     takenOver: null,
+    outdated: false,
   };
 }
 
@@ -106,7 +120,7 @@ export interface AgentRunner {
  * `InProcessRuntime` and a runner for isolated agents); tests substitute a
  * fake.
  */
-export interface AgentRuntime extends AgentRunner {
+export interface AgentRuntime extends AgentRunner, WarmsRooms {
   credentialsPath(agentId: string): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
@@ -130,6 +144,12 @@ export interface AgentRuntime extends AgentRunner {
   ): Promise<ProviderReadiness>;
   /** The agent host's state root as the agent host sees it: where a given login's files go. */
   agentStateRoot(agentId: string): string;
+}
+
+/** An agent host this controller runs, asked to start a room's session early. */
+export interface WarmsRooms {
+  /** Start the session a message to `roomId` would start; throws when the agent host is not running here. */
+  warm(agentId: string, roomId: string): Promise<void>;
 }
 
 /**
@@ -166,7 +186,7 @@ export async function probeProvider(
   const { stdout } = await execute(
     process.execPath,
     [bundlePath, '--probe', provider, cwd, binaryPath],
-    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env }
+    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env, windowsHide: true }
   );
   const line = stdout.trim().split('\n').at(-1) ?? '';
   return providerReadinessSchema.parse(JSON.parse(line));
@@ -224,7 +244,7 @@ export async function writeAtomic(path: string, body: string): Promise<void> {
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
 }
 
 export async function readOptional(path: string): Promise<string | null> {
@@ -261,13 +281,8 @@ export function alive(pid: number): boolean {
 /** A saved PID counts only while it still names a process started for this root. */
 export async function ownsRoot(pid: number, root: string): Promise<boolean> {
   if (!alive(pid)) return false;
-  try {
-    const { stdout } = await execute('ps', ['-p', String(pid), '-o', 'command=']);
-    return stdout.includes(root);
-  } catch (error) {
-    if ((error as { code?: number }).code === 1) return false;
-    throw error;
-  }
+  const commandLine = await processCommandLine(pid);
+  return commandLine !== null && commandLineNames(commandLine, root);
 }
 
 export async function recordedPid(path: string): Promise<number | null> {
@@ -277,16 +292,36 @@ export async function recordedPid(path: string): Promise<number | null> {
   return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
+/**
+ * The shared-host bundle a runner launches agent hosts from, by
+ * `bundleIdentity`: read again only when the file at its path changes, as an
+ * update installed over it or a moved `current` link does.
+ */
+export class LaunchedBundle {
+  private known: { key: string; identity: string } | null = null;
+
+  constructor(private readonly path: string) {}
+
+  async identity(): Promise<string> {
+    const info = await stat(this.path);
+    const key = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+    if (this.known?.key !== key) this.known = { key, identity: await bundleIdentity(this.path) };
+    return this.known.identity;
+  }
+
+  /**
+   * Whether the live agent host whose health this is runs another bundle, or
+   * one too old to say which. Health that is not current says nothing.
+   */
+  async outdates(health: AgentObservation['health']): Promise<boolean> {
+    if (!health?.current) return false;
+    if (health.bundle === undefined) return true;
+    return health.bundle !== (await this.identity());
+  }
+}
+
 /** The owner records an agent host writes under its root: the worker's, then a detached one's supervisor's. */
 export const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
-
-/** The shared host needs POSIX process control: macOS or Linux. */
-export function assertSupportedPlatform(platform: NodeJS.Platform): void {
-  if (platform === 'win32')
-    throw new ConfigurationError(
-      'The agents controller runs agents through the shared host, which needs a macOS or Linux machine.'
-    );
-}
 
 /** What is on disk for one agent's agent host, read by a process that does not run it (`status`). */
 export async function observeOnDisk(
@@ -301,11 +336,13 @@ export async function observeOnDisk(
     healthText === null
       ? null
       : { ...watcherHealthFileSchema.parse(JSON.parse(healthText)), current: running };
-  return { ...(await readRoot(root)), alive: running, health };
+  return { ...(await readRoot(root)), alive: running, health, outdated: false };
 }
 
-/** Everything about an agent host root but whether it runs. */
-export async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> {
+/** Everything about an agent host root but whether it runs, and on which bundle. */
+export async function readRoot(
+  root: string
+): Promise<Omit<AgentObservation, 'alive' | 'outdated'>> {
   const config = await readOptional(join(root, 'config.json'));
   let configured: AgentObservation['configured'] = null;
   if (config !== null) {
@@ -364,9 +401,7 @@ export class InProcessRuntime implements AgentRuntime {
       /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
     }
-  ) {
-    assertSupportedPlatform(process.platform);
-  }
+  ) {}
 
   credentialsPath(agentId: string): string {
     return this.deps.layout.agentCredentials(agentId);
@@ -397,7 +432,9 @@ export class InProcessRuntime implements AgentRuntime {
       return path;
     }
     const expanded =
-      directory === '~' || directory.startsWith('~/')
+      directory === '~' ||
+      directory.startsWith('~/') ||
+      (process.platform === 'win32' && directory.startsWith('~\\'))
         ? join(homedir(), directory.slice(1))
         : directory;
     if (!isAbsolute(expanded))
@@ -440,6 +477,7 @@ export class InProcessRuntime implements AgentRuntime {
             current: true,
           }
         : null,
+      outdated: false,
     };
   }
 
@@ -511,7 +549,7 @@ export class InProcessRuntime implements AgentRuntime {
     const control = new WatcherControl();
     const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
     // For `status`, which runs in another process and reads only disk.
-    const stopRecording = recordWatcherHealth(root, control);
+    const stopRecording = recordWatcherHealth(root, control, null);
     const done = (async () => {
       try {
         await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
@@ -586,11 +624,11 @@ export class InProcessRuntime implements AgentRuntime {
         root,
         pid,
       });
-      process.kill(pid, 'SIGTERM');
+      await requestStop(root, pid);
       const deadline = Date.now() + STOP_TIMEOUT_MS;
       while (alive(pid)) {
         if (Date.now() > deadline) {
-          process.kill(pid, 'SIGKILL');
+          await killProcessTree(pid);
           break;
         }
         await delay(200);
@@ -619,6 +657,19 @@ export class InProcessRuntime implements AgentRuntime {
 
   agentStateRoot(agentId: string): string {
     return this.deps.layout.watcherRoot(agentId);
+  }
+
+  /** False when the agent host does not run in this process. */
+  async warmHere(agentId: string, roomId: string): Promise<boolean> {
+    const host = this.hosts.get(agentId);
+    if (!host) return false;
+    await host.control.warm(roomId);
+    return true;
+  }
+
+  async warm(agentId: string, roomId: string): Promise<void> {
+    if (!(await this.warmHere(agentId, roomId)))
+      throw new Error(`The agent host of agent ${agentId} is not running in this controller.`);
   }
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {

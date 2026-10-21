@@ -17,41 +17,86 @@ import type {
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
-import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionAgent,
+  type ConnectionCatalogEntry,
+  type WorkspaceService,
+  type WorkspaceServiceChange,
+  connectionAgentsSchema,
+  connectionCatalogSchema,
+  knownUnavailableCode,
+  serviceConnectionsSchema,
+  workspaceServiceChangeSchema,
+  workspaceServicesSchema,
+} from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectorApp,
+  type ConnectorAppCheckResult,
+  type ConnectorAppImpact,
+  type ConnectorApps,
+  type SaveConnectorAppInput,
+  type SaveConnectorAppResult,
+  connectorAppCheckResultSchema,
+  connectorAppImpactSchema,
+  connectorAppRefusalSchema,
+  connectorAppSchema,
+  connectorAppsSchema,
+} from '@shared/core/switch-servers/connector-apps';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
-import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
+import { isHttpsOrLoopback } from '@shared/core/switch-servers/loopback';
 import type {
-  AddressingPolicy,
-  AddTeamsTeamResult,
-  BridgeConfigField,
-  BridgeDirectoryUser,
-  ChatClaim,
-  ConnectedChat,
-  DeleteBridgeResult,
-  LinkedIdentity,
-  MessagingAppInstall,
-  MessagingApps,
-  RemoteAgentRoom,
-  RemoteAgentSummary,
-  RemoteBridge,
-  RemoteBridgeType,
-  RemoteExternalUser,
-  RemoteRoomDetail,
-  RemoteRoomGroup,
-  RemoteRoomRole,
-  RemoteRoomSummary,
-  RemoveTeamsTeamResult,
-  SwitchAuthConfig,
-  SwitchServer,
-  SwitchServerDeclaration,
-  SwitchUser,
-  TeamsTeam,
-  TeamsTeamsResult,
-  TrustSettings,
-  UpdateTrustSettingsParams,
+  SlackOwnAppSetup,
+  SlackTokensChecked,
+} from '@shared/core/switch-servers/own-app-setup';
+import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
+import {
+  SERVICE_CALLBACK_PATH,
+  type ServiceFlowStart,
+  type ServiceKeyConnected,
+  serviceFlowSchema,
+  serviceFlowStartSchema,
+  serviceKeyConnectedSchema,
+} from '@shared/core/switch-servers/service-connection';
+import {
+  type ServiceGrants,
+  serviceGrantWarningSchema,
+  serviceGrantsSchema,
+} from '@shared/core/switch-servers/service-grants';
+import {
+  type AddressingPolicy,
+  type AddTeamsTeamResult,
+  type AgentRenameOutcome,
+  type BridgeConfigField,
+  type BridgeDirectoryUser,
+  type ChannelRetirement,
+  type ChatClaim,
+  type ConnectedChat,
+  type DeleteBridgeResult,
+  type LinkedIdentity,
+  type MessagingAppInstall,
+  type MessagingApps,
+  type RemoteAgentRoom,
+  type RemoteAgentSummary,
+  type RemoteBridge,
+  type RemoteBridgeType,
+  type RemoteExternalUser,
+  type RemoteRoomDetail,
+  type RemoteRoomGroup,
+  type RemoteRoomRole,
+  type RemoteRoomSummary,
+  type RemoveTeamsTeamResult,
+  type RetireOutcome,
+  type SwitchAuthConfig,
+  type SwitchServer,
+  type SwitchServerDeclaration,
+  type SwitchUser,
+  type TeamsTeam,
+  type TeamsTeamsResult,
+  type TrustSettings,
+  type UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -63,11 +108,12 @@ import type {
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
+import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
-  return `${server.gatewayUrl}/gateway${path}`;
+  return `${server.url}/gateway${path}`;
 }
 
 /** Renew the session once the stored JWT is within this window of its `exp`, so
@@ -163,7 +209,10 @@ export class GatewayError extends Error {
     readonly code?: string,
     /** The response body as it came, for a caller that reads an envelope other
      * than FastAPI's (agent management answers `{"error": {...}}`). */
-    readonly body?: string
+    readonly body?: string,
+    /** Whether the refusal says a retry can succeed, from a body such as
+     * `{"detail": …, "code": …, "retryable": true}`. Absent when it does not say. */
+    readonly retryable?: boolean
   ) {
     super(message);
     this.name = 'GatewayError';
@@ -203,6 +252,8 @@ type FetchOptions = {
   authenticated: boolean;
   method?: string;
   body?: unknown;
+  /** A multipart body, sent as is; `fetch` sets its boundary. Excludes `body`. */
+  formData?: FormData;
 };
 
 /**
@@ -292,7 +343,9 @@ export async function gatewayRequest(
       return await fetch(gatewayUrl(server, path), {
         method: options.method ?? 'GET',
         headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        body:
+          options.formData ??
+          (options.body !== undefined ? JSON.stringify(options.body) : undefined),
         // We attach the cookie explicitly; don't let the runtime manage a jar.
         redirect: 'manual',
         signal: options.signal,
@@ -301,7 +354,7 @@ export async function gatewayRequest(
       noteManagedServerUnanswered(server);
       throw new GatewayError(
         'network',
-        `Could not reach ${server.gatewayUrl}: ${cause instanceof Error ? cause.message : String(cause)}`
+        `Could not reach ${server.url}: ${cause instanceof Error ? cause.message : String(cause)}`
       );
     }
   };
@@ -323,7 +376,33 @@ export async function gatewayRequest(
   if (response.status === 401) {
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
+  if (answeredWithPage(response)) {
+    throw new NoManagementApiError(server.name, server.url, response.status);
+  }
   return response;
+}
+
+/**
+ * Whether something other than switch-core answered a `/gateway` call: every
+ * answer the management API gives is JSON, its 404 included, so a page that
+ * comes back successfully (a catch-all serving a web app) or as a 404 (a proxy
+ * with no route for the path) is not from it. A proxy's 502 page means the
+ * server is down, which the caller reports as it is.
+ */
+function answeredWithPage(response: Response): boolean {
+  const html = (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
+  return html && (response.ok || response.status === 404);
+}
+
+/** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
+function parseErrorRetryable(body: string): boolean | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { retryable?: unknown };
+    return typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function gatewayFetch(
@@ -343,7 +422,8 @@ export async function gatewayFetch(
       response.status,
       parseErrorDetail(body),
       parseErrorCode(body),
-      body
+      body,
+      parseErrorRetryable(body)
     );
   }
   return response;
@@ -356,12 +436,17 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidc_enabled: boolean;
     oidc_provider_label: string | null;
     signup_enabled?: boolean;
+    oidc_login_options?: { id: string; label: string }[];
+    oidc_browser_handoff?: boolean;
   };
   return {
     passwordLoginEnabled: json.password_login_enabled,
     oidcEnabled: json.oidc_enabled,
     oidcProviderLabel: json.oidc_provider_label,
     signupEnabled: json.signup_enabled === true,
+    // Absent on servers predating them: one button, in the app's own window.
+    oidcLoginOptions: (json.oidc_login_options ?? []).map(({ id, label }) => ({ id, label })),
+    oidcBrowserHandoff: json.oidc_browser_handoff === true,
   };
 }
 
@@ -464,6 +549,24 @@ const featureFlagsResponseSchema = z.object({
 export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFeatureFlag[]> {
   const res = await gatewayFetch(server, '/feature-flags', { authenticated: true });
   return featureFlagsResponseSchema.parse(await res.json()).flags;
+}
+
+/**
+ * Delete the signed-in account on this server, confirmed by its email. A
+ * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * raised with the server's own reason, which says what to do first.
+ */
+export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
+  try {
+    await gatewayFetch(server, '/auth/me', {
+      authenticated: true,
+      method: 'DELETE',
+      body: { email },
+    });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
 }
 
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
@@ -1150,21 +1253,82 @@ export async function updateCanManageAgents(
   });
 }
 
+/** Whether a server generates and forwards third-party avatar URLs — DiceBear
+ * for an agent with no icon, `ui-avatars.com` for a relayed platform user — or
+ * has turned that off (`THIRD_PARTY_AVATARS_ENABLED` on the server). */
+export type AvatarSettings = { thirdPartyAvatarsEnabled: boolean };
+
+/** How long a server's answer to `GET /agents/avatar-settings` is reused. The
+ * avatars, the picker, the new-agent default and the icon backfill all ask
+ * within a few seconds of a workspace loading, and this answers them with one
+ * request. It is not kept for the session: the setting changes when the
+ * server restarts, which a running Console outlives, and an operator who
+ * turns it off should not wait for every Console to restart. */
+const AVATAR_SETTINGS_TTL_MS = 60_000;
+
+/** Evicted on failure, so a transient network error is asked again rather
+ * than answered from the cache. */
+const avatarSettingsCache = new Map<string, { at: number; request: Promise<AvatarSettings> }>();
+
+/**
+ * Whether `server` allows a third-party avatar URL to be generated or sent
+ * anywhere (`GET /agents/avatar-settings`).
+ *
+ * A 404 is a server predating the setting: every such server always generated
+ * and forwarded these URLs, so absence reads as enabled — the same behavior as
+ * before the setting existed, and the same pattern as every other
+ * predates-the-capability field in this file. Any other failure propagates.
+ */
+export function fetchAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  const cached = avatarSettingsCache.get(server.id);
+  if (cached && Date.now() - cached.at < AVATAR_SETTINGS_TTL_MS) return cached.request;
+  const request: Promise<AvatarSettings> = requestAvatarSettings(server).catch((cause) => {
+    if (avatarSettingsCache.get(server.id)?.request === request) {
+      avatarSettingsCache.delete(server.id);
+    }
+    throw cause;
+  });
+  avatarSettingsCache.set(server.id, { at: Date.now(), request });
+  return request;
+}
+
+async function requestAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/agents/avatar-settings', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { thirdPartyAvatarsEnabled: true };
+    }
+    throw cause;
+  }
+  const json = (await res.json()) as { third_party_avatars_enabled: boolean };
+  return { thirdPartyAvatarsEnabled: json.third_party_avatars_enabled };
+}
+
 /**
  * One page of the icons the server generates for an agent called `name`
  * (`GET /agents/icon-choices`): page 0 leads with the one an agent of that
- * name gets when nobody picks an icon.
+ * name gets when nobody picks an icon. `choices` is empty on a server that
+ * disables third-party avatars — callers that already know that from
+ * {@link fetchAvatarSettings} should not call this at all, but the server
+ * answers consistently either way.
  */
 export async function fetchAgentIconChoices(
   server: SwitchServer,
   name: string,
   page: number
-): Promise<string[]> {
+): Promise<{ choices: string[]; thirdPartyAvatarsEnabled: boolean }> {
   const query = new URLSearchParams({ name, page: String(page) });
   const res = await gatewayFetch(server, `/agents/icon-choices?${query.toString()}`, {
     authenticated: true,
   });
-  return ((await res.json()) as { choices: string[] }).choices;
+  const json = (await res.json()) as { choices: string[]; third_party_avatars_enabled?: boolean };
+  // Absent on a server predating the setting, which always generated them.
+  return {
+    choices: json.choices,
+    thirdPartyAvatarsEnabled: json.third_party_avatars_enabled ?? true,
+  };
 }
 
 /**
@@ -1219,6 +1383,38 @@ export async function updateAgentDisplayName(
     body: { display_name: displayName },
   });
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+/**
+ * Rename an agent and set its display name in one step
+ * (`PUT /agents/{id}/name`). The display name is always sent: the current one
+ * keeps it, null clears it. Only the agent's owner (or an admin) may; a
+ * refusal (a name in use, a clash in a room or on a chat platform) surfaces as
+ * a `GatewayError` carrying the server's reason.
+ */
+export async function renameAgent(
+  server: SwitchServer,
+  agentId: string,
+  name: string,
+  displayName: string | null
+): Promise<AgentRenameOutcome> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/name`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { name, display_name: displayName },
+  });
+  const json = (await res.json()) as {
+    agent: AgentSummaryJson;
+    old_name: string;
+    bridge_failures: string[];
+    templates_mentioning_old_name: string[];
+  };
+  return {
+    agent: toRemoteAgentSummary(json.agent),
+    oldName: json.old_name,
+    bridgeFailures: json.bridge_failures,
+    templatesMentioningOldName: json.templates_mentioning_old_name,
+  };
 }
 
 /** List a server's room groups (`GET /room-groups`), for the addressing-rule
@@ -1511,6 +1707,49 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
  * it to the renderer, and do not fold it into an error message: `GatewayError`
  * quotes the *response* body only, never the request.
  */
+/** Slack's create-app page, filled in with the app this server needs. */
+export async function fetchSlackOwnAppSetup(server: SwitchServer): Promise<SlackOwnAppSetup> {
+  const res = await gatewayFetch(server, '/collaborations/setup/slack', { authenticated: true });
+  const body = z.object({ create_url: z.string() }).parse(await res.json());
+  return { createUrl: body.create_url };
+}
+
+/**
+ * Whether a Slack app's two tokens work, and its workspace. A refusal is raised
+ * with the server's own sentence, which says which token is wrong. The tokens
+ * are not logged nor quoted in errors.
+ */
+export async function checkSlackTokens(
+  server: SwitchServer,
+  tokens: { botToken: string; appToken: string }
+): Promise<SlackTokensChecked> {
+  const res = await ownAppCheck(server, '/collaborations/setup/slack/check', {
+    bot_token: tokens.botToken,
+    app_token: tokens.appToken,
+  });
+  const body = z
+    .object({ workspace_id: z.string(), workspace_name: z.string(), bot_name: z.string() })
+    .parse(await res.json());
+  return {
+    workspaceId: body.workspace_id,
+    workspaceName: body.workspace_name,
+    botName: body.bot_name,
+  };
+}
+
+async function ownAppCheck(
+  server: SwitchServer,
+  path: string,
+  body: Record<string, string>
+): Promise<Response> {
+  try {
+    return await gatewayFetch(server, path, { authenticated: true, method: 'POST', body });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+}
+
 export async function createBridge(
   server: SwitchServer,
   params: {
@@ -1987,58 +2226,6 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
   }));
 }
 
-/** A subagent registered via the bulk endpoint. `apiKey` is a secret — keep it
- * in the main process (write it to the subagent's settings file); never pass it
- * to the renderer. */
-export type BulkRegisteredSubagent = {
-  agentName: string;
-  name: string;
-  id: string;
-  apiKey: string;
-};
-
-/**
- * Register Claude Code subagents under a parent agent on `server`
- * (session-authed `POST /gateway/agents/register-known-bulk`). The signed-in
- * user must own the parent. A 409 (one or more names already exist) surfaces as
- * a `GatewayError` with status 409 so the caller can offer to overwrite.
- */
-export async function registerSubagentsBulk(
-  server: SwitchServer,
-  params: {
-    parentAgentId: string;
-    subagents: { agentName: string; description: string }[];
-    /** Register every subagent with the `auto_session` connection model, so a
-     * watcher auto-spawns a session when the subagent is addressed. */
-    autoSession: boolean;
-    overwrite?: boolean;
-  }
-): Promise<BulkRegisteredSubagent[]> {
-  const res = await gatewayFetch(server, '/agents/register-known-bulk', {
-    authenticated: true,
-    method: 'POST',
-    body: {
-      agent_type: 'claude-code',
-      parent_agent_id: params.parentAgentId,
-      options: params.autoSession ? { auto_session: true } : {},
-      subagents: params.subagents.map((s) => ({
-        subagent_name: s.agentName,
-        description: s.description,
-      })),
-      overwrite: params.overwrite ?? false,
-    },
-  });
-  const json = (await res.json()) as {
-    results: Array<{ subagent_name: string; name: string; id: string; api_key: string }>;
-  };
-  return json.results.map((r) => ({
-    agentName: r.subagent_name,
-    name: r.name,
-    id: r.id,
-    apiKey: r.api_key,
-  }));
-}
-
 /**
  * Delete an agent on `server` (session-authed `DELETE /agents/{agentId}`). Used
  * to deregister a subagent's child identity when it is removed from Switch Console.
@@ -2137,14 +2324,19 @@ export async function createRoomFromTemplate(
     method: 'POST',
     body: { yaml: yamlText, inputs, ...(templateName ? { template_name: templateName } : {}) },
   });
-  const json = (await res.json()) as
-    | RoomJson
-    | {
-        group_id: string;
-        group_name: string;
-        rooms?: RoomJson[];
-        errors?: Array<Record<string, unknown> & { error: string }>;
-      };
+  return toProvisionResult((await res.json()) as ProvisionJson);
+}
+
+type ProvisionJson =
+  | RoomJson
+  | {
+      group_id: string;
+      group_name: string;
+      rooms?: RoomJson[];
+      errors?: Array<Record<string, unknown> & { error: string }>;
+    };
+
+function toProvisionResult(json: ProvisionJson): ProvisionFromTemplateResult {
   if ('group_id' in json) {
     return {
       kind: 'group',
@@ -2155,6 +2347,173 @@ export async function createRoomFromTemplate(
     };
   }
   return { kind: 'room', ...toRoomResult(json) };
+}
+
+/** One agent a template run creates, resolved by the Use page, as the server takes it. */
+export type TemplateRunAgent = {
+  /** How the template names it, for matching a refusal to its card. */
+  slot: string;
+  name: string;
+  description: string;
+  displayName: string | null;
+  instructions: string;
+  provider: string;
+  /** One of the owner's machines on the server, by id or exact name. */
+  machine: string;
+  model: string | null;
+  advancedConfig: Record<string, unknown>;
+  isolation: 'shared' | 'isolated';
+  autoMode: boolean;
+  autoApprove: boolean;
+  /** May start with `{$agents_dir}`, the machine's own folder for agents; null for the agent's own workspace there. */
+  directory: string | null;
+  addressing: 'owner' | 'owner-agents' | 'anyone';
+  connections: { service: string; access: 'read' | 'write' | null; repos: string[] }[];
+};
+
+/** Why one agent of a run could not be created, with the server's reason code. */
+export type TemplateRunProblem = { slot: string; code: string; message: string };
+
+export type TemplateRunResult =
+  | {
+      kind: 'created';
+      createdAgents: {
+        slot: string;
+        agentId: string;
+        name: string;
+        machine: { id: string; name: string };
+        /** False when it was not taking events before its rooms were made: the kickoff may not have reached it. */
+        listening: boolean;
+      }[];
+      room: ProvisionFromTemplateResult | null;
+    }
+  | {
+      /** Nothing was kept: `agents_not_created` before anything existed, or
+       * `run_undone` when created agents were deleted again. */
+      kind: 'refused';
+      code: string;
+      message: string;
+      problems: TemplateRunProblem[];
+      /** Agents of the run that could not be deleted again. */
+      leftBehind: string[];
+    };
+
+const templateRunRefusalSchema = z.object({
+  detail: z.string(),
+  code: z.string(),
+  problems: z
+    .array(z.object({ slot: z.string(), code: z.string(), message: z.string() }))
+    .optional(),
+  left_behind: z.array(z.string()).optional(),
+});
+
+/**
+ * Run a template that creates agents, in one request: the agents as managed
+ * agents of the signed-in person on their machines, then the room half
+ * (`yamlText`, naming them by name; null for no room). The server checks
+ * everything first and keeps nothing when the run fails.
+ */
+export async function runTemplateWithAgents(
+  server: SwitchServer,
+  body: {
+    agents: TemplateRunAgent[];
+    yamlText: string | null;
+    inputs: Record<string, string | number | boolean>;
+    templateName: string;
+  }
+): Promise<TemplateRunResult> {
+  return postTemplateRun(server, '/rooms/from-template', {
+    agents: body.agents.map((a) => ({
+      slot: a.slot,
+      name: a.name,
+      description: a.description,
+      display_name: a.displayName,
+      instructions: a.instructions,
+      provider: a.provider,
+      machine: a.machine,
+      model: a.model,
+      advanced_config: a.advancedConfig,
+      isolation: a.isolation,
+      auto_mode: a.autoMode,
+      auto_approve: a.autoApprove,
+      directory: a.directory,
+      addressing: a.addressing,
+      connections: a.connections,
+    })),
+    yaml: body.yamlText,
+    inputs: body.inputs,
+    template_name: body.templateName,
+  });
+}
+
+/**
+ * Run a template from its document, in one request: the server works the
+ * agents and rooms out of the document and the inputs (a version 2
+ * document's conditions and references are the server's to resolve), checks
+ * everything, and keeps nothing when the run fails.
+ */
+export async function runTemplateDocument(
+  server: SwitchServer,
+  body: {
+    template: string;
+    inputs: Record<string, string | number | boolean>;
+    /** Existing agents standing in for slots that allow it, by resource key. */
+    filled: Record<string, string>;
+    templateName: string;
+  }
+): Promise<TemplateRunResult> {
+  return postTemplateRun(server, '/rooms/from-template-document', {
+    template: body.template,
+    inputs: body.inputs,
+    filled: body.filled,
+    template_name: body.templateName,
+  });
+}
+
+async function postTemplateRun(
+  server: SwitchServer,
+  path: string,
+  body: Record<string, unknown>
+): Promise<TemplateRunResult> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, path, { authenticated: true, method: 'POST', body });
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 409 && error.body) {
+      const parsed = templateRunRefusalSchema.safeParse(JSON.parse(error.body));
+      if (parsed.success) {
+        return {
+          kind: 'refused',
+          code: parsed.data.code,
+          message: parsed.data.detail,
+          problems: parsed.data.problems ?? [],
+          leftBehind: parsed.data.left_behind ?? [],
+        };
+      }
+    }
+    throw error;
+  }
+  const json = (await res.json()) as {
+    created_agents: {
+      slot: string;
+      agent_id: string;
+      name: string;
+      machine: { id: string; name: string };
+      listening: boolean;
+    }[];
+    room: ProvisionJson | null;
+  };
+  return {
+    kind: 'created',
+    createdAgents: json.created_agents.map((a) => ({
+      slot: a.slot,
+      agentId: a.agent_id,
+      name: a.name,
+      machine: a.machine,
+      listening: a.listening,
+    })),
+    room: json.room === null ? null : toProvisionResult(json.room),
+  };
 }
 
 // ── Template runs ───────────────────────────────────────────────────────────
@@ -2301,8 +2660,10 @@ export type StoredTemplateSummary = {
   description: string;
   kind: string;
   creator: string;
-  /** The owner's user id, so the Console can mark the signed-in user's own templates. */
+  /** The owner's user id, so the Console can mark the signed-in user's own templates. Null for one that comes with Switch. */
   ownerId: string | null;
+  /** Comes with Switch: served by the server itself, and nobody can change or delete it. */
+  official: boolean;
   /** Starts at 1 and goes up by one each time the document is changed. */
   version: number;
   /** `private` is seen by its owner and admins only. */
@@ -2325,7 +2686,7 @@ export type StoredTemplateDetail = StoredTemplateSummary & {
 
 type RegistryTemplateSummary = {
   id: string;
-  owner_id: string;
+  owner_id: string | null;
   owner_name: string | null;
   name: string;
   description: string;
@@ -2335,6 +2696,7 @@ type RegistryTemplateSummary = {
   write_visibility?: TemplateVisibility;
   can_edit?: boolean;
   can_manage?: boolean;
+  official?: boolean;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -2343,8 +2705,9 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     name: t.name,
     description: t.description,
     kind: t.kind,
-    creator: t.owner_name ?? t.owner_id,
+    creator: t.owner_name ?? t.owner_id ?? 'Switch',
     ownerId: t.owner_id,
+    official: t.official ?? false,
     // A server that does not report versions is read as being on the first.
     version: t.version ?? 1,
     // A server without visibility fields shares every template and lets its
@@ -2533,6 +2896,9 @@ type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
   agent_ids?: string[];
   connected_user_names?: string[];
+  /** Absent from a server that predates it; kept absent rather than read as
+   * "no channel", so the delete dialog can say it does not know. */
+  channel_on_delete?: ChannelRetirement | null;
 };
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -2541,6 +2907,7 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     instructions: r.instructions ?? null,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
+    channelOnDelete: r.channel_on_delete,
   };
 }
 
@@ -2621,18 +2988,38 @@ export async function removeRoomAgent(
 }
 
 /**
- * Delete a room outright (`DELETE /rooms/{id}`), taking its history and its
- * bridged channel with it.
+ * Delete a room outright (`DELETE /rooms/{id}`), taking its history with it,
+ * and resolve to what became of its platform channel.
+ *
+ * The channel is kept unless `retireChannel` asks otherwise: people often
+ * delete a room to take the agents out of a channel they keep using. Asked,
+ * the server retires it as far as the platform allows — archived on Slack and
+ * Mattermost, deleted on Discord, left by the bot on Telegram, kept on Teams —
+ * and reports it (`?retire_channel=true`, sent only when asked, so the request
+ * is unchanged for the default). A channel it could not retire comes back
+ * `failed` with the reason: the room is deleted regardless, and the channel
+ * needs removing by hand. Null when the room had no channel, the channel was
+ * kept, or the server predates the report.
  *
  * The gateway decides who may: its owner, or an admin. Switch Console hides the
  * action from anyone else, but that is a courtesy — a refusal here is the
  * authoritative answer and is surfaced rather than swallowed.
  */
-export async function deleteRoom(server: SwitchServer, roomId: string): Promise<void> {
-  await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
+export async function deleteRoom(
+  server: SwitchServer,
+  roomId: string,
+  options: { retireChannel?: boolean } = {}
+): Promise<RetireOutcome | null> {
+  const query = options.retireChannel ? '?retire_channel=true' : '';
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}${query}`, {
     authenticated: true,
     method: 'DELETE',
   });
+  const json = (await res.json()) as {
+    channel?: { outcome: RetireOutcome['outcome']; reason?: string | null } | null;
+  };
+  if (!json.channel) return null;
+  return { outcome: json.channel.outcome, reason: json.channel.reason ?? null };
 }
 
 /**
@@ -2654,7 +3041,8 @@ export async function createRoom(
     name: string;
     description: string;
     instructions?: string;
-    bridgeId: string;
+    /** Null makes an internal room: no channel, not even on the default app. */
+    bridgeId: string | null;
     agentIds: string[];
   }
 ): Promise<RemoteRoomSummary> {
@@ -2666,6 +3054,7 @@ export async function createRoom(
       description: params.description,
       instructions: params.instructions?.trim() ? params.instructions : null,
       bridge_id: params.bridgeId,
+      ...(params.bridgeId === null ? { internal_only: true } : {}),
       channel_type: 'channel_public',
       agent_ids: params.agentIds,
     },
@@ -2728,12 +3117,281 @@ export async function ensureCloudMachine(server: SwitchServer) {
   return cloudMachineSchema.parse(await response.json());
 }
 
-export async function getConnectionCatalog(server: SwitchServer) {
-  return connectionCatalogSchema.parse(
-    await (
-      await gatewayFetch(server, '/provider-connections/catalog', { authenticated: true })
-    ).json()
-  ).connections;
+/**
+ * The services the signed-in person can connect, and their connection to
+ * each: from `/service-connections`, or the older catalog a server from
+ * before service connections answers instead.
+ */
+export async function getConnectionCatalog(
+  server: SwitchServer
+): Promise<ConnectionCatalogEntry[]> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/service-connections', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 404) return getOlderCatalog(server);
+    throw error;
+  }
+  return serviceConnectionsSchema.parse(await response.json()).connections.map((entry) => ({
+    slug: entry.slug,
+    name: entry.name,
+    category: entry.category,
+    description: entry.description,
+    enabled: entry.enabled,
+    auth_type: entry.auth_type,
+    connectable: entry.connectable,
+    status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
+    unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
+    unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
+    pass_through: entry.pass_through,
+    token_lifetime: entry.token_lifetime,
+    loopback_ports: entry.loopback_ports,
+    key: entry.key,
+    external_identity: entry.external_identity,
+    consent: entry.consent,
+    workspace_enabled: entry.workspace_enabled,
+  }));
+}
+
+async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogEntry[]> {
+  const response = await gatewayFetch(server, '/provider-connections/catalog', {
+    authenticated: true,
+  });
+  return (
+    connectionCatalogSchema
+      .parse(await response.json())
+      // GitHub was the one service such a server could connect.
+      .connections.map((entry) => ({
+        ...entry,
+        connectable: entry.enabled && entry.slug === 'github',
+        unavailable_reason: null,
+        unavailable_code: null,
+        pass_through: false,
+        token_lifetime: null,
+        loopback_ports: null,
+        key: null,
+        external_identity: null,
+        consent: null,
+        workspace_enabled: null,
+      }))
+  );
+}
+
+/**
+ * The signed-in person's own agents in the workspace, and whether each is
+ * granted `service`; null when the server has no such list (a 404: it
+ * predates it). Any other failure is thrown for the caller to show.
+ */
+export async function fetchConnectionAgents(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectionAgent[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(
+      server,
+      `/service-connections/${encodeURIComponent(service)}/agents`,
+      { authenticated: true }
+    );
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return connectionAgentsSchema.parse(await response.json());
+}
+
+/**
+ * Every service the workspace can switch on or off, for a workspace admin; null
+ * when the server has no workspace switch (a 404: it predates it, or its
+ * `service_connections` flag is off). Any other failure, a refusal included,
+ * is thrown for the caller to show.
+ */
+export async function fetchWorkspaceServices(
+  server: SwitchServer
+): Promise<WorkspaceService[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/workspace/services', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return workspaceServicesSchema.parse(await response.json()).services;
+}
+
+/** Switch `service` on or off for the whole workspace; workspace admins only. */
+export async function setWorkspaceService(
+  server: SwitchServer,
+  service: string,
+  enabled: boolean
+): Promise<WorkspaceServiceChange> {
+  const response = await gatewayFetch(
+    server,
+    `/workspace/services/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'PUT', body: { enabled } }
+  );
+  return workspaceServiceChangeSchema.parse(await response.json());
+}
+
+const connectorAppPath = (service: string, rest = '') =>
+  `/connector-apps/${encodeURIComponent(service)}${rest}`;
+
+/**
+ * The server's connector apps, for its operator; null when the server has
+ * none to set up (a 404: it predates them, or its `service_connections` flag
+ * is off). Any other failure, a refusal included, is thrown for the caller
+ * to show.
+ */
+export async function fetchConnectorApps(server: SwitchServer): Promise<ConnectorApps | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/connector-apps', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return connectorAppsSchema.parse(await response.json());
+}
+
+/**
+ * Save a connector's app once its vendor accepts it; it takes effect at once.
+ * A refusal from the vendor's check is answered, with the value to look at
+ * again; any other failure is thrown.
+ */
+export async function saveConnectorApp(
+  server: SwitchServer,
+  service: string,
+  input: SaveConnectorAppInput
+): Promise<SaveConnectorAppResult> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, connectorAppPath(service), {
+      authenticated: true,
+      method: 'PUT',
+      body: input,
+    });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 422 && cause.body) {
+      const refusal = connectorAppRefusalSchema.safeParse(safeJson(cause.body));
+      if (refusal.success)
+        return {
+          kind: 'refused',
+          message: refusal.data.detail,
+          field: refusal.data.field,
+          checks: refusal.data.checks,
+        };
+    }
+    throw cause;
+  }
+  return { kind: 'saved', app: connectorAppSchema.parse(await response.json()) };
+}
+
+function safeJson(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
+}
+
+/** Copy the app configuration sets into a saved one, so the configuration can be removed. */
+export async function importConnectorApp(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectorApp> {
+  const response = await gatewayFetch(server, connectorAppPath(service, '/import'), {
+    authenticated: true,
+    method: 'POST',
+  });
+  return connectorAppSchema.parse(await response.json());
+}
+
+/** Ask the vendor about the app in use; nothing is stored. */
+export async function checkConnectorApp(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectorAppCheckResult> {
+  const response = await gatewayFetch(server, connectorAppPath(service, '/check'), {
+    authenticated: true,
+    method: 'POST',
+  });
+  return connectorAppCheckResultSchema.parse(await response.json());
+}
+
+/** Who would have to reconnect if the app `clientId` names replaced the one in use. */
+export async function fetchConnectorAppImpact(
+  server: SwitchServer,
+  service: string,
+  clientId: string
+): Promise<ConnectorAppImpact> {
+  const query = new URLSearchParams({ client_id: clientId });
+  const response = await gatewayFetch(server, connectorAppPath(service, `/impact?${query}`), {
+    authenticated: true,
+  });
+  return connectorAppImpactSchema.parse(await response.json());
+}
+
+/** Remove the saved app; answers who was connected through it, and keeps their connections. */
+export async function removeConnectorApp(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectorAppImpact> {
+  const response = await gatewayFetch(server, connectorAppPath(service), {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  return connectorAppImpactSchema.parse(await response.json());
+}
+
+/**
+ * An agent's service grants, or null when the gateway answers that it is not
+ * the signed-in person's agent (a 404): only its owner sees them. Any other
+ * failure is thrown, for the caller to show.
+ */
+export async function fetchServiceGrants(
+  server: SwitchServer,
+  agentId: string
+): Promise<ServiceGrants | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/service-grants`, {
+      authenticated: true,
+    });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return serviceGrantsSchema.parse(await response.json());
+}
+
+/** Create or replace an agent's grant; the warning names access that stays usable a while. */
+export async function setServiceGrant(
+  server: SwitchServer,
+  agentId: string,
+  service: string,
+  grant: { access: 'read' | 'write' | null; resources: Record<string, unknown> }
+): Promise<string | null> {
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'PUT', body }
+  );
+  return serviceGrantWarningSchema.parse(await response.json()).warning;
+}
+
+export async function removeServiceGrant(
+  server: SwitchServer,
+  agentId: string,
+  service: string
+): Promise<string | null> {
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return serviceGrantWarningSchema.parse(await response.json()).warning;
 }
 export async function getGitHubConnection(server: SwitchServer) {
   return gitHubConnectionSchema.parse(
@@ -2746,8 +3404,8 @@ export async function startGitHubConnection(
   server: SwitchServer,
   input: { port: number; state: string; completion_secret: string }
 ) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('GitHub connections require HTTPS.');
+  if (!isHttpsOrLoopback(new URL(server.url)))
+    throw new Error('GitHub connections require HTTPS, unless the server is on this computer.');
   const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
     await (
       await gatewayFetch(server, '/provider-connections/github/flows', {
@@ -2758,8 +3416,13 @@ export async function startGitHubConnection(
     ).json()
   );
   const url = new URL(value.url);
+  // Core names its public address, which on an older server whose dashboard
+  // has a host of its own is not where Console opens dashboard pages.
   if (
-    url.origin !== new URL(server.gatewayUrl).origin ||
+    !isHttpsOrLoopback(url) ||
+    ![server.url, server.dashboardUrl].some(
+      (own) => own !== null && new URL(own).origin === url.origin
+    ) ||
     url.pathname !== '/gateway/provider-connections/github/authorize' ||
     url.searchParams.get('state') !== value.id ||
     url.username ||
@@ -2777,30 +3440,14 @@ export async function getGitHubFlow(server: SwitchServer, id: string) {
     ).json()
   );
 }
-export async function confirmGitHubConnection(
-  server: SwitchServer,
-  id: string,
-  completionSecret: string
-) {
-  const response = await gatewayFetch(
-    server,
-    `/provider-connections/github/flows/${encodeURIComponent(id)}/confirm`,
-    {
-      authenticated: true,
-      method: 'POST',
-      body: { completion_secret: completionSecret },
-    }
-  );
-  if (response.status === 204) return { warning: null };
-  return z.object({ warning: z.string().nullable() }).parse(await response.json());
-}
+/** Hand the code back: the server exchanges it and keeps the connection. */
 export async function completeGitHubConnection(
   server: SwitchServer,
   id: string,
   code: string,
   completionSecret: string
 ) {
-  await gatewayFetch(
+  const response = await gatewayFetch(
     server,
     `/provider-connections/github/flows/${encodeURIComponent(id)}/complete`,
     {
@@ -2809,6 +3456,9 @@ export async function completeGitHubConnection(
       body: { code, completion_secret: completionSecret },
     }
   );
+  return z
+    .object({ warning: z.string().nullable(), login: z.string() })
+    .parse(await response.json());
 }
 export async function cancelGitHubConnection(server: SwitchServer, id: string) {
   await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
@@ -2822,6 +3472,123 @@ export async function disconnectGitHub(server: SwitchServer) {
     method: 'DELETE',
   });
   if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+
+const serviceFlows = (service: string) =>
+  `/service-connections/${encodeURIComponent(service)}/flows`;
+
+/**
+ * Begin signing in to `service` through Switch's generic OAuth flow. The URL
+ * the browser is sent to is checked: Core's own authorize step on this server,
+ * or the vendor's page returning to this Console's listener with this state.
+ *
+ * Core's authorize step is at its public address (`GATEWAY_PUBLIC_URL`), the
+ * host the vendor returns the browser to and whose cookie ties that return to
+ * the browser. That is normally the server's own address; an older server that
+ * still keeps its dashboard on a host of its own may name that host instead, so
+ * either is accepted, over HTTPS.
+ */
+export async function startServiceConnection(
+  server: SwitchServer,
+  service: string,
+  input: { port: number; state: string; completion_secret: string }
+): Promise<ServiceFlowStart> {
+  if (!isHttpsOrLoopback(new URL(server.url)))
+    throw new Error('Service connections require HTTPS, unless the server is on this computer.');
+  const value = serviceFlowStartSchema.parse(
+    await (
+      await gatewayFetch(server, serviceFlows(service), {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+  const url = new URL(value.url);
+  const valid =
+    value.id === input.state &&
+    !url.username &&
+    !url.password &&
+    (value.mode === 'core'
+      ? isHttpsOrLoopback(url) &&
+        [server.url, server.dashboardUrl].some(
+          (own) => own !== null && new URL(own).origin === url.origin
+        ) &&
+        url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
+        url.searchParams.get('state') === value.id
+      : url.protocol === 'https:' &&
+        url.searchParams.get('state') === value.id &&
+        url.searchParams.get('redirect_uri') ===
+          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+  if (!valid) throw new Error('The server returned an invalid sign-in URL.');
+  return value;
+}
+export async function getServiceFlow(server: SwitchServer, service: string, id: string) {
+  return serviceFlowSchema.parse(
+    await (
+      await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+/** Hand the code back: the server exchanges it and keeps the connection. */
+export async function completeServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  code: string,
+  completionSecret: string
+) {
+  const response = await gatewayFetch(
+    server,
+    `${serviceFlows(service)}/${encodeURIComponent(id)}/complete`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { code, completion_secret: completionSecret },
+    }
+  );
+  return z
+    .object({
+      warning: z.string().nullable(),
+      consent: z.enum(['read', 'write']),
+      account: z.string(),
+    })
+    .parse(await response.json());
+}
+export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+/**
+ * Connect `service` with a pasted key: Switch checks it with the vendor before
+ * keeping it, and never sends it back. A refusal (the vendor refused the key,
+ * a field is malformed, the account is linked to someone else) is thrown, its
+ * `detail` written for the person.
+ */
+export async function connectServiceWithKey(
+  server: SwitchServer,
+  service: string,
+  fields: Record<string, string>
+): Promise<ServiceKeyConnected> {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}/key`,
+    { authenticated: true, method: 'PUT', body: { fields } }
+  );
+  return serviceKeyConnectedSchema.parse(await response.json());
+}
+/** Disconnect `service`: its grants go with it, and what was issued is revoked. */
+export async function disconnectService(server: SwitchServer, service: string) {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
   return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 
@@ -2905,6 +3672,8 @@ export type ManagementController = {
    * last reported; null before it has, or when it or the server predates it.
    */
   workspacesDir: string | null;
+  /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
+  os: string | null;
   /**
    * The key provider logins given to this machine are sealed to; null when
    * its controller has none (it keeps no key, or predates sealed logins).
@@ -2918,6 +3687,8 @@ export type ControllerProviderReport = {
   provider: string;
   installed: boolean;
   auth: 'ok' | 'expired' | 'missing' | 'unknown';
+  /** Why its login does not work, in the controller's words; null when it said nothing. */
+  problem: string | null;
 };
 
 /** A managed agent as the owner's list shows it. */
@@ -2947,6 +3718,8 @@ export type ManagedAgent = {
    * workspace for the agent; null only when the machine has not said where that is.
    */
   directory: string | null;
+  /** Off for a definition saved before auto mode existed, as the server reports it. */
+  autoMode: boolean;
   autoApprove: boolean;
   status: {
     process: string;
@@ -2968,6 +3741,7 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
+  platform?: { os: string } | null;
   public_key?: { alg: string; key: string; key_id: string } | null;
 };
 
@@ -2990,6 +3764,7 @@ type ManagedAgentJson = {
     advanced_config?: unknown;
     instructions?: unknown;
     directory?: unknown;
+    auto_mode?: unknown;
     auto_approve?: unknown;
     isolation?: unknown;
   } | null;
@@ -3048,6 +3823,7 @@ export async function fetchManagementControllers(
     revokedAt: json.revoked_at,
     providers: providerReports(json.status),
     workspacesDir: json.workspaces_dir ?? null,
+    os: json.platform?.os ?? null,
     sealingKey:
       json.public_key?.alg === 'X25519'
         ? { key: json.public_key.key, keyId: json.public_key.key_id }
@@ -3069,11 +3845,7 @@ export async function giveMachineLogin(
 ): Promise<{ operationId: string; revision: number }> {
   // The login is sealed, but the key it was sealed to came from this server:
   // over plain HTTP anyone in between could have handed over their own.
-  const gateway = new URL(server.gatewayUrl);
-  if (
-    gateway.protocol !== 'https:' &&
-    !['localhost', '127.0.0.1', '[::1]'].includes(gateway.hostname)
-  )
+  if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Giving a machine a provider login requires HTTPS.');
   const res = await managementFetch(
     server,
@@ -3140,10 +3912,17 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   if (!Array.isArray(providers)) return [];
   return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
     if (!entry || typeof entry !== 'object') return [];
-    const { provider, installed, auth } = entry as Record<string, unknown>;
+    const { provider, installed, auth, auth_problem } = entry as Record<string, unknown>;
     if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
     const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
-    return [{ provider, installed, auth: known ?? 'unknown' }];
+    return [
+      {
+        provider,
+        installed,
+        auth: known ?? 'unknown',
+        problem: typeof auth_problem === 'string' && auth_problem ? auth_problem : null,
+      },
+    ];
   });
 }
 
@@ -3199,6 +3978,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
       typeof json.definition?.instructions === 'string' ? json.definition.instructions : '',
     isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
+    autoMode: json.definition?.auto_mode === true,
     autoApprove: json.definition?.auto_approve === true,
     status: json.status
       ? {
@@ -3333,6 +4113,7 @@ export type ManagedAgentDefinitionBody = {
   /** Keyed by the provider's advanced configuration fields; unset fields are absent. */
   advanced_config: Record<string, AdvancedConfigValue>;
   instructions: string;
+  auto_mode: boolean;
   auto_approve: boolean;
   directory: string | null;
 };

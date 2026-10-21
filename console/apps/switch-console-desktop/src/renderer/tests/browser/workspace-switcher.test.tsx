@@ -119,6 +119,10 @@ vi.mock('@renderer/features/switch-servers/server-presentation', () => ({
   serverStatusLabel: (server: SwitchServer) => `${server.name} status`,
 }));
 
+vi.mock('@renderer/features/chats/components/chats-offline-note', () => ({
+  ChatsOfflineNote: () => null,
+}));
+
 vi.mock('@renderer/features/switch-servers/server-icon', () => ({
   serverIcon: () => () => null,
 }));
@@ -148,8 +152,8 @@ function server(id: string, name: string): SwitchServer {
   return {
     id,
     name,
-    gatewayUrl: `https://${id}.example.invalid`,
-    apiUrl: `https://${id}.example.invalid/api`,
+    url: `https://${id}.example.invalid/api`,
+    dashboardUrl: `https://${id}.example.invalid`,
     managed: false,
     managementKind: null,
     sshHost: null,

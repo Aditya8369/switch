@@ -49,6 +49,7 @@ import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-con
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import {
   describeRemoteDirRefusal,
+  isAbsoluteMachineDir,
   isAbsoluteRemoteDir,
 } from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -94,7 +95,9 @@ const NO_ATTRIBUTES: RepoAgentAttributes = {};
  * detection, discovery, and location keying — the flow must not care (CHOO-1440). */
 function canonicalDir(dir: string): string {
   const trimmed = dir.trim();
-  const stripped = trimmed.replace(/\/+$/, '');
+  // A Windows drive root keeps its separator: `C:` alone is a relative path.
+  if (/^[A-Za-z]:[\\/]+$/.test(trimmed)) return `${trimmed.slice(0, 2)}\\`;
+  const stripped = trimmed.replace(/[\\/]+$/, '');
   return stripped || (trimmed.startsWith('/') ? '/' : '');
 }
 
@@ -112,7 +115,6 @@ export const NewAgentForm = observer(function NewAgentForm({
   const showAddServerModal = useShowModal('addServerModal');
 
   const pickState = usePickMode();
-  const form = useConfigureAgentForm();
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
@@ -134,6 +136,10 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
+  // Ahead of `pickState.serverId`, which only catches up a tick later (see the
+  // effect below) — the icon form needs the server as early as possible so its
+  // own privacy check has the least time to run against a stale answer.
+  const form = useConfigureAgentForm(selectedServerId);
   // Running in the cloud is offered where the server's flag offers it, and can
   // be chosen only where the server says this workspace can claim a machine:
   // its cloud machine list is null where it cannot, and undefined until read.
@@ -313,13 +319,6 @@ export const NewAgentForm = observer(function NewAgentForm({
     setProviderId(null);
   }, [runHost, setProviderId]);
 
-  const { suggestAutoApprove } = form;
-  const runsElsewhere =
-    isRemoteRun || isCloudRun || (isMachineRun && serverMachine?.local?.kind !== 'this-computer');
-  useEffect(() => {
-    suggestAutoApprove(runsElsewhere);
-  }, [runsElsewhere, suggestAutoApprove]);
-
   // Advanced definition attributes (model, effort, tools, system prompt, …) the
   // user set in the collapsed Advanced section. Held in a ref (not state) so the
   // section can report changes without re-rendering the modal.
@@ -425,7 +424,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // session starts in. Caught here so it greys the button out with a reason.
   // On a server machine the directory may be unknown: the machine makes a fresh workspace.
   const remoteDirIsAbsolute = isMachineRun
-    ? trimmedRemoteDir === '' || isAbsoluteRemoteDir(trimmedRemoteDir)
+    ? trimmedRemoteDir === '' || isAbsoluteMachineDir(trimmedRemoteDir, serverMachine?.os ?? null)
     : !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
 
   const canSubmit =
@@ -476,7 +475,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                                   ? 'Enter the agent’s working directory on the host.'
                                   : 'Choose the agent’s working directory.'
                                 : !remoteDirIsAbsolute
-                                  ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                                  ? serverMachine?.os === 'windows'
+                                    ? `Give the full path on ${runLocationLabel}, starting with a drive, like C:\\.`
+                                    : `Give the full path on ${runLocationLabel}, starting with “/”.`
                                   : policyHasDeadRule(form.addressingPolicy)
                                     ? 'One addressing rule can never match — fix it under Settings.'
                                     : null;
@@ -572,6 +573,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         instructions: form.instructions,
         iconUrl: form.iconUrl,
         autoApprove: form.autoApprove,
+        autoMode: form.autoMode,
         entryPoint,
       };
       if (managedRun) {

@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks, AcpSessionContext } from '../acp/hooks';
 import type { ItemType } from '../events';
+import { execProvider } from '../provider-process';
 import { commandOutput, readiness, signInWith, type ProviderReadiness } from '../readiness';
 
 const CURSOR_LOGIN = 'agent login';
@@ -117,7 +116,7 @@ export const cursorAcp: AcpProviderHooks = {
     let output: string;
     try {
       output = (
-        await promisify(execFile)(binaryPath, ['about'], {
+        await execProvider(binaryPath, ['about'], {
           cwd,
           env,
           timeout: 15000,
@@ -134,7 +133,9 @@ export const cursorAcp: AcpProviderHooks = {
   authMethodId: (env) => (env.CURSOR_API_KEY?.trim() ? undefined : 'cursor_login'),
   promptCapabilities: { image: true },
   // Cursor's own modes are workflows (agent, plan, ask), not permission
-  // levels, so the runtime mode is enforced on its permission requests.
+  // levels, so the runtime mode is enforced on its permission requests. Its
+  // Auto-review classifier is not offered over ACP, so auto mode asks the way
+  // approval-required does.
   sessionMode: () => 'agent',
   mcpServerOf: (toolCall) => {
     const server = toolCall.rawInput?.providerIdentifier;

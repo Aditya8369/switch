@@ -2,6 +2,7 @@ import type { Result } from '@switch-console/shared';
 import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { appService } from '@main/core/app/service';
+import { resetChatStream } from '@main/core/chats/chat-streams';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
@@ -14,66 +15,89 @@ import {
 } from '@main/core/workspaces/workspace-session';
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import type {
+  SaveConnectorAppInput,
+  SaveConnectorAppResult,
+} from '@shared/core/switch-servers/connector-apps';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
   type SwitchCloudEndpoint,
 } from '@shared/core/switch-servers/switch-cloud';
-import type {
-  AddServerParams,
-  BundledChatSignIn,
-  ClearTrustSettingsResult,
-  FetchTrustSettingsResult,
-  PasswordLoginParams,
-  RenameServerParams,
-  ServerConnectionStatus,
-  SignupParams,
-  SignupResult,
-  SwitchAuthConfig,
-  SwitchServer,
-  UpdateServerParams,
-  UpdateServerResult,
-  UpdateTrustSettingsParams,
-  UpdateTrustSettingsResult,
+import {
+  normaliseServerUrl,
+  type AddServerParams,
+  type BundledChatSignIn,
+  type ClearTrustSettingsResult,
+  type FetchTrustSettingsResult,
+  type PasswordLoginParams,
+  type RenameServerParams,
+  type ServerConnectionStatus,
+  type SignupParams,
+  type SignupResult,
+  type SwitchAuthConfig,
+  type SwitchServer,
+  type UpdateServerParams,
+  type UpdateServerResult,
+  type UpdateTrustSettingsParams,
+  type UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { type LoginError, oidcLogin, passwordLogin, type SignupError, signup } from './auth';
+import {
+  cancelOidcLogin,
+  type LoginError,
+  oidcLogin,
+  passwordLogin,
+  type SignupError,
+  signup,
+} from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   getConnectionCatalog,
   getGitHubConnection,
   fetchAgentIconChoices,
+  fetchAvatarSettings,
   cloudMachineLifecycle,
   ensureCloudMachine,
   listCloudMachines,
   disconnectGitHub,
+  connectServiceWithKey,
+  disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
   joinWorkspaceByDomain,
   createTenant,
   fetchAuthConfig,
   fetchCanCreateWorkspace,
+  deleteMyAccount,
   fetchMe,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
   GatewayError,
   type RemoteTenant,
+  checkConnectorApp,
+  fetchConnectorAppImpact,
+  fetchConnectorApps,
+  importConnectorApp,
+  removeConnectorApp,
+  saveConnectorApp,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
   startGitHubBrowserFlow,
   getGitHubBrowserFlow,
-  confirmGitHubBrowserFlow,
   cancelGitHubBrowserFlow,
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
+import { assertServerAddress, assertServesDashboard } from './server-address';
 import {
   addServer,
   deleteSessionCookie,
-  findServerByGatewayUrl,
+  findServerByUrl,
+  findServerByWebAddress,
   getServer,
   listServers,
   removeServer,
@@ -82,6 +106,11 @@ import {
   setActiveServerId,
   updateServer,
 } from './servers-store';
+import {
+  cancelServiceBrowserFlow,
+  getServiceBrowserFlow,
+  startServiceBrowserFlow,
+} from './service-browser-flow';
 import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
 import {
   clearTrustSettingsOnServer,
@@ -173,15 +202,15 @@ function reportSignIn(
  *
  * Idempotent because the first-run flow walks back and forth over it: going
  * back from sign-in and choosing the Cloud again must land on the same row,
- * and the gateway URL is unique, so a second insert would fail rather than
- * duplicate. Reported only when a row is actually added.
+ * and a server's address is not added twice, so a second insert would fail
+ * rather than duplicate. Reported only when a row is actually added.
  */
 async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<SwitchServer> {
-  const existing = await findServerByGatewayUrl(url);
+  const existing = await findServerByUrl(url);
   if (existing) return existing;
   let server: SwitchServer;
   try {
-    server = await addServer({ name: SWITCH_CLOUD_NAME, gatewayUrl: url, apiUrl: url });
+    server = await addServer({ name: SWITCH_CLOUD_NAME, url });
   } catch (error) {
     trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
     throw error;
@@ -195,6 +224,13 @@ async function hostedAgentsOn(server: SwitchServer): Promise<boolean> {
   return (await featureFlagsService.current(server)).flags['hosted_agents'];
 }
 
+/** What this Console holds of a server session, gone: signing out, or the account deleted. */
+async function forgetSession(serverId: string): Promise<void> {
+  await deleteManagedClaudeCredential(serverId);
+  await deleteSessionCookie(serverId);
+  resetChatStream(serverId);
+}
+
 export const switchServersController = createRPCController({
   /** The icons the server generates for an agent called `name`, one page at a time. */
   agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
@@ -204,6 +240,10 @@ export const switchServersController = createRPCController({
   /** Whether the signed-in account may create a workspace on the server. */
   canCreateWorkspace: (serverId: string) =>
     withServerWorkspaceSession(serverId, (server) => fetchCanCreateWorkspace(server)),
+  /** Whether this server allows a third-party avatar URL (DiceBear, ui-avatars.com)
+   * to be generated or sent anywhere. */
+  avatarSettings: (serverId: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) => fetchAvatarSettings(server)),
   /** The caller's cloud machines, or null when the server offers none. */
   cloudMachines: (serverId: string) =>
     withServerWorkspaceSession(serverId, async (server) =>
@@ -233,6 +273,7 @@ export const switchServersController = createRPCController({
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
     let server: SwitchServer;
     try {
+      await assertServerAddress(params.url);
       server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
@@ -252,39 +293,40 @@ export const switchServersController = createRPCController({
   /**
    * The server an invite link points at, as far as this install can reach it.
    *
-   * A server already registered here is handed back as it is. Switch Cloud is
-   * registered on the spot when the link is for it, since its addresses are the
-   * build's and there is nothing to ask. Any other server is unknown: an invite
-   * link names the server's web address and nothing else, and where its agents
-   * connect is not something to guess, so the caller has to ask.
+   * A server already registered here is handed back as it is, whether the link
+   * names its address or the separate dashboard address an older server keeps.
+   * Switch Cloud is registered on the spot when the link is for it, since its
+   * address is the build's and there is nothing to ask. Any other server is
+   * unknown, and the caller offers the link's address to add: on a current
+   * server that is the server's own, and adding checks it really is.
    */
   serverForInvite: async (origin: string): Promise<InviteServer> => {
     const cloud = switchCloudEndpoint();
     if (cloud && new URL(cloud.url).origin === new URL(origin).origin) {
       return { kind: 'known', server: await registerSwitchCloud(cloud), via: 'cloud' };
     }
-    const existing = await findServerByGatewayUrl(origin);
+    const existing = await findServerByWebAddress(origin);
     if (existing) return { kind: 'known', server: existing, via: 'external' };
     return { kind: 'unknown', origin };
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
     const previous = await requireServer(params.id);
+    // Compared normalised, so a no-op edit (or one that only respells the
+    // address) neither re-checks it nor rewrites any agent's config.
+    const urlChanged = normaliseServerUrl(previous.url) !== normaliseServerUrl(params.url);
+    if (urlChanged) await assertServerAddress(params.url);
     const server = await updateServer(params);
 
-    // The API URL is what an agent's SWITCH_API_ENDPOINT points at. When it
+    // The address is what an agent's SWITCH_API_ENDPOINT points at. When it
     // changes, cascade it to every member agent's stored config so they don't
-    // keep authenticating against the stale endpoint (CHOO-1431). Compare the
-    // saved (normalised) values so a no-op edit doesn't rewrite configs.
-    const apiUrlChanged = previous.apiUrl !== server.apiUrl;
-    const propagatedAgents = apiUrlChanged
-      ? await propagateServerApiUrl(server.id, server.apiUrl)
-      : [];
+    // keep authenticating against the stale endpoint (CHOO-1431).
+    const propagatedAgents = urlChanged ? await propagateServerApiUrl(server.id, server.url) : [];
     // The managed agents this computer runs reach the server through its
     // controller, which has to reconnect at the new address too.
-    if (apiUrlChanged) await embeddedControllerService.followServerApiUrl(server.id);
+    if (urlChanged) await embeddedControllerService.followServerApiUrl(server.id);
 
-    return { server, propagation: { apiUrlChanged, agents: propagatedAgents } };
+    return { server, propagation: { urlChanged, agents: propagatedAgents } };
   },
 
   renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),
@@ -305,12 +347,28 @@ export const switchServersController = createRPCController({
     ),
   getGitHubFlow: (serverId: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => getGitHubBrowserFlow(server, id)),
-  confirmGitHubConnection: (serverId: string, id: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) => confirmGitHubBrowserFlow(server, id)),
   cancelGitHubConnection: (serverId: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectGitHub(server)),
+  startServiceConnection: (serverId: string, service: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url))
+    ),
+  getServiceFlow: (serverId: string, service: string, id: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      getServiceBrowserFlow(server, service, id)
+    ),
+  cancelServiceConnection: (serverId: string, service: string, id: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      cancelServiceBrowserFlow(server, service, id)
+    ),
+  connectServiceWithKey: (serverId: string, service: string, fields: Record<string, string>) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      connectServiceWithKey(server, service, fields)
+    ),
+  disconnectService: (serverId: string, service: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) => disconnectService(server, service)),
   openGitHubInstallation: async (serverId: string) => {
     const connection = await withReachableServerWorkspaceSession(serverId, (server) =>
       getGitHubConnection(server)
@@ -446,6 +504,42 @@ export const switchServersController = createRPCController({
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
 
+  /**
+   * The apps connectors sign in through, for the server's operator: not
+   * scoped to a workspace, since one app serves them all. Null when the
+   * server has none to set up.
+   */
+  getConnectorApps: async (serverId: string) =>
+    fetchConnectorApps(await requireReachableServer(serverId)),
+
+  /** Check a connector's app with its vendor, and save it if the vendor accepts it. */
+  saveConnectorApp: async (params: {
+    serverId: string;
+    service: string;
+    input: SaveConnectorAppInput;
+  }): Promise<SaveConnectorAppResult> =>
+    saveConnectorApp(await requireReachableServer(params.serverId), params.service, params.input),
+
+  /** Copy a connector's app from the server's configuration into Switch. */
+  importConnectorApp: async (params: { serverId: string; service: string }) =>
+    importConnectorApp(await requireReachableServer(params.serverId), params.service),
+
+  /** Ask the vendor about the connector's app in use; nothing is stored. */
+  checkConnectorApp: async (params: { serverId: string; service: string }) =>
+    checkConnectorApp(await requireReachableServer(params.serverId), params.service),
+
+  /** Who would have to reconnect if the app `clientId` names replaced the one in use. */
+  getConnectorAppImpact: async (params: { serverId: string; service: string; clientId: string }) =>
+    fetchConnectorAppImpact(
+      await requireReachableServer(params.serverId),
+      params.service,
+      params.clientId
+    ),
+
+  /** Remove a connector's saved app; the connections made through it are kept. */
+  removeConnectorApp: async (params: { serverId: string; service: string }) =>
+    removeConnectorApp(await requireReachableServer(params.serverId), params.service),
+
   // Reported here rather than in `auth.ts`: the same functions are used to
   // re-authenticate a managed server on its own and to log in while starting a
   // stack, and neither of those is a person signing in.
@@ -462,18 +556,26 @@ export const switchServersController = createRPCController({
     return result;
   },
 
-  oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> => {
+  /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
+  oidcLogin: async (
+    serverId: string,
+    provider: string | null
+  ): Promise<Result<true, LoginError>> => {
     const server = await requireServer(serverId);
     const unreachable = hostUnreachable(server);
     if (unreachable) {
       reportSignIn('oidc', server, 'unreachable');
       throw unreachable;
     }
-    const result = await oidcLogin(server);
+    const config = await fetchAuthConfig(server);
+    const result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
     reportSignIn('oidc', server, signInFailureReason(result));
     if (result.success) await adoptWorkspaces(server);
     return result;
   },
+
+  /** Gives up a sign-in waiting on the system browser. */
+  cancelOidcLogin: (serverId: string): void => cancelOidcLogin(serverId),
 
   signup: async (params: SignupParams): Promise<Result<SignupResult, SignupError>> => {
     const server = await requireServer(params.serverId);
@@ -504,9 +606,15 @@ export const switchServersController = createRPCController({
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
-    await deleteManagedClaudeCredential(serverId);
-    await deleteSessionCookie(serverId);
+    await forgetSession(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
+  },
+
+  /** Delete the signed-in account on the server, then forget its session here. */
+  deleteAccount: async (params: { serverId: string; email: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await deleteMyAccount(server, params.email);
+    await forgetSession(params.serverId);
   },
 
   /**
@@ -523,6 +631,7 @@ export const switchServersController = createRPCController({
     if (server.managed) {
       await openAuthenticatedGatewayPage(server, params.url);
     } else {
+      await assertServesDashboard(server);
       await appService.openExternal(params.url);
     }
   },

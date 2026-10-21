@@ -33,7 +33,46 @@ HOSTED_AGENTS = "hosted_agents"
 # /v1/controllers. With it off none of those routes are mounted.
 AGENT_MANAGEMENT = "agent_management"
 
+# Service connections: people connect outside services (GitHub's grants,
+# Atlassian, Google Workspace, Datadog and the rest of the catalog) and grant
+# them to their agents. With it off, the routes for connections, sign-ins,
+# keys and grants (`/gateway/service-connections`, `/gateway/agents/{id}/
+# service-grants`, `/agents/{id}/service-grants` and `service-tokens`) are not
+# mounted: agent hosts read that as no grants, and Console and the dashboard
+# show no services but GitHub's link, as before connections. GitHub's own
+# connect routes stay.
+SERVICE_CONNECTIONS = "service_connections"
+
+# Follow the conversation: a person's message that mentions nobody reaches an
+# agent when it is a reply in a thread the agent is taking part in, the next
+# message in an exchange the agent has just answered, or a message in a room
+# whose main agent it is (`delivery/conversation.py`). With it off such
+# messages reach nobody, as before.
+FOLLOW_THE_CONVERSATION = "follow_the_conversation"
+
+# Agent chats in Switch Console: an agent's page opens on its chats (its
+# direct chats and the rooms it is in) beside the conversation. Core puts an
+# agent's owner back in each chat they started that holds the agent; with it
+# off, owning an agent gives no room membership.
+AGENT_CHATS = "agent_chats"
+
+# switch-buddy: each person's own assistant, which Switch Console creates on
+# their computer at the end of its first run. Core serves the built-in
+# switch-buddy template only with it on (and agent management, which the
+# buddy runs as), and Console offers the buddy only on a server that turns it
+# on, so a server without the template is never asked to make one.
+SWITCH_BUDDY = "switch_buddy"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
-    {ECOSYSTEM_SHOW_OWNERS, SWITCH_CLOUD, HOSTED_AGENTS, AGENT_MANAGEMENT}
+    {
+        ECOSYSTEM_SHOW_OWNERS,
+        SWITCH_CLOUD,
+        HOSTED_AGENTS,
+        AGENT_MANAGEMENT,
+        SERVICE_CONNECTIONS,
+        FOLLOW_THE_CONVERSATION,
+        AGENT_CHATS,
+        SWITCH_BUDDY,
+    }
 )

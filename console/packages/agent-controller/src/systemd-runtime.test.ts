@@ -84,6 +84,7 @@ function template(agentId: string, cwd: string, binaryPath = '/usr/bin/claude') 
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
     },
     cwd,
     credentialsPath: runtime.credentialsPath(agentId),
@@ -110,6 +111,7 @@ beforeEach(() => {
     agentUsers: 2,
     node: '/usr/bin/node',
     bundle: '/opt/switch/shared-host.mjs',
+    releasesDir: null,
   };
   mkdirSync(config.dataDir, { mode: 0o700 });
   mkdirSync(config.agentsDir, { mode: 0o700 });
@@ -128,7 +130,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('SystemdRuntime', () => {
+// Linux only: systemd and Linux users.
+describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
   it('runs an agent as the first free agent user, from files the unit loads', async () => {
     const cwd = await start('agent-1');
     const root = join(config.agentsDir, '01');
@@ -297,7 +300,8 @@ describe('SystemdRuntime', () => {
   });
 });
 
-describe('environmentLine', () => {
+// Linux only: systemd and Linux users.
+describe.skipIf(process.platform === 'win32')('environmentLine', () => {
   it('quotes a value so systemd reads it back as is', () => {
     expect(environmentLine('KEY', 'a b$c"d')).toBe(`KEY='a b$c"d'`);
     expect(environmentLine('KEY', `it's $x "y" \\z`)).toBe(`KEY="it's \\$x \\"y\\" \\\\z"`);

@@ -2,14 +2,13 @@
 over the real transport (docs/design/switch-trust-guardrails-v1.md).
 
 Drives the genuine path: `AgentCore.send_message` → `_enforce_trust` →
-(blocked: `SystemActor.send_admin` / allowed-or-degraded: the real send) — and
-reads the outcome back out of the `messages` table, so nothing is inferred
-from in-process state.
+(blocked: `SystemActor.send_admin` in place of the reply / alerted or errored:
+the real send plus a separate `SystemActor.send_admin` notice / allowed: the
+real send alone) — and reads the outcome back out of the `messages` table, so
+nothing is inferred from in-process state.
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -49,12 +48,12 @@ class _FailingTrustClient:
 async def _wait_joined(
     client: object, transport_room_id: str, timeout: float = 30
 ) -> None:
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if transport_room_id in client.room_join_times:  # type: ignore[attr-defined]
-            return
-        await asyncio.sleep(0.25)
-    raise AssertionError(f"client never joined {transport_room_id} within {timeout}s")
+    """Block until the agent is a member of the room: its membership is a
+    row, written when it was invited (`Actor.wait_joined` reads it). An
+    agent reads no room, so it does not hear its own join."""
+    assert await client.wait_joined(transport_room_id, timeout), (  # type: ignore[attr-defined]
+        f"client never joined {transport_room_id} within {timeout}s"
+    )
 
 
 async def _timeline_messages(
@@ -83,12 +82,14 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         agent_store=session_env.agent_store,
         room_store=session_env.room_store,
         room_role_store=session_env.room_role_store,
+        external_user_store=session_env.external_user_store,
         document_store=session_env.document_store,
         reference_store=session_env.reference_store,
         agent_session_store=session_env.agent_session_store,
         room_service=harness.room_service,
         connections=AgentConnectionRegistry(),
-        frontend_base_url=session_env.config.frontend_base_url,
+        frontend_base_url=session_env.config.dashboard_base_url,
+        follow_the_conversation_enabled=False,
     )
     await harness.client_lifecycle.ensure_system_client("admin")
 
@@ -234,18 +235,60 @@ async def test_redacted_agent_message_is_sent_with_content_swapped(
     assert not any("agent@example.com" in row.content.get("body", "") for row in rows)
 
 
-async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
+async def test_alerted_agent_message_is_sent_with_a_separate_notice(
     harness: Harness, session_env: SessionEnv
 ) -> None:
     agent_id, room_id = await _setup_room(
-        harness, session_env, "e2e-trust-failopen", with_admin=False
+        harness, session_env, "e2e-trust-alerted", with_admin=True
+    )
+    harness.protocol.trust_client = _FixedTrustClient(
+        TrustCheckResult(
+            outcome="alerted",
+            policy_id="policy-1",
+            policy_name="default",
+            findings=(
+                TrustFinding(
+                    category="pii/email", detector_name="email", severity="low"
+                ),
+            ),
+        )
+    )
+
+    await harness.protocol.send_message(
+        agent_id, room_id, "my email is agent@example.com"
+    )
+
+    rows = await _timeline_messages(harness, session_env, room_id)
+    sent = [
+        row
+        for row in rows
+        if row.content.get("body") == "my email is agent@example.com"
+    ]
+    assert len(sent) == 1
+    admin_rows = [row for row in rows if "com.switch.admin" in row.content]
+    assert len(admin_rows) == 1
+    assert admin_rows[0].content["com.switch.admin"]["type"] == "trust_alerted"
+    assert "Switch Trust flagged this message" in admin_rows[0].content["body"]
+    # Threaded under the flagged reply itself, not under whatever thread (if
+    # any) the agent happened to be posting in.
+    assert admin_rows[0].thread_root_event_id == sent[0].transport_event_id
+
+
+async def test_trust_check_failure_fails_open_and_notifies_instead_of_blocking(
+    harness: Harness, session_env: SessionEnv
+) -> None:
+    agent_id, room_id = await _setup_room(
+        harness, session_env, "e2e-trust-failopen", with_admin=True
     )
     harness.protocol.trust_client = _FailingTrustClient()
 
     await harness.protocol.send_message(agent_id, room_id, "hello there")
 
     rows = await _timeline_messages(harness, session_env, room_id)
-    sent = [row for row in rows if "hello there" in row.content.get("body", "")]
+    sent = [row for row in rows if row.content.get("body") == "hello there"]
     assert len(sent) == 1
-    assert "Switch Trust could not fully check" in sent[0].content["body"]
-    assert not any("com.switch.admin" in row.content for row in rows)
+    admin_rows = [row for row in rows if "com.switch.admin" in row.content]
+    assert len(admin_rows) == 1
+    assert admin_rows[0].content["com.switch.admin"]["type"] == "trust_errored"
+    assert "Switch Trust could not check" in admin_rows[0].content["body"]
+    assert admin_rows[0].thread_root_event_id == sent[0].transport_event_id

@@ -22,6 +22,9 @@ export const antigravityAcp: AcpProviderHooks = {
   },
   launch: antigravityLaunch,
   loginCommand: 'antigravity-acp --login',
+  unsupportedPlatforms: {
+    win32: 'Antigravity ACP has no Windows build, so it cannot run on Windows.',
+  },
   // `authMethods` is the agent's own answer: the sign-ins it still wants.
   // Calling `authenticate` here would not test the sign-in but perform it,
   // opening a browser.
@@ -43,12 +46,19 @@ export const antigravityAcp: AcpProviderHooks = {
   // only a session start sends it and the sign-in check never does.
   authMethodId: () => 'oauth-personal',
   promptCapabilities: { image: true, audio: true, embeddedContext: true },
-  sessionMode: (runtimeMode) =>
-    runtimeMode === 'full-access'
-      ? 'yolo'
-      : runtimeMode === 'auto-accept-edits'
-        ? 'auto_edit'
-        : 'default',
+  // Antigravity has no reviewer of its own, so auto mode is its auto-edit
+  // mode: edits run, commands and connector calls still ask.
+  sessionMode: (runtimeMode) => {
+    switch (runtimeMode) {
+      case 'full-access':
+        return 'yolo';
+      case 'auto-accept-edits':
+      case 'auto':
+        return 'auto_edit';
+      case 'approval-required':
+        return 'default';
+    }
+  },
   nativeSessionIdPrefix: {
     prefix: 'acp:',
     legacyMessage:

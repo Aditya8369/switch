@@ -135,6 +135,9 @@ async function main(): Promise<void> {
         adapter: createBenchAdapter(),
         port: process,
         authenticate: null,
+        services: { grants: [], unavailable: null },
+        servicesChange: null,
+        entrypoint: process.argv[1]!,
         signal: stop.signal,
       });
     } catch (error) {

@@ -5,6 +5,7 @@ import {
   sealProviderLogin,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
+import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import {
@@ -30,6 +31,7 @@ import {
 } from '@main/core/switch-servers/local-provider-sign-in';
 import { withReachableServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { log } from '@main/lib/logger';
 import type {
   AdvancedConfigField,
   ManagedAgentChanges,
@@ -38,10 +40,31 @@ import type {
   MachineLoginOutcome,
   ManagedMachine,
   OwnedMachine,
+  ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { ownedMachines } from './owned-machines';
+import { ownedMachines, thisComputerReport } from './owned-machines';
+
+async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+  const [thisComputer, hosts] = await Promise.all([
+    embeddedControllerService.enrolledControllerId(serverId),
+    hostControllerService.recordsOn(serverId),
+  ]);
+  return withReachableServerWorkspaceSession(serverId, async (server) => {
+    let controllers;
+    try {
+      controllers = await fetchManagementControllers(server);
+    } catch (error) {
+      if (error instanceof AgentManagementUnavailableError) return null;
+      throw error;
+    }
+    return ownedMachines(controllers, {
+      thisComputer,
+      sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
+    });
+  });
+}
 
 /**
  * The signed-in user's managed agents on a server, as the server holds them:
@@ -93,6 +116,7 @@ export const managedAgentsController = createRPCController({
             model: agent.model,
             advancedConfig: agent.advancedConfig,
             instructions: agent.instructions,
+            autoMode: agent.autoMode,
             autoApprove: agent.autoApprove,
             directory: agent.directory,
             isolation: agent.isolation,
@@ -107,25 +131,15 @@ export const managedAgentsController = createRPCController({
    * The owner's machines an agent can be placed on, with the providers each
    * last reported. Null when the server does not run agent management.
    */
-  machines: async (serverId: string): Promise<OwnedMachine[] | null> => {
-    const [thisComputer, hosts] = await Promise.all([
-      embeddedControllerService.enrolledControllerId(serverId),
-      hostControllerService.recordsOn(serverId),
-    ]);
-    return withReachableServerWorkspaceSession(serverId, async (server) => {
-      let controllers;
-      try {
-        controllers = await fetchManagementControllers(server);
-      } catch (error) {
-        if (error instanceof AgentManagementUnavailableError) return null;
-        throw error;
-      }
-      return ownedMachines(controllers, {
-        thisComputer,
-        sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
-      });
-    });
-  },
+  machines: (serverId: string): Promise<OwnedMachine[] | null> => machinesOn(serverId),
+
+  /**
+   * This computer's providers as its controller last reported them to a
+   * server it runs for; null when it runs for none, or none has a report,
+   * and Console's own check is what there is to go by.
+   */
+  thisComputerProviders: async (): Promise<ThisComputerReport | null> =>
+    thisComputerReport(await embeddedControllerService.runningServerIds(), machinesOn),
 
   /**
    * Gives one of the owner's machines a provider login, sealed here to the
@@ -226,11 +240,23 @@ export const managedAgentsController = createRPCController({
 
   /** Deletes the agent: its machine stops it, and it is gone from Switch.
    * One call: Switch stops managing an agent it deletes, while stopping
-   * managing it first would leave the agent behind if the delete then failed. */
-  remove: (params: { serverId: string; agentId: string }): Promise<void> =>
-    withReachableServerWorkspaceSession(params.serverId, (server) =>
+   * managing it first would leave the agent behind if the delete then failed.
+   * An agent this Console moved to managed also loses the Console row it was
+   * moved from; a failure there is left to the next automatic pass. */
+  remove: async (params: { serverId: string; agentId: string }): Promise<void> => {
+    await withReachableServerWorkspaceSession(params.serverId, (server) =>
       deleteAgent(server, params.agentId)
-    ),
+    );
+    await agentMigrationService
+      .forgetDeleted(params.serverId, params.agentId)
+      .catch((error: unknown) => {
+        log.error('Could not remove the Console agent a deleted managed agent was moved from', {
+          serverId: params.serverId,
+          agentId: params.agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  },
 });
 
 function definitionBody(changes: ManagedAgentChanges['definition']): Record<string, unknown> {
@@ -239,6 +265,7 @@ function definitionBody(changes: ManagedAgentChanges['definition']): Record<stri
   if (changes.model !== undefined) body.model = changes.model;
   if (changes.advancedConfig !== undefined) body.advanced_config = changes.advancedConfig;
   if (changes.instructions !== undefined) body.instructions = changes.instructions;
+  if (changes.autoMode !== undefined) body.auto_mode = changes.autoMode;
   if (changes.autoApprove !== undefined) body.auto_approve = changes.autoApprove;
   if (changes.directory !== undefined) body.directory = changes.directory;
   if (changes.isolation !== undefined) body.isolation = changes.isolation;

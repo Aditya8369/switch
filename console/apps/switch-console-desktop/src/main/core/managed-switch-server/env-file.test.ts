@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile, keysDisagreeing, readStackEnv, telemetryRequested } from './env-file';
+import {
+  buildEnvFile,
+  keysDisagreeing,
+  MANAGED_SERVER_FEATURE_FLAGS,
+  managedServerFeatureFlags,
+  readStackEnv,
+  telemetryRequested,
+} from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -34,6 +41,7 @@ describe('buildEnvFile', () => {
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
   const vars = Object.fromEntries(
     env
@@ -75,8 +83,19 @@ describe('buildEnvFile', () => {
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
   });
 
-  it('turns agent management on', () => {
-    expect(vars.FEATURE_FLAGS_ENABLED).toBe('agent_management');
+  it("starts a managed stack with this build's feature flags", () => {
+    expect(vars.FEATURE_FLAGS_ENABLED).toBe(MANAGED_SERVER_FEATURE_FLAGS.join(','));
+  });
+
+  it('turns on what switch-buddy needs only in a build with the new first run', () => {
+    expect(managedServerFeatureFlags(true)).toEqual([
+      'agent_management',
+      'agent_chats',
+      'switch_buddy',
+      'follow_the_conversation',
+      'service_connections',
+    ]);
+    expect(managedServerFeatureFlags(false)).toEqual([]);
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {
@@ -155,6 +174,9 @@ describe('buildEnvFile', () => {
       'TEAMS_APP_PRIVACY_URL',
       'TEAMS_APP_TERMS_URL',
       'TEAMS_APP_NAME',
+      // Written, and empty on purpose in a build without the new first run
+      // (MANAGED_SERVER_FEATURE_FLAGS).
+      'FEATURE_FLAGS_ENABLED',
     ]);
 
     const missing = [...interpolated]
@@ -184,6 +206,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
       telemetryInternal: false,
+      telemetryEndpoint: 'https://relay.example.test',
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
   });
@@ -200,6 +223,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'local',
       telemetryInternal: false,
+      telemetryEndpoint: 'https://relay.example.test',
     });
 
     expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
@@ -218,11 +242,17 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
       telemetryInternal: true,
+      telemetryEndpoint: 'https://relay.example.test',
     });
 
     expect(forStaff).toContain('TELEMETRY_INTERNAL=true');
     expect(vars.TELEMETRY_INTERNAL).toBe('false');
     expect(composeYaml).toMatch(/^\s+TELEMETRY_INTERNAL:\s*$/m);
+  });
+
+  it('names the relay the server reports to, rather than leaving it to the server’s default', () => {
+    expect(vars.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_ENDPOINT:\s*$/m);
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {
@@ -252,6 +282,7 @@ describe('readStackEnv', () => {
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('reads back exactly what buildEnvFile wrote', () => {
@@ -366,6 +397,7 @@ describe('keysDisagreeing', () => {
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('finds nothing wrong with a copy of the same settings', () => {

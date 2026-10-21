@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
 )
 from switch_core.tenant_context import tenant_scope
+from tests.ownership import SoleOwner
 
 
 def _raw_config(**overrides: Any) -> dict[str, Any]:
@@ -293,10 +294,10 @@ class _RecordingAdapter(PlatformAdapter):
     async def add_users_to_channel(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    async def create_agent_identity(self, *args: Any, **kwargs: Any) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         return None
 
-    async def remove_agent_identity(self, *args: Any, **kwargs: Any) -> None:
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         return None
 
     async def get_channel_agent_names(self, *args: Any, **kwargs: Any) -> list[str]:
@@ -325,6 +326,8 @@ def _lifecycle() -> CollaborationBridgeLifecycleService:
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(MagicMock()),
     )
     service.register_adapter("recording", _RecordingAdapter, _RecordingConfig)
     return service
@@ -440,6 +443,8 @@ def _service_with_existing(
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(MagicMock(return_value=session)),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     return service
@@ -626,6 +631,8 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(MagicMock(return_value=session)),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     monkeypatch.setattr(
@@ -699,6 +706,8 @@ async def test_start_refuses_a_second_bridge_already_holding_the_port(
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(MagicMock(return_value=session)),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     # A bridge already running and holding the port.

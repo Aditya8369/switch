@@ -46,6 +46,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: { effort: 'high', tools: ['Read'] },
     instructions: 'Be brief.',
     autoApprove: false,
+    autoMode: false,
     directory: '/work/pm',
     isolation: 'shared',
   },
@@ -68,6 +69,13 @@ describe('editOf', () => {
     };
     expect(editOf(AGENT, SCHEMA, before, after)).toEqual({
       changes: { definition: { autoApprove: true, isolation: 'isolated', model: 'sonnet' } },
+    });
+  });
+
+  it('sends auto mode when it changed', () => {
+    const before = draftOf(AGENT, SCHEMA, null);
+    expect(editOf(AGENT, SCHEMA, before, { ...before, autoMode: true })).toEqual({
+      changes: { definition: { autoMode: true } },
     });
   });
 
@@ -129,6 +137,7 @@ describe('shownDirectory', () => {
     cloud: false,
     local: null,
     workspacesDir: '/srv/workspaces/',
+    os: null,
   };
   const unset = { ...AGENT, definition: { ...AGENT.definition, directory: null } };
   const reported = {

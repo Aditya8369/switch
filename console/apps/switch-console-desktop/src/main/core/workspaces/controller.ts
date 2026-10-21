@@ -1,3 +1,5 @@
+import { managedAgentLocator } from '@main/core/agent-migration/managed-agent-location';
+import { appService } from '@main/core/app/service';
 import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-icons';
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
 import { createBridgeOnServer } from '@main/core/switch-servers/create-bridge';
@@ -10,9 +12,15 @@ import {
   addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer,
+  checkSlackTokens,
+  fetchSlackOwnAppSetup,
   beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
+  runTemplateDocument,
+  runTemplateWithAgents,
+  type TemplateRunAgent,
+  type TemplateRunResult,
   createTemplate,
   deleteRoom,
   deleteTemplate,
@@ -28,6 +36,7 @@ import {
   beginMessagingAppInstall,
   fetchBridgeTypes,
   fetchConnectedChats,
+  fetchManagedAgent,
   fetchMessagingApps,
   fetchMyIdentities,
   fetchRoomAgentIds,
@@ -50,9 +59,21 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  fetchConnectionAgents,
+  fetchServiceGrants,
+  fetchWorkspaceServices,
+  getConnectionCatalog,
+  getGitHubConnection,
+  connectServiceWithKey,
+  disconnectGitHub,
+  disconnectService,
+  setServiceGrant,
+  setWorkspaceService,
+  removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
   updateAgentDisplayName,
+  renameAgent,
   updateAgentIcon,
   updateRoom,
   updateTemplate,
@@ -63,8 +84,14 @@ import {
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
+import {
+  cancelServiceBrowserFlow,
+  getServiceBrowserFlow,
+  startServiceBrowserFlow,
+} from '@main/core/switch-servers/service-browser-flow';
 import { saveTeamsPackage } from '@main/core/switch-servers/teams-package';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryBridgeFailure,
@@ -72,13 +99,21 @@ import type {
   TelemetryOutcome,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
+  TelemetryRoomCreateSource,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
-import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { entryPointOf, roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
+import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
+import type {
+  SlackOwnAppSetup,
+  SlackTokensChecked,
+} from '@shared/core/switch-servers/own-app-setup';
+import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
   AddressingPolicy,
+  AgentRenameOutcome,
   AddTeamsTeamResult,
   AgentIconBackfill,
   AgentVerifyResult,
@@ -105,12 +140,14 @@ import type {
   RemoteRoomRole,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
+  RetireOutcome,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
   UpdateRoomParams,
 } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
@@ -124,6 +161,7 @@ import {
 import { listServersWithoutMembership } from './reconcile-workspaces';
 import {
   withReachableWorkspaceSession,
+  withWorkspaceIfSelected,
   withWorkspaceSession,
   workspaceServer,
 } from './workspace-session';
@@ -205,13 +243,14 @@ function bridgePlatformOnServer(
  * Report once the platform is known, without anyone waiting for it.
  *
  * The event arrives a moment after the action rather than with it, which costs
- * nothing: it carries its own timestamp, taken when the work happened.
+ * nothing: it carries its own timestamp, taken here, when the work happened.
  */
 function reportWithBridge(
   platform: Promise<TelemetryBridgePlatform>,
-  emit: (platform: TelemetryBridgePlatform) => void
+  emit: (platform: TelemetryBridgePlatform, at: number) => void
 ): void {
-  void platform.then(emit).catch(() => {});
+  const at = Date.now();
+  void platform.then((known) => emit(known, at)).catch(() => {});
 }
 
 /** The same, for a room create whose other properties are already known. */
@@ -223,15 +262,163 @@ function reportRoomCreated(
     agent_count: number;
     has_instructions: boolean;
     failure_reason: TelemetryRoomCreateFailure;
+    source: TelemetryRoomCreateSource;
   }
 ): void {
-  reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform) =>
-    trackEvent('room_created', {
-      ...rest,
-      bridge_platform,
-      outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
-    })
+  reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform, at) =>
+    trackEventAt(
+      'room_created',
+      {
+        ...rest,
+        bridge_platform,
+        outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
+      },
+      at
+    )
   );
+}
+
+/** The rooms a template run made: one, a group's, or none for a run with no room half. */
+function templateRoomIds(room: ProvisionFromTemplateResult | null): string[] {
+  if (room === null) return [];
+  return room.kind === 'room' ? [room.roomId] : room.rooms.map((r) => r.roomId);
+}
+
+type CreatedTemplateAgent = Extract<
+  TemplateRunResult,
+  { kind: 'created' }
+>['createdAgents'][number];
+
+/** What a template made, as the reports below need it. */
+type TemplateMade = {
+  room: ProvisionFromTemplateResult | null;
+  /** Null for a template that makes rooms only. */
+  agents: {
+    created: CreatedTemplateAgent[];
+    /** Each agent's provider by slot, where the caller declared it. */
+    declaredProviders: ReadonlyMap<string, string>;
+    /** Where the run was started. */
+    entryPoint: UiEntryPoint;
+  } | null;
+};
+
+function logUnreported(what: string, error: unknown): void {
+  log.warn(`${what} a template made could not be read back to report it`, {
+    event: 'telemetry_template_made',
+    errorCode: error instanceof GatewayError ? error.kind : 'error',
+    error: String(error),
+  });
+}
+
+/**
+ * Report each room and agent a template made. What the run's result does not
+ * say is read back, only when an event could be sent and only while the run's
+ * workspace is still selected; what cannot be read is logged, not guessed.
+ */
+async function reportTemplateMade(
+  workspaceId: string,
+  server: SwitchServer,
+  made: TemplateMade,
+  at: number
+): Promise<void> {
+  const roomIds = templateRoomIds(made.room);
+  const agents = made.agents;
+  if (roomIds.length === 0 && (agents === null || agents.created.length === 0)) return;
+  if (!(await telemetryService.canSend())) return;
+
+  const read = await withWorkspaceIfSelected(workspaceId, (selected) =>
+    Promise.all([
+      Promise.allSettled(roomIds.map((roomId) => fetchRoomDetail(selected, roomId))),
+      Promise.allSettled(
+        (agents?.created ?? []).map(async (agent) => {
+          const declared = agents?.declaredProviders.get(agent.slot);
+          if (declared !== undefined) return declared;
+          const managed = await fetchManagedAgent(selected, agent.agentId);
+          if (!managed) throw new Error('The agent the run made is not a managed agent.');
+          return managed.provider;
+        })
+      ),
+    ])
+  );
+  if (read === null) {
+    log.warn('What a template made was not reported: its workspace is no longer selected', {
+      event: 'telemetry_template_made',
+      errorCode: 'workspace_not_selected',
+    });
+    return;
+  }
+  const [rooms, providers] = read;
+
+  const serverKind = serverKindOf(server);
+  for (const room of rooms) {
+    if (room.status === 'rejected') {
+      logUnreported('A room', room.reason);
+      continue;
+    }
+    trackEventAt(
+      'room_created',
+      {
+        server_kind: serverKind,
+        bridge_platform: bridgePlatformOfType(room.value.bridgeType),
+        agent_count: room.value.agentCount,
+        has_instructions: (room.value.instructions?.trim().length ?? 0) > 0,
+        outcome: 'success',
+        failure_reason: 'none',
+        source: 'template',
+      },
+      at
+    );
+  }
+
+  if (agents === null || agents.created.length === 0) return;
+  const locate = await managedAgentLocator(server.id);
+  for (const [i, provider] of providers.entries()) {
+    if (provider.status === 'rejected') {
+      logUnreported('An agent', provider.reason);
+      continue;
+    }
+    trackEventAt(
+      'agent_created',
+      {
+        agent_type: agentTypeOf(provider.value),
+        location: locate(agents.created[i].machine.id),
+        outcome: 'success',
+        failure_reason: 'none',
+        entry_point: entryPointOf(agents.entryPoint),
+      },
+      at
+    );
+  }
+}
+
+/** Run a template call, then report what it made (null: nothing) without waiting. */
+async function runTemplateReported<R>(
+  workspaceId: string,
+  run: (server: SwitchServer) => Promise<R>,
+  made: (result: R) => TemplateMade | null
+): Promise<R> {
+  const { result, server } = await withWorkspaceSession(workspaceId, async (leased) => ({
+    result: await run(leased),
+    server: leased,
+  }));
+  const report = made(result);
+  if (report !== null) {
+    void reportTemplateMade(workspaceId, server, report, Date.now()).catch((error: unknown) =>
+      logUnreported('What', error)
+    );
+  }
+  return result;
+}
+
+/** What a run that may create agents made: nothing when it was refused. */
+function madeByRun(agents: {
+  entryPoint: UiEntryPoint;
+  declaredProviders: ReadonlyMap<string, string>;
+}): (result: TemplateRunResult) => TemplateMade | null {
+  return (result) =>
+    result.kind === 'created'
+      ? { room: result.room, agents: { created: result.createdAgents, ...agents } }
+      : null;
 }
 
 /**
@@ -291,6 +478,20 @@ export const workspacesController = createRPCController({
 
   listMessagingApps: (workspaceId: string): Promise<MessagingApps> =>
     withReachableWorkspaceSession(workspaceId, fetchMessagingApps),
+
+  /** Slack's create-app page, filled in with the app this server needs. */
+  slackOwnAppSetup: (workspaceId: string): Promise<SlackOwnAppSetup> =>
+    withReachableWorkspaceSession(workspaceId, fetchSlackOwnAppSetup),
+
+  /** Whether a Slack app's tokens work, and its workspace. Do not log the tokens. */
+  checkSlackTokens: (params: {
+    workspaceId: string;
+    botToken: string;
+    appToken: string;
+  }): Promise<SlackTokensChecked> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      checkSlackTokens(server, { botToken: params.botToken, appToken: params.appToken })
+    ),
 
   /** Returns the platform's consent URL for the renderer to open in the browser. */
   beginMessagingAppInstall: (params: { workspaceId: string; platform: string }): Promise<string> =>
@@ -487,6 +688,7 @@ export const workspacesController = createRPCController({
         agent_count: params.agentIds.length,
         has_instructions: (params.instructions?.trim().length ?? 0) > 0,
         failure_reason,
+        source: 'dialog',
       });
 
     const unreachable = hostUnreachable(known);
@@ -521,9 +723,58 @@ export const workspacesController = createRPCController({
     inputs: Record<string, string | number | boolean>,
     templateName: string
   ): Promise<ProvisionFromTemplateResult> =>
-    withWorkspaceSession(workspaceId, (server) =>
-      createRoomFromTemplate(server, yamlText, inputs, templateName)
+    runTemplateReported(
+      workspaceId,
+      (server) => createRoomFromTemplate(server, yamlText, inputs, templateName),
+      (room) => ({ room, agents: null })
     ),
+
+  /**
+   * Run a template that creates agents in one request: the agents as managed
+   * agents on the signed-in person's machines, then its rooms. Nothing is
+   * kept when it is refused; the result says why, per agent.
+   */
+  runTemplateWithAgents: (
+    workspaceId: string,
+    body: {
+      agents: TemplateRunAgent[];
+      yamlText: string | null;
+      inputs: Record<string, string | number | boolean>;
+      templateName: string;
+      /** Where the run was started, for the agents it makes. */
+      entryPoint: UiEntryPoint;
+    }
+  ): Promise<TemplateRunResult> => {
+    const { entryPoint, ...run } = body;
+    // The caller named each agent's provider, so none has to be read back.
+    const declaredProviders = new Map(run.agents.map((agent) => [agent.slot, agent.provider]));
+    return runTemplateReported(
+      workspaceId,
+      (server) => runTemplateWithAgents(server, run),
+      madeByRun({ entryPoint, declaredProviders })
+    );
+  },
+
+  /** Run a template from its document: the server works the agents and rooms out of it. */
+  runTemplateDocument: (
+    workspaceId: string,
+    body: {
+      template: string;
+      inputs: Record<string, string | number | boolean>;
+      filled: Record<string, string>;
+      templateName: string;
+      /** Where the run was started, for the agents it makes. */
+      entryPoint: UiEntryPoint;
+    }
+  ): Promise<TemplateRunResult> => {
+    const { entryPoint, ...run } = body;
+    // The server picks providers from the document's conditions, so they are read back.
+    return runTemplateReported(
+      workspaceId,
+      (server) => runTemplateDocument(server, run),
+      madeByRun({ entryPoint, declaredProviders: new Map() })
+    );
+  },
 
   /** The runs the user may see, or null when the server does not record runs. */
   listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>
@@ -658,8 +909,14 @@ export const workspacesController = createRPCController({
       removeRoomAgent(server, params.roomId, params.agentId)
     ),
 
-  /** Delete a room and everything in it. The gateway enforces who may. */
-  deleteRoom: async (params: { workspaceId: string; roomId: string }): Promise<void> => {
+  /** Delete a room and everything in it, resolving to what became of its
+   * platform channel (see `deleteRoom` in the gateway client). The channel is
+   * kept unless `retireChannel` is true. The gateway enforces who may. */
+  deleteRoom: async (params: {
+    workspaceId: string;
+    roomId: string;
+    retireChannel?: boolean;
+  }): Promise<RetireOutcome | null> => {
     const known = await workspaceServer(params.workspaceId);
     const report = (outcome: TelemetryOutcome) =>
       trackEvent('room_deleted', { server_kind: serverKindOf(known), outcome });
@@ -672,14 +929,18 @@ export const workspacesController = createRPCController({
       throw unreachable;
     }
 
-    await withWorkspaceSession(params.workspaceId, async (server) => {
+    return withWorkspaceSession(params.workspaceId, async (server) => {
+      let channel: RetireOutcome | null;
       try {
-        await deleteRoom(server, params.roomId);
+        channel = await deleteRoom(server, params.roomId, {
+          retireChannel: params.retireChannel ?? false,
+        });
       } catch (error) {
         report('failure');
         throw error;
       }
       report('success');
+      return channel;
     });
   },
 
@@ -713,11 +974,15 @@ export const workspacesController = createRPCController({
     );
     // Reported after the lease, not inside it: the platform lookup takes a lease
     // of its own, and the bridge is still there to read afterwards.
-    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform) =>
-      trackEvent('bridge_identity_claimed', {
-        bridge_platform,
-        outcome: result.kind === 'claimed' ? 'success' : 'failure',
-      })
+    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform, at) =>
+      trackEventAt(
+        'bridge_identity_claimed',
+        {
+          bridge_platform,
+          outcome: result.kind === 'claimed' ? 'success' : 'failure',
+        },
+        at
+      )
     );
     return result;
   },
@@ -747,6 +1012,111 @@ export const workspacesController = createRPCController({
    * about. One agent-list read, so callers need not ration it. */
   ownsOwnerAddressedAgent: (workspaceId: string): Promise<boolean> =>
     withWorkspaceSession(workspaceId, ownsOwnerAddressedAgent),
+
+  /**
+   * The agent's service grants and whether anyone can address it; null when
+   * it is not the signed-in person's agent.
+   */
+  getServiceGrants: (params: {
+    workspaceId: string;
+    agentId: string;
+  }): Promise<ServiceGrants | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchServiceGrants(server, params.agentId)
+    ),
+
+  /** The signed-in person's GitHub link in this workspace and the repositories it reaches. */
+  getGitHubConnection: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, getGitHubConnection),
+
+  /** Every catalog service with the signed-in person's connection to it, in this workspace. */
+  getServiceConnections: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, getConnectionCatalog),
+
+  /**
+   * Start signing in to `service` for this workspace: the browser opens at the
+   * vendor, and this Console's listener takes the result back. Resolves to the
+   * flow's id.
+   */
+  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+    ),
+
+  getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      getServiceBrowserFlow(server, params.service, params.flowId)
+    ),
+
+  cancelServiceConnection: (params: { workspaceId: string; service: string; flowId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      cancelServiceBrowserFlow(server, params.service, params.flowId)
+    ),
+
+  /** Connect `service` with a key, or replace the key it has; Switch checks it with the vendor. */
+  connectServiceWithKey: (params: {
+    workspaceId: string;
+    service: string;
+    fields: Record<string, string>;
+  }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /** Disconnect `service` in this workspace: its grants go with it. */
+  disconnectService: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) => disconnectService(server, params.service)),
+
+  disconnectGitHub: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, (server) => disconnectGitHub(server)),
+
+  /** The signed-in person's own agents in this workspace, and which are granted `service`. */
+  getConnectionAgents: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchConnectionAgents(server, params.service)
+    ),
+
+  /**
+   * The workspace's switch for each service, for a workspace admin; null when
+   * its server has no workspace switch.
+   */
+  getWorkspaceServices: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, fetchWorkspaceServices),
+
+  /** Switch a service on or off for everyone in this workspace; workspace admins only. */
+  setWorkspaceService: (params: { workspaceId: string; service: string; enabled: boolean }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setWorkspaceService(server, params.service, params.enabled)
+    ),
+
+  /**
+   * Create or replace the agent's grant on a service; owner only. Resolves to
+   * a warning or null. `access` is left out of an on/off grant (a service
+   * whose agents use the owner's own token), which takes the connection's.
+   */
+  setServiceGrant: (params: {
+    workspaceId: string;
+    agentId: string;
+    service: string;
+    access: 'read' | 'write' | null;
+    resources: Record<string, unknown>;
+  }): Promise<string | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setServiceGrant(server, params.agentId, params.service, {
+        access: params.access,
+        resources: params.resources,
+      })
+    ),
+
+  /** Remove the agent's grant on a service; owner only. Resolves to a warning or null. */
+  removeServiceGrant: (params: {
+    workspaceId: string;
+    agentId: string;
+    service: string;
+  }): Promise<string | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      removeServiceGrant(server, params.agentId, params.service)
+    ),
 
   getAddressingPolicy: (params: {
     workspaceId: string;
@@ -821,6 +1191,21 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentDisplayName(server, params.agentId, params.displayName)
+    ),
+
+  /**
+   * Rename an agent on its Switch server, with its display name in the same
+   * step. Only the server's half: a Console agent's own files follow through
+   * `agents.renameLocal`.
+   */
+  renameAgent: (params: {
+    workspaceId: string;
+    agentId: string;
+    name: string;
+    displayName: string | null;
+  }): Promise<AgentRenameOutcome> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      renameAgent(server, params.agentId, params.name, params.displayName)
     ),
 
   verifyAgent: (params: { workspaceId: string; agentId: string }): Promise<AgentVerifyResult> =>

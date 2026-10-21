@@ -40,6 +40,9 @@ export interface RoomSummary {
 export interface AgentSummary {
   id: string;
   name: string;
+  // The label people read ("Notes Helper"); null when none was chosen and the
+  // name is shown instead.
+  display_name: string | null;
   description: string;
   connector_type: string;
   connection_model: string | null;
@@ -621,11 +624,39 @@ export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
   return fetchJson<AgentDetail>(`/agents/${agentId}`);
 }
 
-export async function deleteAgent(agentId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/agents/${agentId}`, {
+export interface DeleteAgentResult {
+  ok: boolean;
+  // Chat platforms whose clean-up failed. The agent is deleted regardless;
+  // each platform finishes the clean-up when its bridge next starts.
+  bridge_cleanup_failures: string[];
+}
+
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult | null> {
+  return fetchJson<DeleteAgentResult>(`/agents/${agentId}`, {
     method: "DELETE",
   });
-  return res?.ok ?? false;
+}
+
+export interface RenameAgentResult {
+  agent: AgentSummary;
+  old_name: string;
+  // Chat platforms that could not be updated yet. The rename stands; each
+  // catches up when its bridge next starts.
+  bridge_failures: string[];
+  templates_mentioning_old_name: string[];
+}
+
+// Renames the agent and sets its display name in one step. Pass the current
+// display name to keep it, and null to clear it.
+export async function renameAgent(
+  agentId: string,
+  name: string,
+  displayName: string | null,
+): Promise<RenameAgentResult> {
+  return jsonRequest<RenameAgentResult>(`/agents/${agentId}/name`, "PUT", {
+    name,
+    display_name: displayName,
+  });
 }
 
 export async function updateAgentAddressingPolicy(
@@ -1900,8 +1931,11 @@ export async function detachPackageFromRoom(
 
 export interface TemplateSummary {
   id: string;
-  owner_id: string;
+  /** Null for a template that comes with Switch. */
+  owner_id: string | null;
   owner_name: string | null;
+  /** Comes with Switch: on every workspace, and changed by nobody. */
+  official: boolean;
   name: string;
   description: string;
   kind: string;
@@ -2153,4 +2187,275 @@ export async function deleteBudget(tenantId: string, budgetId: string): Promise<
     const detail = await res.json().catch(() => null);
     throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
   }
+}
+
+// ── Service connections and grants ───────────────────────────────────────────
+
+/** A grant giving an agent access to its owner's connection to a service. */
+export interface ServiceGrant {
+  service: string;
+  name: string;
+  access: "read" | "write";
+  tool_mode: "allow" | "deny";
+  tools: string[];
+  effective_tools: string[];
+  resources: Record<string, unknown>;
+  /** What the grant lets the agent do, in a sentence. */
+  summary: string;
+}
+
+export interface ServiceGrants {
+  grants: ServiceGrant[];
+  /** Whether anyone can address the agent, and so use its grants. */
+  addressing_open: boolean;
+}
+
+/** The agent's grants; only its owner may read them. */
+export async function fetchServiceGrants(agentId: string): Promise<ServiceGrants> {
+  return jsonRequest<ServiceGrants>(`/agents/${agentId}/service-grants`, "GET");
+}
+
+/**
+ * Create or replace the agent's grant on a service. `warning` is set when
+ * what the old grant gave out stays usable for a while.
+ */
+export async function setServiceGrant(
+  agentId: string,
+  service: string,
+  grant: { access: "read" | "write" | null; resources: Record<string, unknown> },
+): Promise<{ grant: ServiceGrant; warning: string | null }> {
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "PUT", body);
+}
+
+/** A catalog service, with the signed-in person's connection to it. */
+export interface ServiceConnection {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  enabled: boolean;
+  connectable: boolean;
+  /** Why the service cannot be granted to agents on this server; null when it can. */
+  unavailable_reason: string | null;
+  /** Whether it waits on the server's operator setting up its app under Connectors. */
+  server_setup_needed: boolean;
+  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
+  pass_through: boolean;
+  /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
+  token_lifetime: number | null;
+  /**
+   * What a person pastes to connect a service connected with a key, and where
+   * they make one; null for any other. A key is connected from Switch Console.
+   */
+  key: ServiceKeyForm | null;
+}
+
+/** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
+export interface ServiceKeyField {
+  name: string;
+  label: string;
+  secret: boolean;
+  help: string | null;
+  choices: string[] | null;
+}
+
+export interface ServiceKeyForm {
+  fields: ServiceKeyField[];
+  help_url: string | null;
+}
+
+/** Every catalog service and the signed-in person's connection to it. */
+export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
+  return (await jsonRequest<{ connections: ServiceConnection[] }>("/service-connections", "GET"))
+    .connections;
+}
+
+export async function removeServiceGrant(
+  agentId: string,
+  service: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "DELETE");
+}
+
+export interface GitHubRepository {
+  id: number;
+  name: string;
+}
+
+export interface GitHubInstallation {
+  id: number;
+  account: string;
+  repositories: GitHubRepository[];
+}
+
+/** The signed-in person's GitHub connection, and the repositories the App lets them reach. */
+export type GitHubConnection =
+  | { status: "not_connected"; install_url: string }
+  | {
+      status: "connected";
+      login: string;
+      install_url: string;
+      installations: GitHubInstallation[];
+    };
+
+export async function fetchGitHubConnection(): Promise<GitHubConnection> {
+  return jsonRequest<GitHubConnection>("/provider-connections/github", "GET");
+}
+
+/**
+ * Owner-only addressing: the owner, and agents the owner runs. What the grant
+ * screens offer when anyone can address an agent with grants.
+ */
+export const OWNER_ONLY_POLICY: AddressingPolicy = {
+  rules: [
+    {
+      rooms: "*",
+      room_groups: "*",
+      users: [],
+      agents: [],
+      owner: true,
+      owner_agents: true,
+    },
+  ],
+};
+
+// ── Connector app credentials (the server's operator only) ───────────────
+
+export type ConnectorAppKind = "github_app" | "oauth_client";
+export type ConnectorAppField = "client_id" | "client_secret" | "private_key";
+
+/** Whether a secret is set, and how the operator recognises it; never the secret. */
+export interface ConnectorAppSecret {
+  set: boolean;
+  /** A client secret's last four characters. */
+  last4?: string | null;
+  /** A private key's SHA-256 fingerprint, as GitHub lists it. */
+  fingerprint?: string | null;
+}
+
+/** The app one connector signs in through, and where it comes from. */
+export interface ConnectorApp {
+  slug: string;
+  name: string;
+  kind: ConnectorAppKind;
+  source: "configuration" | "saved" | "none";
+  /** The variables that set it from configuration. */
+  configuration_variables: string[];
+  /** GitHub's HOSTED_GITHUB_CONFIG_PATH: no private key, so it can't be copied. */
+  deprecated: boolean;
+  client_id: string | null;
+  /** The client saved here, when there is one. */
+  saved_client_id: string | null;
+  fields: { slug?: string | null };
+  secrets: Record<string, ConnectorAppSecret>;
+  /** Saved here, but configuration is set, so Switch uses that. */
+  saved_ignored: boolean;
+  /** Saved here under a key the server no longer has. */
+  unreadable: boolean;
+  /** Why the app saved here can't be used. */
+  load_error: string | null;
+  /** Where the vendor sends people back to Switch; null without a GATEWAY_PUBLIC_URL it accepts. */
+  redirect_uri: string | null;
+  /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
+  setup_blocked: string | null;
+  install_url: string | null;
+  updated_by_name: string | null;
+  updated_at: string | null;
+  connected_members: number;
+  workspaces: number;
+  /** Connections made through an app this server no longer uses. */
+  stale_connections: number;
+}
+
+/** The server's connector apps; a service that needs no app of the operator's is not listed. */
+export interface ConnectorApps {
+  public_url: string | null;
+  apps: ConnectorApp[];
+}
+
+export interface ConnectorAppCheck {
+  name: string;
+  ok: boolean;
+  message: string;
+  field: ConnectorAppField | null;
+}
+
+export interface SaveConnectorAppInput {
+  client_id: string;
+  client_secret?: string;
+  private_key?: string;
+  /** Switching to another app on purpose: everyone connected must reconnect. */
+  replace: boolean;
+}
+
+export interface ConnectorAppImpact {
+  connected_members: number;
+  workspaces: number;
+}
+
+/** A save the vendor refused: what it said, and the value to look at again. */
+export class ConnectorAppRefusal extends ApiError {
+  readonly field: ConnectorAppField | null;
+
+  constructor(status: number, message: string, field: ConnectorAppField | null) {
+    super(status, message, message);
+    this.name = "ConnectorAppRefusal";
+    this.field = field;
+  }
+}
+
+/** What the operator reads when the server has no connector-apps routes:
+ * they are mounted only with the `service_connections` flag. */
+export const CONNECTORS_NOT_ENABLED =
+  "Connectors are not enabled on this server. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
+
+export async function fetchConnectorApps(): Promise<ConnectorApps> {
+  return jsonRequest<ConnectorApps>("/connector-apps", "GET");
+}
+
+export async function saveConnectorApp(
+  service: string,
+  input: SaveConnectorAppInput,
+): Promise<ConnectorApp> {
+  const res = await fetch(`${BASE}/connector-apps/${service}`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = payload?.detail ?? null;
+    const message = errorText(detail, `${res.status} ${res.statusText}`);
+    if (res.status === 422 && payload && "checks" in payload) {
+      throw new ConnectorAppRefusal(res.status, message, payload.field ?? null);
+    }
+    throw new ApiError(res.status, detail, message);
+  }
+  return payload as ConnectorApp;
+}
+
+export async function importConnectorApp(service: string): Promise<ConnectorApp> {
+  return jsonRequest<ConnectorApp>(`/connector-apps/${service}/import`, "POST");
+}
+
+export async function checkConnectorApp(
+  service: string,
+): Promise<{ ok: boolean; checks: ConnectorAppCheck[] }> {
+  return jsonRequest(`/connector-apps/${service}/check`, "POST");
+}
+
+export async function fetchConnectorAppImpact(
+  service: string,
+  clientId: string,
+): Promise<ConnectorAppImpact> {
+  const params = new URLSearchParams({ client_id: clientId });
+  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}/impact?${params}`, "GET");
+}
+
+export async function removeConnectorApp(service: string): Promise<ConnectorAppImpact> {
+  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}`, "DELETE");
 }

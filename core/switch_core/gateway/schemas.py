@@ -14,7 +14,11 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingPolicy
-from switch_core.bridges.collaboration.models import BridgeInstallLink
+from switch_core.bridges.collaboration.models import (
+    BridgeInstallLink,
+    ChannelRetirement,
+    RetireOutcome,
+)
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
@@ -100,6 +104,9 @@ class RoomDetail(RoomSummary):
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
+    # What deleting the room will do to its platform channel ("archived",
+    # "deleted", "left", "kept"), or null when the room has no channel.
+    channel_on_delete: ChannelRetirement | None = None
 
 
 class RoomCreateRequest(BaseModel):
@@ -168,10 +175,25 @@ class RoomObserveRequest(BaseModel):
 
 class BulkDeleteRequest(BaseModel):
     room_ids: list[str]
+    # Also archive, delete or leave each room's platform channel, as its
+    # platform allows. Off unless asked: deleting a room is often about taking
+    # the agents out of a channel people keep using.
+    retire_channel: bool = False
+
+
+class RoomDeleteResponse(BaseModel):
+    ok: bool
+    # What became of the room's platform channel; null when the room had none
+    # or the caller kept it. `failed` means it is still there and needs
+    # removing by hand.
+    channel: RetireOutcome | None
 
 
 class BulkDeleteResponse(BaseModel):
     deleted: int
+    # Per deleted room id, what became of its platform channel. Rooms without
+    # one are absent.
+    channels: dict[str, RetireOutcome]
 
 
 class BulkArchiveRequest(BaseModel):
@@ -359,11 +381,63 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class AvatarSettingsResponse(BaseModel):
+    """Whether this server lets icons drawn by outside avatar services through
+    (`THIRD_PARTY_AVATARS_ENABLED`). A client that draws agents itself follows
+    it, so turning it off covers the client as well as the bridges."""
+
+    third_party_avatars_enabled: bool
+
+
+class IconChoicesResponse(BaseModel):
+    """One page of generated icons to choose from. `choices` is empty when
+    `third_party_avatars_enabled` is false: the server generates none, rather
+    than having none to offer."""
+
+    choices: list[str]
+    third_party_avatars_enabled: bool
+
+
 class UpdateAgentDescriptionRequest(BaseModel):
     """Change what an agent is for. A description is required, so a blank one
     is refused rather than stored."""
 
     description: str
+
+
+class RenameAgentRequest(BaseModel):
+    """Change an agent's name (the identifier people type and mention) and its
+    display name (the label people read) together.
+
+    ``display_name`` is required, like on the display-name route: send the
+    current one to keep it, and null or a blank string to clear it, so a
+    rename never leaves the label behind by accident."""
+
+    name: str
+    display_name: str | None
+
+
+class RenameAgentResponse(BaseModel):
+    """The renamed agent, plus what the rename could not do.
+
+    `bridge_failures` names each chat platform that could not be updated: the
+    rename stands, and that platform catches up when its bridge next starts.
+    `templates_mentioning_old_name` lists saved templates whose text still
+    says the old name."""
+
+    agent: AgentSummary
+    old_name: str
+    bridge_failures: list[str]
+    templates_mentioning_old_name: list[str]
+
+
+class DeleteAgentResponse(BaseModel):
+    """`bridge_cleanup_failures` names each chat platform whose clean-up
+    failed; the agent is deleted regardless, and the platform finishes the
+    clean-up when its bridge next starts."""
+
+    ok: bool
+    bridge_cleanup_failures: list[str]
 
 
 class UpdateAgentDisplayNameRequest(BaseModel):
@@ -743,6 +817,13 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
 
 
+class DeleteAccountRequest(BaseModel):
+    """The account's own email, typed by the person as their confirmation:
+    an SSO account has no password to ask for."""
+
+    email: str
+
+
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: Annotated[
@@ -997,6 +1078,11 @@ class MemberUpdateRequest(BaseModel):
     role: str
 
 
+class OidcLoginOptionView(BaseModel):
+    id: str
+    label: str
+
+
 class AuthConfigResponse(BaseModel):
     # Read unauthenticated by the login page to decide which login methods to
     # show. `oidc_provider_label` is the button text (e.g. "Okta").
@@ -1008,6 +1094,12 @@ class AuthConfigResponse(BaseModel):
     signup_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
+    # The sign-in buttons for the OIDC provider (`id`, `label`); empty for one
+    # button labelled `oidc_provider_label`.
+    oidc_login_options: list[OidcLoginOptionView]
+    # Whether `/auth/oidc/login` can hand the sign-in back to an app listening
+    # on this computer (`return_to`), so the app may use the system browser.
+    oidc_browser_handoff: bool
     # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
     # page can say whether signing in also creates an account of your own.
     signup_mode: Literal["default_tenant", "invite_only", "open"]
@@ -1367,13 +1459,17 @@ class TemplateSummary(BaseModel):
     """
 
     id: str
-    owner_id: str
+    # None for an official template, which comes with Switch.
+    owner_id: str | None
     owner_name: str | None = None
     name: str
     description: str
     kind: str
     read_visibility: str
     write_visibility: str
+    # Comes with Switch: served by the server on every workspace, and changed
+    # by nobody (see `official_templates`).
+    official: bool = False
     # What the caller may do with it, so a client shows Edit and Remove only
     # where the server would say yes. Admin here means the tenant's, which a
     # client cannot tell from the user's global role.
@@ -1575,3 +1671,22 @@ class FeatureFlagState(BaseModel):
 
 class FeatureFlagsResponse(BaseModel):
     flags: list[FeatureFlagState]
+
+
+class SlackOwnAppSetup(BaseModel):
+    """What it takes to create a Slack app of your own for this server."""
+
+    manifest: dict[str, Any]
+    #: Slack's create-app page, already filled in with `manifest`.
+    create_url: str
+
+
+class SlackTokensCheck(BaseModel):
+    bot_token: str
+    app_token: str
+
+
+class SlackTokensChecked(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    bot_name: str

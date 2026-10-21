@@ -34,6 +34,7 @@ const assignment = {
         advanced_config: {},
         instructions: '',
         auto_approve: false,
+        auto_mode: false,
         directory: null,
         isolation: 'shared' as const,
       },
@@ -42,6 +43,24 @@ const assignment = {
 };
 
 describe('ControllerStore', () => {
+  it('keeps the last update attempt across reopening, and forgets it', () => {
+    const store = ControllerStore.open(path);
+    expect(store.updateAttempt()).toBeNull();
+    store.saveUpdateAttempt({ target: '0.31.0', at: 42, problem: null });
+    store.close();
+    const again = ControllerStore.open(path);
+    expect(again.updateAttempt()).toEqual({ target: '0.31.0', at: 42, problem: null });
+    again.saveUpdateAttempt({ target: '0.31.0', at: 43, problem: 'npm install failed' });
+    expect(again.updateAttempt()).toEqual({
+      target: '0.31.0',
+      at: 43,
+      problem: 'npm install failed',
+    });
+    again.saveUpdateAttempt(null);
+    expect(again.updateAttempt()).toBeNull();
+    again.close();
+  });
+
   it('migrates a new file to the current schema version', () => {
     const store = ControllerStore.open(path);
     expect(store.schemaVersion()).toBe(STORE_SCHEMA_VERSION);

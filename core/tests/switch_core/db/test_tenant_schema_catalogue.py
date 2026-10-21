@@ -112,9 +112,27 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # sockets for every tenant at once, and the row says only that it
             # is alive.
             "switch_core_processes",
+            # Which of those processes runs each piece of work that must run
+            # once: a process holds work for every tenant at once, and the row
+            # names only which process runs which id.
+            "ownership_leases",
             # Switch Trust's one guardrails policy for the whole deployment.
             # A policy that varied per tenant would be a new scoped table.
             "trust_settings",
+            # The OAuth client Core registered for itself at a vendor: the
+            # vendor sees one Switch, so one client per deployment and
+            # service, holding no person's account.
+            "service_oauth_clients",
+            # Which schema revisions a release from before them can still
+            # serve on, as Alembic applied them: a fact about the schema.
+            "schema_expand_only_revisions",
+            # The app the operator registered at a vendor and entered from the
+            # dashboard: one per deployment and service, as above. A
+            # workspace's own app would be a new scoped table.
+            "service_app_credentials",
+            # Changes to the server as a whole, such as setting up one of those
+            # apps: no tenant owns them, so `audit_events` cannot hold them.
+            "server_audit_events",
         }
 
     async def test_scoped_is_everything_else(self) -> None:
@@ -162,7 +180,12 @@ class TestScopedTableCatalogue:
         columns for a composite foreign key to exist at all, but this asserts
         it is exactly the `(id, tenant_id)` shape the design calls for,
         derived from who actually references whom rather than a hand-kept
-        list of "the ~13 referenced tables"."""
+        list of "the ~13 referenced tables".
+
+        A key that names a table's natural composite key instead of its `id`
+        is not that shape and is not checked here: `service_grants` names its
+        connection by `(tenant_id, owner_id, service)`, the connection's whole
+        primary key, which already carries `tenant_id` (the test above)."""
         scoped = _scoped_tables()
         async with session_factory() as session:
             conn = await session.connection()
@@ -174,7 +197,11 @@ class TestScopedTableCatalogue:
                         continue
                     local_cols = fk["constrained_columns"]
                     ref_cols = fk["referred_columns"]
-                    if "tenant_id" in local_cols and "tenant_id" in ref_cols:
+                    if (
+                        "tenant_id" in local_cols
+                        and "tenant_id" in ref_cols
+                        and "id" in ref_cols
+                    ):
                         referenced.add(ref_table)
 
             missing: list[str] = []
