@@ -84,7 +84,16 @@ registerProcessErrorLogging(log);
 registerRendererLogHandler(ipcMain);
 logAppStart();
 
-app.on('second-instance', () => {
+// A launch while Console is quitting finds no window to show, and one opened
+// now would close with the exit, so Console starts again once it has quit.
+let quitting = false;
+let relaunchArgs: string[] | null = null;
+
+app.on('second-instance', (_event, commandLine) => {
+  if (quitting) {
+    relaunchArgs = commandLine.slice(1);
+    return;
+  }
   const win = BrowserWindow.getAllWindows()[0];
   if (win?.isMinimized()) win.restore();
   win?.focus();
@@ -310,6 +319,8 @@ void app.whenReady().then(async () => {
 
 app.on('before-quit', (event) => {
   event.preventDefault();
+  if (quitting) return;
+  quitting = true;
   logAppExit('before-quit');
   controlService.dispose();
   stopAutoMigration();
@@ -338,6 +349,7 @@ app.on('before-quit', (event) => {
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });
+    if (relaunchArgs) app.relaunch({ args: relaunchArgs });
     app.exit(0);
   })();
 });
