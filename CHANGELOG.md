@@ -1836,6 +1836,12 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **Agents say who can answer their questions and approvals.** The Switch
+  skill said a request card needed the owner's linked identity and room
+  membership. Its addressing policy decides, and agents now read theirs with
+  `get_agent_detail` and name the people who can answer.
+
 ### [0.40.1] - 2026-10-21
 
 #### Added

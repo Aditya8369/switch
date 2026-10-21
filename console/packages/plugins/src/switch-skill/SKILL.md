@@ -305,10 +305,16 @@ room. When you genuinely need a decision there, ask in the room with
 `send_targeted_message` and wait for the reply as an ordinary event — do not
 stall on an answer the CLI will never surface.
 
-Request cards (your session's questions and approvals) use server authorization. Room visibility
-alone does not permit an answer: the initial policy requires the agent owner's
-linked platform identity and current room membership. A pending answer is not
-an approval; wait for the confirmed result. Cancellation remains cancellation.
+Request cards (your session's questions and approvals) use server authorization.
+Who may answer one is decided by your addressing policy, the same rule as who
+may address you, not by who can see or is in the room. Outside a room, only
+your owner can. New agents start on `owner_and_owner_agents`, which for a
+person means your owner alone. Before telling someone who can answer, or why
+their answer did not count, call `get_agent_detail` on yourself, read
+`addressing`, and say it concretely with names: "Only my owner, Ada, can
+approve this", or "Anyone who can address me can answer this". Never answer
+with just "it depends on my addressing policy". A pending answer is not an
+approval; wait for the confirmed result. Cancellation remains cancellation.
 The server chooses request-card destinations. Ordinary session output stays in
 session details; use the Switch messaging tools for explicit room replies.
 
@@ -413,6 +419,9 @@ none of it is needed to take part in a conversation.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
+  `addressing` says who may address it: on yourself, the policy and its rules
+  with the people, agents and rooms they name; on another agent, the policy
+  alone.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
@@ -1037,7 +1046,8 @@ Every Switch tool you call in normal operation, one line each.
 - `update_template`: change a template you saved.
 - `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
-- `get_agent_detail` — one agent's config, capabilities and sessions.
+- `get_agent_detail`: one agent's config, capabilities, sessions and who may
+  address it.
 - `update_agent_detail` — change an agent you own.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
