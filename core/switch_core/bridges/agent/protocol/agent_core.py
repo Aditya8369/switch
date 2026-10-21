@@ -3333,6 +3333,39 @@ class AgentCore:
             await session.commit()
             return await self._describe_sharing(session, target)
 
+    async def check_shares(
+        self,
+        agent_id: str,
+        placements: dict[str, str],
+        shares: dict[str, list[str]],
+    ) -> str | None:
+        """Why a watcher may not place these shares, or None when it may: each
+        sharing session must be placed in the agent's home room, and each room
+        it shares must be one the agent's settings share."""
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                return f"Unknown agent: {agent_id}"
+            sharing = await shared_session.sharing_of(session, self.room_store, agent)
+        for session_id, rooms in shares.items():
+            if not rooms:
+                continue
+            if sharing.home_room_id is None:
+                return "this agent has no shared session: it has no home room"
+            if placements.get(session_id) != sharing.home_room_id:
+                return (
+                    f"session {session_id} is not placed in the agent's home room "
+                    f"{sharing.home_room_id}, so it cannot share rooms"
+                )
+            isolated = sorted(
+                r for r in rooms if r == sharing.home_room_id or not sharing.covers(r)
+            )
+            if isolated:
+                return (
+                    f"room(s) {', '.join(isolated)} do not share this agent's session"
+                )
+        return None
+
     async def _describe_sharing(
         self, session: AsyncSession, agent: Agent
     ) -> dict[str, Any]:
