@@ -123,9 +123,10 @@ version of their own to them without also giving them a release of their own.
     managed agent on the machine the entry names (this needs agent management
     and the "can manage agents" permission). `agents=` now means "use this
     existing agent instead of creating one", and only for an entry that says
-    `allow_existing: true`. Every agent entry also needs `provider`, `machine`
-    and `directory`, so a template written for 0.30 gets warnings and won't
-    save until you add them or save with `bypass_warnings=true` (#851).
+    `allow_existing: true`. Every agent entry also needs `provider`,
+    `machine` (or `location`) and `directory`, so a template written for 0.30
+    gets warnings and won't save until you add them or save with
+    `bypass_warnings=true` (#851).
 - **A caller repeating a refused request is answered with 429 from memory,**
   rather than re-doing the refused work each time (#750).
 - **Console links work on chat platforms.** A `switchdash://open/...` link an
