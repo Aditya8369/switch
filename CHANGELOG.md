@@ -44,6 +44,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **A request card posted in a thread now mentions the person who can answer
+  it.** Approval and question cards go into the thread of the turn that raised
+  them, and on Slack they used to mention nobody there, so an owner who was not
+  in the thread was never told and the agent waited. A card in a thread now
+  mentions the agent's owner when the agent's addressing policy lets them
+  answer, otherwise the person who asked if they may answer, otherwise nobody.
+  It never mentions more than one person, even when the policy lets anyone
+  answer. Cards at the top of a channel mention whoever asked, as before.
+
 ### [0.31.0] - 2026-10-20
 
 #### Added
