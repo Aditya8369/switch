@@ -89,6 +89,7 @@ from switch_core.bridges.collaboration.telegram.app_client import (
     TelegramAppClient,
     bot_id_of,
     bot_resource,
+    initialize_bot,
 )
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
@@ -681,7 +682,7 @@ class TelegramAdapter(PlatformAdapter):
         self._app = app
         self._bot = app.bot
 
-        await app.initialize()
+        await initialize_bot(app.initialize())
         me = await app.bot.get_me()
         self._bot_user_id = me.id
         if me.username and me.username != self._bot_username:
