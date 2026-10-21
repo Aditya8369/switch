@@ -42,6 +42,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentProfileUpdate,
     assemble_agent_detail,
+    describe_addressing,
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -167,7 +168,7 @@ if TYPE_CHECKING:
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
-    from switch_core.gateway.schemas import AgentDetail
+    from switch_core.gateway.schemas import AgentAddressing, AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
     from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -3974,6 +3975,23 @@ class AgentCore:
                 agent_session_store=self.agent_session_store,
                 room_role_store=self.room_role_store,
                 connections=self.connections,
+            )
+
+    async def get_agent_addressing(
+        self, agent_id: str, target_agent_id: str
+    ) -> AgentAddressing:
+        """Who may address `target_agent_id`, as `agent_id` may see it: the
+        rules with their names when an agent reads its own, the policy's kind
+        alone otherwise.
+
+        Raises ValueError if the target agent does not exist.
+        """
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, target_agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            return await describe_addressing(
+                session, agent=agent, with_rules=agent_id == target_agent_id
             )
 
     async def require_same_owner(self, agent_id: str, target_agent_id: str) -> None:

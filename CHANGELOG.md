@@ -44,6 +44,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **An agent can read its own addressing policy.** `get_agent_detail` now
+  returns `addressing`: the kind of policy (`owner_only`,
+  `owner_and_owner_agents`, `anyone` or `custom`) and, when an agent looks
+  itself up, its rules with the people, agents and rooms they name. So an
+  agent can tell someone who may answer its questions and approvals instead
+  of guessing. Another agent sees only the kind.
+
 ### [0.31.0] - 2026-10-20
 
 #### Added
