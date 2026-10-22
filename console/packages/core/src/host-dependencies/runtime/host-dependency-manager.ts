@@ -828,10 +828,30 @@ export class HostDependencyManager {
   }
 
   /**
+   * Extracts the `--prefix` value from an npm command string, if present.
+   * The Linux OpenCode option installs under `--prefix "$HOME/.local"`, so
+   * the verification must query the same prefix rather than the default global root.
+   */
+  private extractNpmPrefix(command: string): string | null {
+    const tokens = command.split(/\s+/).filter(Boolean);
+    for (let i = 0; i < tokens.length - 1; i++) {
+      if (tokens[i] === '--prefix') {
+        const val = tokens[i + 1];
+        // Strip surrounding quotes that may appear in shell command strings
+        return val ? val.replace(/^["']|["']$/g, '') : null;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Pre-flight check: verify the target package/formula is actually installed
    * before running the uninstall command. Catches mismatches where the
    * descriptor names one package but the binary was installed under another
    * (e.g. `opencode-ai` vs `@opencode/cli`).
+   *
+   * For npm commands with `--prefix`, the same prefix is forwarded to `npm list`
+   * so the check queries the right install root.
    *
    * Returns the target name on success, or a DependencyUninstallResult error.
    */
@@ -846,10 +866,12 @@ export class HostDependencyManager {
     const VERIFY_TIMEOUT_MS = 10_000;
 
     if (method === 'npm') {
+      const listArgs = ['list', '-g', target, '--depth=0'];
+      const prefix = this.extractNpmPrefix(command);
+      if (prefix) listArgs.push('--prefix', prefix);
+
       try {
-        await this.ctx.exec('npm', ['list', '-g', target, '--depth=0'], {
-          timeout: VERIFY_TIMEOUT_MS,
-        });
+        await this.ctx.exec('npm', listArgs, { timeout: VERIFY_TIMEOUT_MS });
         return ok(target);
       } catch {
         this.logger.warn(

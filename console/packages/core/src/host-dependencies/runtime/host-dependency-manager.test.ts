@@ -615,6 +615,25 @@ describe('HostDependencyManager uninstall', () => {
         }),
       },
     },
+    {
+      id: 'opencode-pm-prefix',
+      name: 'OpenCode (npm with prefix)',
+      category: 'agent',
+      commands: ['opencode'],
+      versionArgs: ['--version'],
+      installCommands: {
+        linux: [
+          {
+            method: 'npm',
+            command: 'npm install -g --prefix "$HOME/.local" opencode-ai',
+            uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+            recommended: true,
+          },
+        ],
+      },
+      updates: { kind: 'none' },
+      uninstall: { kind: 'package-manager' },
+    },
   ];
 
   it('returns unknown-dependency error for an unrecognised id', async () => {
@@ -815,6 +834,37 @@ describe('HostDependencyManager uninstall', () => {
 
     // Verification must run before the uninstall command
     expect(callOrder).toEqual(['npm-list', 'uninstall']);
+  });
+
+  it('forwards --prefix to npm list when the uninstall command uses a custom prefix', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    let listArgs: string[] = [];
+    const prefixCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        listArgs = [...args];
+        return { stdout: '/home/user/.local/lib\n└── opencode-ai@2.0.0\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(prefixCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+      platform: 'linux',
+    });
+
+    await manager.uninstall('opencode-pm-prefix');
+
+    // npm list must include --prefix matching the uninstall command
+    expect(listArgs).toEqual([
+      'list',
+      '-g',
+      'opencode-ai',
+      '--depth=0',
+      '--prefix',
+      '$HOME/.local',
+    ]);
+    expect(runInstallCommand).toHaveBeenCalled();
   });
 
   it('skips pre-flight verification for cli uninstall strategy', async () => {
