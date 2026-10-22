@@ -367,7 +367,9 @@ class RoomGroupStore:
             return
         if parent_group_id == group_id:
             raise ValueError("A group cannot be its own parent")
-        parent = await session.get(RoomGroup, parent_group_id)
+        # Read fresh, under the lock `update_fields` holds: a move another
+        # session committed must count, or two crossing moves make a cycle.
+        parent = await session.get(RoomGroup, parent_group_id, populate_existing=True)
         if parent is None:
             raise ValueError(f"Parent group not found: {parent_group_id}")
         # Walk up from the proposed parent; if we reach `group_id`, the new
@@ -382,7 +384,7 @@ class RoomGroupStore:
             if cursor in seen:
                 break
             seen.add(cursor)
-            ancestor = await session.get(RoomGroup, cursor)
+            ancestor = await session.get(RoomGroup, cursor, populate_existing=True)
             cursor = ancestor.parent_group_id if ancestor else None
 
     async def get_room_counts(self, session: AsyncSession) -> dict[str, int]:

@@ -116,6 +116,32 @@ class TestRoomGroupStore:
                     session, a.id, parent_group_id=c.id, reparent=True
                 )
 
+    async def test_reparent_sees_a_move_another_session_committed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            a = await store.create(
+                session, name="A", description=None, color=None, parent_group_id=None
+            )
+            b = await store.create(
+                session, name="B", description=None, color=None, parent_group_id=None
+            )
+            await session.commit()
+            # This session still holds A at the top level when another one
+            # moves A under B; B under A would then close a cycle.
+            async with session_factory() as other:
+                await store.update_fields(
+                    other, a.id, parent_group_id=b.id, reparent=True
+                )
+                await other.commit()
+            assert a.parent_group_id is None
+
+            with pytest.raises(ValueError, match="descendants"):
+                await store.update_fields(
+                    session, b.id, parent_group_id=a.id, reparent=True
+                )
+
     async def test_reparent_to_top_level(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
