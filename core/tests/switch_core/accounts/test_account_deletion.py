@@ -465,6 +465,45 @@ async def test_an_account_with_a_cloud_machine_is_refused(
     assert reason is not None and "cloud machine" in reason
 
 
+async def test_a_messaging_app_left_in_a_workspace_since_emptied_does_not_refuse(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Removed from a workspace everyone has since left, the person is not
+    "alone" in it: the app they installed there goes with the rest, rather
+    than refusing a deletion they could not act on."""
+    deletion, _, _ = _deletion(session_factory)
+    empty = f"empty-{uuid.uuid4().hex[:6]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=empty, slug=empty, name="Empty"))
+        await session.flush()
+        removed = await _user(session, "removed")
+        removed_id = removed.id
+        await session.commit()
+    async with tenant_session(session_factory, empty) as session:
+        session.add(
+            MessagingInstall(
+                tenant_id=empty,
+                platform="slack",
+                external_workspace_id="T-empty",
+                scopes="chat:write",
+                status="active",
+                installed_by_user_id=removed_id,
+            )
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        user = await session.get(User, removed_id)
+        assert user is not None
+        workspaces = await deletion.with_former_workspaces(user.id, [])
+        assert [(w.id, w.role) for w in workspaces] == [(empty, "former member")]
+        assert await deletion.refusal(session, user, workspaces) is None
+        await deletion.delete(session, user, workspaces)
+
+    async with session_factory() as session:
+        assert await session.get(User, removed_id) is None
+
+
 async def test_a_workspace_the_person_was_removed_from_is_cleared_too(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

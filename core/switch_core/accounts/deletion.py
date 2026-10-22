@@ -279,7 +279,11 @@ class AccountDeletion:
     async def _workspace_refusal(self, user: User, workspace: Workspace) -> str | None:
         async with tenant_session(self.session_factory, workspace.id) as session:
             members = await self.users.list_tenant_members(session)
-            alone = all(member.id == user.id for member, _ in members)
+            # A former member is never alone in a workspace: what they left
+            # there is handed over or cleared like anything else they left.
+            alone = workspace.role != FORMER_MEMBER and all(
+                member.id == user.id for member, _ in members
+            )
             if (
                 not alone
                 and workspace.role == "owner"
