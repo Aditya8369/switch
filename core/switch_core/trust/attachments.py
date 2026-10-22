@@ -367,16 +367,13 @@ async def check_attachments(
                 )
             continue
         result = checked.get(index)
-        if result is None:
-            # Empty or whitespace-only: there is nothing in it to check.
-            continue
-        if result.outcome == "blocked":
+        if result is not None and result.outcome == "blocked":
             block_reasons.append(
                 f"{filename} was blocked ({_categories(result, 'policy violation')})"
             )
             block_result = block_result or result
             continue
-        if result.outcome == "redacted":
+        if result is not None and result.outcome == "redacted":
             block_reasons.append(
                 f"{filename} holds content Switch Trust would redact "
                 f"({_categories(result, 'policy violation')}), and a file "
@@ -389,14 +386,16 @@ async def check_attachments(
                 findings=result.findings,
             )
             continue
-        if result.outcome == "alerted":
+        if result is not None and result.outcome == "alerted":
             flagged = True
             notes.append(
                 f"⚠️ _Switch Trust flagged {filename} (not blocked - "
                 f"{_categories(result, 'policy alert')})._"
             )
-        elif result.outcome == "errored":
+        elif result is not None and result.outcome == "errored":
             notes.append(f"⚠️ _Switch Trust could not check {filename}._")
+        # Noted whether or not the checked part held anything: a file padded
+        # with blank space up to the cap is still unchecked past it.
         if file_text.checked_part is not None:
             logger.warning(
                 "Switch Trust checked only %s (%d characters) of attachment %s "

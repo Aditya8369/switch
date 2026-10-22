@@ -141,6 +141,24 @@ async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
     assert len(client.checked) == 2
 
 
+async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checked() -> (
+    None
+):
+    client = _ContentTrustClient()
+    verdict = await check_attachments(
+        client,  # type: ignore[arg-type]
+        role="user",
+        files=[(b" " * TRUST_FILE_TEXT_LIMIT + b"FORBIDDEN", "pad.txt", "text/plain")],
+        room_id="room-1",
+    )
+    assert not verdict.blocked
+    assert client.checked == []
+    assert verdict.notes == (
+        "⚠️ _Switch Trust checked only the first 20,000 characters of pad.txt; "
+        "the rest was not checked._",
+    )
+
+
 async def test_unchecked_files_block_when_the_policy_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
