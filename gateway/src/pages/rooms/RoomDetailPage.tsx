@@ -98,9 +98,11 @@ export default function RoomDetailPage() {
     (user.id === room.owner_id ||
       canAdminTenant ||
       room.write_visibility === "public");
-  // Delete is stricter — owner or admin only, never via public write.
-  const canDelete =
+  // Delete and access changes are stricter: owner or admin only, never via
+  // public write (the server's `require_manage` / `delete` checks).
+  const canManage =
     !!user && (user.id === room.owner_id || canAdminTenant);
+  const canDelete = canManage;
 
   return (
     <Box>
@@ -135,6 +137,7 @@ export default function RoomDetailPage() {
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
+          canManage={canManage}
           onSaved={refetch}
         />
         <Divider />
@@ -596,13 +599,18 @@ function RoleRow({
 
 // ── Editable fields ─────────────────────────────────────────────────────────
 
-function EditableFieldsSection({
+// Exported for its test.
+export function EditableFieldsSection({
   room,
   canWrite,
+  canManage,
   onSaved,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  /** Owner or admin. A publicly writable room lets anyone edit its settings,
+   * but only these people may change who can see and write to it. */
+  canManage: boolean;
   onSaved: () => void;
 }) {
   const [name, setName] = useState(room.name);
@@ -637,7 +645,11 @@ function EditableFieldsSection({
           !isBridged && description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        // The server refuses the whole update if it carries a visibility
+        // change from someone who doesn't manage the room.
+        ...(canManage && access !== toAccessLevel(room)
+          ? fromAccessLevel(access)
+          : {}),
       });
       onSaved();
     } catch (err) {
@@ -645,7 +657,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, onSaved]);
+  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -691,7 +703,14 @@ function EditableFieldsSection({
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canWrite || saving}
+        disabled={!canManage || saving}
+        helpers={
+          canManage
+            ? undefined
+            : {
+                [access]: "Only the room's owner and admins can change who can see and write to it.",
+              }
+        }
         sx={{ maxWidth: 360 }}
       />
       <Box>
