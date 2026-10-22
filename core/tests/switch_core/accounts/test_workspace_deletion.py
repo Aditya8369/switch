@@ -25,9 +25,11 @@ from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.base import Base
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AgentController,
     ApiKey,
     AuditEvent,
     Invitation,
+    MessagingInstall,
     Room,
     ServerAuditEvent,
     Tenant,
@@ -36,6 +38,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.rls_ddl import HISTORY_TABLES, scoped_tables
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.user_store import UserStore
 from tests.switch_core.accounts.test_account_deletion import (
     _agent,
     _invitation,
@@ -49,6 +52,7 @@ from tests.switch_core.gateway.test_tenant_api_routes import (
     _make_tenant,
     _token,
 )
+from tests.switch_core.hosted_machine_helpers import seed_machine
 
 
 def test_every_scoped_table_says_what_deleting_a_workspace_does_with_it() -> None:
@@ -187,6 +191,100 @@ async def test_a_workspace_with_something_left_is_not_touched(
         await session.rollback()
     async with session_factory() as session:
         assert await session.get(Tenant, tenant_id) is not None
+
+
+async def _ended_and_live(
+    session: AsyncSession, tenant_id: str, owner_id: str, *, live: bool
+) -> None:
+    """A removed machine, a disconnected messaging app and a cloud machine
+    since torn down; with `live`, one of each still in use as well."""
+    now = datetime.now(UTC)
+    for ended in (True, False) if live else (True,):
+        session.add(
+            AgentController(
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+                name="laptop",
+                kind="console",
+                revoked_at=now if ended else None,
+            )
+        )
+        session.add(
+            MessagingInstall(
+                tenant_id=tenant_id,
+                platform="slack",
+                external_workspace_id=f"T-{uuid.uuid4().hex[:6]}",
+                scopes="chat:write",
+                status="disconnected" if ended else "active",
+                installed_by_user_id=owner_id,
+            )
+        )
+        await seed_machine(
+            session,
+            owner_id=owner_id,
+            state="deleted" if ended else "ready",
+            desired_state="deleted" if ended else "running",
+            stop_reason=None,
+            revision=1,
+        )
+    await session.commit()
+
+
+async def test_records_of_what_has_ended_neither_block_nor_survive(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    tenant_id, owner_id = await _workspace(session_factory)
+    async with tenant_session(session_factory, tenant_id) as session:
+        await _ended_and_live(session, tenant_id, owner_id, live=False)
+
+        assert await refusal(session, tenant_id, owner_id) is None
+        await delete_workspace(session, tenant_id, owner_id, owner_id)
+        await session.commit()
+
+    async with session_factory() as session:
+        assert await session.get(Tenant, tenant_id) is None
+    async with tenant_session(session_factory, tenant_id) as session:
+        assert await session.scalar(select(AgentController.id)) is None
+        assert await session.scalar(select(MessagingInstall.id)) is None
+
+
+async def test_what_is_still_in_use_blocks_beside_what_has_ended(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    tenant_id, owner_id = await _workspace(session_factory)
+    async with tenant_session(session_factory, tenant_id) as session:
+        await _ended_and_live(session, tenant_id, owner_id, live=True)
+        reason = await refusal(session, tenant_id, owner_id)
+    assert reason is not None
+    assert "1 machine" in reason
+    assert "1 messaging app connection" in reason
+    assert "1 cloud machine" in reason
+
+
+async def test_a_workspace_deleted_meanwhile_is_not_found(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second request for the same deletion, which the first finished while
+    this one was being authorized."""
+    token = await _route_people(session_factory, "owner")
+    tenant_role = UserStore.tenant_role
+
+    async def deleted_meanwhile(
+        store: UserStore, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> str | None:
+        role = await tenant_role(store, session, tenant_id, user_id)
+        async with tenant_session(session_factory, tenant_id) as other:
+            await delete_workspace(other, tenant_id, user_id, user_id)
+            await other.commit()
+        return role
+
+    monkeypatch.setattr(UserStore, "tenant_role", deleted_meanwhile)
+    async with _client(_app(session_factory, client_lifecycle=_Clients()), token) as c:
+        response = await c.request(
+            "DELETE", f"/tenants/{TENANT}", json={"name": TENANT}
+        )
+    assert response.status_code == 404, response.text
 
 
 class _Clients:

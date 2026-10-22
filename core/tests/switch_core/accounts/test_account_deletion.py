@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts import deletion as deletion_module
 from switch_core.accounts.deletion import (
     USER_REFERENCES,
     AccountDeletion,
@@ -37,6 +38,7 @@ from switch_core.db.models import (
     Reference,
     ReferenceType,
     Room,
+    ServerAuditEvent,
     Template,
     Tenant,
     TenantMember,
@@ -461,6 +463,55 @@ async def test_a_workspace_left_empty_is_deleted_with_its_setup(
             )
         )
         assert actions == {"account.deleted", "tenant.deleted"}
+    async with session_factory() as session:
+        server_event = await session.scalar(
+            select(ServerAuditEvent).where(ServerAuditEvent.target_id == solo)
+        )
+    assert server_event is not None
+    assert server_event.action == "workspace.deleted"
+    assert server_event.actor_user_id == user_id
+
+
+async def test_a_workspace_that_gains_something_meanwhile_stays_and_the_account_goes(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Something arrives between the check that the workspace is empty and its
+    deletion. The person has already left it, committed, so the workspace is
+    kept, empty, and the account's deletion still finishes."""
+    deletion, _, _ = _deletion(session_factory)
+    solo = f"solo-{uuid.uuid4().hex[:6]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=solo, slug=solo, name="Solo"))
+        await session.flush()
+        alone = await _user(session, "alone")
+        user_id = alone.id
+        await session.commit()
+    async with tenant_session(session_factory, solo) as session:
+        await _member(session, solo, alone, "owner")
+        session.add(
+            Room(
+                tenant_id=solo,
+                transport_room_id=f"!{uuid.uuid4().hex}:test",
+                name="arrived",
+                description="",
+            )
+        )
+        await session.commit()
+
+    async def found_empty(*_args: Any) -> None:
+        return None
+
+    monkeypatch.setattr(deletion_module, "workspace_refusal", found_empty)
+    workspaces = [Workspace(solo, "Solo", "owner")]
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
+
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is None
+        assert await session.get(Tenant, solo) is not None
 
 
 async def test_a_workspace_left_with_a_room_stays_empty(
@@ -494,7 +545,7 @@ async def test_a_workspace_left_with_a_room_stays_empty(
     async with session_factory() as session:
         user = await session.get(User, user_id)
         assert user is not None
-        await deletion.delete(session, user, workspaces)
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
 
     async with session_factory() as session:
         assert await session.get(Tenant, solo) is not None

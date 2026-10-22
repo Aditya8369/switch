@@ -5,15 +5,19 @@ deleted only once its owner has removed, one by one and with each in front of
 them, everything in `REFUSED`: rooms (archived ones too), agents, resources,
 machines, messaging and service connections and every other member, and
 until every service token issued in it that can still be revoked has been.
-The refusal lists what is left, by kind and count. What remains after that is the workspace's
-own setup (its settings, invitations, join domains, usage counters and the
-clients the server runs for it), which goes with it, in one transaction, and
-the `tenants` row last.
+The refusal lists what is left, by kind and count. A record kept only as
+history of something already ended (`TERMINAL`: a removed machine, a
+disconnected messaging app, a cloud machine since deleted) does not count, and
+goes with the workspace. What remains after that is the workspace's own setup
+(its settings, invitations, join domains, usage counters and the clients the
+server runs for it), which goes with it, in one transaction, and the `tenants`
+row last.
 
 The workspace's audit history stays (`KEPT`): `audit_events.tenant_id`
 carries no foreign key so it can outlive the tenant, and the runtime role may
 not delete it anyway. No member is left to read it; the deletion itself is
-also recorded in the server's audit log, which outlives every workspace.
+also recorded in the server's audit log, which outlives every workspace, in
+the same transaction, whoever asked for it.
 
 `WORKSPACE_TABLES` says what happens to every tenant-scoped table, and a test
 holds it to the schema, so a table added later cannot be swept away with a
@@ -26,19 +30,27 @@ fails once the row is gone.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import Table, delete, func, select
+from sqlalchemy import ColumnElement, Table, delete, func, select
 
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import (
+    AuditAction,
+    ServerAuditAction,
+    record_audit_event,
+    record_server_audit_event,
+)
 from switch_core.db.base import Base
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     ApiKey,
+    CloudMachine,
     Room,
     ServiceTokenIssuance,
     Tenant,
 )
+from switch_core.db.stores.messaging_install_store import INSTALL_ACTIVE
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -151,6 +163,21 @@ REFUSED: dict[str, tuple[str, str]] = {
 }
 
 
+# Rows of a refused table that are kept only as the record of something that
+# has ended, and so neither block the deletion nor survive it. Every other row
+# of the table still blocks.
+TERMINAL: dict[str, Callable[[Table], ColumnElement[bool]]] = {
+    # A machine removed in Switch Console keeps its row, revoked.
+    "agent_controllers": lambda table: table.c.revoked_at.is_not(None),
+    # A disconnected or revoked app keeps its row, with no token.
+    "messaging_installs": lambda table: table.c.status != INSTALL_ACTIVE,
+    # A cloud machine's row outlives its teardown, as `deleted`.
+    "machine_workspaces": lambda table: table.c.machine_id.in_(
+        select(CloudMachine.id).where(CloudMachine.state == "deleted")
+    ),
+}
+
+
 class WorkspaceDeletionRefused(Exception):
     """The workspace still holds something; the message lists what."""
 
@@ -171,11 +198,11 @@ async def remaining(session: AsyncSession, tenant_id: str, owner_id: str) -> lis
     left: list[str] = []
     for name, names in REFUSED.items():
         table = _table(name)
-        count = await session.scalar(
-            select(func.count())
-            .select_from(table)
-            .where(table.c.tenant_id == tenant_id)
-        )
+        counted = select(func.count()).select_from(table)
+        counted = counted.where(table.c.tenant_id == tenant_id)
+        if name in TERMINAL:
+            counted = counted.where(~TERMINAL[name](table))
+        count = await session.scalar(counted)
         if not count:
             continue
         entry = _counted(count, names)
@@ -243,8 +270,10 @@ async def delete_workspace(
 ) -> list[str]:
     """Delete the workspace on `session`, which is bound to it; the caller
     commits. Raises `WorkspaceDeletionRefused`, having deleted nothing, unless
-    it is empty. Returns the hashes of the API keys deleted with it, for the
-    caller to drop from its cache once this has committed."""
+    it is empty. Records the deletion in the workspace's audit log and the
+    server's, naming `actor_user_id`. Returns the hashes of the API keys
+    deleted with it, for the caller to drop from its cache once this has
+    committed."""
     tenant = await session.scalar(
         select(Tenant).where(Tenant.id == tenant_id).with_for_update()
     )
@@ -267,9 +296,26 @@ async def delete_workspace(
         target_id=tenant_id,
         details={"slug": tenant.slug},
     )
+    await record_server_audit_event(
+        session,
+        actor_user_id=actor_user_id,
+        action=ServerAuditAction.WORKSPACE_DELETED,
+        target_type="tenant",
+        target_id=tenant_id,
+        details={"slug": tenant.slug},
+    )
     # Children before parents, so no foreign key between two of these tables
     # holds a delete back.
     for table in reversed(Base.metadata.sorted_tables):
+        if table.name in TERMINAL:
+            # The refusal found only ended rows; a live one fails the
+            # `tenants` delete below on its foreign key.
+            await session.execute(
+                delete(table).where(
+                    table.c.tenant_id == tenant_id, TERMINAL[table.name](table)
+                )
+            )
+            continue
         if WORKSPACE_TABLES.get(table.name) != "deleted" or table.name == "tenants":
             continue
         await session.execute(delete(table).where(table.c.tenant_id == tenant_id))

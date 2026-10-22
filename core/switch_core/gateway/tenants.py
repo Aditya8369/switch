@@ -30,10 +30,8 @@ from switch_core.connections.broker import (
 )
 from switch_core.db.audit import (
     AuditAction,
-    ServerAuditAction,
     list_audit_events,
     record_audit_event,
-    record_server_audit_event,
 )
 from switch_core.db.models import (
     Invitation,
@@ -523,7 +521,9 @@ async def delete_tenant(
             status_code=403, detail="Only a workspace owner may delete the workspace"
         )
     tenant = await session.get(Tenant, tenant_id)
-    assert tenant is not None
+    if tenant is None:
+        # Deleted by a request that got here first.
+        raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
     if req.name.strip() != tenant.name:
         raise HTTPException(
             status_code=400, detail="That name doesn't match this workspace."
@@ -533,14 +533,6 @@ async def delete_tenant(
     except WorkspaceDeletionRefused as refused:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(refused)) from None
-    await record_server_audit_event(
-        session,
-        actor_user_id=user.id,
-        action=ServerAuditAction.WORKSPACE_DELETED,
-        target_type="tenant",
-        target_id=tenant_id,
-        details={"slug": tenant.slug},
-    )
     await session.commit()
     logger.info("Owner %s deleted workspace %s", user.id, tenant_id)
 

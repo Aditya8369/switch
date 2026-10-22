@@ -42,7 +42,10 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from sqlalchemy import Select, case, delete, exists, func, or_, select, update
 
-from switch_core.accounts.workspace_deletion import delete_workspace
+from switch_core.accounts.workspace_deletion import (
+    WorkspaceDeletionRefused,
+    delete_workspace,
+)
 from switch_core.accounts.workspace_deletion import refusal as workspace_refusal
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
@@ -495,11 +498,15 @@ class AccountDeletion:
                 )
 
         if workspace.role != FORMER_MEMBER and successor is None:
-            await self._close_if_empty(user_id, tenant_id)
+            await self._close_if_empty(user_id, tenant_id, actor_id)
 
-    async def _close_if_empty(self, user_id: str, tenant_id: str) -> None:
+    async def _close_if_empty(
+        self, user_id: str, tenant_id: str, actor_id: str
+    ) -> None:
         """Delete a workspace the person leaves with nobody in it, once its
-        tokens are revoked; leave it, saying why, when anything is left."""
+        tokens are revoked; leave it, saying why, when anything is left.
+        Leaving it is never a reason to fail the account's deletion: the
+        person has already left it, committed."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             members = await self.users.list_tenant_members(session)
             if members:
@@ -513,7 +520,20 @@ class AccountDeletion:
                     reason,
                 )
                 return
-            key_hashes = await delete_workspace(session, tenant_id, user_id, user_id)
+            try:
+                key_hashes = await delete_workspace(
+                    session, tenant_id, user_id, actor_id
+                )
+            except WorkspaceDeletionRefused as refused:
+                # Something arrived since the check above.
+                await session.rollback()
+                logger.warning(
+                    "Workspace %s is left empty, not deleted, with user %s: %s",
+                    tenant_id,
+                    user_id,
+                    refused,
+                )
+                return
             await session.commit()
         for key_hash in key_hashes:
             self.protocol.api_key_cache.invalidate(key_hash)
