@@ -364,6 +364,30 @@ class TestSiblingNames:
                     session, moving, parent_group_id=payments, reparent=True
                 )
 
+    async def test_rename_checks_names_under_the_parent_committed_last(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            fraud = await _group(store, session, "Fraud", None)
+            await _group(store, session, "Releases", payments)
+            moving = await _group(store, session, "Incidents", fraud)
+            await session.commit()
+            # This session still holds Incidents under Fraud when another one
+            # moves it under Payments. Kept referenced so the session's
+            # identity map keeps the stale copy.
+            held = await store.get(session, moving)
+            assert held is not None and held.parent_group_id == fraud
+            async with session_factory() as other:
+                await store.update_fields(
+                    other, moving, parent_group_id=payments, reparent=True
+                )
+                await other.commit()
+
+            with pytest.raises(RoomGroupNameTaken, match="under 'Payments'"):
+                await store.update_fields(session, moving, name="Releases")
+
     async def test_delete_that_would_promote_onto_a_namesake_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

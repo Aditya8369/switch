@@ -227,7 +227,11 @@ class RoomGroupStore:
         reparent=True`) from "leave the parent unchanged" (`reparent=False`).
         Reparenting validates that the new parent does not create a cycle.
         """
-        group = await session.get(RoomGroup, group_id)
+        # Lock before reading the group: a rename or reparent committed while
+        # we wait would otherwise leave us checking sibling names under a
+        # parent, or against a name, the group no longer has.
+        await self._lock_names(session)
+        group = await session.get(RoomGroup, group_id, populate_existing=True)
         if group is None:
             raise ValueError(f"Room group not found: {group_id}")
         renamed = name is not None and name != group.name
