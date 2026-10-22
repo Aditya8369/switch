@@ -22,6 +22,7 @@ import {
   detachPackageFromRoom,
   detachReferenceFromRoom,
 } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
 import {
   useDocuments,
   usePackages,
@@ -30,6 +31,7 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { canReadResource } from "./roomAccess";
 
 interface Props {
   roomId: string;
@@ -47,6 +49,18 @@ export default function RoomResourcesSection({ roomId, canWrite }: Props) {
     for (const p of roomPackages ?? []) m[p.id] = p.name || p.description;
     return m;
   }, [roomPackages]);
+  // A private package attached by its owner is listed to every reader of the
+  // room, but only those who may read it get a link to it.
+  const { user, canAdminTenant } = useAuth();
+  const readablePackageIds = useMemo(
+    () =>
+      new Set(
+        (roomPackages ?? [])
+          .filter((p) => canReadResource(p, user?.id, canAdminTenant))
+          .map((p) => p.id),
+      ),
+    [roomPackages, user, canAdminTenant],
+  );
 
   return (
     <Stack spacing={3}>
@@ -57,18 +71,21 @@ export default function RoomResourcesSection({ roomId, canWrite }: Props) {
         roomId={roomId}
         canWrite={canWrite}
         attachedPackageIds={attachedPackageIds}
+        readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomDocuments
         roomId={roomId}
         canWrite={canWrite}
         attachedPackageIds={attachedPackageIds}
+        readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomPackages
         roomId={roomId}
         canWrite={canWrite}
         packages={roomPackages ?? []}
+        readablePackageIds={readablePackageIds}
         refetch={refetchPackages}
       />
     </Stack>
@@ -78,10 +95,12 @@ export default function RoomResourcesSection({ roomId, canWrite }: Props) {
 function PackageChips({
   packageIds,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   packageIds: string[];
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const navigate = useNavigate();
@@ -95,10 +114,14 @@ function PackageChips({
           label={`via ${packageDescriptions[pid] ?? "package"}`}
           size="small"
           variant="outlined"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/resources/packages/${pid}`);
-          }}
+          onClick={
+            readablePackageIds.has(pid)
+              ? (e) => {
+                  e.stopPropagation();
+                  navigate(`/resources/packages/${pid}`);
+                }
+              : undefined
+          }
         />
       ))}
     </Stack>
@@ -109,11 +132,13 @@ function RoomReferences({
   roomId,
   canWrite,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
   canWrite: boolean;
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const {
@@ -217,6 +242,7 @@ function RoomReferences({
               <PackageChips
                 packageIds={ref.packages ?? []}
                 attachedPackageIds={attachedPackageIds}
+                readablePackageIds={readablePackageIds}
                 packageDescriptions={packageDescriptions}
               />
               {canWrite && (
@@ -263,11 +289,13 @@ function RoomDocuments({
   roomId,
   canWrite,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
   canWrite: boolean;
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const {
@@ -365,6 +393,7 @@ function RoomDocuments({
                   <PackageChips
                     packageIds={doc.packages ?? []}
                     attachedPackageIds={attachedPackageIds}
+                    readablePackageIds={readablePackageIds}
                     packageDescriptions={packageDescriptions}
                   />
                   {canWrite && (
@@ -465,11 +494,13 @@ function RoomPackages({
   roomId,
   canWrite,
   packages,
+  readablePackageIds,
   refetch,
 }: {
   roomId: string;
   canWrite: boolean;
   packages: Array<{ id: string; name: string; description: string }>;
+  readablePackageIds: Set<string>;
   refetch: () => void;
 }) {
   const navigate = useNavigate();
@@ -542,10 +573,17 @@ function RoomPackages({
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
-                cursor: "pointer",
-                "&:hover": { backgroundColor: "action.hover" },
+                ...(readablePackageIds.has(p.id) && {
+                  cursor: "pointer",
+                  "&:hover": { backgroundColor: "action.hover" },
+                }),
               }}
-              onClick={() => navigate(`/resources/packages/${p.id}`)}
+              onClick={
+                readablePackageIds.has(p.id)
+                  ? () => navigate(`/resources/packages/${p.id}`)
+                  : undefined
+              }
+              data-testid={`room-package-${p.id}`}
             >
               <Typography variant="body2" sx={{ flexGrow: 1 }}>
                 {p.name || p.description}

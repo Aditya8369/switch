@@ -1,11 +1,21 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAuth } from "../../data/AuthContext";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 
 // The room's linked rooms and resources change only for someone with write
-// access to the room, so their controls show only to them.
+// access to the room, so their controls show only to them. A linked room or
+// package opens only for someone who may read it.
+
+const navigate = vi.fn();
+vi.mock("react-router", () => ({
+  useNavigate: () => navigate,
+}));
+
+vi.mock("../../data/AuthContext", () => ({
+  useAuth: vi.fn(),
+}));
 
 const result = <T,>(data: T) => ({
   data,
@@ -22,6 +32,14 @@ vi.mock("../../data/hooks", () => ({
         target_room_name: "other",
         target_room_description: "",
         label: "see also",
+        can_read: true,
+      },
+      {
+        target_room_id: "r3",
+        target_room_name: "hidden",
+        target_room_description: "",
+        label: "private",
+        can_read: false,
       },
     ]),
   useRooms: () => result([]),
@@ -42,18 +60,51 @@ vi.mock("../../data/hooks", () => ({
       { id: "doc1", name: "notes", description: "", scope: "global", packages: [] },
     ]),
   useDocuments: () => result([]),
-  useRoomPackages: () => result([{ id: "pkg1", name: "kit", description: "" }]),
+  useRoomPackages: () =>
+    result([
+      {
+        id: "pkg1",
+        name: "kit",
+        description: "",
+        owner_id: "someone",
+        read_visibility: "public",
+      },
+      {
+        id: "pkg2",
+        name: "secret-kit",
+        description: "",
+        owner_id: "someone",
+        read_visibility: "private",
+      },
+      {
+        id: "pkg3",
+        name: "my-kit",
+        description: "",
+        owner_id: "u1",
+        read_visibility: "private",
+      },
+    ]),
   usePackages: () => result([]),
 }));
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.mocked(useAuth).mockReturnValue({
+    user: { id: "u1" },
+    canAdminTenant: false,
+  } as unknown as ReturnType<typeof useAuth>);
+});
+
+afterEach(() => {
+  cleanup();
+  navigate.mockReset();
+});
 
 function renderSections(canWrite: boolean) {
   render(
-    <MemoryRouter>
+    <>
       <RoomResourcesSection roomId="r1" canWrite={canWrite} />
       <RoomLinkedRoomsSection roomId="r1" canWrite={canWrite} />
-    </MemoryRouter>,
+    </>,
   );
 }
 
@@ -82,6 +133,38 @@ describe("room resources and linked rooms", () => {
     for (const name of ADD_BUTTONS) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
-    expect(screen.getAllByTestId("DeleteOutlineIcon")).toHaveLength(4);
+    // A reference, a document, three packages and two linked rooms.
+    expect(screen.getAllByTestId("DeleteOutlineIcon")).toHaveLength(7);
+  });
+});
+
+describe("linked rooms and attached packages", () => {
+  it("open only when the viewer may read them", () => {
+    renderSections(false);
+
+    fireEvent.click(screen.getByTestId("linked-room-r2"));
+    expect(navigate).toHaveBeenLastCalledWith("/rooms/r2");
+    fireEvent.click(screen.getByTestId("room-package-pkg1"));
+    expect(navigate).toHaveBeenLastCalledWith("/resources/packages/pkg1");
+    fireEvent.click(screen.getByTestId("room-package-pkg3"));
+    expect(navigate).toHaveBeenLastCalledWith("/resources/packages/pkg3");
+    navigate.mockReset();
+
+    fireEvent.click(screen.getByTestId("linked-room-r3"));
+    fireEvent.click(screen.getByTestId("room-package-pkg2"));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(screen.getByText("hidden")).toBeTruthy();
+    expect(screen.getByText("secret-kit")).toBeTruthy();
+  });
+
+  it("all open for an admin", () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { id: "u2" },
+      canAdminTenant: true,
+    } as unknown as ReturnType<typeof useAuth>);
+    renderSections(false);
+
+    fireEvent.click(screen.getByTestId("room-package-pkg2"));
+    expect(navigate).toHaveBeenLastCalledWith("/resources/packages/pkg2");
   });
 });

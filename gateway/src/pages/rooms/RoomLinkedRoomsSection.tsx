@@ -73,14 +73,23 @@ export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
               direction="row"
               alignItems="center"
               spacing={1}
+              // A linked room the viewer can't read is listed, but not as a
+              // link: opening it would only be refused.
               sx={{
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
-                cursor: "pointer",
-                "&:hover": { backgroundColor: "action.hover" },
+                ...(link.can_read && {
+                  cursor: "pointer",
+                  "&:hover": { backgroundColor: "action.hover" },
+                }),
               }}
-              onClick={() => navigate(`/rooms/${link.target_room_id}`)}
+              onClick={
+                link.can_read
+                  ? () => navigate(`/rooms/${link.target_room_id}`)
+                  : undefined
+              }
+              data-testid={`linked-room-${link.target_room_id}`}
             >
               <Chip label={link.label} size="small" />
               <Stack sx={{ flexGrow: 1, minWidth: 0 }}>
