@@ -50,6 +50,8 @@ class _FakeClient:
         self.agent = SimpleNamespace(name="helper")
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
+        if filename == "unsendable.txt":
+            raise RuntimeError("upload failed")
         self.uploads.append(filename)
         return f"mxc://s/{filename}"
 
@@ -185,6 +187,44 @@ async def test_a_notice_that_could_not_be_posted_is_reported_as_such() -> None:
         "outcome": "errored",
         "notice_error": "no admin client is running to post it",
     }
+
+
+async def test_agents_receive_the_not_checked_note_with_the_file() -> None:
+    # The room notice is an admin event that agents are never routed; the
+    # caption of the file itself is what reaches them.
+    svc, client, _notices = _build(_ContentTrustClient())
+
+    await svc.send_media(
+        "agent-1",
+        "room-1",
+        [(b"png", "cat.png", "image/png"), (b"fine", "notes.txt", "text/plain")],
+        caption="have a look",
+    )
+
+    first, second = client.sends
+    assert first["caption"].startswith("have a look\n\n")
+    assert "did not check cat.png" in first["caption"]
+    assert second["caption"] is None
+
+
+async def test_a_later_failed_upload_still_posts_the_notice_for_files_sent() -> None:
+    svc, client, notices = _build(_ContentTrustClient())
+
+    with pytest.raises(RuntimeError):
+        await svc.send_media(
+            "agent-1",
+            "room-1",
+            [
+                (b"png", "cat.png", "image/png"),
+                (b"fine", "unsendable.txt", "text/plain"),
+            ],
+        )
+
+    assert client.uploads == ["cat.png"]
+    assert "did not check cat.png" in client.sends[0]["caption"]
+    [(kind, event_id, annotation, _outcome)] = notices
+    assert (kind, event_id) == ("alert", "$media-event-1")
+    assert "did not check cat.png" in annotation
 
 
 async def test_with_trust_off_nothing_is_checked() -> None:

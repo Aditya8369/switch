@@ -2045,6 +2045,7 @@ class AgentCore:
         caption_text = caption if caption and caption.strip() else None
         caption_verdict: TrustOutcome | None = None
         trust_notes: list[str] = []
+        file_notes: tuple[str, ...] = ()
         flagged = False
         if await trust_is_active(self.trust_client):
             files_check_task = check_attachments(
@@ -2078,46 +2079,56 @@ class AgentCore:
                 raise GuardrailBlockedError(
                     files_check.block, "; ".join(files_check.block_reasons)
                 )
-            trust_notes.extend(files_check.notes)
+            file_notes = files_check.notes
+            trust_notes.extend(file_notes)
             flagged = flagged or files_check.flagged
+        # What Switch Trust says about the files rides in the first file's
+        # caption, so every agent that receives them receives it too.
+        first_caption = (
+            "\n\n".join(p for p in (caption_text, "\n".join(file_notes)) if p) or None
+        )
 
         total = len(files)
         group_id = str(uuid.uuid4()) if total > 1 else None
         posted: list[dict[str, str]] = []
-        for index, (data, filename, mimetype) in enumerate(files):
-            media_uri = await client.upload_media(data, mimetype, filename)
-            msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
-            event_id = await client.send_media(
-                room.transport_room_id,
-                media_uri,
-                filename,
-                mimetype,
-                len(data),
-                msgtype=msgtype,
-                caption=caption_text if index == 0 else None,
-                thread_root_id=thread_root_id,
-                group=(
-                    {"id": group_id, "index": index, "total": total}
-                    if group_id is not None
-                    else None
-                ),
-                metered=True,
-            )
-            if event_id is None:
-                raise ValueError(f"Failed to send media message for '{filename}'")
-            posted.append(
-                {"event_id": event_id, "mxc": media_uri, "filename": filename}
-            )
         media_alert: tuple[str, TrustOutcome] | None = (
             ("\n".join(trust_notes), "alerted" if flagged else "errored")
             if trust_notes
             else None
         )
         notice_error: str | None = None
-        if media_alert is not None:
-            notice_error = await self._post_trust_alert_notice(
-                room, posted[0]["event_id"], *media_alert
-            )
+        try:
+            for index, (data, filename, mimetype) in enumerate(files):
+                media_uri = await client.upload_media(data, mimetype, filename)
+                msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
+                event_id = await client.send_media(
+                    room.transport_room_id,
+                    media_uri,
+                    filename,
+                    mimetype,
+                    len(data),
+                    msgtype=msgtype,
+                    caption=first_caption if index == 0 else None,
+                    thread_root_id=thread_root_id,
+                    group=(
+                        {"id": group_id, "index": index, "total": total}
+                        if group_id is not None
+                        else None
+                    ),
+                    metered=True,
+                )
+                if event_id is None:
+                    raise ValueError(f"Failed to send media message for '{filename}'")
+                posted.append(
+                    {"event_id": event_id, "mxc": media_uri, "filename": filename}
+                )
+        finally:
+            # Also told as a notice to the room's people, even when a later
+            # file failed to send after the first was posted.
+            if media_alert is not None and posted:
+                notice_error = await self._post_trust_alert_notice(
+                    room, posted[0]["event_id"], *media_alert
+                )
         try:
             await self._set_typing(agent_id, room, False)
         except Exception:
@@ -4427,7 +4438,7 @@ class AgentCore:
 
         `arguments` is not inspected. It is accepted because a mediation
         decision that looks at what is being passed is the obvious next thing
-        to want, and because the hook already sends it.
+        to want.
         """
         await self.require_room_member(agent_id, room_id)
         verdict = await self.mediation.tool_access(agent_id, tool_name)
