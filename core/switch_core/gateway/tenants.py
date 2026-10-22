@@ -1419,7 +1419,15 @@ async def remove_member(
     owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
-    membership = await session.get(TenantMember, (tenant_id, user_id))
+    # Locked until the removal commits, as handing the member something locks
+    # it (`accounts/transfer.py`), so no agent reaches them after the check
+    # below finds none.
+    membership = await session.get(
+        TenantMember,
+        (tenant_id, user_id),
+        with_for_update=True,
+        populate_existing=True,
+    )
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this tenant")
 

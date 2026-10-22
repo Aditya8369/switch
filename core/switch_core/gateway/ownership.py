@@ -91,6 +91,9 @@ async def transfer(
     if done.retired_key_hash is not None:
         protocol.api_key_cache.invalidate(done.retired_key_hash)
         protocol.api_key_cache.invalidate_agent(done.resource_id)
+        # Its connections authenticated with the old key when they opened.
+        # After the key is dropped, so a client told cannot open another.
+        await protocol.connections.agent_key_reissued(done.resource_id)
     # A chat membership held only because its holder owned this agent goes
     # with the ownership.
     for room_id in rooms:

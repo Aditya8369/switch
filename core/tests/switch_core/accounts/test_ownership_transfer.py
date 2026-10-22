@@ -6,17 +6,29 @@ carry over is held in other tables, and the refusals read them.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.accounts.transfer import TransferRefused, transfer_ownership
 from switch_core.authz import Principal
+from switch_core.bridges.agent.protocol.agent_connections import (
+    KEY_REISSUED,
+    AgentConnection,
+    AgentConnectionRegistry,
+    ClientDeclaration,
+)
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    AgentConnectionRecord,
     ApiKey,
     AuditEvent,
     Document,
@@ -26,10 +38,27 @@ from switch_core.db.models import (
     ServiceConnection,
     ServiceGrant,
     Template,
+    TenantMember,
     User,
 )
+from switch_core.db.session_scope import tenant_session
+from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.ownership import router as ownership_router
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.accounts.test_account_deletion import _agent, _member, _user
+from tests.switch_core.gateway.test_tenant_api_routes import (
+    TENANT_A,
+    _app,
+    _client,
+    _make_agent_with_key,
+    _make_member,
+    _make_tenant,
+    _token,
+)
+
+# Long enough for a statement that is not waiting on a lock to have finished.
+_BLOCKED_SECONDS = 0.5
 
 
 def _reference(owner: User, *, write_visibility: str = "private") -> Reference:
@@ -354,3 +383,221 @@ async def test_an_admin_may_not_take_someone_elses_package_for_themselves(
                 session, "package", package.id, admin, Principal(admin.id, True)
             )
         assert "to yourself" in str(refused.value)
+
+
+async def test_a_server_connectors_agent_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        owner, member, _ = await _people(session)
+        agent = await _agent(session, TENANT_ZERO_ID, owner, "connector-agent")
+        agent.metadata_ = {"server_connector_id": "connector-1"}
+        await session.commit()
+
+        with pytest.raises(TransferRefused) as refused:
+            await _transfer(
+                session, "agent", agent.id, member, Principal(owner.id, False)
+            )
+        assert refused.value.status == 409
+        assert "server connector" in str(refused.value)
+
+
+async def test_an_agents_connection_rows_go_with_its_old_key(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Its connections authenticated with the old key; with their rows gone,
+    every process that holds one ends it."""
+    async with session_factory() as session:
+        owner, member, _ = await _people(session)
+        agent = await _agent(session, TENANT_ZERO_ID, owner, "connected")
+        session.add(
+            AgentConnectionRecord(
+                id="conn-1",
+                agent_id=agent.id,
+                process_id="some-process",
+                incarnation=1,
+                scope="single",
+                delivery_filter="addressed",
+                spawn_capable=False,
+                transport="websocket",
+            )
+        )
+        await session.commit()
+
+        await _transfer(session, "agent", agent.id, member, Principal(owner.id, False))
+        await session.commit()
+
+        assert (
+            await session.scalar(
+                select(AgentConnectionRecord.id).where(
+                    AgentConnectionRecord.agent_id == agent.id
+                )
+            )
+        ) is None
+
+
+def _ownership_app(
+    session_factory: async_sessionmaker[AsyncSession],
+    caller: User,
+    connections: AgentConnectionRegistry,
+) -> FastAPI:
+    async def _session_dep():
+        async with session_factory() as session:
+            yield session
+
+    async def _sync_room(_tenant_id: str, _room_id: str) -> None:
+        pass
+
+    app = FastAPI()
+    app.include_router(ownership_router)
+    app.state.chat_service = SimpleNamespace(sync_room=_sync_room)
+    overrides = app.dependency_overrides
+    overrides[gw_deps.get_session] = _session_dep
+    overrides[get_current_user] = lambda: caller
+    overrides[get_tenant_is_admin] = lambda: False
+    overrides[gw_deps.get_config] = lambda: SimpleNamespace(keyring=TEST_KEYRING)
+    overrides[gw_deps.get_protocol] = lambda: SimpleNamespace(
+        api_key_cache=SimpleNamespace(
+            invalidate=lambda key_hash: None, invalidate_agent=lambda agent_id: None
+        ),
+        connections=connections,
+    )
+    return app
+
+
+async def _open(connections: AgentConnectionRegistry, agent_id: str) -> AgentConnection:
+    async with connections.slots(agent_id):
+        async with connections.recorded(agent_id):
+            return connections.open(
+                agent_id=agent_id,
+                connection_id="conn-1",
+                scope="single",
+                delivery_filter="addressed",
+                spawn_capable=False,
+                position={OWN_EVENTS: 0},
+                declaration=ClientDeclaration(speaks=None),
+                expected_generation=None,
+            )
+
+
+async def test_the_route_ends_the_agents_open_connections(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        owner, member, _ = await _people(session)
+        agent = await _agent(session, TENANT_ZERO_ID, owner, "live")
+        await session.commit()
+        agent_id, member_id = agent.id, member.id
+    connections = AgentConnectionRegistry()
+    conn = await _open(connections, agent_id)
+
+    app = _ownership_app(session_factory, owner, connections)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/ownership/transfer",
+            json={"kind": "agent", "id": agent_id, "new_owner_id": member_id},
+        )
+    assert response.status_code == 200, response.text
+    assert conn.closure == KEY_REISSUED
+    assert not connections.is_live(agent_id)
+
+
+async def test_two_transfers_of_one_agent_take_turns(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The second waits for the first, then is judged on the owner the first
+    left: its caller no longer owns the agent."""
+    async with session_factory() as session:
+        owner, first, second = await _people(session)
+        agent = await _agent(session, TENANT_ZERO_ID, owner, "contested")
+        await session.commit()
+        owner_id, first_id, agent_id = owner.id, first.id, agent.id
+
+    async with session_factory() as one, session_factory() as two:
+        await _transfer(one, "agent", agent_id, first, Principal(owner_id, False))
+        racing = asyncio.create_task(
+            _transfer(two, "agent", agent_id, second, Principal(owner_id, False))
+        )
+        await asyncio.sleep(_BLOCKED_SECONDS)
+        assert not racing.done()
+        await one.commit()
+        with pytest.raises(TransferRefused) as refused:
+            await racing
+        assert refused.value.status == 403
+
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Agent.owner_id).where(Agent.id == agent_id))
+        ) == first_id
+
+
+async def test_a_transfer_waits_for_a_removal_of_its_new_owner(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A removal holding the membership row: the transfer finds no member once
+    it commits."""
+    async with session_factory() as session:
+        owner, member, _ = await _people(session)
+        agent = await _agent(session, TENANT_ZERO_ID, owner, "pending")
+        await session.commit()
+        owner_id, member_id, agent_id = owner.id, member.id, agent.id
+
+    async with session_factory() as removal, session_factory() as session:
+        membership = await removal.get(
+            TenantMember, (TENANT_ZERO_ID, member_id), with_for_update=True
+        )
+        await removal.delete(membership)
+        await removal.flush()
+        racing = asyncio.create_task(
+            _transfer(session, "agent", agent_id, member, Principal(owner_id, False))
+        )
+        await asyncio.sleep(_BLOCKED_SECONDS)
+        assert not racing.done()
+        await removal.commit()
+        with pytest.raises(TransferRefused) as refused:
+            await racing
+        assert refused.value.status == 400
+        assert "current member" in str(refused.value)
+
+
+async def test_a_removal_waits_for_a_transfer_to_the_member(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A transfer under way to the member: the removal, once it commits, finds
+    the agent they now own and refuses."""
+    await _make_tenant(session_factory, TENANT_A)
+    owner_id = await _make_member(
+        session_factory, name="giver", tenant_id=TENANT_A, role="owner"
+    )
+    member_id = await _make_member(
+        session_factory, name="taker", tenant_id=TENANT_A, role="member"
+    )
+    agent_id, agent_name, _ = await _make_agent_with_key(
+        session_factory, tenant_id=TENANT_A, owner_id=owner_id
+    )
+
+    async with tenant_session(session_factory, TENANT_A) as transfer:
+        await transfer_ownership(
+            transfer,
+            tenant_id=TENANT_A,
+            kind="agent",
+            resource_id=agent_id,
+            new_owner_id=member_id,
+            caller=Principal(owner_id, False),
+            keyring=TEST_KEYRING,
+        )
+        token = _token(owner_id, "giver@example.invalid", TENANT_A)
+        async with _client(_app(session_factory), token) as client:
+            racing = asyncio.create_task(
+                client.delete(f"/tenants/{TENANT_A}/members/{member_id}")
+            )
+            await asyncio.sleep(_BLOCKED_SECONDS)
+            assert not racing.done()
+            await transfer.commit()
+            response = await racing
+    assert response.status_code == 409, response.text
+    assert agent_name in response.json()["detail"]
+    async with session_factory() as session:
+        assert await session.get(TenantMember, (TENANT_A, member_id)) is not None

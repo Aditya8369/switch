@@ -16,11 +16,22 @@ first:
 - an agent with sub-agents, or a sub-agent, is one of a family registered
   together from one session;
 - an agent that signs in with an OAuth client of its own holds a credential
-  this module does not rotate.
+  this module does not rotate;
+- an agent a server-side connector runs is registered again by that
+  connector, under its own owner, whenever the server starts.
 
 What is left is the agent's API key, which its owner can reveal. It is
-re-issued to the new owner, so a copy the previous owner holds stops working;
-the agent has to be reconnected with the new key.
+re-issued to the new owner, so a copy the previous owner holds stops working.
+The agent's open connections authenticated with the old key, so their rows go
+in the same transaction, and the caller ends them in every process once it has
+committed (`AgentConnectionRegistry.agent_key_reissued`): the agent has to be
+reconnected with the new key.
+
+The thing's row is locked before anything is checked and held until the caller
+commits, so two transfers of the same thing take turns, and the second is
+judged on the owner the first left. The new owner's membership row is locked
+too, as removing a member locks it (`gateway/tenants.py`), so a member being
+removed cannot be handed an agent between the removal's check and its commit.
 """
 
 from __future__ import annotations
@@ -47,6 +58,7 @@ from switch_core.db.models import (
     Template,
     TenantMember,
 )
+from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,7 +113,12 @@ async def _load(
     session: AsyncSession, tenant_id: str, kind: str, resource_id: str
 ) -> Owned | None:
     if kind == "reference_type":
-        return await session.get(ReferenceType, (tenant_id, resource_id))
+        return await session.get(
+            ReferenceType,
+            (tenant_id, resource_id),
+            with_for_update=True,
+            populate_existing=True,
+        )
     models: dict[str, type[Agent | Room | Package | Reference | Document | Template]]
     models = {
         "agent": Agent,
@@ -111,7 +128,12 @@ async def _load(
         "document": Document,
         "template": Template,
     }
-    row = cast(Owned | None, await session.get(models[kind], resource_id))
+    row = cast(
+        Owned | None,
+        await session.get(
+            models[kind], resource_id, with_for_update=True, populate_existing=True
+        ),
+    )
     # The policy already hides another tenant's row; this says so in Python
     # too, for a connection the policy does not apply to.
     if row is None or row.tenant_id != tenant_id:
@@ -164,6 +186,13 @@ async def _refuse_agent(session: AsyncSession, tenant_id: str, agent: Agent) -> 
         raise TransferRefused(
             409,
             "This agent signs in with an OAuth client of its own and can't be "
+            "transferred.",
+        )
+    if (agent.metadata_ or {}).get("server_connector_id"):
+        raise TransferRefused(
+            409,
+            "This agent is run by a server connector, which registers it again "
+            "under its own owner whenever the server starts, so it can't be "
             "transferred.",
         )
 
@@ -228,7 +257,9 @@ async def transfer_ownership(
     keyring: Keyring,
 ) -> Transferred:
     """Make `new_owner_id` the owner, on `session`, with its audit event; the
-    caller commits. Raises `TransferRefused` and changes nothing otherwise."""
+    caller commits, and for an agent then ends its connections
+    (`AgentConnectionRegistry.agent_key_reissued`). Raises `TransferRefused`
+    and changes nothing otherwise."""
     if kind not in TRANSFER_KINDS:
         raise TransferRefused(
             400,
@@ -244,7 +275,12 @@ async def transfer_ownership(
             403,
             f"Only the {label}'s owner or a workspace admin can transfer it.",
         )
-    membership = await session.get(TenantMember, (tenant_id, new_owner_id))
+    membership = await session.get(
+        TenantMember,
+        (tenant_id, new_owner_id),
+        with_for_update=True,
+        populate_existing=True,
+    )
     if membership is None:
         raise TransferRefused(
             400, "The new owner must be a current member of this workspace."
@@ -263,6 +299,9 @@ async def transfer_ownership(
     retired: str | None = None
     if isinstance(resource, Agent):
         retired = await _reissue_agent_key(session, resource, new_owner_id, keyring)
+        await AgentConnectionStore().delete_agent(
+            session, tenant_id=tenant_id, agent_id=resource.id
+        )
     resource.owner_id = new_owner_id
     await session.flush()
     await record_audit_event(
