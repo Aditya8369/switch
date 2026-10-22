@@ -55,8 +55,10 @@ def resolve_group_reference(groups: Sequence[_GroupNode], reference: str) -> str
     A path ("Fraud/Incidents") starts at a top-level group and names each child
     in turn; whitespace around each segment is ignored, so the displayed
     "Fraud / Incidents" form works too. A bare name must be unique in the
-    tenant; when it is not, the error lists each match by its path so the
-    caller can retry with one. Names match exactly (case-sensitive).
+    tenant; when it is not, the error lists each match by its path, or by
+    its id where the path cannot single it out, so the caller can retry with
+    one. A path through an ambiguous ancestor is refused the same way, with
+    the ids of the groups it could mean. Names match exactly (case-sensitive).
 
     Raises ValueError when nothing matches or the reference is ambiguous.
     """
@@ -81,33 +83,52 @@ def resolve_group_reference(groups: Sequence[_GroupNode], reference: str) -> str
             )
         return matches[0].id
 
-    parent: _GroupNode | None = None
-    for segment in segments:
-        parent_id = parent.id if parent is not None else None
+    # Every group the path so far could mean: one, unless a legacy duplicate
+    # on the way has made an ancestor ambiguous.
+    candidates: list[_GroupNode] = []
+    ambiguous_ancestor: str | None = None
+    for i, segment in enumerate(segments):
+        parent_ids: set[str | None] = {g.id for g in candidates} if i else {None}
         children = [
             g
             for g in groups
-            if g.parent_group_id == parent_id and g.name.strip() == segment
+            if g.parent_group_id in parent_ids and g.name.strip() == segment
         ]
-        where = (
-            "at the top level"
-            if parent is None
-            else f"under '{group_path(parent, by_id)}'"
-        )
+        if not i:
+            where = "at the top level"
+        elif len(candidates) == 1:
+            where = f"under '{group_path(candidates[0], by_id)}'"
+        else:
+            where = (
+                f"under any of the {len(candidates)} groups at "
+                f"'{group_path(candidates[0], by_id)}'"
+            )
         if not children:
             raise ValueError(
                 f"No room group '{reference}': there is no group named "
                 f"'{segment}' {where}"
             )
-        if len(children) > 1:
-            ids = _or_list([f"'{g.id}'" for g in children])
-            raise ValueError(
-                f"Ambiguous room group '{reference}': {len(children)} groups are "
-                f"named '{segment}' {where}; pass one of their ids instead: {ids}"
+        if len(children) > 1 and i < len(segments) - 1 and ambiguous_ancestor is None:
+            ambiguous_ancestor = (
+                f"{len(children)} groups are named '{segment}' {where}, so the "
+                "path does not single out one group"
             )
-        parent = children[0]
-    assert parent is not None
-    return parent.id
+        candidates = children
+
+    if ambiguous_ancestor is not None:
+        ways = _or_list([f"'{group_path(g, by_id)}' (id '{g.id}')" for g in candidates])
+        which = "its id" if len(candidates) == 1 else "the id of the one you mean"
+        raise ValueError(
+            f"Ambiguous room group '{reference}': {ambiguous_ancestor}; pass "
+            f"{which} instead: {ways}"
+        )
+    if len(candidates) > 1:
+        ids = _or_list([f"'{g.id}'" for g in candidates])
+        raise ValueError(
+            f"Ambiguous room group '{reference}': {len(candidates)} groups are "
+            f"named '{segments[-1]}' {where}; pass one of their ids instead: {ids}"
+        )
+    return candidates[0].id
 
 
 def _ways_to_name(
@@ -116,13 +137,16 @@ def _ways_to_name(
     """How to name each of several same-named groups: its path, or its id
     where the path cannot single it out (a sibling with the same name, or a
     name on the way that contains the separator, both left from before sibling
-    names were unique)."""
+    names were unique). A top-level match is named by its id: its path is the
+    bare name that was ambiguous in the first place."""
     paths = {g.id: group_path(g, by_id) for g in matches}
     out: list[str] = []
-    for g in sorted(matches, key=lambda m: paths[m.id]):
+    for g in sorted(matches, key=lambda m: (paths[m.id] == m.name, paths[m.id])):
         path = paths[g.id]
         shared = sum(1 for p in paths.values() if p == path) > 1
-        if shared or _has_separator_on_path(g, by_id):
+        if path == g.name:
+            out.append(f"id '{g.id}' for the top-level '{path}'")
+        elif shared or _has_separator_on_path(g, by_id):
             out.append(f"'{path}' (id '{g.id}')")
         else:
             out.append(f"'{path}'")

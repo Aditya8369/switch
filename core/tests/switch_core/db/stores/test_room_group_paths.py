@@ -112,6 +112,60 @@ class TestResolveGroupReference:
             resolve_group_reference(groups, "Ops/Dup")
         assert resolve_group_reference(groups, "b") == "b"
 
+    def test_ambiguous_ancestor_names_the_final_groups_by_id(self) -> None:
+        # The ids of the two "Ops" groups would file the room under Ops, not
+        # Incidents, so the error offers the Incidents groups instead.
+        groups = [
+            G("ops-1", "Ops", None),
+            G("ops-2", "Ops", None),
+            G("inc-1", "Incidents", "ops-1"),
+            G("inc-2", "Incidents", "ops-2"),
+        ]
+        with pytest.raises(ValueError) as e:
+            resolve_group_reference(groups, "Ops/Incidents")
+        assert str(e.value) == (
+            "Ambiguous room group 'Ops/Incidents': 2 groups are named 'Ops' at "
+            "the top level, so the path does not single out one group; pass the "
+            "id of the one you mean instead: 'Ops/Incidents' (id 'inc-1') or "
+            "'Ops/Incidents' (id 'inc-2')"
+        )
+
+    def test_ambiguous_ancestor_with_one_final_group_offers_its_id(self) -> None:
+        groups = [
+            G("ops-1", "Ops", None),
+            G("ops-2", "Ops", None),
+            G("inc-2", "Incidents", "ops-2"),
+        ]
+        with pytest.raises(ValueError) as e:
+            resolve_group_reference(groups, "Ops/Incidents")
+        assert str(e.value).endswith(
+            "pass its id instead: 'Ops/Incidents' (id 'inc-2')"
+        )
+
+    def test_ambiguous_ancestor_without_the_final_group(self) -> None:
+        groups = [G("ops-1", "Ops", None), G("ops-2", "Ops", None)]
+        with pytest.raises(ValueError) as e:
+            resolve_group_reference(groups, "Ops/Incidents")
+        assert str(e.value) == (
+            "No room group 'Ops/Incidents': there is no group named 'Incidents' "
+            "under any of the 2 groups at 'Ops'"
+        )
+
+    def test_a_top_level_match_is_offered_by_id(self) -> None:
+        # Its path is the bare name itself, so suggesting the path would only
+        # repeat the ambiguous reference.
+        groups = [
+            G("root", "Root", None),
+            G("top", "Dup", None),
+            G("nested", "Dup", "root"),
+        ]
+        with pytest.raises(ValueError) as e:
+            resolve_group_reference(groups, "Dup")
+        assert str(e.value) == (
+            "Ambiguous room group 'Dup': use 'Root/Dup' or id 'top' for the "
+            "top-level 'Dup'"
+        )
+
     def test_legacy_name_with_separator_is_reached_by_id(self) -> None:
         groups = [G("x", "A/B", None), G("y", "A", None), G("z", "B", "y")]
         assert resolve_group_reference(groups, "A/B") == "z"

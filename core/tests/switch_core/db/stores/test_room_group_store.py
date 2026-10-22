@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Room
+from switch_core.db.models import Room, RoomGroup
 from switch_core.db.stores.room_group_store import (
     RoomGroupNameTaken,
     RoomGroupStore,
@@ -451,3 +451,26 @@ class TestSiblingNames:
                 "would move under 'Payments', where a group named 'Incidents' "
                 "already exists. Rename or move one of them first"
             )
+
+    async def test_legacy_top_level_duplicates_offer_the_final_groups_ids(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Two top-level "Ops" groups from before the sibling rule, added past
+        # the store because it would refuse the second.
+        store = GroupStore()
+        async with session_factory() as session:
+            ops = [RoomGroup(name="Ops"), RoomGroup(name="Ops")]
+            session.add_all(ops)
+            await session.flush()
+            incidents = [
+                await _group(store, session, "Incidents", group.id) for group in ops
+            ]
+            await session.commit()
+            with pytest.raises(ValueError) as e:
+                await store.resolve(session, "Ops/Incidents")
+            message = str(e.value)
+            assert "2 groups are named 'Ops' at the top level" in message
+            for group_id in incidents:
+                assert f"'Ops/Incidents' (id '{group_id}')" in message
+            for group in ops:
+                assert group.id not in message

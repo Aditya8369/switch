@@ -66,7 +66,8 @@ class TestResolveGroupName:
             with pytest.raises(ValueError) as e:
                 await svc._resolve_group_name(session, "Dup")
             assert str(e.value) == (
-                "Ambiguous room group 'Dup': use 'Dup' or 'Root/Dup'"
+                "Ambiguous room group 'Dup': use 'Root/Dup' or id "
+                f"'{top.id}' for the top-level 'Dup'"
             )
             assert await svc._resolve_group_name(session, "Root/Dup") == nested.id
             assert await svc._resolve_group_name(session, top.id) == top.id
