@@ -44,6 +44,15 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Console hears when your managed agents or machines change.** A signed-in
+  user's Console opens one WebSocket per workspace (`/gateway/changes/ws`), and
+  switch-core tells it when one of their managed agents or machines changed, so
+  Console reads it again instead of polling. A notice names a kind and an id
+  and carries nothing else. Notices travel between replicas on the signal bus,
+  so a change made through one pod reaches a Console connected to another
+  (#717).
+
 #### Fixed
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`
@@ -1847,6 +1856,12 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Changed
+- **Managed agents and machines update when the server says they changed.**
+  Against a server that pushes change notices, Console stops polling those
+  lists and reads them again when told to; against one that does not, it polls
+  as before (#717).
 
 ### [0.40.1] - 2026-10-21
 
