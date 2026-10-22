@@ -3,11 +3,15 @@ together. The two call sites (inbound bridge, agent send_media) are tested
 separately; this covers the decisions they share."""
 
 import io
+import logging
+import sys
 import zipfile
 
 import pytest
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 
+from switch_core import file_text as file_text_module
+from switch_core.file_text import read_file_text
 from switch_core.trust import attachments
 from switch_core.trust.attachments import (
     TRUST_FILE_TEXT_LIMIT,
@@ -176,21 +180,67 @@ async def test_unchecked_files_block_when_the_policy_says_so(
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
-def _docx(body: str, *, header: str | None = None, padding: int = 0) -> bytes:
-    """A minimal Word document: just the parts the reader looks at."""
+_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
-    def part(text: str) -> str:
-        return (
-            f'<w:document xmlns:w="{_W_NS}"><w:body><w:p><w:r>'
-            f"<w:t>{text}</w:t></w:r></w:p>{'<w:p/>' * padding}</w:body></w:document>"
+
+def _part(text: str, padding: int = 0) -> str:
+    return (
+        f'<w:document xmlns:w="{_W_NS}"><w:body><w:p><w:r>'
+        f"<w:t>{text}</w:t></w:r></w:p>{'<w:p/>' * padding}</w:body></w:document>"
+    )
+
+
+def _rels(*links: tuple[str, str, str]) -> str:
+    """A .rels part: (type, target, extra attributes) per relationship."""
+    return (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'relationships">'
+        + "".join(
+            f'<Relationship Id="r{i}" Type="{_REL}/{kind}" Target="{target}"{extra}/>'
+            for i, (kind, target, extra) in enumerate(links)
         )
+        + "</Relationships>"
+    )
 
+
+def _zip(members: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def _docx(
+    body: str,
+    *,
+    header: str | None = None,
+    header_name: str = "header1.xml",
+    padding: int = 0,
+    links: tuple[tuple[str, str, str], ...] = (),
+    compression: dict[str, int] | None = None,
+) -> bytes:
+    """A minimal Word document: the package's and the body's relationships,
+    and the parts the reader looks at. `compression` overrides how named
+    members are stored."""
+    members = {
+        "[Content_Types].xml": "<Types/>",
+        "_rels/.rels": _rels(("officeDocument", "word/document.xml", "")),
+        "word/document.xml": _part(body, padding),
+    }
+    body_links = list(links)
+    if header is not None:
+        members[f"word/{header_name}"] = _part(header)
+        body_links.append(("header", header_name, ""))
+    members["word/_rels/document.xml.rels"] = _rels(*body_links)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", "<Types/>")
-        archive.writestr("word/document.xml", part(body))
-        if header is not None:
-            archive.writestr("word/header1.xml", part(header))
+        for name, content in members.items():
+            archive.writestr(
+                name,
+                content,
+                compress_type=(compression or {}).get(name, zipfile.ZIP_DEFLATED),
+            )
     return buffer.getvalue()
 
 
@@ -253,6 +303,13 @@ def test_a_word_document_is_recognised_by_extension_alone() -> None:
         b"PK\x03\x04 not really a zip",
         # A zip without a document body is not a Word document.
         _docx("x").replace(b"word/document.xml", b"word/documenX.xml"),
+        # Nor is one whose package names a body it does not contain.
+        _zip(
+            {
+                "_rels/.rels": _rels(("officeDocument", "word/gone.xml", "")),
+                "word/document.xml": _part("x"),
+            }
+        ),
     ],
 )
 def test_a_broken_word_document_is_unchecked_not_an_error(data: bytes) -> None:
@@ -274,17 +331,118 @@ def test_a_word_document_declaring_a_dtd_is_refused() -> None:
     assert file_text.text is None
 
 
-def test_a_word_document_stops_at_the_byte_budget(
+def test_a_word_document_body_larger_than_the_budget_is_not_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A highly compressible document (a zip bomb, in the limit) is only
-    # inflated as far as the budget, and says it was checked in part.
-    monkeypatch.setattr(attachments, "_DOCX_XML_BYTE_BUDGET", 2_000)
+    # A highly compressible document (a zip bomb, in the limit) is refused
+    # from its declared size, before anything is inflated.
+    monkeypatch.setattr(file_text_module, "_DOCX_XML_BYTE_BUDGET", 2_000)
     file_text = extract_file_text(
         _docx("early text", padding=100_000), _DOCX_TYPE, "bomb.docx"
     )
-    assert file_text.text is not None and "early text" in file_text.text
-    assert file_text.checked_part == "the first 8 MB"
+    assert file_text.text is None
+    assert file_text.unreadable_reason == (
+        "this Word document is larger than Switch Trust reads"
+    )
+
+
+def test_a_header_past_the_budget_is_named_as_not_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(file_text_module, "_DOCX_XML_BYTE_BUDGET", 2_000)
+    file_text = extract_file_text(
+        _docx("the body", header="x" * 5_000), _DOCX_TYPE, "memo.docx"
+    )
+    assert file_text.text is not None and "the body" in file_text.text
+    assert file_text.skipped == (
+        "word/header1.xml, which is larger than Switch Trust reads",
+    )
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_LZMA, zipfile.ZIP_BZIP2])
+def test_a_word_document_body_not_stored_or_deflated_is_never_inflated(
+    method: int,
+) -> None:
+    # Python's LZMA and bzip2 readers inflate past what one read asks for, so
+    # a tiny member could cost far more memory than the budget allows.
+    data = _docx("the body", compression={"word/document.xml": method})
+    file_text = extract_file_text(data, _DOCX_TYPE, "memo.docx")
+    assert file_text.text is None
+    assert file_text.unreadable_reason == (
+        "this Word document uses a compression Switch Trust does not read"
+    )
+
+
+def test_a_header_not_stored_or_deflated_is_named_as_not_checked() -> None:
+    data = _docx(
+        "the body",
+        header="FORBIDDEN",
+        compression={"word/header1.xml": zipfile.ZIP_LZMA},
+    )
+    file_text = extract_file_text(data, _DOCX_TYPE, "memo.docx")
+    assert file_text.text is not None and "FORBIDDEN" not in file_text.text
+    assert file_text.skipped == (
+        "word/header1.xml, which uses a compression Switch Trust does not read",
+    )
+
+
+async def test_a_renamed_header_is_found_through_the_relationships() -> None:
+    # Word finds a header by the body's relationships, not by its file name.
+    client = _ContentTrustClient()
+    verdict = await check_attachments(
+        client,  # type: ignore[arg-type]
+        role="user",
+        files=[
+            (
+                _docx("the body", header="FORBIDDEN", header_name="custom-header.xml"),
+                "memo.docx",
+                _DOCX_TYPE,
+            )
+        ],
+        room_id="room-1",
+    )
+    assert verdict.blocked
+    assert "memo.docx was blocked" in verdict.block_reasons[0]
+
+
+def test_a_body_the_package_names_elsewhere_is_the_one_read() -> None:
+    data = _zip(
+        {
+            "_rels/.rels": _rels(("officeDocument", "/content/main.xml", "")),
+            "content/main.xml": _part("the real body"),
+            "word/document.xml": _part("a decoy"),
+        }
+    )
+    file_text = extract_file_text(data, _DOCX_TYPE, "memo.docx")
+    assert file_text.text is not None
+    assert "the real body" in file_text.text
+    assert "a decoy" not in file_text.text
+
+
+async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> None:
+    data = _docx(
+        "the body",
+        links=(
+            ("aFChunk", "afchunk.mht", ""),
+            ("footer", "https://example.com/footer.xml", ' TargetMode="External"'),
+            ("footnotes", "footnotes.xml", ""),
+        ),
+    )
+    file_text = extract_file_text(data, _DOCX_TYPE, "memo.docx")
+    assert file_text.skipped == (
+        "an embedded document",
+        "a footer part it links to but does not contain",
+        "a footnotes part it links to but does not contain",
+    )
+    verdict = await check_attachments(
+        _ContentTrustClient(),  # type: ignore[arg-type]
+        role="user",
+        files=[(data, "memo.docx", _DOCX_TYPE)],
+        room_id="room-1",
+    )
+    assert not verdict.blocked
+    [note] = verdict.notes
+    assert "did not check part of memo.docx (an embedded document;" in note
 
 
 def test_a_word_document_with_no_text_is_unchecked() -> None:
@@ -327,10 +485,77 @@ def test_an_encrypted_pdf_is_unchecked() -> None:
 def test_a_pdf_past_the_page_limit_says_which_pages_were_checked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(attachments, "_PDF_PAGE_LIMIT", 1)
+    monkeypatch.setattr(file_text_module, "_PDF_PAGE_LIMIT", 1)
     file_text = extract_file_text(_pdf("one", "two"), "application/pdf", "x.pdf")
     assert file_text.text is not None and "two" not in file_text.text
-    assert file_text.checked_part == "the first 1 of 2 pages"
+    assert file_text.checked_part == "the first 1 pages"
+
+
+def test_a_pdf_is_read_without_walking_its_whole_page_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `reader.pages` counts every page before giving the first; a crafted
+    # page tree makes that as slow as its author likes.
+    def walk_everything(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("walked the whole page tree")
+
+    monkeypatch.setattr(PdfReader, "_flatten", walk_everything)
+    file_text = extract_file_text(
+        _pdf("first page", "second page"), "application/pdf", "doc.pdf"
+    )
+    assert file_text.text is not None
+    assert "first page" in file_text.text and "second page" in file_text.text
+
+
+def test_a_pdf_page_inherits_its_fonts_from_the_page_tree() -> None:
+    data = (
+        _pdf("inherited font")
+        .replace(b"/Resources << /Font << /F1 5 0 R >> >> ", b"")
+        .replace(b"/Count 1 >>", b"/Count 1 /Resources << /Font << /F1 5 0 R >> >> >>")
+    )
+    file_text = extract_file_text(data, "application/pdf", "doc.pdf")
+    assert file_text.text is not None and "inherited font" in file_text.text
+
+
+async def test_a_document_that_takes_too_long_to_read_is_not_checked(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(file_text_module, "_WORKER_TIMEOUT_SECONDS", 0)
+    client = _ContentTrustClient()
+    with caplog.at_level(logging.WARNING):
+        verdict = await check_attachments(
+            client,  # type: ignore[arg-type]
+            role="user",
+            files=[(_pdf("FORBIDDEN"), "slow.pdf", "application/pdf")],
+            room_id="room-1",
+        )
+    assert not verdict.blocked
+    assert verdict.notes == (
+        "⚠️ _Switch Trust did not check slow.pdf (it took too long to read)._",
+    )
+    assert client.checked == []
+    assert "took longer than" in caplog.text
+
+
+async def test_documents_are_read_in_a_worker_process() -> None:
+    word = await read_file_text(_docx("the body"), _DOCX_TYPE, "memo.docx")
+    pdf = await read_file_text(_pdf("a page"), "application/pdf", "doc.pdf")
+    assert word.text is not None and "the body" in word.text
+    assert pdf.text is not None and "a page" in pdf.text
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="only Linux caps address space"
+)
+async def test_a_document_that_needs_too_much_memory_is_not_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(file_text_module, "_WORKER_MEMORY_BYTES", 1024 * 1024)
+    file_text = await read_file_text(
+        _pdf("x" * 2_000_000), "application/pdf", "doc.pdf"
+    )
+    assert file_text.text is None
+    assert file_text.unreadable_reason == "it could not be read within Switch's limits"
 
 
 async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
