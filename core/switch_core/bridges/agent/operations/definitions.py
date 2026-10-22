@@ -790,8 +790,10 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any
         saw them; {"outcome": "alerted", "note": "<the notice>"} when it was
         delivered as sent but flagged, with that notice posted under it; or
         {"outcome": "errored", "note": "<the notice>"} when it was delivered
-        without being fully checked. A blocked message is not delivered at
-        all, and the call fails instead.
+        without being fully checked. `note` is there only when the notice was
+        posted in the room; when it could not be, `note` is absent and
+        `notice_error` says why, and the room was not warned. A blocked
+        message is not delivered at all, and the call fails instead.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()

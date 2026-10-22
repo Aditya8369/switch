@@ -295,7 +295,9 @@ Your own sends tell you when this happened. The result of `post_message` and
 `send_targeted_message` carries a `trust` field only when Switch Trust changed
 or flagged the message:
 `{"outcome": "redacted", "delivered": "<what the room received>"}`, or
-`alerted` / `errored` with the `note` posted under it. If it says your message
+`alerted` / `errored` with the `note` posted under it. When that notice could
+not be posted, `note` is absent and `notice_error` says why: the room was not
+warned. If it says your message
 was redacted, read `delivered`: the room saw that, not what you wrote. When the
 redacted version no longer makes sense, tell the room what you meant in words
 that pass. Don't repost the original.

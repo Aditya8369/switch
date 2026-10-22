@@ -17,6 +17,8 @@ from switch_core.bridges.agent.protocol.types import (
     SentMessage,
     TrustFeedback,
 )
+from switch_core.clients.actor import SystemActor
+from switch_core.tenant_context import tenant_scope
 from switch_core.trust.client import TrustCheckResult, TrustFinding
 
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
@@ -49,15 +51,20 @@ class _FakeClient:
         return f"$event-{len(self.sent)}"
 
 
-def _build() -> tuple[AgentCore, _FakeClient, list[Any]]:
+def _build(
+    notice_error: str | None = None,
+) -> tuple[AgentCore, _FakeClient, list[Any]]:
+    """`notice_error` is what the alert notice answers: None when it was
+    posted, else why it was not."""
     client = _FakeClient()
     notices: list[Any] = []
 
     async def _require(agent_id: str, room_id: str) -> SimpleNamespace:
         return SimpleNamespace(id=room_id, transport_room_id="!room", bridge_id=None)
 
-    async def _alert_notice(room, event_id, annotation, outcome) -> None:  # noqa: ANN001
+    async def _alert_notice(room, event_id, annotation, outcome) -> str | None:  # noqa: ANN001
         notices.append((event_id, annotation, outcome))
+        return notice_error
 
     async def _set_typing(*_args: object) -> None:
         return None
@@ -82,7 +89,10 @@ async def test_a_redacted_message_reports_what_the_room_received() -> None:
     assert sent == SentMessage(
         event_id="$event-1",
         trust=TrustFeedback(
-            outcome="redacted", delivered="the key is [redacted]", note=None
+            outcome="redacted",
+            delivered="the key is [redacted]",
+            note=None,
+            notice_error=None,
         ),
     )
 
@@ -96,7 +106,10 @@ async def test_a_redaction_that_changed_nothing_is_still_reported() -> None:
 
     assert client.sent == ["nothing-to-cut here"]
     assert sent.trust == TrustFeedback(
-        outcome="redacted", delivered="nothing-to-cut here", note=None
+        outcome="redacted",
+        delivered="nothing-to-cut here",
+        note=None,
+        notice_error=None,
     )
 
 
@@ -110,6 +123,79 @@ async def test_a_flagged_message_reports_the_notice_posted_under_it() -> None:
     assert sent.trust.outcome == "alerted"
     assert sent.trust.delivered is None
     assert sent.trust.note == notices[0][1]
+
+
+async def test_a_flagged_message_whose_notice_failed_says_so() -> None:
+    svc, client, notices = _build(notice_error="no admin client is running to post it")
+
+    sent = await svc.send_message("agent-1", "room-1", "something suspicious")
+
+    assert client.sent == ["something suspicious"]
+    assert len(notices) == 1
+    assert sent.trust == TrustFeedback(
+        outcome="alerted",
+        delivered=None,
+        note=None,
+        notice_error="no admin client is running to post it",
+    )
+    assert sent.trust.to_result() == {
+        "outcome": "alerted",
+        "notice_error": "no admin client is running to post it",
+    }
+
+
+class _Admin(SystemActor):
+    def __init__(self, event_id: str | None) -> None:
+        self._event_id = event_id
+        self.posted: list[str] = []
+
+    async def send_admin(self, room_id: str, body: str, **_kw: Any) -> str | None:
+        self.posted.append(body)
+        return self._event_id
+
+
+def _core_with_admins(*admins: SystemActor) -> AgentCore:
+    svc = object.__new__(AgentCore)
+    svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
+        get_by_type=lambda kind, tenant_id: list(admins)
+    )
+    return svc
+
+
+_ROOM = SimpleNamespace(id="room-1", transport_room_id="!room")
+
+
+async def test_an_alert_notice_posted_reports_no_error() -> None:
+    admin = _Admin("$notice")
+    with tenant_scope("tenant-a"):
+        error = await _core_with_admins(admin)._post_trust_alert_notice(
+            _ROOM,  # type: ignore[arg-type]
+            "$event",
+            "flagged",
+            "alerted",
+        )
+
+    assert error is None
+    assert admin.posted == ["flagged"]
+
+
+@pytest.mark.parametrize("admin_running", [False, True])
+async def test_an_alert_notice_not_posted_says_why(
+    admin_running: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With no admin client to post it, or one whose post the transport
+    refused, the notice is reported as not posted."""
+    admins = (_Admin(None),) if admin_running else ()
+    with tenant_scope("tenant-a"):
+        error = await _core_with_admins(*admins)._post_trust_alert_notice(
+            _ROOM,  # type: ignore[arg-type]
+            "$event",
+            "flagged",
+            "alerted",
+        )
+
+    assert error is not None
+    assert "Switch Trust" in caplog.text
 
 
 async def test_a_clean_message_reports_nothing_about_trust() -> None:
@@ -155,7 +241,10 @@ async def test_post_message_result_carries_the_redaction(
             SentMessage(
                 event_id="$e",
                 trust=TrustFeedback(
-                    outcome="redacted", delivered="the key is [redacted]", note=None
+                    outcome="redacted",
+                    delivered="the key is [redacted]",
+                    note=None,
+                    notice_error=None,
                 ),
             )
         ),
@@ -186,7 +275,10 @@ async def test_send_targeted_message_result_carries_the_redaction(
             SentMessage(
                 event_id="$e",
                 trust=TrustFeedback(
-                    outcome="redacted", delivered="@bob [redacted]", note=None
+                    outcome="redacted",
+                    delivered="@bob [redacted]",
+                    note=None,
+                    notice_error=None,
                 ),
             )
         ),

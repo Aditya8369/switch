@@ -147,12 +147,15 @@ class TrustFeedback(BaseModel):
     the room received in `delivered` (which can match what was sent when
     there was nothing it could cut); otherwise `alerted` (flagged and
     delivered as sent) or `errored` (delivered as sent, not fully checked).
-    `note` is the notice posted in the room under the message, when there is
-    one."""
+    `note` is the notice posted in the room under the message, when one was
+    posted. When a notice was due but could not be posted, `note` is unset
+    and `notice_error` says why, so the agent is not told the room was
+    warned when it was not."""
 
     outcome: Literal["redacted", "alerted", "errored"]
     delivered: str | None
     note: str | None
+    notice_error: str | None
 
     def to_result(self) -> dict[str, str]:
         """The tool-result form: the fields that are set, and no others."""

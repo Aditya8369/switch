@@ -58,7 +58,9 @@ class _FakeClient:
         return f"$media-event-{len(self.sends)}"
 
 
-def _build(trust: _ContentTrustClient) -> tuple[AgentCore, _FakeClient, list[Any]]:
+def _build(
+    trust: _ContentTrustClient, notice_error: str | None = None
+) -> tuple[AgentCore, _FakeClient, list[Any]]:
     client = _FakeClient()
     notices: list[Any] = []
 
@@ -68,8 +70,9 @@ def _build(trust: _ContentTrustClient) -> tuple[AgentCore, _FakeClient, list[Any
     async def _blocked_notice(room, thread_root_id, client_) -> None:  # noqa: ANN001
         notices.append(("blocked", thread_root_id))
 
-    async def _alert_notice(room, event_id, annotation, outcome) -> None:  # noqa: ANN001
+    async def _alert_notice(room, event_id, annotation, outcome) -> str | None:  # noqa: ANN001
         notices.append(("alert", event_id, annotation, outcome))
+        return notice_error
 
     async def _set_typing(*_args: object) -> None:
         return None
@@ -165,6 +168,23 @@ async def test_image_is_sent_with_a_not_checked_notice() -> None:
     assert (kind, event_id, outcome) == ("alert", "$media-event-1", "errored")
     assert "did not check cat.png" in annotation
     assert result["trust"] == {"outcome": "errored", "note": annotation}
+
+
+async def test_a_notice_that_could_not_be_posted_is_reported_as_such() -> None:
+    svc, client, notices = _build(
+        _ContentTrustClient(), notice_error="no admin client is running to post it"
+    )
+
+    result = await svc.send_media(
+        "agent-1", "room-1", [(b"png", "cat.png", "image/png")]
+    )
+
+    assert client.uploads == ["cat.png"]
+    assert len(notices) == 1
+    assert result["trust"] == {
+        "outcome": "errored",
+        "notice_error": "no admin client is running to post it",
+    }
 
 
 async def test_with_trust_off_nothing_is_checked() -> None:

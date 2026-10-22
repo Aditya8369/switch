@@ -250,26 +250,31 @@ def _trust_feedback(
     verdict: TrustOutcome | None,
     delivered: str | None,
     alert: tuple[str, TrustOutcome] | None,
+    notice_error: str | None,
 ) -> TrustFeedback | None:
     """What to tell an agent Switch Trust did to the text it sent, or None
     when it let the text through unflagged.
 
     `verdict` is Switch Trust's outcome for the text (None when it was not
-    checked) and `alert` the notice posted under the message, if any. A
+    checked), `alert` the notice due under the message, if any, and
+    `notice_error` why that notice was not posted (None once it was). A
     redaction can leave the words as they were, so it is told from the
     verdict rather than from the delivered text differing from the sent."""
+    note = alert[0] if alert is not None and notice_error is None else None
     if verdict == "redacted":
         return TrustFeedback(
             outcome="redacted",
             delivered=delivered,
-            note=alert[0] if alert is not None else None,
+            note=note,
+            notice_error=notice_error,
         )
     if alert is None:
         return None
     return TrustFeedback(
         outcome="alerted" if alert[1] == "alerted" else "errored",
         delivered=None,
-        note=alert[0],
+        note=note,
+        notice_error=notice_error,
     )
 
 
@@ -1820,13 +1825,18 @@ class AgentCore:
         reply_to_event_id: str,
         annotation: str,
         outcome: TrustOutcome,
-    ) -> None:
+    ) -> str | None:
         """Tell the room a response was flagged (or could not be fully
         checked), as its own notice threaded under the flagged reply's own
         event id — not the pre-send thread the agent happened to be posting
         in — rather than appended to the reply itself. Mirrors how
         `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
-        human-authored message under the message that triggered it."""
+        human-authored message under the message that triggered it.
+
+        Returns None once the notice is posted, or why it was not (logged as
+        a WARNING), for the sender's `TrustFeedback.notice_error`. A notice
+        that fails does not fail the send: the message is already in the
+        room."""
         admin = next(
             (
                 c
@@ -1842,14 +1852,14 @@ class AgentCore:
                 room.id,
                 outcome,
             )
-            return
+            return "no admin client is running to post it"
         message_type = (
             AdminMessageType.TRUST_ALERTED
             if outcome == "alerted"
             else AdminMessageType.TRUST_ERRORED
         )
         try:
-            await admin.send_admin(
+            event_id = await admin.send_admin(
                 room.transport_room_id,
                 annotation,
                 message_type=message_type,
@@ -1861,6 +1871,15 @@ class AgentCore:
                 room.id,
                 exc_info=True,
             )
+            return "posting it failed"
+        if event_id is None:
+            logger.warning(
+                "Could not post a Switch Trust alert notice in %s: the "
+                "transport refused it",
+                room.id,
+            )
+            return "posting it failed"
+        return None
 
     async def _post_role_change_notice(
         self, agent_id: str, transport_room_id: str, action: str
@@ -1942,9 +1961,12 @@ class AgentCore:
             event_id,
             room.transport_room_id,
         )
+        notice_error: str | None = None
         if pending_alert is not None:
             annotation, outcome = pending_alert
-            await self._post_trust_alert_notice(room, event_id, annotation, outcome)
+            notice_error = await self._post_trust_alert_notice(
+                room, event_id, annotation, outcome
+            )
         # The agent has replied, so clear any typing indicator raised when the
         # inbound message arrived. The message itself is already delivered, so a
         # failure here is degraded-but-functional, not a reason to fail the send.
@@ -1956,7 +1978,7 @@ class AgentCore:
             )
         return SentMessage(
             event_id=event_id,
-            trust=_trust_feedback(verdict, delivered, pending_alert),
+            trust=_trust_feedback(verdict, delivered, pending_alert, notice_error),
         )
 
     async def send_media(
@@ -2091,8 +2113,9 @@ class AgentCore:
             if trust_notes
             else None
         )
+        notice_error: str | None = None
         if media_alert is not None:
-            await self._post_trust_alert_notice(
+            notice_error = await self._post_trust_alert_notice(
                 room, posted[0]["event_id"], *media_alert
             )
         try:
@@ -2106,7 +2129,9 @@ class AgentCore:
             "mxc": posted[0]["mxc"],
             "attachments": posted,
         }
-        feedback = _trust_feedback(caption_verdict, caption_text, media_alert)
+        feedback = _trust_feedback(
+            caption_verdict, caption_text, media_alert, notice_error
+        )
         if feedback is not None:
             result["trust"] = feedback.to_result()
         return result
