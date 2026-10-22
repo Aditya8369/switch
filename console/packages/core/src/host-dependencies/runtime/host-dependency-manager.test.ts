@@ -617,7 +617,7 @@ describe('HostDependencyManager uninstall', () => {
     },
     {
       id: 'opencode-pm-prefix',
-      name: 'OpenCode (npm with prefix)',
+      name: 'OpenCode (npm with prefix, migration)',
       category: 'agent',
       commands: ['opencode'],
       versionArgs: ['--version'],
@@ -625,13 +625,52 @@ describe('HostDependencyManager uninstall', () => {
         linux: [
           {
             method: 'npm',
-            command: 'npm install -g --prefix "$HOME/.local" opencode-ai',
-            uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+            command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
+            uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli opencode-ai',
             recommended: true,
           },
         ],
       },
       updates: { kind: 'none' },
+      uninstall: { kind: 'package-manager' },
+    },
+    {
+      id: 'codex-pm-migration',
+      name: 'Codex (dual-package uninstall)',
+      category: 'agent',
+      commands: ['codex'],
+      versionArgs: ['--version'],
+      installCommands: {
+        macos: [
+          {
+            method: 'npm',
+            command: 'npm install -g @openai/codex',
+            recommended: true,
+            uninstallCommand: 'npm uninstall -g @openai/codex old-codex-name',
+          },
+        ],
+        linux: [
+          {
+            method: 'npm',
+            command: 'npm install -g @openai/codex',
+            recommended: true,
+            uninstallCommand: 'npm uninstall -g @openai/codex old-codex-name',
+          },
+        ],
+        windows: [
+          {
+            method: 'npm',
+            command: 'npm install -g @openai/codex',
+            recommended: true,
+            uninstallCommand: 'npm uninstall -g @openai/codex old-codex-name',
+          },
+        ],
+      },
+      updates: {
+        kind: 'supported',
+        releaseSource: { kind: 'npm', package: '@openai/codex' },
+        update: { kind: 'package-manager' },
+      },
       uninstall: { kind: 'package-manager' },
     },
   ];
@@ -842,7 +881,7 @@ describe('HostDependencyManager uninstall', () => {
     const prefixCtx = makeCtx(async (command, args = []) => {
       if (command === 'npm' && args[0] === 'list') {
         listArgs = [...args];
-        return { stdout: '/home/user/.local/lib\n└── opencode-ai@2.0.0\n', stderr: '' };
+        return { stdout: '/home/user/.local/lib\n└── @opencode/cli@2.0.0\n', stderr: '' };
       }
       throw new Error('missing');
     });
@@ -859,12 +898,37 @@ describe('HostDependencyManager uninstall', () => {
     expect(listArgs).toEqual([
       'list',
       '-g',
-      'opencode-ai',
+      '@opencode/cli',
       '--depth=0',
       '--prefix',
       '$HOME/.local',
     ]);
     expect(runInstallCommand).toHaveBeenCalled();
+  });
+
+  it('passes pre-flight when any of multiple uninstall targets is installed (migration)', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    // Only the legacy name is installed — the new name is not
+    const migrationCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list' && args[2] === '@openai/codex') {
+        throw new Error('npm ERR! code ELSPROBLEMS');
+      }
+      if (command === 'npm' && args[0] === 'list' && args[2] === 'old-codex-name') {
+        return { stdout: '/usr/lib\n└── old-codex-name@1.0.0\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(migrationCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    const result = await manager.uninstall('codex-pm-migration');
+
+    // Pre-flight passes because the second target is found
+    expect(runInstallCommand).toHaveBeenCalled();
+    expect(result.success).toBe(true);
   });
 
   it('skips pre-flight verification for cli uninstall strategy', async () => {

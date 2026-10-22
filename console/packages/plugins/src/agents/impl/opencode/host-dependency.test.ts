@@ -32,6 +32,14 @@ describe('opencode host dependency', () => {
     expect(firstOption(platform).command).not.toContain('--prefix');
   });
 
+  it('uninstalls both @opencode/cli and the legacy opencode-ai on every platform', () => {
+    for (const platform of ['macos', 'linux', 'windows'] as const) {
+      const cmd = firstOption(platform).uninstallCommand ?? '';
+      expect(cmd).toContain('@opencode/cli');
+      expect(cmd).toContain('opencode-ai');
+    }
+  });
+
   it('probes the opencode binary', () => {
     expect(hostDependency.binaryNames).toEqual(['opencode']);
   });

@@ -789,42 +789,42 @@ export class HostDependencyManager {
   }
 
   /**
-   * Extracts the package/formula name from an uninstall command string.
+   * Extracts package/formula names from an uninstall command string.
+   * Returns all targets — a command may name several packages (e.g.
+   * `npm uninstall -g @opencode/cli opencode-ai` for migration).
    *
-   * For npm: `npm uninstall -g [--prefix ...] <package>` → last token that
-   * is not a flag or its value.
-   * For homebrew: `brew uninstall [--cask] <formula>` → last token.
+   * For npm: every non-flag, non-subcommand token after `npm uninstall`.
+   * For homebrew: every non-flag token after `brew uninstall`.
    */
-  private extractUninstallTarget(command: string, method: InstallMethod): string | null {
+  private extractUninstallTargets(command: string, method: InstallMethod): string[] {
     const tokens = command.split(/\s+/).filter(Boolean);
-    if (tokens.length < 2) return null;
+    if (tokens.length < 2) return [];
 
     if (method === 'npm') {
-      // Walk backwards past flag values: the package name is the last token
-      // that is not a flag and not the value of a --prefix / --registry flag.
       const flagsWithValue = new Set(['--prefix', '--registry']);
-      for (let i = tokens.length - 1; i >= 0; i--) {
+      const targets: string[] = [];
+      for (let i = 0; i < tokens.length; i++) {
         const tok = tokens[i]!;
-        if (tok.startsWith('-')) continue;
-        // Check if the preceding token is a flag that takes a value
-        if (i > 0 && flagsWithValue.has(tokens[i - 1]!)) continue;
-        // Skip 'npm', 'uninstall', etc.
+        if (tok.startsWith('-')) {
+          if (flagsWithValue.has(tok)) i++; // skip the flag's value
+          continue;
+        }
         if (tok === 'npm' || tok === 'uninstall') continue;
-        return tok;
+        targets.push(tok);
       }
-      return null;
+      return targets;
     }
 
     if (method === 'homebrew') {
-      // `brew uninstall [--cask] <formula>` → last non-flag token
-      for (let i = tokens.length - 1; i >= 0; i--) {
-        const tok = tokens[i]!;
-        if (!tok.startsWith('-') && tok !== 'brew' && tok !== 'uninstall') return tok;
+      const targets: string[] = [];
+      for (const tok of tokens) {
+        if (tok.startsWith('-') || tok === 'brew' || tok === 'uninstall') continue;
+        targets.push(tok);
       }
-      return null;
+      return targets;
     }
 
-    return null;
+    return [];
   }
 
   /**
@@ -845,56 +845,75 @@ export class HostDependencyManager {
   }
 
   /**
-   * Pre-flight check: verify the target package/formula is actually installed
-   * before running the uninstall command. Catches mismatches where the
-   * descriptor names one package but the binary was installed under another
-   * (e.g. `opencode-ai` vs `@opencode/cli`).
+   * Pre-flight check: verify at least one of the target packages/formulas is
+   * actually installed before running the uninstall command. A command may list
+   * several packages (e.g. `npm uninstall -g @opencode/cli opencode-ai` for
+   * migration from a renamed package); the check passes when any one is found.
    *
    * For npm commands with `--prefix`, the same prefix is forwarded to `npm list`
    * so the check queries the right install root.
    *
-   * Returns the target name on success, or a DependencyUninstallResult error.
+   * Returns the first found target on success, or an error when none is installed.
    */
   private async verifyUninstallTarget(
     id: DependencyId,
     command: string,
     method: InstallMethod
   ): Promise<Result<string, DependencyUninstallError>> {
-    const target = this.extractUninstallTarget(command, method);
-    if (!target) return ok(target ?? '');
+    const targets = this.extractUninstallTargets(command, method);
+    if (targets.length === 0) return ok('');
 
     const VERIFY_TIMEOUT_MS = 10_000;
 
     if (method === 'npm') {
-      const listArgs = ['list', '-g', target, '--depth=0'];
       const prefix = this.extractNpmPrefix(command);
-      if (prefix) listArgs.push('--prefix', prefix);
 
-      try {
-        await this.ctx.exec('npm', listArgs, { timeout: VERIFY_TIMEOUT_MS });
-        return ok(target);
-      } catch {
-        this.logger.warn(
-          `[HostDependencyManager] Pre-flight check: npm package '${target}' is not installed globally`
-        );
-        return err({ type: 'uninstall-target-not-found', id, package: target, method });
+      for (const target of targets) {
+        const listArgs = ['list', '-g', target, '--depth=0'];
+        if (prefix) listArgs.push('--prefix', prefix);
+
+        try {
+          await this.ctx.exec('npm', listArgs, { timeout: VERIFY_TIMEOUT_MS });
+          return ok(target);
+        } catch {
+          // This target not found; try the next one
+        }
       }
+
+      this.logger.warn(
+        `[HostDependencyManager] Pre-flight check: none of [${targets.join(', ')}] installed globally via npm`
+      );
+      return err({
+        type: 'uninstall-target-not-found',
+        id,
+        package: targets.join(', '),
+        method,
+      });
     }
 
     if (method === 'homebrew') {
-      try {
-        await this.ctx.exec('brew', ['list', target], { timeout: VERIFY_TIMEOUT_MS });
-        return ok(target);
-      } catch {
-        this.logger.warn(
-          `[HostDependencyManager] Pre-flight check: homebrew formula '${target}' is not installed`
-        );
-        return err({ type: 'uninstall-target-not-found', id, package: target, method });
+      for (const target of targets) {
+        try {
+          await this.ctx.exec('brew', ['list', target], { timeout: VERIFY_TIMEOUT_MS });
+          return ok(target);
+        } catch {
+          // This target not found; try the next one
+        }
       }
+
+      this.logger.warn(
+        `[HostDependencyManager] Pre-flight check: none of [${targets.join(', ')}] installed via homebrew`
+      );
+      return err({
+        type: 'uninstall-target-not-found',
+        id,
+        package: targets.join(', '),
+        method,
+      });
     }
 
     // No verification available for this method; proceed
-    return ok(target ?? '');
+    return ok('');
   }
 
   /**
