@@ -17,6 +17,7 @@ import type {
   DependencyId,
   DependencyInstallResult,
   DependencyProbeOptions,
+  DependencyUninstallError,
   DependencyState,
   DependencyStatus,
   DependencyStatusUpdatedEvent,
@@ -788,7 +789,100 @@ export class HostDependencyManager {
   }
 
   /**
+   * Extracts the package/formula name from an uninstall command string.
+   *
+   * For npm: `npm uninstall -g [--prefix ...] <package>` → last token that
+   * is not a flag or its value.
+   * For homebrew: `brew uninstall [--cask] <formula>` → last token.
+   */
+  private extractUninstallTarget(command: string, method: InstallMethod): string | null {
+    const tokens = command.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) return null;
+
+    if (method === 'npm') {
+      // Walk backwards past flag values: the package name is the last token
+      // that is not a flag and not the value of a --prefix / --registry flag.
+      const flagsWithValue = new Set(['--prefix', '--registry']);
+      for (let i = tokens.length - 1; i >= 0; i--) {
+        const tok = tokens[i]!;
+        if (tok.startsWith('-')) continue;
+        // Check if the preceding token is a flag that takes a value
+        if (i > 0 && flagsWithValue.has(tokens[i - 1]!)) continue;
+        // Skip 'npm', 'uninstall', etc.
+        if (tok === 'npm' || tok === 'uninstall') continue;
+        return tok;
+      }
+      return null;
+    }
+
+    if (method === 'homebrew') {
+      // `brew uninstall [--cask] <formula>` → last non-flag token
+      for (let i = tokens.length - 1; i >= 0; i--) {
+        const tok = tokens[i]!;
+        if (!tok.startsWith('-') && tok !== 'brew' && tok !== 'uninstall') return tok;
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  /**
+   * Pre-flight check: verify the target package/formula is actually installed
+   * before running the uninstall command. Catches mismatches where the
+   * descriptor names one package but the binary was installed under another
+   * (e.g. `opencode-ai` vs `@opencode/cli`).
+   *
+   * Returns the target name on success, or a DependencyUninstallResult error.
+   */
+  private async verifyUninstallTarget(
+    id: DependencyId,
+    command: string,
+    method: InstallMethod
+  ): Promise<Result<string, DependencyUninstallError>> {
+    const target = this.extractUninstallTarget(command, method);
+    if (!target) return ok(target ?? '');
+
+    const VERIFY_TIMEOUT_MS = 10_000;
+
+    if (method === 'npm') {
+      try {
+        await this.ctx.exec('npm', ['list', '-g', target, '--depth=0'], {
+          timeout: VERIFY_TIMEOUT_MS,
+        });
+        return ok(target);
+      } catch {
+        this.logger.warn(
+          `[HostDependencyManager] Pre-flight check: npm package '${target}' is not installed globally`
+        );
+        return err({ type: 'uninstall-target-not-found', id, package: target, method });
+      }
+    }
+
+    if (method === 'homebrew') {
+      try {
+        await this.ctx.exec('brew', ['list', target], { timeout: VERIFY_TIMEOUT_MS });
+        return ok(target);
+      } catch {
+        this.logger.warn(
+          `[HostDependencyManager] Pre-flight check: homebrew formula '${target}' is not installed`
+        );
+        return err({ type: 'uninstall-target-not-found', id, package: target, method });
+      }
+    }
+
+    // No verification available for this method; proceed
+    return ok(target ?? '');
+  }
+
+  /**
    * Uninstall an agent dependency on this host, then re-probe to confirm it is gone.
+   *
+   * Before running the uninstall command, a pre-flight check verifies the target
+   * package/formula is actually installed under the expected name. This catches
+   * mismatches like a descriptor naming `opencode-ai` when the binary was installed
+   * as `@opencode/cli` — npm silently exits 0 for packages that aren't installed,
+   * which would otherwise produce a false success.
    *
    * Routing is driven by the active installation's provenance: method selections use
    * PM uninstall commands when available (e.g. `brew uninstall <formula>`), otherwise
@@ -836,6 +930,14 @@ export class HostDependencyManager {
     const plan = this.resolveUpdatePlan(effectiveMethod, descriptor, 'uninstall');
 
     if (plan.kind === 'package-manager') {
+      // Pre-flight: verify the target package is actually installed
+      const resolvedMethod =
+        effectiveMethod ?? pickInstallOption(descriptor, this.platform)?.method;
+      if (resolvedMethod) {
+        const verify = await this.verifyUninstallTarget(id, plan.command, resolvedMethod);
+        if (!verify.success) return verify;
+      }
+
       const runResult = await this.runInstallCommand(plan.command);
       if (!runResult.success) return err(runResult.error);
     } else if (plan.kind === 'cli') {

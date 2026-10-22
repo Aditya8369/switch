@@ -653,7 +653,19 @@ describe('HostDependencyManager uninstall', () => {
 
   it('runs the uninstallCommand for package-manager strategy and re-probes', async () => {
     const runInstallCommand = vi.fn(async () => ok<void>());
-    const manager = new HostDependencyManager(missingCtx, {
+    // Verification passes: npm list confirms the package is installed
+    const verifiedCtx = makeCtx(async (command, args = []) => {
+      if (
+        command === 'npm' &&
+        args[0] === 'list' &&
+        args[1] === '-g' &&
+        args[2] === '@openai/codex'
+      ) {
+        return { stdout: '/usr/lib\n└── @openai/codex@1.2.3\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(verifiedCtx, {
       dependencies: UNINSTALL_DEPENDENCIES,
       runInstallCommand,
       installMethodDetector: npmDetector,
@@ -676,7 +688,14 @@ describe('HostDependencyManager uninstall', () => {
         exitCode: 243,
       })
     );
-    const manager = new HostDependencyManager(missingCtx, {
+    // Verification passes so we reach the runner
+    const verifiedCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        return { stdout: '/usr/lib\n└── @openai/codex@1.2.3\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(verifiedCtx, {
       dependencies: UNINSTALL_DEPENDENCIES,
       runInstallCommand,
     });
@@ -741,6 +760,90 @@ describe('HostDependencyManager uninstall', () => {
       command: '/usr/local/bin/claude',
       args: ['custom-remove', '--force'],
     });
+  });
+
+  it('returns uninstall-target-not-found when npm package is not installed globally', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    // npm list exits non-zero when the package isn't installed
+    const notInstalledCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        throw new Error('npm ERR! code ELSPROBLEMS');
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(notInstalledCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    const result = await manager.uninstall('codex-pm');
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'uninstall-target-not-found',
+        id: 'codex-pm',
+        package: '@openai/codex',
+        method: 'npm',
+      },
+    });
+    // Must not attempt the uninstall command
+    expect(runInstallCommand).not.toHaveBeenCalled();
+  });
+
+  it('verifies npm package before running uninstall command', async () => {
+    const callOrder: string[] = [];
+    const verifyAndUninstallCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        callOrder.push('npm-list');
+        return { stdout: '/usr/lib\n└── @openai/codex@1.2.3\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const runInstallCommand = vi.fn(async () => {
+      callOrder.push('uninstall');
+      return ok<void>();
+    });
+    const manager = new HostDependencyManager(verifyAndUninstallCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    await manager.uninstall('codex-pm');
+
+    // Verification must run before the uninstall command
+    expect(callOrder).toEqual(['npm-list', 'uninstall']);
+  });
+
+  it('skips pre-flight verification for cli uninstall strategy', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    const claudeCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        throw new Error('npm list should not be called for cli uninstall');
+      }
+      if (command === 'which' && args[0] === 'claude') {
+        return { stdout: '/usr/local/bin/claude\n', stderr: '' };
+      }
+      if (command === 'which' && args[0] === '-a' && args[1] === 'claude') {
+        return { stdout: '/usr/local/bin/claude\n', stderr: '' };
+      }
+      if (command === 'realpath') {
+        return { stdout: `${args[0]}\n`, stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(claudeCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: unknownDetector,
+    });
+
+    await manager.uninstall('claude-cli-uninstall');
+
+    // cli strategy should not trigger npm list verification
+    expect(runInstallCommand).toHaveBeenCalled();
   });
 });
 
