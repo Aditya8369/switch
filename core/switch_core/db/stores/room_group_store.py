@@ -303,7 +303,13 @@ class RoomGroupStore:
             if parent_group_id is None
             else RoomGroup.parent_group_id == parent_group_id
         )
-        result = await session.execute(select(RoomGroup).where(parent_clause))
+        # Names as committed, not as this session last loaded them: another
+        # session may have renamed a sibling before we took the lock.
+        result = await session.execute(
+            select(RoomGroup)
+            .where(parent_clause)
+            .execution_options(populate_existing=True)
+        )
         return list(result.scalars().all())
 
     async def _where(self, session: AsyncSession, parent_group_id: str | None) -> str:

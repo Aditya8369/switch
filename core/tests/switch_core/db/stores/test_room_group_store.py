@@ -414,6 +414,26 @@ class TestSiblingNames:
             with pytest.raises(RoomGroupNameTaken, match="under 'Payments'"):
                 await store.update_fields(session, moving, name="Releases")
 
+    async def test_rename_checks_sibling_names_committed_last(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            releases = await _group(store, session, "Releases", payments)
+            incidents = await _group(store, session, "Incidents", payments)
+            await session.commit()
+            # This session still holds the sibling as Releases when another
+            # one renames it to Archive.
+            held = await store.get(session, releases)
+            assert held is not None
+            async with session_factory() as other:
+                await store.update_fields(other, releases, name="Archive")
+                await other.commit()
+
+            with pytest.raises(RoomGroupNameTaken, match="'Archive'"):
+                await store.update_fields(session, incidents, name="Archive")
+
     async def test_delete_that_would_promote_onto_a_namesake_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
