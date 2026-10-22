@@ -127,12 +127,32 @@ def test_every_point_names_its_process_as_a_tag():
         numbers=[NumberPoint(attributes={"transport": "websocket"}, value=7.0)],
         histograms=(),
     )
+    histogram = MetricPayload(
+        name="switch.db.pool.wait.duration",
+        unit="ms",
+        description="Pool waits.",
+        kind="histogram",
+        numbers=(),
+        histograms=[
+            HistogramPoint(
+                attributes={},
+                count=1,
+                total=3.0,
+                bucket_counts=[1, 0],
+                bounds=[5.0],
+            )
+        ],
+    )
     payload = build_metrics_payload(
-        [gauge, _sum_metric()], resource, START_NANOS, END_NANOS
+        [gauge, _sum_metric(), histogram], resource, START_NANOS, END_NANOS
     )
     metrics = payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
 
-    for points in (metrics[0]["gauge"]["dataPoints"], metrics[1]["sum"]["dataPoints"]):
+    for points in (
+        metrics[0]["gauge"]["dataPoints"],
+        metrics[1]["sum"]["dataPoints"],
+        metrics[2]["histogram"]["dataPoints"],
+    ):
         tags = {a["key"]: a["value"] for a in points[0]["attributes"]}
         assert tags["process_id"] == {"stringValue": "switch-core-7d9f-abcd1234"}
     gauge_tags = {a["key"] for a in metrics[0]["gauge"]["dataPoints"][0]["attributes"]}
