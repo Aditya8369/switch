@@ -7,6 +7,8 @@ operations call, against a real database.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -133,3 +135,59 @@ async def test_the_owner_and_an_admin_change_the_visibility(
         )
     for row in (reference, package, reference_type):
         assert (row.read_visibility, row.write_visibility) == ("private", "private")
+
+
+async def test_a_writer_racing_the_owner_is_checked_against_the_committed_row(
+    session_factory: async_sessionmaker[AsyncSession], service: ResourceService
+) -> None:
+    """The owner makes everything private while a writer, who read it public,
+    sends an edit with the visibility it saw. The writer waits for the owner's
+    commit and is then refused, rather than passing a check made on the row as
+    it was before."""
+    async with session_factory() as session:
+        owner = await _make_user(session, "owner")
+        writer = await _make_user(session, "writer")
+        reference_id, package_id, slug = await _open_resources(session, owner.id)
+        await session.commit()
+    private = {"read_visibility": "private", "write_visibility": "private"}
+    updates = {
+        "reference": (service.update_reference, reference_id, {"description": "x"}),
+        "package": (service.update_package, package_id, {"description": "x"}),
+        "reference type": (service.update_reference_type, slug, {"instructions": "x"}),
+    }
+
+    for label, (update, key, edit) in updates.items():
+        async with (
+            session_factory() as owner_session,
+            session_factory() as writer_session,
+        ):
+            await update(
+                owner_session, key, user_id=owner.id, is_admin=False, **private
+            )
+            writer_edit = asyncio.create_task(
+                update(
+                    writer_session,
+                    key,
+                    user_id=writer.id,
+                    is_admin=False,
+                    **OPEN,
+                    **edit,
+                )
+            )
+            await asyncio.sleep(0.2)
+            assert not writer_edit.done(), f"the {label} was not locked"
+            await owner_session.commit()
+            with pytest.raises(PermissionError):
+                await writer_edit
+            await writer_session.rollback()
+
+    async with session_factory() as session:
+        rows = [
+            await ReferenceStore().get(session, reference_id),
+            await PackageStore().get(session, package_id),
+            await ReferenceTypeStore().get(session, slug),
+        ]
+    for row in rows:
+        assert row is not None
+        assert (row.read_visibility, row.write_visibility) == ("private", "private")
+        assert "x" not in (getattr(row, "description", ""), row.instructions)

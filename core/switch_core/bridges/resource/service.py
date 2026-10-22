@@ -361,7 +361,7 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> ReferenceType:
-        reference_type = await self._reference_types.get(session, type_)
+        reference_type = await self._reference_types.get_for_update(session, type_)
         if reference_type is None:
             raise ValueError(f"Reference type not found: {type_}")
         require(Principal(user_id, is_admin), "write", reference_type)
@@ -624,7 +624,7 @@ class ResourceService:
         write_visibility: str | None = None,
         value: dict[str, Any] | None = None,
     ) -> Reference:
-        ref = await self._references.get(session, reference_id)
+        ref = await self._references.get_for_update(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "write", ref)
@@ -1272,7 +1272,7 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> Package:
-        pkg = await self._packages.get(session, package_id)
+        pkg = await self._packages.get_for_update(session, package_id)
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "write", pkg)
