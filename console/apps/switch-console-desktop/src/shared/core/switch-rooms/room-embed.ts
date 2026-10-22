@@ -39,6 +39,16 @@ export type RoomEmbed =
   | { kind: 'unlinked'; platform: string };
 
 /**
+ * Whether a room bridged to `bridgeType` can have its conversation drawn
+ * inline. Only Mattermost can: it is the platform Switch runs and holds a
+ * session for. Whether a given room's channel can be reached right now is
+ * decided when it is opened; this is only whether its platform ever can.
+ */
+export function bridgeCanEmbed(bridgeType: string | null): boolean {
+  return bridgeType === 'mattermost';
+}
+
+/**
  * Mattermost deeplinks are `mattermost://<host>/<team>/channels/<name>`, which
  * a webview cannot load. Rewrite one onto the http(s) origin we actually serve
  * Mattermost from, preserving the team/channel path.
@@ -63,4 +73,23 @@ export function channelUrlFromDeeplink(deeplink: string, mattermostOrigin: strin
 /** Per-server partition, so each server's Mattermost session stays isolated. */
 export function mattermostPartition(serverId: string): string {
   return `persist:switch-mattermost:${serverId}`;
+}
+
+/**
+ * Whether a room's conversation, decided while its channel link was
+ * `resolvedUrl`, has to be decided again now the room list says `currentUrl`.
+ *
+ * The link is missing while the server's bridge is not running — a local
+ * server's Mattermost comes up minutes after the server does — so a room
+ * opened in that window would otherwise stay "unavailable" once it is back.
+ * A live conversation is not torn down for a link that has merely gone
+ * missing: its own page reconnects when the platform does.
+ */
+export function embedIsStale(
+  embed: RoomEmbed,
+  resolvedUrl: string | null,
+  currentUrl: string | null
+): boolean {
+  if (resolvedUrl === currentUrl) return false;
+  return currentUrl !== null || embed.kind !== 'inline';
 }

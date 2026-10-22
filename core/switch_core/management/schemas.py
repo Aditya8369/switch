@@ -19,6 +19,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     Agent,
     AgentController,
@@ -27,8 +28,8 @@ from switch_core.db.models import (
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
-from switch_core.management.process_lease import ProcessLeases
 from switch_core.management.sealed_logins import PublicKey, key_id
+from switch_core.process_lease import ProcessLeases
 from switch_core.providers.registry import AgentProviderId
 
 Provider = AgentProviderId
@@ -84,6 +85,11 @@ class DefinitionV1(_GatewayBody):
     # `advanced_config`.
     advanced_config: dict[str, Any] = Field(default_factory=dict)
     instructions: str = ""
+    # The provider's own automatic review: safe actions run, risky ones still
+    # ask. A stored definition without the key predates it and reads as off
+    # (`stored_definition`).
+    auto_mode: bool = True
+    # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
     directory: str | None = None
     # `shared`: the agent host runs inside its machine's controller.
@@ -169,6 +175,10 @@ class StatusControllerInfo(_StatusBody):
     version: str
     protocol: int
     assignment_revision: int
+    # Who moves it onto another release: itself, following the release Core
+    # names, or Switch Console, which runs it (on an SSH host, say) and
+    # replaces its bundle. Absent from a controller older than this field.
+    updated_by: Literal["self", "console"] | None = None
 
 
 class MachineStatus(_StatusBody):
@@ -396,7 +406,8 @@ class CreateManagedAgentRequest(_GatewayBody):
     name: str
     description: str
     display_name: str | None = None
-    # Null for the icon its name generates (`agent_icon.generated_icon_url`).
+    # Null for the icon its name generates (`agent_icon.generated_icon_url`),
+    # or for no icon when the server has third-party avatars off.
     icon_url: str | None = None
     controller_id: str | None
     desired_state: DesiredState
@@ -429,6 +440,12 @@ class CreateOperationRequest(_GatewayBody):
 # ── Wire shapes ───────────────────────────────────────────────────────────────
 
 
+def stored_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    """A stored v1 definition with the fields it may predate filled in as they
+    read: a definition saved before `auto_mode` existed has it off."""
+    return {**definition, "auto_mode": definition.get("auto_mode", False)}
+
+
 def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
     """An `AgentAssignment`: the stored v1 definition, plus the agent's `name`,
     `display_name` and `icon_url` read from its own row.
@@ -449,6 +466,7 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "model": definition.get("model"),
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
+            "auto_mode": definition.get("auto_mode", False),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
@@ -521,8 +539,55 @@ def connection_view(
     }
 
 
+def updated_by_console(controller: AgentController) -> bool:
+    """Whether Switch Console updates this controller: Console's own, or one
+    Console runs elsewhere and says so in its status. Either ships with
+    Console and cannot follow the release Core names."""
+    if controller.kind == "console":
+        return True
+    info = (controller.status or {}).get("controller") or {}
+    return info.get("updated_by") == "console"
+
+
+def release_for(
+    controller: AgentController, release: ControllerRelease | None
+) -> ControllerRelease | None:
+    """The release this controller is told to run. None for one Switch Console
+    updates, whatever is set."""
+    return None if updated_by_console(controller) else release
+
+
+def controller_release_view(
+    controller: AgentController, release: ControllerRelease | None
+) -> dict[str, str] | None:
+    """The release the controller is told to run, or null when it is told none."""
+    wanted = release_for(controller, release)
+    if wanted is None:
+        return None
+    return {"version": wanted.version, "url": wanted.url, "sha256": wanted.sha256}
+
+
+def release_view(
+    controller: AgentController, release: ControllerRelease | None
+) -> dict[str, Any] | None:
+    """Whether the controller runs the release it is told to run: the version
+    wanted, the one it last reported, and whether they are the same. Null when
+    it is told none."""
+    release = release_for(controller, release)
+    if release is None:
+        return None
+    return {
+        "wanted": release.version,
+        "running": controller.version,
+        "current": controller.version == release.version,
+    }
+
+
 def controller_view(
-    controller: AgentController, state: str, leases: ProcessLeases
+    controller: AgentController,
+    state: str,
+    leases: ProcessLeases,
+    release: ControllerRelease | None,
 ) -> dict[str, Any]:
     return {
         "id": controller.id,
@@ -531,6 +596,7 @@ def controller_view(
         "kind": controller.kind,
         "platform": controller.platform,
         "version": controller.version,
+        "release": release_view(controller, release),
         "state": state,
         "last_seen_at": wire_time_or_none(controller.last_seen_at),
         "connection": connection_view(controller, leases),
@@ -594,7 +660,7 @@ def managed_agent_view(
         "controller_state": controller_state,
         "desired_state": row.desired_state,
         "revision": row.revision,
-        "definition": row.definition,
+        "definition": stored_definition(row.definition),
         "status": agent_status_from(controller, agent.id),
         "created_at": wire_time(row.created_at),
         "updated_at": wire_time(row.updated_at),

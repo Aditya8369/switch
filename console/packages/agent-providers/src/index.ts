@@ -13,7 +13,7 @@ export type {
   StdioMcpServerSpec,
   TurnAttachment,
 } from './adapter';
-export { ProviderSessionError, ProviderUnavailableError } from './adapter';
+export { ProviderSessionError, ProviderUnavailableError, runtimeModeFor } from './adapter';
 export type { ClaudeAdapterLogger, ClaudeAdapterOptions } from './claude/claude-adapter';
 export { ClaudeAdapter, createClaudeAdapter } from './claude/claude-adapter';
 export type {
@@ -76,6 +76,14 @@ export {
   requestStop,
   STOP_MESSAGE,
 } from './host/stop-request';
+export {
+  isProviderRecheckReply,
+  isProviderRecheckRequest,
+  PROVIDER_RECHECK_KIND,
+  PROVIDER_RECHECKED_KIND,
+  type ProviderRecheckReply,
+  type ProviderRecheckRequest,
+} from './host/provider-recheck';
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
@@ -94,6 +102,7 @@ export {
 } from './host/hub-stream';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
 export {
+  bundleIdentity,
   recordWatcherHealth,
   WATCHER_HEALTH_FILE,
   type WatcherHealthFile,
@@ -157,6 +166,7 @@ export { readSharedCredentials, sharedConfigSchema } from './host/shared-config'
 export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './readiness';
+export { verifyClaudeSignIn } from './claude/sign-in';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';
 export {
   acpProviderRuntime,

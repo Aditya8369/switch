@@ -33,6 +33,7 @@ from switch_core.management.wiring import create_management
 from switch_core.tenant_context import current_tenant_id
 from switch_core.trust.client import NullTrustClient
 from switch_core.user_changes import LocalUserChanges
+from tests.db_buffer import QuietRooms
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
     Harness,
@@ -281,11 +282,13 @@ class TestTheFlagOff:
 
         assert (
             create_management(
-                _Off(),
-                object(),
+                _Off(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
                 AgentConnectionRegistry().controllers,
+                object(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
                 LocalUserChanges(),
-            )  # type: ignore[arg-type]
+            )
             is None
         )
 
@@ -307,8 +310,7 @@ class TestTheFlagOff:
             room_service=object(),  # type: ignore[arg-type]
             client_lifecycle=object(),  # type: ignore[arg-type]
             collab_lifecycle=object(),  # type: ignore[arg-type]
-            event_buffer=EventBuffer(sequence_base=0),
-            task_store=object(),  # type: ignore[arg-type]
+            event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
             resource_service=object(),  # type: ignore[arg-type]
             api_key_store=object(),  # type: ignore[arg-type]
             external_user_store=object(),  # type: ignore[arg-type]
@@ -318,6 +320,7 @@ class TestTheFlagOff:
             approval_outcomes=object(),  # type: ignore[arg-type]
             controller_auth=None,
             trust_client=NullTrustClient(),
+            gateway_ui=None,
         )
         paths = [getattr(route, "path", "") for route in app.routes]
         assert paths

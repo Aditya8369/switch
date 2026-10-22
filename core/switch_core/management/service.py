@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_url,
     normalise_icon_url,
 )
@@ -39,9 +40,15 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExists
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
-    Binding,
+    DISCONNECT_REVOKED,
+    ControllerConnection,
     ControllerPresence,
+    ControllerRevokedError,
+    ControllerTakenOverError,
+    UnknownControllerConnectionError,
 )
+from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
+from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -68,21 +75,21 @@ from switch_core.gateway.cloud_controllers import (
 )
 from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
+from switch_core.management.bindings import binding_of
 from switch_core.management.errors import ManagementError, not_found
-from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
     is_revoked,
     require_placement,
 )
-from switch_core.management.process_lease import ProcessLeases, read_leases
 from switch_core.management.schemas import (
     ControllerDescription,
     CreateManagedAgentRequest,
     DefinitionV1,
     StatusReport,
     assignment_entry,
+    controller_release_view,
     controller_view,
     managed_agent_view,
     operation_view,
@@ -91,6 +98,8 @@ from switch_core.management.schemas import (
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
+from switch_core.management.signals import ControllerSignals
+from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.providers.registry import provider_ids
 from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
 
@@ -116,6 +125,12 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
+    # stores none rather than the generated one, which carries its name.
+    third_party_avatars: bool
+    # The controller release every controller is told to run; None when the
+    # deployment names none, and then controllers are told nothing.
+    controller_release: ControllerRelease | None
 
 
 @dataclass(frozen=True)
@@ -130,7 +145,7 @@ class ManagementService:
         self,
         *,
         settings: ManagementSettings,
-        notifier: ControllerNotifier,
+        signals: ControllerSignals,
         user_changes: UserChangePublisher,
         controllers: AgentControllerStore,
         definitions: AgentDefinitionStore,
@@ -142,7 +157,8 @@ class ManagementService:
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
-        self.notifier = notifier
+        self.signals = signals
+        self.notifier = signals.notifier
         self.user_changes = user_changes
         self.presence = presence
         self.controllers = controllers
@@ -347,7 +363,7 @@ class ManagementService:
             self._announce_revoked(replaced)
             for row in moved:
                 await self._bind(session, tenant_id, row)
-            self._nudge(revisions)
+            self._nudge(tenant_id, revisions)
             logger.info(
                 "Cloud machine %s enrolled again; revoked its previous controller %s "
                 "and moved its %d agent(s) to %s",
@@ -459,8 +475,6 @@ class ManagementService:
         """
         controller = await self._principal_controller(session, principal)
         before = _status_signature(controller.status)
-        revision = controller.assignment_revision
-        owner_id = controller.owner_id
         new_status = report.model_dump(mode="json", exclude_unset=True)
         stored = await self.controllers.record_status(
             session,
@@ -478,6 +492,12 @@ class ManagementService:
                 report.seq,
                 principal.controller_id,
             )
+        # Read again: the store wrote the row without touching the copy loaded
+        # above, and the release the controller is told depends on the status
+        # it just reported.
+        await session.refresh(controller)
+        revision = controller.assignment_revision
+        owner_id = controller.owner_id
         if stored and controller.kind == "ec2":
             await record_controller_status(
                 session, controller.id, report.machine.model_dump(mode="json")
@@ -490,7 +510,131 @@ class ManagementService:
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
+            "controller_release": controller_release_view(
+                controller, self.settings.controller_release
+            ),
         }
+
+    async def record_opened(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        *,
+        connection_id: str,
+        generation: int,
+        resume_cursors: dict[str, int | None],
+    ) -> None:
+        """Record the connection the controller is opening and tell every
+        other process: its socket may attach through any of them, and a
+        connection another process holds for this controller has been taken
+        over.
+
+        Committed before the connection is held here, so a read of the row
+        that lands in between finds the new connection named there, or finds
+        the earlier one while this process still holds only that one."""
+        await self.controllers.record_opened(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=connection_id,
+            generation=generation,
+            process_id=self.signals.process_id,
+            resume_cursors=resume_cursors,
+        )
+        await session.commit()
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+
+    async def hold_connection(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection:
+        """The connection a socket attaching names, held here, or the refusal.
+
+        Decided on the controller's row rather than on this process's memory,
+        which may be a moment behind what another process has done: only a
+        connection older than the one the row names is refused as taken
+        over. The row names the connection the controller opened last and the
+        process holding it:
+
+        - this connection, held by this process: the copy here is the one
+          that counts, and none here means it ended here (its heartbeat
+          lapsed, say), which is final, as it always was;
+        - another connection: the controller has opened a newer one, so a
+          copy of this one still here is closed `taken_over`, and the attach
+          refused as this process answers for it;
+        - this connection, held by another process: it is taken up here,
+          replacing any copy this process kept from holding it before.
+        """
+        presence = self.presence
+        controller_id = principal.controller_id
+        controller = await self.controllers.get(
+            session, principal.tenant_id, controller_id
+        )
+        if controller is None:
+            raise UnknownControllerConnectionError(connection_id)
+        if is_revoked(controller):
+            raise ControllerRevokedError(controller_id)
+        if controller.open_connection_id != connection_id:
+            local = presence.current_connection(controller_id)
+            if local is not None and local.id == connection_id:
+                presence.supersede(controller_id)
+            return presence.require(controller_id, connection_id, generation)
+        if controller.open_process_id == self.signals.process_id:
+            return presence.require(controller_id, connection_id, generation)
+        return await self._take_up(
+            session, principal, controller, connection_id, generation
+        )
+
+    async def _take_up(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        controller: AgentController,
+        connection_id: str,
+        generation: int,
+    ) -> ControllerConnection:
+        """Hold here the connection the controller opened last, which another
+        process holds or held, unless something has ended it. Recorded before
+        it is held, as an open is.
+
+        Its stream resumes each agent from the cursors recorded with it, which
+        are the open's until a socket on it goes and its holder writes them.
+        A socket attached to it whose going was never written (its holder
+        died, or has not written it yet) may have sent past them, and the
+        beats confirming how far went with that holder: resuming there would
+        skip what it sent after, so the controller is told to open again,
+        with its own cursors."""
+        if controller.open_generation != generation or (
+            controller.connection_id == connection_id
+            and (
+                controller.disconnected_at is None
+                or controller.disconnect_reason in _ENDING_REASONS
+            )
+        ):
+            raise UnknownControllerConnectionError(connection_id)
+        resume_cursors = _resume_cursors(controller.open_cursors)
+        if not await self.controllers.record_taken_up(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            connection_id=connection_id,
+            process_id=self.signals.process_id,
+        ):
+            # The controller opened another connection since the row was read.
+            raise ControllerTakenOverError(connection_id)
+        await session.commit()
+        conn = self.presence.adopt(
+            controller_id=principal.controller_id,
+            tenant_id=principal.tenant_id,
+            connection_id=connection_id,
+            generation=generation,
+            resume_cursors=resume_cursors,
+        )
+        self.signals.connection_changed(principal.tenant_id, principal.controller_id)
+        return conn
 
     async def connection_state(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -648,7 +792,12 @@ class ManagementService:
         )
         leases = await self.leases(session)
         return [
-            controller_view(controller, self.state_of(controller, leases), leases)
+            controller_view(
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
+            )
             for controller in controllers
         ]
 
@@ -703,7 +852,10 @@ class ManagementService:
         if not details:
             leases = await self.leases(session)
             view = controller_view(
-                controller, self.state_of(controller, leases), leases
+                controller,
+                self.state_of(controller, leases),
+                leases,
+                self.settings.controller_release,
             )
             await session.commit()
             return view
@@ -722,12 +874,18 @@ class ManagementService:
             session, tenant_id, controller_id, changes
         )
         leases = await self.leases(session)
-        view = controller_view(controller, self.state_of(controller, leases), leases)
+        view = controller_view(
+            controller,
+            self.state_of(controller, leases),
+            leases,
+            self.settings.controller_release,
+        )
         owner_id = controller.owner_id
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MACHINE, controller_id)
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
+            self.signals.renamed(tenant_id, controller_id)
         logger.info(
             "Updated agent controller %s (%s)",
             controller_id,
@@ -809,8 +967,7 @@ class ManagementService:
         return moved
 
     def _announce_revoked(self, controller_id: str) -> None:
-        self.notifier.credential_revoked(controller_id)
-        self.presence.revoke_controller(controller_id)
+        self.signals.revoked(controller_id)
 
     # ── Provider logins sealed to a controller ────────────────────────────────
 
@@ -876,7 +1033,7 @@ class ManagementService:
             provider,
             row.revision,
         )
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id,
             operation_id=operation.id,
             kind="provider.login",
@@ -914,7 +1071,7 @@ class ManagementService:
         logger.info(
             "Withdrew agent controller %s's sealed %s login", controller_id, provider
         )
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id,
             operation_id=operation.id,
             kind="provider.recheck",
@@ -1079,9 +1236,9 @@ class ManagementService:
             )
         return revisions
 
-    def _nudge(self, revisions: dict[str, int]) -> None:
+    def _nudge(self, tenant_id: str, revisions: dict[str, int]) -> None:
         for controller_id, revision in revisions.items():
-            self.notifier.assignment_changed(controller_id, revision)
+            self.signals.assignment_changed(tenant_id, controller_id, revision)
 
     async def _bind(
         self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
@@ -1097,6 +1254,28 @@ class ManagementService:
                 "which does not exist"
             )
         self.presence.bind(binding_of(tenant_id, row, controller))
+
+    async def check_new_managed_agent(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        request: CreateManagedAgentRequest,
+    ) -> None:
+        """The checks `create_managed_agent` makes before it registers
+        anything, raising as it would, with nothing created."""
+        await self._check_target(
+            session,
+            tenant_id,
+            owner_id,
+            request.controller_id,
+            request.definition.provider,
+            check_placement=True,
+        )
+        try:
+            normalise_icon_url(request.icon_url)
+        except InvalidIconUrl as exc:
+            raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
 
     async def create_managed_agent(
         self,
@@ -1119,9 +1298,12 @@ class ManagementService:
         )
         definition = with_directory(request.definition, controller, request.name)
         try:
-            icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
-                request.name
+            icon_url = drop_third_party_avatar(
+                normalise_icon_url(request.icon_url),
+                third_party_avatars=self.settings.third_party_avatars,
             )
+            if icon_url is None and self.settings.third_party_avatars:
+                icon_url = generated_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)
@@ -1139,7 +1321,6 @@ class ManagementService:
                 models=spec.models,
                 metadata=metadata,
                 owner_id=owner_id,
-                owner_only=True,
             )
         except AgentExistsError as exc:
             raise ManagementError(409, reason_codes.VALIDATION_ERROR, str(exc)) from exc
@@ -1159,7 +1340,7 @@ class ManagementService:
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, result.agent_id)
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info(
             "Created managed agent %s on controller %s",
             result.agent_id,
@@ -1250,8 +1431,10 @@ class ManagementService:
             previous = await self.controllers.get(
                 session, tenant_id, existing.controller_id
             )
-            # The old machine's workspace for the agent means nothing on the new one.
-            if directory == default_directory(previous, agent.name):
+            # The old machine's workspace for the agent means nothing on the
+            # new one. Matched on the workspaces folder rather than the exact
+            # path, because a rename pins the folder under the agent's old name.
+            if _inside_workspaces(previous, directory):
                 directory = None
         if directory is None:
             directory = default_directory(controller, agent.name)
@@ -1312,7 +1495,7 @@ class ManagementService:
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent.id)
         await self._bind(session, tenant_id, row)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
         return await self._view(
             session, tenant_id, row, agent, {}, await self.leases(session)
@@ -1337,7 +1520,43 @@ class ManagementService:
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent_id)
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
+
+    async def agent_renamed(
+        self, session: AsyncSession, tenant_id: str, agent_id: str, old_name: str
+    ) -> None:
+        """Hand a renamed agent's new name to the machine that runs it.
+
+        The assignment carries the agent's name live, so all a rename needs is
+        a new revision for the controller to pull. A definition naming no
+        directory would have the controller derive the workspace from the name,
+        moving the agent to an empty folder, so the old one is pinned first.
+        """
+        row = await self.definitions.get_for_agent(session, tenant_id, agent_id)
+        if row is None:
+            return
+        definition = dict(row.definition)
+        if definition.get("directory") is None and row.controller_id is not None:
+            controller = await self.controllers.get(
+                session, tenant_id, row.controller_id
+            )
+            directory = default_directory(controller, old_name)
+            if directory is not None:
+                definition["directory"] = directory
+        await self.definitions.update(
+            session,
+            tenant_id,
+            agent_id,
+            controller_id=row.controller_id,
+            desired_state=row.desired_state,
+            definition=definition,
+        )
+        revisions = await self._bump_and_collect(
+            session, tenant_id, {row.controller_id}
+        )
+        await session.commit()
+        self._nudge(tenant_id, revisions)
+        logger.info("Told the controller of agent %s about its new name", agent_id)
 
     async def forget_deleted_agent(
         self, session: AsyncSession, tenant_id: str, agent_id: str
@@ -1363,7 +1582,7 @@ class ManagementService:
         await session.commit()
         self.user_changes.publish(tenant_id, row.owner_id, MANAGED_AGENT, agent_id)
         self.presence.unbind(agent_id, DETACH_DELETED)
-        self._nudge(revisions)
+        self._nudge(tenant_id, revisions)
         logger.info("Stopped managing agent %s, which is being deleted", agent_id)
 
     # ── Operations, owner side ────────────────────────────────────────────────
@@ -1434,7 +1653,7 @@ class ManagementService:
         )
         view = operation_view(operation)
         await session.commit()
-        self.notifier.operation_pending(
+        self.signals.operation_pending(
             controller_id, operation_id=operation.id, kind=kind, agent_id=agent_id
         )
         return view
@@ -1462,18 +1681,21 @@ class ManagementService:
         return [operation_view(operation) for operation in operations]
 
 
-def binding_of(
-    tenant_id: str, row: AgentDefinitionRow, controller: AgentController
-) -> Binding:
-    """The binding Core keeps for a definition placed on `controller`."""
-    assert row.controller_id == controller.id
-    return Binding(
-        agent_id=row.agent_id,
-        controller_id=controller.id,
-        tenant_id=tenant_id,
-        controller_name=controller.name,
-        running=row.desired_state == "running",
-    )
+# Why a connection ended for good: a socket going for any of these leaves
+# nothing to reattach to, and the controller opens another.
+_ENDING_REASONS = frozenset(
+    {HEARTBEAT_LAPSED.code, TAKEN_OVER.code, DISCONNECT_REVOKED}
+)
+
+
+def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
+    """The cursors recorded with a connection, as the presence holds them."""
+    if not recorded:
+        return {}
+    return {
+        agent_id: cursor if isinstance(cursor, int) else None
+        for agent_id, cursor in recorded.items()
+    }
 
 
 def placement_from(
@@ -1499,6 +1721,20 @@ def default_directory(controller: AgentController | None, name: str) -> str | No
     if platform.get("os") == "windows":
         return ntpath.join(root, name)
     return posixpath.join(root, name)
+
+
+def _inside_workspaces(controller: AgentController | None, directory: str) -> bool:
+    """Whether `directory` is one of the workspaces `controller` makes for its
+    agents: a folder directly inside its workspaces folder."""
+    if controller is None:
+        return False
+    root = workspaces_dir_of(controller)
+    if root is None:
+        return False
+    platform = controller.platform or {}
+    if platform.get("os") == "windows":
+        return bool(ntpath.dirname(ntpath.normpath(directory)) == ntpath.normpath(root))
+    return posixpath.dirname(posixpath.normpath(directory)) == posixpath.normpath(root)
 
 
 def with_directory(

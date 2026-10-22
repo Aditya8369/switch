@@ -1,10 +1,19 @@
 /**
- * Shared types for local-server mode: Switch Console runs a full Switch stack on the
- * user's machine via `docker compose`, using the standalone compose artifact
- * bundled into the app (pinned to COMPATIBLE_SWITCH_VERSION). The main process
- * owns the container lifecycle; the renderer drives it through these types and
- * subscribes to the status event.
+ * Shared types for local-server mode: Switch Console runs a full Switch server on
+ * the user's machine at COMPATIBLE_SWITCH_VERSION — natively (PostgreSQL and
+ * switch-core as plain processes), or, for a server set up before that, via
+ * `docker compose` and the standalone compose artifact bundled into the app.
+ * The main process owns the lifecycle; the renderer drives it through these
+ * types and subscribes to the status event.
  */
+
+/**
+ * How the local server runs. `native` — PostgreSQL and switch-core as plain
+ * processes on this machine, no Docker — is what a new install gets. `docker`
+ * is a server set up before that, which stays on its compose stack (and its
+ * data volume) until it is reset.
+ */
+export type LocalServerRuntime = 'native' | 'docker';
 
 /** Lifecycle phase of the managed local stack. */
 export type LocalServerPhase = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
@@ -108,6 +117,10 @@ export type CheckoutBuild = {
   root: string;
   /** Whether the option is on. Applies from the next start onwards. */
   enabled: boolean;
+  /** The environment setting that decides `enabled` for this run instead of
+   * the toggle (e.g. `SWITCH_CONSOLE_SERVER_VERSION=checkout`), or null when
+   * the toggle decides. */
+  forcedBy: string | null;
 };
 
 /**
@@ -121,7 +134,13 @@ export type CheckoutBuild = {
  * unread host must not render as one that agrees.
  */
 export type DeployedTelemetry =
-  | { known: true; enabled: boolean }
+  | {
+      known: true;
+      enabled: boolean;
+      /** Whether it sends to the relay this build reports to. A stack set up by
+       * an older build may name none and run on its own version's default. */
+      endpointCurrent: boolean;
+    }
   | { known: false; reason: string };
 
 /**
@@ -165,6 +184,19 @@ export function managedServerUpgradeBlockedReason(
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
+  /** How this server runs, once read at boot; null until then. */
+  runtime: LocalServerRuntime | null;
+  /** Whether Mattermost is turned on for a native server (it needs Docker);
+   * null when the user never chose, which means on wherever Docker is
+   * available. A Docker server always runs it, so this is null there. */
+  mattermost: boolean | null;
+  /** How the Mattermost beside a native server is doing since the last start:
+   * it comes up after the server does. Null when it is off, or when nothing has
+   * been seen of it since Console launched. */
+  mattermostState: 'starting' | 'running' | 'failed' | null;
+  /** Something the last start could not do that did not stop it (Mattermost
+   * skipped or failed, say), for the server page to say; else null. */
+  notice: string | null;
   /** Whether the stack's state has been read since launch. Until it has, a
    * `stopped` phase is only the starting value, not something observed. */
   checked: boolean;
@@ -172,7 +204,9 @@ export type LocalServerStatus = {
   upgrade: ManagedServerUpgrade | null;
   /** The registered server's id once the stack is up, else null. */
   serverId: string | null;
-  /** The pinned switch-core version this build runs. */
+  /** The released switch-core version this build runs: its pin, or in a dev
+   * build the one SWITCH_CONSOLE_SERVER_VERSION names. A checkout build
+   * replaces it on the local server — see {@link checkoutBuild}. */
   version: string;
   /** The version the stack on the host is actually deployed at, once observed.
    * Null when nothing is deployed yet or it could not be read. */

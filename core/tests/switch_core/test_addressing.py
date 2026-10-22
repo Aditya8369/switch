@@ -7,6 +7,7 @@ from switch_core.addressing import (
     AddressingPolicy,
     AddressingRule,
     can_address,
+    default_agent_policy,
     owner_and_owner_agents_policy,
     owner_only_policy,
     parse_policy,
@@ -610,22 +611,38 @@ class TestRequiresOwnerIdentity:
 
 
 class TestAdmitsOthers:
-    """Whether anyone but the owner and their own agents can address the agent."""
+    """Whether anyone but the owner can address the agent."""
 
-    OWN = {"owner_identity_ids": {"ext-owner"}, "owner_agent_ids": {"own-agent"}}
+    OWN = {"owner_identity_ids": {"ext-owner"}}
 
     def test_open_policy_admits_others(self) -> None:
         assert AddressingPolicy().admits_others(**self.OWN) is True
 
-    def test_owner_and_owner_agents_do_not(self) -> None:
-        assert owner_and_owner_agents_policy().admits_others(**self.OWN) is False
+    def test_the_owner_alone_does_not(self) -> None:
         assert owner_only_policy([]).admits_others(**self.OWN) is False
-        assert owner_only_policy(["own-agent"]).admits_others(**self.OWN) is False
+
+    def test_the_owners_agents_do_not(self) -> None:
+        assert owner_and_owner_agents_policy().admits_others(**self.OWN) is False
+        assert default_agent_policy().admits_others(**self.OWN) is False
+
+    def test_an_agent_named_by_id_does(self) -> None:
+        assert owner_only_policy(["own-agent"]).admits_others(**self.OWN) is True
+
+    def test_the_owners_agents_are_still_allowed_to_address_it(self) -> None:
+        assert owner_and_owner_agents_policy().allows(
+            room_id="room-x",
+            group_id=None,
+            sender_kind="agent",
+            sender_id="own-agent",
+            sender_user_ids=[],
+            sender_owner_user_id="owner",
+            owner_user_id="owner",
+        )
 
     def test_anyone_in_one_room_does(self) -> None:
         policy = AddressingPolicy(
             rules=[
-                *owner_and_owner_agents_policy().rules,
+                *owner_only_policy([]).rules,
                 AddressingRule(rooms=["room-x"], users="*", agents=[]),
             ]
         )
@@ -649,7 +666,7 @@ class TestAdmitsOthers:
     def test_a_platform_rule_does_not(self) -> None:
         policy = AddressingPolicy(
             rules=[
-                *owner_and_owner_agents_policy().rules,
+                *owner_only_policy([]).rules,
                 *platform_allowed_policy().rules,
             ]
         )

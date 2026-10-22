@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
 import {
   InvitedBadge,
   invitationSummary,
@@ -32,7 +33,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
   administersWorkspace,
@@ -194,6 +195,7 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
                   ) : (
                     <ServerProblemDot server={activeServer} />
                   )}
+                  <ChatsOfflineNote server={activeServer} />
                 </span>
               </span>
               <ChevronsUpDown className="size-3.5 shrink-0 text-foreground-muted" />
@@ -368,6 +370,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
                   ) : (
                     <ServerProblemDot server={activeServer} />
                   )}
+                  <ChatsOfflineNote server={activeServer} />
                 </span>
               </span>
               <PendingInvitationCount server={activeServer} />
@@ -786,7 +789,13 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   // refuses every call scoped to it — offering it would turn a fact the app
   // already knows into an error after the click.
   const unavailable = workspaceUnavailability(workspace, onServerCount);
-  const canInvite = !dormant && unavailable === null && administersWorkspace(workspace);
+  // Not offered on a server running on this computer: nobody elsewhere can
+  // reach it, so an invitation would lead them nowhere.
+  const canInvite =
+    !dormant &&
+    unavailable === null &&
+    administersWorkspace(workspace) &&
+    !runsOnThisComputer(server);
 
   return (
     <DropdownMenuItem

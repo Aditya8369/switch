@@ -4,19 +4,32 @@ import logging
 import math
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    final,
+    runtime_checkable,
+)
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import generated_icon_url, initials_icon_url
+from switch_core.agent_icon import (
+    generated_icon_url,
+    initials_icon_url,
+    is_third_party_avatar,
+)
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.install import InboundWebhook, WebhookRequest
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
+    ChannelRetirement,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -27,6 +40,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
     WebhookDeliveryUnsupported,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -38,6 +52,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.deeplinks import rewrite_console_links
 from switch_core.messaging_platforms import MessagingPlatform
 from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
@@ -51,7 +66,40 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+if TYPE_CHECKING:
+    from switch_core.db.models import Agent
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentIdentity:
+    """An agent as a bridge needs it to keep the agent's platform handle.
+
+    ``agent_id`` is the stable key: it never changes, so a platform object
+    tied to it survives a rename on either side. ``name`` is the identifier
+    people type and mention, and it can change.
+    """
+
+    agent_id: str
+    name: str
+    description: str
+    display_name: str | None
+
+
+def agent_identity(agent: Agent) -> AgentIdentity:
+    """The identity a bridge keeps for this stored agent."""
+    return AgentIdentity(
+        agent_id=agent.id,
+        name=agent.name,
+        description=agent.description,
+        display_name=agent.display_name,
+    )
+
+
+class AgentIdentityConflict(ValueError):
+    """The platform already has something that is not this agent under the
+    handle the agent would need, so the agent cannot take that name there."""
 
 
 @dataclass(frozen=True)
@@ -82,7 +130,8 @@ class AgentRendering:
 
     field_label: str
     body_label: str
-    icon_url: str
+    # None when the platform should draw its own default icon for the sender.
+    icon_url: str | None
 
 
 @dataclass(frozen=True)
@@ -106,7 +155,6 @@ class TurnActivity:
     status_only: bool = False
     # Stable recovery marker for a reserved platform post, not an answer token.
     publication_token: str | None = None
-    session_url: str | None = None
     notify_external_id: str | None = None
     # There was someone who should be told and nobody here to name: the agent
     # has no owner, or an owner who has claimed no account on this platform.
@@ -143,7 +191,6 @@ class ActivitySnapshot:
     items: list[Item]
     turn: TurnUpsert
     elapsed_seconds: float | None
-    session_url: str | None
     read_at: datetime
 
 
@@ -472,7 +519,9 @@ class PlatformAdapter(ABC):
     #: where this is False that link cannot work as written, and the deployment
     #: needs `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to the https
     #: redirect. Declared here so the lifecycle can say so once at startup
-    #: instead of each bridge discovering it in its own way.
+    #: instead of each bridge discovering it in its own way. Where it is
+    #: False, `translate_outbound` also rewrites links an agent writes to
+    #: Switch Console pages (`switchdash://open/…`).
     renders_custom_url_schemes: ClassVar[bool] = True
 
     #: Whether `find_request_card` can actually search this platform.
@@ -527,7 +576,27 @@ class PlatformAdapter(ABC):
     #: withheld is the notice, not the request.
     discloses_unconfirmed_posts: ClassVar[bool] = False
 
+    # Whether this adapter keeps quiet when told not to listen
+    # (`set_listening`): it opens nothing the platform delivers events over,
+    # no socket, no poll, no subscription it keeps alive, and only calls the
+    # platform's API. A bridge is listened to by the one switch-core process
+    # that holds it (`ownership.py`); every other runs it quietly to serve the
+    # requests and webhooks that reach it. An adapter that cannot keep quiet
+    # listens wherever it runs, so its platform delivers to every process.
+    keeps_quiet_unless_listening: ClassVar[bool] = False
+
+    #: What `retire_channel` does to a deleted room's channel when it works.
+    #:
+    #: Console reads it, through room detail, to tell the person deleting a
+    #: room what will become of its channel before they confirm, so it has to
+    #: say what this adapter's `retire_channel` actually does. `kept` here
+    #: because the base leaves the channel alone.
+    channel_on_delete: ClassVar[ChannelRetirement] = "kept"
+
     def __init__(self) -> None:
+        # Whether this process holds the bridge: see
+        # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
+        self._listening = True
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
         self._on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]] | None = (
@@ -573,9 +642,62 @@ class PlatformAdapter(ABC):
         self._max_attachment_bytes = 20 * 1024 * 1024
         # Set by `set_webhook_url` for an adapter that receives webhooks.
         self.webhook_url: str | None = None
+        # Set by the lifecycle service from config.third_party_avatars_enabled.
+        # Off until then, so an adapter whose wiring was missed shows platform
+        # default icons, which someone notices, rather than quietly sending
+        # names to avatar services an operator has turned off.
+        self._third_party_avatars = False
+        # Set by the lifecycle (`set_holder_relay`): hands a request to the
+        # process that holds the bridge, for work only the holder does.
+        self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
+        # Set by the lifecycle (`set_gateway_public_url`).
+        self._gateway_public_url: str | None = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
+
+    def set_listening(self, listening: bool) -> None:
+        """Whether this process holds the bridge and listens to the platform
+        for it, or runs it quietly. Before `start`; an adapter that cannot
+        keep quiet ignores it (`keeps_quiet_unless_listening`)."""
+        self._listening = listening
+
+    def set_holder_relay(self, relay: Callable[[dict[str, str]], None]) -> None:
+        """How a quiet copy hands the process holding the bridge a piece of
+        work only the holder does, which reached this process instead: a
+        webhook arrives at whichever process the load balancer picks. The
+        holder receives it in `receive_relayed`."""
+        self._relay_to_holder = relay
+
+    def _hand_to_holder(self, request: dict[str, str]) -> None:
+        """Hand `request` to the process holding the bridge. Nobody may hold
+        it right now; the next holder catches up as it takes the bridge over,
+        as it does for anything that happened while nobody held it."""
+        if self._relay_to_holder is None:
+            logger.warning(
+                "No way to reach the process holding this bridge; dropping %r",
+                request,
+            )
+            return
+        self._relay_to_holder(request)
+
+    async def receive_relayed(self, request: Mapping[str, str]) -> None:
+        """Do a piece of work a quiet copy in another process handed here
+        (`_hand_to_holder`), as this process holds the bridge. Nothing hands
+        work to an adapter that does not override this."""
+        logger.warning("Ignoring a relayed request this bridge has no use for")
+
+    def set_third_party_avatars(self, enabled: bool) -> None:
+        """Whether this adapter may hand platforms an icon drawn by an outside
+        avatar service (`agent_icon.is_third_party_avatar`)."""
+        self._third_party_avatars = enabled
+
+    def set_gateway_public_url(self, gateway_public_url: str | None) -> None:
+        """The server's public address (`GATEWAY_PUBLIC_URL`), which a link to
+        a Switch Console page is rewritten to on a platform that cannot open
+        `switchdash://`. None where the server has none, and those links are
+        then named in words (`rewrite_console_links`)."""
+        self._gateway_public_url = gateway_public_url
 
     @classmethod
     def describe(cls, key: str) -> MessagingPlatform:
@@ -650,6 +772,17 @@ class PlatformAdapter(ABC):
 
         Quoted verbatim in that refusal, so it must not embed credential
         material. Return None for a platform with no such notion.
+        """
+        return None
+
+    @classmethod
+    def held_with(cls, connection_config: dict[str, object]) -> tuple[str, str] | None:
+        """Other owned work this bridge must be held beside, as (kind, key) in
+        `ownership.py`, or None for a bridge placed on its own.
+
+        For a bridge whose platform events reach it in-process from something
+        else that runs once per deployment, such as Discord's one shared
+        Gateway connection: held anywhere else, it would never hear them.
         """
         return None
 
@@ -1476,15 +1609,71 @@ class PlatformAdapter(ABC):
         ...
 
     @abstractmethod
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None: ...
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
+        """Give the agent its platform handle, or bring an existing one in
+        line with it. Idempotent."""
 
     @abstractmethod
-    async def remove_agent_identity(self, agent_name: str) -> None: ...
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        """Retire the agent's platform handle. Raises when the platform could
+        not be told, so the caller can say the clean-up is outstanding."""
+
+    async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        """Raise `AgentIdentityConflict` if this platform has something other
+        than agent ``agent_id`` holding the handle ``new_name`` would need.
+
+        Asked before a rename is written, so a clash refuses the rename instead
+        of leaving the agent renamed in Switch and stranded on the platform.
+        Default: nothing to check."""
+        return None
+
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Move the agent's platform handle from ``old_name`` to ``agent.name``.
+
+        Default: retire the old handle and provision a new one. Adapters that
+        can rename their platform object in place override this, so whatever
+        hangs off it (membership, history) carries over."""
+        await self.remove_agent_identity(replace(agent, name=old_name))
+        await self.create_agent_identity(agent)
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        """The agent's display name or description changed. Default: nothing,
+        for platforms whose handle carries neither."""
+        return None
+
+    async def sync_agent_identities(
+        self, agents: Sequence[AgentIdentity]
+    ) -> list[tuple[str, BaseException]]:
+        """Bring every agent's handle in line, at bridge start.
+
+        Returns the agents that failed, by name, with what went wrong, rather
+        than stopping at the first. Adapters that can tell their own handles
+        apart from everything else on the platform override this to also
+        retire handles left behind by agents that no longer exist."""
+        failures: list[tuple[str, BaseException]] = []
+        for agent in agents:
+            try:
+                await self.create_agent_identity(agent)
+            except Exception as exc:
+                failures.append((agent.name, exc))
+        return failures
 
     @abstractmethod
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        """Retire a deleted room's channel as far as this platform allows.
+
+        Called when a person deletes the room, never when a connection is
+        removed — by then the bot may have lost its access. Returns what
+        happened, matching `channel_on_delete` when it works. A refusal from
+        the platform comes back as `RetireOutcome.failed` carrying what the
+        platform said rather than being raised: the room is deleted either
+        way, and the person is told the channel needs cleaning up by hand.
+
+        The base leaves the channel where it is.
+        """
+        return RetireOutcome(outcome="kept")
 
     @final
     def translate_outbound(self, content: str) -> str:
@@ -1494,7 +1683,13 @@ class PlatformAdapter(ABC):
         `_render_outbound`, and nothing a body says can then page a channel.
         Only `render_room_wide_mention` does that, for a message the server
         marked.
+
+        A Markdown link to a Switch Console page is rewritten first, on a
+        platform that cannot open `switchdash://` (`rewrite_console_links`),
+        so the platform renders an https link like any other.
         """
+        if not self.renders_custom_url_schemes:
+            content = rewrite_console_links(content, self._gateway_public_url)
         return self.defuse_mass_mentions(self._render_outbound(content))
 
     @abstractmethod
@@ -1590,6 +1785,15 @@ class PlatformAdapter(ABC):
         Default is a no-op; adapters whose outbound endpoint is only discovered
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
+        return None
+
+    def set_bridge_id(self, bridge_id: str) -> None:
+        """Tell the adapter the id of the bridge it serves.
+
+        Default is a no-op. Slack overrides it to mark the user groups it
+        creates as this bridge's, so clean-up never touches a group another
+        Switch installation made in the same workspace.
+        """
         return None
 
     def set_tenant_id(self, tenant_id: str) -> None:
@@ -1863,6 +2067,11 @@ class PlatformAdapter(ABC):
         # than turning every agent into a person. The bridge core installs one
         # before the adapter starts, so a running bridge without it is a wiring
         # fault, and said so once.
+        #
+        # The face and the badge are both drawn by outside services that see
+        # the name. With third-party avatars off neither is built, and a stored
+        # icon on one of those services is withheld too, so the sender goes out
+        # with no icon and the platform draws its own default.
         if self._resolve_agent_presentation is None:
             if not self._reported_missing_resolver:
                 self._reported_missing_resolver = True
@@ -1872,25 +2081,40 @@ class PlatformAdapter(ABC):
                     type(self).__name__,
                 )
             label = agent_name
-            icon_url = generated_icon_url(agent_name)
+            icon_url = self._generated_icon(agent_name)
         else:
             found = await self._resolve_agent_presentation(agent_name)
             label = (found.display_name if found else None) or agent_name
             if found is None:
-                icon_url = initials_icon_url(agent_name)
+                icon_url = (
+                    initials_icon_url(agent_name) if self._third_party_avatars else None
+                )
+            elif found.icon_url is None:
+                icon_url = self._generated_icon(agent_name)
+            elif not self._third_party_avatars and is_third_party_avatar(
+                found.icon_url
+            ):
+                icon_url = None
             else:
-                icon_url = found.icon_url or generated_icon_url(agent_name)
+                icon_url = found.icon_url
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(icon_url),
+            icon_url=None if icon_url is None else self.adapt_icon_url(icon_url),
         )
 
-    async def agent_icon_url(self, agent_name: str) -> str:
+    def _generated_icon(self, agent_name: str) -> str | None:
+        return generated_icon_url(agent_name) if self._third_party_avatars else None
+
+    async def agent_icon_url(self, agent_name: str) -> str | None:
         """The icon URL to render for an agent on this platform.
 
         Adapters call this wherever they need a per-message avatar: the agent's
-        own icon when it has one, otherwise this platform's existing default."""
+        own icon when it has one, otherwise this platform's existing default.
+        None when third-party avatars are off and the icon would have come from
+        an outside avatar service: the generated face or lettered badge, or a
+        stored icon on one of those services, whoever chose it. The platform
+        then draws its own default."""
         return (await self.agent_rendering(agent_name)).icon_url
 
     async def agent_label_for_body(self, agent_name: str) -> str:

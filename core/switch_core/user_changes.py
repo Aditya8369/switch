@@ -13,23 +13,39 @@ socket wakes is sent once.
 Subscriptions are per (tenant, user), because a session is bound to one
 tenant: a change in another of the user's workspaces is not this session's.
 
-Core runs as one process, so `LocalUserChanges` fans out in memory and only
-reaches the sockets this process holds. Writers depend on `UserChangePublisher`
-alone, so that a multi-replica Core can swap in a publisher that sends each
-change through Postgres (`pg_notify` on a channel every replica LISTENs to, as
-`messages/notify.py` does for room messages) and have each replica hand what it
-hears to its own `LocalUserChanges`.
+Each process holds its own Consoles' sockets, so a change committed in one
+process has to reach every other. `LocalUserChanges` fans a notice out in
+memory to the sockets this process holds. `SignalUserChanges` is what writers
+are given: it hands each notice to this process's `LocalUserChanges` at once
+and publishes it on the `SignalBus` (`switch_core.signals`), and every other
+process hands what it hears to its own. Writers depend on
+`UserChangePublisher` alone.
+
+A notice that the bus loses (its sender died between the commit and the send,
+or a receiver's listening connection was down) is not re-sent: there is
+nothing in the database to compare a socket against. Instead, when a
+process's listening connection comes back, every socket it holds is told that
+everything of every kind changed, so its Console reads it all again, as it
+would on reconnecting.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from switch_core.signals import SignalBus
+
+logger = logging.getLogger(__name__)
 
 MANAGED_AGENT = "managed_agent"
 MACHINE = "machine"
 KINDS = (MANAGED_AGENT, MACHINE)
+
+USER_CHANGED_SIGNAL = "user.changed"
 
 # Notices a subscription holds before it collapses them into one per kind
 # (`id` None, "something of this kind changed"), so a socket that is not being
@@ -109,3 +125,47 @@ class LocalUserChanges:
         change = UserChange(kind, id)
         for subscription in self._subscriptions.get((tenant_id, user_id), ()):
             subscription._add(change)
+
+    def publish_everything(self) -> None:
+        """Tell every subscription here that anything of any kind may have
+        changed: for when notices may have been missed."""
+        everything = [UserChange(kind, None) for kind in KINDS]
+        for held in self._subscriptions.values():
+            for subscription in held:
+                for change in everything:
+                    subscription._add(change)
+
+
+class SignalUserChanges:
+    """`UserChangePublisher` for every process: a notice published in one
+    reaches the subscriptions held in each of them."""
+
+    def __init__(self, *, local: LocalUserChanges, bus: SignalBus) -> None:
+        self._local = local
+        self._bus = bus
+        bus.handle(USER_CHANGED_SIGNAL, self._on_changed)
+        bus.on_resync(self._resync)
+
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
+        # The bus skips a process's own signals, so this one is told here.
+        self._local.publish(tenant_id, user_id, kind, id)
+        self._bus.publish(
+            USER_CHANGED_SIGNAL,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            # `kind` is the signal's own.
+            change=kind,
+            id=id,
+        )
+
+    def _on_changed(self, signal: dict[str, Any]) -> None:
+        kind = signal.get("change")
+        if kind not in KINDS:
+            # A newer process may send kinds an older one does not know,
+            # during a rolling deploy; its Console polls for those anyway.
+            logger.debug("Ignoring a user change of unknown kind %r", kind)
+            return
+        self._local.publish(signal["tenant_id"], signal["user_id"], kind, signal["id"])
+
+    async def _resync(self) -> None:
+        self._local.publish_everything()

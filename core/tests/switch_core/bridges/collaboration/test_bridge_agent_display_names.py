@@ -18,6 +18,7 @@ import pytest
 
 from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
     AgentPresentation,
     PlatformAdapter,
     TurnActivity,
@@ -111,7 +112,12 @@ def _bridge(*agents: SimpleNamespace) -> CollaborationCore:
 
 class _BareAdapter(PlatformAdapter):
     """Concrete only so it can be instantiated: the label plumbing under test
-    lives on the base class and no platform method is called."""
+    lives on the base class and no platform method is called. Third-party
+    avatars are on, as the lifecycle sets them under the default config."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_third_party_avatars(True)
 
     display_name: ClassVar[str] = "Stub"
 
@@ -126,8 +132,8 @@ class _BareAdapter(PlatformAdapter):
     async def get_channel_agent_names(self, *a: Any, **k: Any) -> Any: ...
     async def add_agents_to_channel(self, *a: Any, **k: Any) -> Any: ...
     async def add_users_to_channel(self, *a: Any, **k: Any) -> Any: ...
-    async def create_agent_identity(self, *a: Any, **k: Any) -> Any: ...
-    async def remove_agent_identity(self, *a: Any, **k: Any) -> Any: ...
+    async def create_agent_identity(self, agent: AgentIdentity) -> None: ...
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None: ...
     def translate_inbound(self, *a: Any, **k: Any) -> Any: ...
     def _render_outbound(self, *a: Any, **k: Any) -> Any: ...
 
@@ -324,6 +330,7 @@ def _slack_adapter(
             bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
         )
     )
+    adapter.set_third_party_avatars(True)
     client = _FakeSlackClient()
     adapter._web_client = client  # type: ignore[assignment]
     adapter._bot_user_id = "U1"
@@ -1072,6 +1079,7 @@ def _teams_adapter(
             client_state="s3cr3t",
         )
     )
+    adapter.set_third_party_avatars(True)
     connector = _FakeTeamsConnector()
     adapter._connector = connector  # type: ignore[assignment]
     adapter._default_service_url = "https://smba.example/amer/"
@@ -1642,11 +1650,20 @@ def _mattermost_identity_adapter(
     return adapter, admin
 
 
+def _identity(name: str) -> AgentIdentity:
+    return AgentIdentity(
+        agent_id=f"id-{name}",
+        name=name,
+        description="a Switch agent",
+        display_name=None,
+    )
+
+
 def _create_mattermost_identity(adapter: MattermostAdapter, *agent_names: str) -> None:
     async def _go() -> None:
         adapter._main_loop = asyncio.get_running_loop()
         for name in agent_names:
-            await adapter.create_agent_identity(name, "a Switch agent")
+            await adapter.create_agent_identity(_identity(name))
 
     _run(_go())
 
@@ -1676,8 +1693,8 @@ def test_overlapping_mattermost_registrations_of_one_agent_create_one_bot() -> N
     async def _go() -> None:
         adapter._main_loop = asyncio.get_running_loop()
         await asyncio.gather(
-            adapter.create_agent_identity("switchdev", "a Switch agent"),
-            adapter.create_agent_identity("switchdev", "a Switch agent"),
+            adapter.create_agent_identity(_identity("switchdev")),
+            adapter.create_agent_identity(_identity("switchdev")),
         )
 
     _run(_go())

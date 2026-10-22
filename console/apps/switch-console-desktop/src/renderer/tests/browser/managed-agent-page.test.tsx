@@ -3,7 +3,8 @@
  * header, instructions, General, the server's Advanced configuration for its
  * provider and its sessions. Every edit is pending until the page's save bar
  * saves them together, sending only what changed; a refusal is shown in the
- * server's words.
+ * server's words. Its tabbed titlebar keeps every tab in view beside a long
+ * name.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -68,9 +69,13 @@ vi.mock(
     ),
   })
 );
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useFeatureFlags: () => ({ agent_chats: false, service_connections: false }),
+}));
 vi.mock('@renderer/lib/components/agent-icon-picker', () => ({ AgentIconPicker: () => null }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => vi.fn() }));
 
+import '@renderer/index.css';
 import { ManagedAgentPage } from '@renderer/features/managed-agents/managed-agent-page';
 
 const AGENT: ManagedAgentView = {
@@ -90,6 +95,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: { effort: 'high', tools: ['Read'] },
     instructions: 'Be brief.',
     autoApprove: false,
+    autoMode: false,
     directory: '/work/pm',
     isolation: 'shared',
   },
@@ -99,7 +105,7 @@ const AGENT: ManagedAgentView = {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
   acceptsLogins: false,
   cloud: false,
   workspacesDir: '/home/me/workspaces',
@@ -137,7 +143,7 @@ beforeEach(async () => {
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <ManagedAgentPage agent={AGENT} />
+        <ManagedAgentPage agent={AGENT} serviceGrants />
       </QueryClientProvider>
     );
   });
@@ -188,10 +194,9 @@ it('lays out the agent the way a Console agent’s page does', () => {
   expect(text).toContain('on laptop');
   expect(text).toContain('Writes PRDs');
   expect(container.querySelector('textarea')?.value).toBe('Be brief.');
-  for (const heading of ['General', 'Sessions'])
-    expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain(heading);
+  expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain('General');
   for (const row of [
-    'Auto-create a session on notify',
+    'Auto mode',
     'Bypass permissions',
     'Can manage agents',
     'Who can talk to your agent',
@@ -266,6 +271,7 @@ it('shows where the machine will make the agent’s directory when nothing names
       <QueryClientProvider client={client}>
         <ManagedAgentPage
           key="unplaced"
+          serviceGrants
           agent={{ ...AGENT, definition: { ...AGENT.definition, directory: null } }}
         />
       </QueryClientProvider>
@@ -288,7 +294,7 @@ it('gives an agent on the Switch cloud machine the cloud agent’s service acces
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <ManagedAgentPage key="cloud" agent={{ ...AGENT, machine }} />
+        <ManagedAgentPage key="cloud" agent={{ ...AGENT, machine }} serviceGrants />
       </QueryClientProvider>
     );
   });

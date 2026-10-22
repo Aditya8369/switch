@@ -6,6 +6,7 @@ import type {
   InstallOverride,
 } from '@switch-console/core/deps/runtime';
 import { reportedCliAction } from '@main/core/telemetry/cli-action';
+import { ensureUserBinDirsInPath } from '@main/utils/userEnv';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import {
   type AgentProviderDefinition,
@@ -23,6 +24,7 @@ import {
   buildAgentPayloads,
   toAgentInstallationStatus,
 } from './agent-payload-builder';
+import { providerLoginRunner } from './provider-login';
 
 /** Enrich a manager HostDependency snapshot with latestVersion/updateAvailable from the coordinator. */
 const enrichHostDep = (
@@ -97,6 +99,17 @@ export const providersController = createRPCController({
     return reportedCliAction('uninstall', TARGET, id, method, () => mgr.uninstall(id, method));
   },
 
+  // ── Sign-in ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Runs the provider's own sign-in command on this computer. What it writes
+   * arrives on `providerLoginLineChannel`, and its end on
+   * `providerLoginExitChannel`, both under the attempt id returned.
+   */
+  startLogin: (id: AgentProviderId): { attemptId: string } => providerLoginRunner.start(id),
+
+  cancelLogin: (): void => providerLoginRunner.cancel(),
+
   // ── Settings ─────────────────────────────────────────────────────────────────
 
   getDefaultSettings: async (id: string): Promise<ProviderCustomConfig | null> => {
@@ -140,6 +153,9 @@ export const providersController = createRPCController({
   },
 
   probeAll: async (connectionId?: string, options?: DependencyProbeOptions) => {
+    // A CLI installed since start, by hand or by its own installer, is often in
+    // ~/.local/bin, which this computer's controller always looks in.
+    if (!connectionId) ensureUserBinDirsInPath();
     const mgr = await getDependencyManager(connectionId);
     return mgr.probeAll(options);
   },

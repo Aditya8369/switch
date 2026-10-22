@@ -84,6 +84,7 @@ function template(agentId: string, cwd: string, binaryPath = '/usr/bin/claude') 
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
     },
     cwd,
     credentialsPath: runtime.credentialsPath(agentId),
@@ -110,6 +111,7 @@ beforeEach(() => {
     agentUsers: 2,
     node: '/usr/bin/node',
     bundle: '/opt/switch/shared-host.mjs',
+    releasesDir: null,
   };
   mkdirSync(config.dataDir, { mode: 0o700 });
   mkdirSync(config.agentsDir, { mode: 0o700 });
