@@ -9,7 +9,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.deletion import AccountDeletion, Workspace
+from switch_core.accounts.deletion import (
+    AccountDeletion,
+    AccountDeletionIncomplete,
+    Workspace,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -458,7 +462,7 @@ async def delete_my_account(
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
-    await deletion.delete(session, user, workspaces)
+    await deletion.delete(session, user, workspaces, actor_id=user.id)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -595,9 +599,10 @@ async def delete_user(
 
     The same deletion, and the same refusals, as `DELETE /auth/me`: this only
     changes who asks. The operator's own account is refused, so that leaving
-    the server is always the person's own act. Whether it went ahead or was
-    refused lands in the server's audit log, since an account spans every
-    workspace and no one workspace's history is the place for it.
+    the server is always the person's own act. Whether it went ahead, was
+    refused or failed partway lands in the server's audit log, since an
+    account spans every workspace and no one workspace's history is the place
+    for it.
 
     `session` is bound to the operator's own workspace, like the other user
     routes, but carries only rows that belong to no workspace: the `users`
@@ -605,14 +610,14 @@ async def delete_user(
     account is in is left in a `tenant_session` of its own.
     """
     if user_id == admin.id:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "That's your own account. Delete it from your account settings instead."
-            ),
+        detail = (
+            "That's your own account. Delete it from your account settings instead."
         )
+        await _record_refusal(session, admin.id, user_id, detail)
+        raise HTTPException(status_code=409, detail=detail)
     target = await user_store.get(session, user_id)
     if target is None:
+        await _record_refusal(session, admin.id, user_id, "User not found")
         raise HTTPException(status_code=404, detail="User not found")
     deletion = _account_deletion(
         request,
@@ -632,15 +637,7 @@ async def delete_user(
     )
     reason = await deletion.refusal(session, target, workspaces)
     if reason is not None:
-        await record_server_audit_event(
-            session,
-            actor_user_id=admin.id,
-            action=ServerAuditAction.USER_DELETION_REFUSED,
-            target_type="user",
-            target_id=target.id,
-            details={"outcome": "refused", "reason": reason},
-        )
-        await session.commit()
+        await _record_refusal(session, admin.id, target.id, reason)
         raise HTTPException(status_code=409, detail=reason)
     await record_server_audit_event(
         session,
@@ -651,7 +648,42 @@ async def delete_user(
         details={"outcome": "deleted", "workspaces": len(workspaces)},
     )
     # The event commits with the `users` row, so it never records a deletion
-    # that did not finish.
-    await deletion.delete(session, target, workspaces)
-    logger.info("Operator %s deleted the account of user %s", admin.id, target.id)
+    # that did not finish. The ids outlive the rollback that expires the rows.
+    operator_id, target_id = admin.id, target.id
+    try:
+        await deletion.delete(session, target, workspaces, actor_id=admin.id)
+    except AccountDeletionIncomplete as error:
+        # The workspaces already left stay left, so the attempt is recorded on
+        # its own, in a transaction after the one that just rolled back.
+        await session.rollback()
+        await record_server_audit_event(
+            session,
+            actor_user_id=operator_id,
+            action=ServerAuditAction.USER_DELETION_FAILED,
+            target_type="user",
+            target_id=target_id,
+            details={
+                "outcome": "failed",
+                "workspaces": len(workspaces),
+                "workspaces_completed": [w.id for w in error.completed],
+                "error": type(error.__cause__).__name__,
+            },
+        )
+        await session.commit()
+        raise
+    logger.info("Operator %s deleted the account of user %s", operator_id, target_id)
     return {"ok": True}
+
+
+async def _record_refusal(
+    session: AsyncSession, operator_id: str, target_id: str, reason: str
+) -> None:
+    await record_server_audit_event(
+        session,
+        actor_user_id=operator_id,
+        action=ServerAuditAction.USER_DELETION_REFUSED,
+        target_type="user",
+        target_id=target_id,
+        details={"outcome": "refused", "reason": reason},
+    )
+    await session.commit()
