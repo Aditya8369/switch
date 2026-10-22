@@ -70,6 +70,7 @@ async function start(
     runtimeMode: 'approval-required',
     env: {},
     mcpServers: {},
+    connectorMcpServers: [],
     ...input,
   });
   return { adapter, events, session, server: servers.at(-1)! };
@@ -190,6 +191,7 @@ it('auto-approves a tool the hooks place on any session-registered MCP server', 
   };
   const { adapter, events, server } = await start(hooks, {
     mcpServers: { echo: { transport: 'stdio', command: 'node', args: ['echo.js'] } },
+    connectorMcpServers: [],
   });
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
   const options = [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }];
@@ -248,11 +250,13 @@ it('offers allow-for-session, maps it to the agent option, and answers decline w
   });
 });
 
-it('approves without asking in full access, and approves only edits in auto-accept-edits', async () => {
+it('approves without asking in full access, approves only edits in auto-accept-edits, and asks in auto', async () => {
   for (const [runtimeMode, kind, prompted] of [
     ['full-access', 'execute', 0],
     ['auto-accept-edits', 'edit', 0],
     ['auto-accept-edits', 'execute', 1],
+    ['auto', 'edit', 1],
+    ['auto', 'execute', 1],
   ] as const) {
     const { adapter, events, server } = await start(dummy, { runtimeMode });
     await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
@@ -345,3 +349,57 @@ it('fills a stdio MCP server environment from the session for its envVars', asyn
     },
   ]);
 });
+
+it.each([
+  ['approval-required', 'switch', false],
+  ['approval-required', 'other', false],
+  ['approval-required', 'atlassian', true],
+  ['approval-required', 'gws', true],
+  ['auto-accept-edits', 'switch', false],
+  ['auto-accept-edits', 'other', false],
+  ['auto-accept-edits', 'atlassian', true],
+  ['auto-accept-edits', 'gws', true],
+  ['auto', 'switch', false],
+  ['auto', 'other', false],
+  ['auto', 'atlassian', true],
+  ['auto', 'gws', true],
+  ['full-access', 'switch', false],
+  ['full-access', 'atlassian', false],
+  ['full-access', 'gws', false],
+] as const)(
+  "in %s a tool on %s asks: %s (Switch's own never does)",
+  async (runtimeMode, toolServer, asks) => {
+    const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.js'] };
+    const hooks: AcpProviderHooks = {
+      ...dummy,
+      mcpServerOf: (toolCall) => toolCall._meta?.server as string | undefined,
+    };
+    const { adapter, events, server } = await start(hooks, {
+      runtimeMode,
+      mcpServers: { switch: stdio, atlassian: stdio, gws: stdio, other: stdio },
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    server.send({
+      id: 80,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'call-80', title: 'search', _meta: { server: toolServer } },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await flush();
+    const opened = events.filter((e) => e.type === 'request.opened');
+    if (!asks) {
+      expect(opened).toEqual([]);
+      expect(server.received.find((m) => m.id === 80)?.result).toEqual({
+        outcome: { outcome: 'selected', optionId: 'once' },
+      });
+      return;
+    }
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ requestType: 'mcp_tool_approval', connector: toolServer });
+    expect(server.received.some((m) => m.id === 80 && m.result)).toBe(false);
+  }
+);

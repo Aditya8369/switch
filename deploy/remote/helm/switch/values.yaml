@@ -189,6 +189,10 @@ secrets:
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
+  # The GitHub App and Google's client below are optional: the server's
+  # operator can set them up under Connectors in the dashboard instead
+  # (docs/old/github-app-setup.md, docs/old/google-workspace-setup.md). Set
+  # here, they win over what is saved there.
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
   # Absolute path to the GitHub App's signing key inside a Secret this chart
@@ -201,7 +205,8 @@ switchCore:
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
-  # as its redirect URI. Without it, Google Workspace shows as not set up.
+  # as its redirect URI. Without it or one saved under Connectors, Google
+  # Workspace shows as not set up.
   googleWorkspaceClientSecret: ""
   hostedControllerSecret: ""
   # How many cloud machines may run at once; 0 means this server cannot run
@@ -283,7 +288,7 @@ switchCore:
     enabled: false
     # Base URL, no path — `/v1/logs` is appended, the same
     # convention otlpEndpoint follows.
-    endpoint: https://telemetry.flintai.dev
+    endpoint: https://telemetry.switchagents.ai
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
     # Which Amplitude project the usage lands in: prod, staging, dev or local.
@@ -305,6 +310,8 @@ switchCore:
     enabled: true
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
+  # Empty while serveDashboard is on, links to the dashboard use
+  # gatewayPublicUrl, and a sign-in lands back on the host that set its cookie.
   frontendBaseUrl: ""
   # Public origin (scheme + host, no path) of the gateway HTTP API itself, used
   # to build the switchdash:// deeplink HTTP redirect so the "Open in Switch
@@ -312,6 +319,13 @@ switchCore:
   # platforms. Leave empty to
   # post the raw switchdash:// deeplink.
   gatewayPublicUrl: ""
+  # switch-core serves the operator dashboard on its own port beside the API,
+  # from the build in its image. Its pages answer without credentials, as the
+  # gateway's do, and include /agents and /agents/<id>, which agentApiPaths
+  # route to switch-core. Turn it off to keep switch-core to the API, e.g. where
+  # its host is public and the dashboard is not; gateway.enabled must then
+  # stay on, or there is no dashboard at all.
+  serveDashboard: true
   # Set the Secure flag on the switch_auth session cookie. True here because the
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP
   # local dev.
@@ -333,6 +347,13 @@ switchCore:
     clientId: ""
     scopes: "openid profile email"
     providerLabel: "OIDC"
+    # One sign-in button per entry instead of one labelled providerLabel. Each
+    # sends its params with the authorization request, so a provider that
+    # understands them goes straight to that way of signing in. WorkOS:
+    #   loginOptions:
+    #     - { id: google, label: Google, params: { provider: GoogleOAuth } }
+    #     - { id: github, label: GitHub, params: { provider: GitHubOAuth } }
+    loginOptions: []
     # Must exactly match the redirect URI registered with the IdP.
     redirectUrl: ""
     # Refuse a login unless the IdP asserts email_verified. Set false only for a
@@ -683,7 +704,19 @@ switchCore:
       cpu: "1000m"
 
 # ── Gateway (React + nginx) ──────────────────────────────────────────────────
+# A separate container serving the operator dashboard and forwarding /gateway
+# to switch-core. switch-core now serves the same dashboard itself, on its own
+# port, so the server has one address; set enabled: false to drop this
+# Deployment, and with ingress.mode=managed the Ingress then sends every path
+# to switch-core. Left on by default so the chart renders what it did before.
+#
+# While both run, a hard refresh of /agents or /agents/<id> (agentApiPaths, so
+# switch-core) loads switch-core's copy of the page, which then fetches its
+# hashed /assets/* from this container. That holds while both images are built
+# from one commit, as a published chart pins them; pin this image and
+# switchCore's to different releases and those pages load blank.
 gateway:
+  enabled: true
   image: gateway:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.

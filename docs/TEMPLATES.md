@@ -147,7 +147,7 @@ is the name; keep it a plain identifier.
 | `bridge` | The display name of a messaging app set up on the server. | The server checks it exists. |
 | `room` | The name of a room on the server. | The server checks it exists. |
 | `user` | A username on the room's messaging app. | The server looks it up on the app. |
-| `provider` | A coding agent id: `claude`, `codex` or `opencode`. | Read when the agents are created; never in the room document. |
+| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity` or `cursor`. | Read when the agents are created; never in the room document. |
 | `location` | Where an agent runs: `local`, or an SSH host name the Console knows. | Switch Console; never in the room document. |
 | `machine` | One of the deployer's machines on the server, by name or id. | Read when the agents are created; never in the room document. |
 | `directory` | An agent's working directory, on the machine it runs on. | Read when the agents are created; never in the room document. |
@@ -264,16 +264,19 @@ offers to link it.
 agent:
   name:           identifier
   display_name:   text
+  icon_url:       https URL
   description:    text
   instructions:   text
-  provider:       claude | codex | opencode | "{param}"
+  provider:       claude | codex | opencode | antigravity | cursor | "{param}"
   machine:        machine name or id | "{param}"
   location:       local | ssh host | "{param}"
   directory:      path | "{param}"
   model:          text | "{param}"
   advanced_config: { key: value }
   isolation:      shared | isolated
+  auto_mode:      true | false
   auto_approve:   true | false
+  can_manage_agents: true | false
   connections:    [ service, or {service, access, repos} ]
   repo:           URL
   sources:        [ {label, url} or url ]
@@ -371,8 +374,23 @@ setting.
 **`isolation`**. `shared` (the default) runs the agent inside its machine's
 controller; `isolated` runs it as a process of its own.
 
-**`auto_approve`**. Whether the agent runs tools without asking for
-approval. Default `false`.
+**`auto_mode`**. Auto mode: the provider's own automatic review decides
+which actions need approval, so safe ones run without asking and risky ones
+still ask a person. Default `true`.
+
+**`auto_approve`**. Bypass: the agent runs every tool without any permission
+check. It overrides `auto_mode`, and is unsafe. Default `false`.
+
+**`icon_url`**. The agent's picture: an absolute `https://` URL, checked as
+an icon set on the agent's page is. Without one it gets the picture drawn
+from its name.
+
+**`can_manage_agents`**. Turns on the agent's "can manage agents"
+capability: it may list the deployer's machines and create managed agents
+on them, acting for the deployer. Default `false`. The deployer owns every
+agent the template creates, so the capability is theirs to give; an agent
+deploying a template already has it, or it could not create agents at all.
+Only on a server with agent management.
 
 **`connections`**. The deployer's own connections (GitHub, Atlassian, and
 the rest of Settings, Connections) granted to the agent once it exists.

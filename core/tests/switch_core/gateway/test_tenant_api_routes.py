@@ -57,6 +57,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.invite_mail import (
@@ -161,6 +162,9 @@ def _app(
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -169,7 +173,7 @@ def _app(
         gateway_max_workspaces_per_user=max_workspaces_per_user,
         gateway_signup_mode=signup_mode,
         gateway_invite_emails_per_day=invite_emails_per_day,
-        frontend_base_url="https://switch.example.com/",
+        dashboard_base_url="https://switch.example.com/",
     )
     return app
 
@@ -1491,6 +1495,7 @@ class TestMemberRoutes:
                 encrypted_secret=_KEYRING.encrypt(
                     json.dumps({"access_token": "SYNTHETIC-USER-TOKEN"})
                 ),
+                oauth_client_id=None,
             )
             session.add(
                 ServiceTokenIssuance(
@@ -1540,6 +1545,9 @@ class TestMemberRoutes:
             disabled={},
             store=ServiceConnectionStore(),
             token_retention=timedelta(days=30),
+            workspace_services=WorkspaceServiceStore(),
+            workspace_gate=False,
+            public_url=None,
         )
         async with _client(app, token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")

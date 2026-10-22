@@ -2,11 +2,17 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
-import { type AgentAssignment, type SealedLoginResponse, statusReportSchema } from './schemas';
+import {
+  type AgentAssignment,
+  type ProviderStatus,
+  type SealedLoginResponse,
+  statusReportSchema,
+} from './schemas';
 import { SealedLogins } from './sealed-logins';
 import {
   mapAgentProcess,
@@ -38,6 +44,7 @@ function entry(overrides: Partial<AgentAssignment> = {}): AgentAssignment {
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
     },
@@ -248,6 +255,14 @@ describe('providerStatusFrom', () => {
       auth: 'unknown',
       auth_source: null,
     });
+    expect(
+      providerStatusFrom(
+        'claude',
+        located,
+        { status: 'unknown', message: 'Claude Code may be too old.', models: [] },
+        at
+      )
+    ).toMatchObject({ auth: 'unknown', auth_problem: 'Claude Code may be too old.' });
     expect(providerStatusFrom('claude', located, null, at)).toMatchObject({
       auth: 'unknown',
       reason: 'internal',
@@ -287,6 +302,129 @@ describe('ProviderStatuses', () => {
     await statuses.check('claude');
     expect(changes).toBe(6);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
+  });
+});
+
+describe('ProviderStatuses trying a login with a test prompt', () => {
+  function build(answer: () => ProviderReadiness) {
+    const runtime = new FakeRuntime();
+    const tried: string[] = [];
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: '/tmp',
+      verify: (provider) => {
+        if (provider !== 'claude') return null;
+        tried.push(provider);
+        return Promise.resolve(answer());
+      },
+      now: () => 0,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    return { providers, tried };
+  }
+  const works: ProviderReadiness = { status: 'authenticated', message: 'OK', models: [] };
+  const fails: ProviderReadiness = {
+    status: 'unauthenticated',
+    message: 'Claude Code is signed in but could not answer a test prompt ("Invalid API key").',
+    models: [],
+  };
+
+  it('reports a login that is there but cannot answer as missing, saying why', async () => {
+    const { providers } = build(() => fails);
+    expect(await providers.check('claude')).toMatchObject({
+      auth: 'missing',
+      reason: 'provider_login_missing',
+      auth_problem: fails.message,
+    });
+  });
+
+  it('tries a login once it works, then again only when asked', async () => {
+    const { providers, tried } = build(() => works);
+    expect((await providers.check('claude')).auth).toBe('ok');
+    await providers.check('claude');
+    expect(tried).toHaveLength(1);
+    await providers.check('claude', { verify: true });
+    expect(tried).toHaveLength(2);
+  });
+
+  it('keeps trying a login that has not worked yet', async () => {
+    let answer = fails;
+    const { providers, tried } = build(() => answer);
+    await providers.check('claude');
+    answer = works;
+    expect((await providers.check('claude')).auth).toBe('ok');
+    expect(tried).toHaveLength(2);
+  });
+});
+
+describe('ProviderStatuses taking checks made before it started', () => {
+  function statuses(clock: () => number) {
+    const runtime = new FakeRuntime();
+    let changes = 0;
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: '/tmp',
+      now: clock,
+      log: silentLogger,
+      onChange: () => changes++,
+    });
+    return { providers, runtime, changes: () => changes };
+  }
+
+  function seeded(
+    provider: string,
+    auth: 'ok' | 'missing',
+    at: number,
+    installed = true
+  ): { status: ProviderStatus; path: string | null } {
+    return {
+      status: {
+        provider,
+        installed,
+        version: installed ? '1.0.0' : null,
+        auth: installed ? auth : 'unknown',
+        auth_source: installed && auth === 'ok' ? 'local' : null,
+        checked_at: new Date(at).toISOString(),
+      },
+      path: installed ? `/bin/${provider}` : null,
+    };
+  }
+
+  it('reports a provider signed in on its own, or not installed, without checking it again', async () => {
+    const { providers, runtime, changes } = statuses(() => NOW);
+    providers.seed([seeded('claude', 'ok', NOW - 1_000), seeded('cursor', 'ok', NOW, false)]);
+    expect(changes()).toBe(1);
+    expect(providers.snapshot().map((status) => [status.provider, status.auth])).toEqual([
+      ['claude', 'ok'],
+      ['cursor', 'unknown'],
+    ]);
+    await providers.refreshStale();
+    // Every provider but the two seeded is checked here.
+    expect(runtime.probes).toBe(3);
+    expect(await providers.binaryPath('claude')).toBe('/bin/claude');
+  });
+
+  it('checks for itself what a login given to the machine could change, and what is stale', async () => {
+    const { providers, changes } = statuses(() => NOW);
+    providers.seed([
+      seeded('codex', 'missing', NOW),
+      seeded('claude', 'ok', NOW - PROVIDER_TTL_MS),
+    ]);
+    expect(changes()).toBe(0);
+    expect(providers.snapshot()).toEqual([]);
+  });
+
+  it('leaves a provider it has already checked as it found it', async () => {
+    const { providers } = statuses(() => NOW);
+    await providers.check('claude');
+    const own = providers.snapshot().find((status) => status.provider === 'claude');
+    providers.seed([seeded('claude', 'ok', NOW + 5)]);
+    expect(providers.snapshot().find((status) => status.provider === 'claude')).toEqual(own);
   });
 });
 
@@ -453,7 +591,7 @@ describe('PathProviderLocator', () => {
     const script = await writeNodeCli(dir, 'cursor-agent', 'console.log("2026.01.15-abc")');
     writeFileSync(join(dir, 'claude'), 'not executable');
     const locator = new PathProviderLocator(
-      ['/nonexistent', dir].join(delimiter),
+      () => ['/nonexistent', dir].join(delimiter),
       join(dir, 'probe-home')
     );
     expect(await locator.locate('cursor')).toEqual({
@@ -478,7 +616,7 @@ describe('PathProviderLocator', () => {
     const previous = process.env.HOME;
     process.env.HOME = '/nonexistent';
     try {
-      const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
+      const located = await new PathProviderLocator(() => dir, join(dir, 'probe-home')).locate(
         'opencode'
       );
       expect(located).toEqual({
@@ -505,7 +643,9 @@ describe('a CLI whose version cannot be read', () => {
       'opencode',
       'console.error("EROFS: read-only file system"); process.exit(1);'
     );
-    const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
+    const located = await new PathProviderLocator(() => dir, join(dir, 'probe-home')).locate(
+      'opencode'
+    );
     expect(located).toEqual({
       path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
       version: null,
@@ -665,5 +805,29 @@ describe('StatusCollector', () => {
       since: new Date(clock).toISOString(),
     });
     expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
+  });
+});
+
+describe('statusFingerprint', () => {
+  it('changes when only a provider’s auth problem changes', () => {
+    const report = (authProblem?: string) =>
+      ({
+        controller: { assignment_revision: 1 },
+        providers: [
+          {
+            provider: 'claude',
+            installed: true,
+            version: '2.1.0',
+            auth: 'missing',
+            ...(authProblem ? { auth_problem: authProblem } : {}),
+          },
+        ],
+        tools: [],
+        agents: [],
+      }) as unknown as Parameters<typeof statusFingerprint>[0];
+    expect(statusFingerprint(report('Invalid API key'))).not.toBe(
+      statusFingerprint(report('Not logged in'))
+    );
+    expect(statusFingerprint(report())).not.toBe(statusFingerprint(report('Invalid API key')));
   });
 });

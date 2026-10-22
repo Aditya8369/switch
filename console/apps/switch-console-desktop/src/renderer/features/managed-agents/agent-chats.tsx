@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
 import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import { ChatRow } from '@renderer/features/chats/components/chat-row';
@@ -8,14 +8,46 @@ import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
-import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
+import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
+import { AgentProfile, managedAgentMachineLine } from './agent-profile';
+import {
+  type AgentSection,
+  agentSections,
+  shownAgentRoom,
+  shownAgentSection,
+} from './agent-sections';
+import { shouldAutoStartChat } from './auto-start-chat';
+import { ManagedAgentPage } from './managed-agent-page';
+import { managedAgentLabel } from './managed-agent-state';
+import { useRunsOnThisComputer } from './use-managed-agents';
+
+/**
+ * The sections the agent's page offers, and the one showing: `chosen` from
+ * the view's params when it is offered, else none, and a chat shows.
+ */
+export function useAgentSection(
+  serverId: string,
+  agent: ManagedAgentView | null,
+  chosen: AgentSection | undefined
+) {
+  const flags = useFeatureFlags(serverId);
+  const grants = useAgentServiceGrants(
+    flags.service_connections,
+    agent?.workspaceId ?? null,
+    agent?.agentId ?? ''
+  );
+  const sections = agentSections(flags.service_connections, grants.data);
+  return { sections, section: shownAgentSection(chosen, sections) };
+}
 
 function Section({
   title,
@@ -32,7 +64,7 @@ function Section({
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <section aria-label={title} className="flex flex-col gap-[2px] pb-3">
-      <div className="flex items-center justify-between px-1 pb-1">
+      <div className="flex items-center justify-between pr-1 pb-1">
         <button
           type="button"
           aria-expanded={open}
@@ -59,10 +91,10 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   // The chats store follows the window's server; another server's chats are not in it.
   const agentChats = chatsStore.serverId === serverId ? chatsStore.chatsOfAgent(agentId) : [];
   const agentRooms = switchRoomsStore.roomsFor(workspaceId, agentId);
-  return { agentRooms, ...agentConversations(agentChats, agentRooms ?? []) };
+  return { agentRooms, ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed) };
 }
 
-/** The direct chat open on an agent's Chats tab: the one in the params, else its newest. */
+/** The direct chat open on an agent's page: the one in the params, else its newest. */
 export function openAgentChat(
   agent: ManagedAgentView,
   roomId: string | undefined
@@ -71,30 +103,72 @@ export function openAgentChat(
   return direct.find((chat) => chat.roomId === roomId) ?? direct[0] ?? null;
 }
 
+/** The room shown on an agent's page in place of a chat, if one is. */
+export function openAgentRoom(
+  agent: ManagedAgentView,
+  room: string | undefined,
+  section: AgentSection | null
+): string | null {
+  const { agentRooms, rooms } = conversationsOf(agent);
+  return shownAgentRoom(room, section, agentRooms && rooms);
+}
+
 /**
- * An agent's chats: its direct chats, beside the one open, and the rooms it is
- * in, which open in the room view. The open chat is kept in the view's params;
- * with none chosen it is the newest direct chat.
+ * An agent's page: its profile (with buttons to its own sections), its direct
+ * chats and the rooms it is in, each opened in place beside the column.
+ * The selection is kept in the view's params; with none chosen it is the
+ * newest direct chat, and an agent with none gets one started once per visit.
  */
 export const AgentChats = observer(function AgentChats({ agent }: { agent: ManagedAgentView }) {
   const { params, setParams } = useParams('managedAgent');
   const { serverId, workspaceId, agentId } = agent;
   useEffect(() => {
-    void switchRoomsStore.fetchAgentRooms(workspaceId, agentId);
+    return switchRoomsStore.watchMembership(workspaceId, agentId);
   }, [workspaceId, agentId]);
 
   const { agentRooms, direct, rooms } = conversationsOf(agent);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
-  const roomId = openAgentChat(agent, params.roomId)?.roomId ?? null;
-  const open = (id: string) => setParams({ roomId: id });
+  const { sections, section } = useAgentSection(serverId, agent, params.section);
+  const thisComputer = useRunsOnThisComputer(agent);
+  const shownRoom = openAgentRoom(agent, params.room, section);
+  const roomId = shownRoom ? null : (openAgentChat(agent, params.roomId)?.roomId ?? null);
+  const open = (id: string) => setParams({ roomId: id, section: undefined, room: undefined });
   const newChat = async () => {
     const chat = await directChats.start(serverId, agentId);
     if (chat) open(chat.roomId);
   };
 
+  const ownServer = chatsStore.serverId === serverId;
+  const listing = ownServer && chatsStore.userId === null && !chatsStore.listError;
+  const autoStartTried = useRef(false);
+  const [autoStarting, setAutoStarting] = useState(false);
+  const autoStart = shouldAutoStartChat({
+    listed: ownServer && chatsStore.userId !== null,
+    listFailed: chatsStore.listError !== null,
+    hasDirectChats: direct.length > 0,
+    selected: Boolean(params.roomId) || section !== null || shownRoom !== null,
+    tried: autoStartTried.current,
+  });
+  useEffect(() => {
+    if (!autoStart) return;
+    autoStartTried.current = true;
+    setAutoStarting(true);
+    void newChat().finally(() => setAutoStarting(false));
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- runs when the decision turns true, not when newChat is redefined
+  }, [autoStart]);
+
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
+        <AgentProfile
+          name={managedAgentLabel(agent)}
+          iconUrl={agent.iconUrl}
+          serverId={serverId}
+          machine={managedAgentMachineLine(agent, thisComputer)}
+          sections={sections}
+          selected={section}
+          onSelect={(chosen) => setParams({ section: chosen })}
+        />
         <Section title="Direct chats" addLabel="New chat" onAdd={() => void newChat()}>
           {chatsStore.listError && <Note>{chatsStore.listError}</Note>}
           {direct.map((chat) => (
@@ -102,7 +176,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               key={chat.roomId}
               serverId={serverId}
               chat={chat}
-              isActive={chat.roomId === roomId}
+              isActive={!section && chat.roomId === roomId}
               onOpen={() => open(chat.roomId)}
             />
           ))}
@@ -123,16 +197,28 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                 bridgeDisplayName:
                   switchRoomsStore.roomSummaryById(room.roomId)?.bridgeDisplayName ?? null,
               }}
-              isActive={false}
-              onOpen={() => openRoomView(room.roomId)}
+              isActive={room.roomId === shownRoom}
+              onOpen={() => setParams({ room: room.roomId, section: undefined })}
             />
           ))}
           {!agentRooms && !roomsError && <Note>Loading…</Note>}
           {agentRooms && rooms.length === 0 && <Note>Not in any room yet.</Note>}
         </Section>
       </div>
-      <div className="relative min-w-0 flex-1">
-        {roomId ? (
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {section === 'settings' ? (
+          <ManagedAgentPage agent={agent} serviceGrants={!sections.includes('connections')} />
+        ) : section === 'connections' ? (
+          <AgentConnectionsTab
+            serverId={serverId}
+            workspaceId={workspaceId}
+            agentId={agentId}
+            agentName={managedAgentLabel(agent)}
+            cloud={agent.machine !== null && isCloudMachine(agent.machine)}
+          />
+        ) : shownRoom ? (
+          <EmbeddedRoom roomId={shownRoom} />
+        ) : roomId ? (
           <>
             <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />
             <div
@@ -140,7 +226,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"
             />
           </>
-        ) : (
+        ) : listing || autoStart || autoStarting ? null : (
           <EmptyState
             label="No chat open"
             description="Start a chat with this agent."

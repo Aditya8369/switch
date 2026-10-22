@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowUpCircle, Power, Server } from 'lucide-react';
+import { ArrowUpCircle, Power, ShieldCheck } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
+import { AdminFrame, adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -28,7 +30,11 @@ import {
   stopManagedServer,
 } from './managed-server-actions';
 import { WorkingSpinner } from './managed-server-dot';
-import { type ManagedServerState, managedServerState } from './managed-server-state';
+import {
+  type ManagedServerState,
+  isFrozenServer,
+  managedServerState,
+} from './managed-server-state';
 import { managedTelemetryNotice } from './managed-telemetry-notice';
 import { remoteServerStore } from './remote-server-store';
 import { serverIcon } from './server-icon';
@@ -56,8 +62,9 @@ function useServerId(): string {
   return useParams('managedServer').params.serverId;
 }
 
+/** Part of the Admin page, whose menu it is drawn beside, so titled as it is. */
 const ManagedServerTitlebar = observer(function ManagedServerTitlebar() {
-  return <ServerSectionTitlebar serverId={useServerId()} icon={Server} label="Server" />;
+  return <ServerSectionTitlebar serverId={useServerId()} icon={ShieldCheck} label="Admin" />;
 });
 
 /** One line of recent activity, from either kind of record. */
@@ -106,7 +113,26 @@ const ManagedServerMainPanel = observer(function ManagedServerMainPanel() {
       </div>
     );
   }
-  return <ManagedServerPage server={server} />;
+  return <ManagedServerInAdmin server={server} />;
+});
+
+/**
+ * The page as the Admin menu's Status entry. While the server can't answer
+ * the menu holds only this entry: the rest need the server, and the way to
+ * start it is all that stays live.
+ */
+const ManagedServerInAdmin = observer(function ManagedServerInAdmin({
+  server,
+}: {
+  server: SwitchServer;
+}) {
+  const serviceConnections = useFeatureFlags(server.id).service_connections;
+  const groups = adminGroupsInScope(server.id, serviceConnections && !isFrozenServer(server));
+  return (
+    <AdminFrame serverId={server.id} groups={groups} active="status">
+      <ManagedServerPage server={server} />
+    </AdminFrame>
+  );
 });
 
 const ManagedServerPage = observer(function ManagedServerPage({
@@ -174,6 +200,8 @@ const ManagedServerPage = observer(function ManagedServerPage({
   const lastFailedAt = sshHost
     ? undefined
     : localActivity.data?.find((entry) => entry.action === 'start-failed')?.at;
+  // Nothing comes back after a reset: it deleted the agents and the data.
+  const justReset = sshHost === null && localActivity.data?.[0]?.action === 'reset';
 
   const workspaceNames = workspacesStore
     .onServer(server.id)
@@ -184,6 +212,8 @@ const ManagedServerPage = observer(function ManagedServerPage({
   const placement = sshHost ?? 'This computer';
   const deployed = status.deployedVersion ?? status.version;
   const checkout = sshHost ? null : localServerStore.checkoutBuild;
+  const native = sshHost === null && localServerStore.isNative;
+  const localDocker = sshHost ? null : localServerStore.docker;
   const runsCheckout = status.deployedVersion === CHECKOUT_IMAGE_TAG;
   const working = state.tone === 'working';
 
@@ -200,8 +230,8 @@ const ManagedServerPage = observer(function ManagedServerPage({
   });
 
   return (
-    <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-[720px] space-y-[18px] p-[22px]">
+    <div className="min-w-0 pt-10 pb-10">
+      <div className="w-full max-w-[720px] space-y-[18px]">
         <header className="flex items-center gap-3">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--fill)]">
             <Icon className="size-[18px] text-[var(--srv-stopped-text)]" />
@@ -212,7 +242,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
               <StatusPill state={state} />
             </div>
             <p className="truncate text-[13px] text-[var(--fg-dim)]">
-              {placement} · runs with Docker
+              {placement} · {native ? 'runs without Docker' : 'runs with Docker'}
             </p>
           </div>
         </header>
@@ -238,6 +268,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
           workspaceNames={workspaceNames}
           othersNames={namesOf(others, self)}
           lastFailedAt={lastFailedAt ?? null}
+          justReset={justReset}
           now={now}
         />
 
@@ -300,21 +331,51 @@ const ManagedServerPage = observer(function ManagedServerPage({
           </section>
         )}
 
+        {native && (
+          <div className="flex items-start justify-between gap-3 rounded-[10px] border-[0.5px] border-[var(--hair-strong)] px-[14px] py-3">
+            <div className="min-w-0">
+              <p className="text-[13px] text-foreground">Mattermost</p>
+              <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
+                {answering && localServerStore.mattermostState === 'starting'
+                  ? 'Setting up beside the server… the server is already usable.'
+                  : answering && localServerStore.mattermostState === 'running'
+                    ? 'Running. Team chat for your rooms, in Docker beside the server.'
+                    : localDocker === null
+                      ? 'Checking for Docker…'
+                      : localDocker.available
+                        ? 'Team chat for your rooms, run in Docker beside the server.'
+                        : `Team chat for your rooms needs Docker. ${localDocker.detail} The server works without it.`}
+              </p>
+            </div>
+            <Switch
+              checked={localServerStore.mattermost}
+              disabled={
+                working || (!localServerStore.mattermost && !(localDocker?.available ?? false))
+              }
+              onCheckedChange={(enabled) => void localServerStore.setMattermost(enabled)}
+              aria-label="Run Mattermost"
+            />
+          </div>
+        )}
+
         {/* Dev builds launched from a Switch checkout only. */}
         {checkout && (
           <div className="flex items-start justify-between gap-3 rounded-[10px] border-[0.5px] border-dashed border-[var(--hair-strong)] px-[14px] py-3">
             <div className="min-w-0">
               <p className="text-[13px] text-foreground">Build switch-core from this checkout</p>
               <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
-                Dev builds only. Builds the images from{' '}
+                Dev builds only. {native ? 'Installs switch-core from' : 'Builds the images from'}{' '}
                 <span className="font-mono break-all">{checkout.root}</span> on every start instead
-                of pulling switch-core {status.version}.
+                of {native ? 'the' : 'pulling'} switch-core {status.version}
+                {native ? ' release' : ''}.
+                {checkout.forcedBy !== null &&
+                  ` ${checkout.enabled ? 'On' : 'Off'} for this run: ${checkout.forcedBy} is set.`}
                 {answering && checkout.enabled !== runsCheckout && ' Restart the server to apply.'}
               </p>
             </div>
             <Switch
               checked={checkout.enabled}
-              disabled={working}
+              disabled={working || checkout.forcedBy !== null}
               onCheckedChange={(enabled) => void localServerStore.setCheckoutBuild(enabled)}
               aria-label="Build switch-core from this checkout"
             />
@@ -463,6 +524,7 @@ const Messages = observer(function Messages({
   workspaceNames,
   othersNames,
   lastFailedAt,
+  justReset,
   now,
 }: {
   server: SwitchServer;
@@ -471,6 +533,8 @@ const Messages = observer(function Messages({
   /** Who else has used it lately, as one phrase; empty when nobody has. */
   othersNames: string;
   lastFailedAt: string | null;
+  /** The last thing done to this computer's server was a reset. */
+  justReset: boolean;
   now: Date;
 }) {
   const sshHost = server.managementKind === 'remote' ? server.sshHost : null;
@@ -541,7 +605,9 @@ const Messages = observer(function Messages({
       case 'stopped':
         return (
           <MessageBox tone="stopped">
-            {workspaceNames.length > 0 ? (
+            {justReset ? (
+              <p>This server was reset. Start it to set it up again, empty.</p>
+            ) : workspaceNames.length > 0 ? (
               <p>
                 Agents and rooms in <NamesInBold names={workspaceNames} /> live here. They come back
                 once it's running.
@@ -628,9 +694,15 @@ const Messages = observer(function Messages({
   // their own: they are about the server, not about its state.
   const remote = sshHost ? remoteServerStore.statusFor(sshHost) : null;
   const working = state.tone === 'working';
+  const localNotice = sshHost ? null : (localServerStore.status?.notice ?? null);
   return (
     <>
       {box}
+      {localNotice && !working && (
+        <MessageBox tone="attention">
+          <p>{localNotice}</p>
+        </MessageBox>
+      )}
       {remote?.notice && !working && (
         <MessageBox tone="stopped">
           <p>{remote.notice}</p>

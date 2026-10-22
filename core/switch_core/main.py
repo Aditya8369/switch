@@ -94,13 +94,16 @@ from switch_core.bridges.collaboration.webhooks import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
+from switch_core.chats.signals import ChatSignals
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
-from switch_core.connections.adapters.github import GitHubApp
+from switch_core.connections.app_credentials import ConnectorApps
+from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
 from switch_core.connections.loader import CATALOG
@@ -162,13 +165,14 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
@@ -176,6 +180,7 @@ from switch_core.delivery.router import GROUP_SWEEP_SECONDS, MessageRouter
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
+from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
 from switch_core.management.wiring import Management, create_management
 from switch_core.messages.notify import MessageListener
@@ -677,7 +682,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     agent_session_store = AgentSessionStore()
     room_store = RoomStore()
     client_store = ClientStore()
-    task_store = TaskStore()
     bridge_store = CollaborationBridgeStore()
     external_user_store = ExternalUserStore()
     bridge_message_map_store = BridgeMessageMapStore()
@@ -813,7 +817,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             room_role_store=room_role_store,
             external_user_store=external_user_store,
             connections=connections,
-            frontend_base_url=config.frontend_base_url,
+            frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
         ),
         message_store=message_store,
@@ -935,6 +939,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     collab_lifecycle._room_service = room_service
 
+    # The rename and delete commands reach AgentCore through this, bound once
+    # AgentCore exists below.
+    agent_admin = AgentAdministration()
+    deletion_requests = AgentDeletionRequests()
+
     # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
     # room (and any bridged channel).
@@ -950,8 +959,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         reference_store=reference_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
+        user_store=user_store,
+        agent_admin=agent_admin,
+        deletion_requests=deletion_requests,
         connections=connections,
-        frontend_base_url=config.frontend_base_url,
+        frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
     )
 
@@ -972,7 +984,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         external_user_store=external_user_store,
@@ -986,7 +997,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         connections=connections,
         telemetry=telemetry,
         trust_client=trust_client,
+        gateway_ui=(
+            GatewayUi.load(config.gateway_ui_dir)
+            if config.gateway_ui_dir is not None
+            else None
+        ),
     )
+    agent_admin.bind(protocol)
+    protocol.deletion_requests = deletion_requests
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
@@ -1107,10 +1125,35 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         id_server_name=config.id_server_name,
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
-        controllers=connections.controllers,
+        connections=connections,
     )
+    # Changes to people's chats made in another process wake the Console
+    # streams held here too (`chats/signals.py`).
+    ChatSignals(service=chat_service, bus=signal_bus)
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
+    protocol.set_agent_profile_listener(chat_service.agent_changed)
+
+    # ── Connector app credentials ─────────────────────────────────────────────
+    # Each connector's app, from configuration or a row the operator saved,
+    # before anything that serves a sign-in reads them.
+    service_http = guarded_async_client(config.outbound_policy, timeout=20)
+    service_registration = ClientRegistration(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        public_url=config.gateway_public_url,
+        server_name=config.id_server_name,
+    )
+    connector_apps = ConnectorApps(
+        catalog=CATALOG,
+        config=config,
+        environ=os.environ,
+        session_factory=session_factory,
+        store=ServiceAppCredentialStore(config.keyring),
+        http=service_http,
+        registration=service_registration,
+    )
+    await connector_apps.load()
 
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
@@ -1142,6 +1185,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             else None
         ),
         chat_service=chat_service,
+        connector_apps=connector_apps,
         config=config,
     )
 
@@ -1201,6 +1245,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             gateway_app=gateway_app,
             protocol=protocol,
         )
+        # What deleting an account needs of it: revoking the person's machines.
+        gateway_app.state.controller_revoker = management.service
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
@@ -1242,31 +1288,36 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # A service is issued only where this server is set up for it, as its
     # catalog entry's adapter says (`connections/registry.py`). Without any,
     # the broker's upkeep still revokes and prunes whatever records exist.
-    github_app: GitHubApp | None = gateway_app.state.github_app
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
         catalog=CATALOG,
         adapters=build_adapters(
             CATALOG,
-            github_app=github_app,
-            environ=os.environ,
-            http=guarded_async_client(config.outbound_policy, timeout=20),
-            registration=ClientRegistration(
-                session_factory=session_factory,
-                keyring=config.keyring,
-                public_url=config.gateway_public_url,
-                server_name=config.id_server_name,
-            ),
+            github_app=connector_apps.github_app(),
+            oauth_clients=connector_apps.oauth_clients(),
+            http=service_http,
+            registration=service_registration,
         ),
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=config.service_connections_enabled,
+        public_url=config.gateway_public_url,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # A connector app the operator saves or removes, put to work in every process.
+    ConnectorAppSignals(
+        apps=connector_apps,
+        broker=service_broker,
+        state=gateway_app.state,
+        bus=signal_bus,
+    )
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
+    protocol.install_service = install_service
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
@@ -1462,29 +1513,40 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     server = uvicorn.Server(server_config)
 
     loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(
-                _shutdown(
-                    server,
-                    draining.set,
-                    lambda: _release_process(
-                        ownership, shared_connections, management, process_lease
-                    ),
-                    _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
-                    connections.controllers,
-                    client_lifecycle,
-                    collab_lifecycle,
-                    connector_lifecycle,
-                    provisioning,
-                    discord_gateway,
-                    teams_app,
-                    telegram_app,
-                    telegram_app_task,
-                )
-            ),
+
+    def _begin_shutdown() -> None:
+        asyncio.create_task(
+            _shutdown(
+                server,
+                draining.set,
+                lambda: _release_process(
+                    ownership, shared_connections, management, process_lease
+                ),
+                _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
+                connections.controllers,
+                client_lifecycle,
+                collab_lifecycle,
+                connector_lifecycle,
+                provisioning,
+                discord_gateway,
+                teams_app,
+                telegram_app,
+                telegram_app_task,
+            )
         )
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _begin_shutdown)
+        except NotImplementedError:
+            # Windows' event loops take no signal handlers. Ctrl-C still
+            # arrives as SIGINT through the signal module, outside the loop,
+            # so it is handed back to the loop; SIGTERM is never delivered
+            # there, a stop being a process kill instead.
+            signal.signal(
+                sig,
+                lambda _signum, _frame: loop.call_soon_threadsafe(_begin_shutdown),
+            )
 
     await server.serve()
 

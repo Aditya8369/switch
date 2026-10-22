@@ -794,6 +794,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $oidcScopes | quote }}
 - name: GATEWAY_OIDC_PROVIDER_LABEL
   value: {{ .Values.switchCore.oidc.providerLabel | quote }}
+{{- with .Values.switchCore.oidc.loginOptions }}
+- name: GATEWAY_OIDC_LOGIN_OPTIONS
+  value: {{ toJson . | quote }}
+{{- end }}
 {{- if .Values.switchCore.oidc.redirectUrl }}
 - name: GATEWAY_OIDC_REDIRECT_URL
   value: {{ .Values.switchCore.oidc.redirectUrl | quote }}
@@ -833,10 +837,13 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: FEATURE_FLAGS_ENABLED
   value: {{ join "," . | quote }}
 {{- end }}
+{{- if not (or .Values.gateway.enabled .Values.switchCore.serveDashboard) }}
+{{- fail "gateway.enabled and switchCore.serveDashboard are both off, so nothing serves the operator dashboard. Turn one of them on." }}
+{{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}
-{{- if not $.Values.switchCore.frontendBaseUrl }}
-{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin." }}
+{{- if not (or $.Values.switchCore.frontendBaseUrl (and $.Values.switchCore.serveDashboard $.Values.switchCore.gatewayPublicUrl)) }}
+{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin. (With switchCore.serveDashboard on, switchCore.gatewayPublicUrl does instead.)" }}
 {{- end }}
 {{- if not (has .tls (list "starttls" "tls" "none")) }}
 {{- fail (printf "switchCore.smtp.tls must be one of starttls, tls, none. Got %q." .tls) }}
@@ -938,6 +945,11 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- if .Values.switchCore.gatewayPublicUrl }}
 - name: GATEWAY_PUBLIC_URL
   value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
+{{- end }}
+{{- if not .Values.switchCore.serveDashboard }}
+{{- /* The image points it at its dashboard build; empty serves none. */}}
+- name: GATEWAY_UI_DIR
+  value: ""
 {{- end }}
 {{- if or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled .Values.switchCore.teamsApp.enabled .Values.switchCore.telegramApp.enabled }}
 - name: MESSAGING_PUBLIC_URL

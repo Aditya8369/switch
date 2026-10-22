@@ -93,7 +93,8 @@ kickoff: "@{agent} introduce yourself."
 @pytest_asyncio.fixture
 async def tools(env):
     env["protocol"].config = SimpleNamespace(
-        template_max_bytes=64 * 1024, feature_flags={"agent_management": False}
+        template_max_bytes=64 * 1024,
+        feature_flags={"agent_management": False, "switch_buddy": False},
     )
     env["protocol"].telemetry = None
     async with env["session_factory"]() as session:
@@ -623,7 +624,7 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         yaml=ROOM_TEMPLATE,
     )
     templates = AgentTemplates(
-        TemplateStore(), max_bytes=64 * 1024, agent_management=False
+        TemplateStore(), max_bytes=64 * 1024, agent_management=False, switch_buddy=False
     )
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
@@ -864,3 +865,14 @@ async def test_an_official_template_is_read_and_never_changed(tools, caplog):
         await _as(
             tools["agent_id"], delete_template, template_id="official:switch-expert"
         )
+
+
+@pytest.mark.asyncio
+async def test_a_server_with_switch_buddy_offers_it_instead_of_the_expert(tools):
+    tools["protocol"].config.feature_flags = {
+        "agent_management": True,
+        "switch_buddy": True,
+    }
+    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
+    assert "official:switch-buddy" in ids
+    assert "official:switch-expert" not in ids

@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useState } from 'react';
+import { type ComponentProps, type ReactNode, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { cn } from '@renderer/utils/utils';
 import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
 import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
@@ -77,34 +78,6 @@ function ToolGroup({
   );
 }
 
-/** Switch's own tools for the turn, folded into a count until asked for. */
-function SwitchActions({
-  items,
-  turn,
-  activity,
-}: {
-  items: ChatActivityItem[];
-  turn: TurnActivity;
-  activity: AgentActivity;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <WorkLogRow
-      icon={<ToolKindIcon kind="switch" />}
-      label={`${items.length} Switch ${items.length === 1 ? 'action' : 'actions'}`}
-      tone="passive"
-      open={open}
-      onToggle={() => setOpen(!open)}
-    >
-      {open && (
-        <div className="ms-3 border-l border-border ps-2">
-          <ToolRows items={items} turn={turn} activity={activity} />
-        </div>
-      )}
-    </WorkLogRow>
-  );
-}
-
 /** How a turn ended, with the host's reason for it muted after it. */
 export function turnEndLabel(label: string, reason: string | null): ReactNode {
   if (!reason) return label;
@@ -113,6 +86,59 @@ export function turnEndLabel(label: string, reason: string | null): ReactNode {
       {label}
       <span className="text-foreground-passive"> — {reason}</span>
     </>
+  );
+}
+
+/**
+ * One row of an agent's block in the timeline. The first row of the block
+ * carries the avatar and the agent's name; the rows after it keep the indent.
+ */
+export function AgentRow({
+  agent,
+  serverId,
+  head,
+  trailing,
+  className,
+  children,
+  ...props
+}: ComponentProps<'div'> & {
+  agent: { name: string; iconUrl: string | null };
+  serverId: string;
+  head: boolean;
+  trailing?: ReactNode;
+}) {
+  return (
+    <div className={cn('flex gap-3', className)} {...props}>
+      {head ? (
+        <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={28} />
+      ) : (
+        <span className="w-7 shrink-0" aria-hidden />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {head && (
+          <span className="mb-1 text-xs leading-4 font-semibold text-foreground-muted">
+            {agent.name}
+          </span>
+        )}
+        {children}
+      </div>
+      {trailing}
+    </div>
+  );
+}
+
+/** Whether a turn has anything to show in its work log. */
+export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean {
+  const running = turn.status === 'queued' || turn.status === 'running';
+  const reasoning = activity.reasoning.get(turn.turnId) ?? null;
+  const work = turnTools(turn);
+  return (
+    reasoningLabel(reasoning, running && reasoning !== null) !== null ||
+    work.length > 0 ||
+    isThinking(turn) ||
+    turn.status === 'interrupted' ||
+    turn.status === 'error' ||
+    turn.requests.length > 0
   );
 }
 
@@ -127,73 +153,71 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   activity,
   turn,
   agent,
+  head,
   endReason,
   serverId,
+  className,
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
   agent: { name: string; iconUrl: string | null };
+  /** Whether this turn starts the agent's block, so shows its avatar and name. */
+  head: boolean;
   /** Why the turn ended, from the host's notice in the room; null when it posted none. */
   endReason: string | null;
   serverId: string;
+  className?: string;
 }) {
   const running = turn.status === 'queued' || turn.status === 'running';
   const reasoning = activity.reasoning.get(turn.turnId) ?? null;
   const label = reasoningLabel(reasoning, running && reasoning !== null);
-  const { work, switchActions } = turnTools(turn);
-  const thinking = isThinking(turn) && !label;
+  const work = turnTools(turn);
+  const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
-  if (!label && !work.length && !switchActions.length && !thinking && !ended && !requests.length)
-    return null;
+  if (!turnShown(activity, turn)) return null;
   return (
-    <div className="flex gap-3" data-turn-id={turn.turnId}>
-      <AgentAvatar
-        name={agent.name}
-        iconUrl={agent.iconUrl}
-        serverId={serverId}
-        size={28}
-        className="mt-0.5"
-      />
-      <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-        {label && (
-          <Reasoning
-            label={label.label}
-            shimmer={running && !reasoning?.completedAt}
-            text={reasoning?.text ?? ''}
-          />
-        )}
-        {!running && work.length >= GROUP_AT ? (
-          <ToolGroup items={work} turn={turn} activity={activity} />
-        ) : (
-          <ToolRows items={work} turn={turn} activity={activity} />
-        )}
-        {switchActions.length > 0 && (
-          <SwitchActions items={switchActions} turn={turn} activity={activity} />
-        )}
-        {thinking && (
+    <AgentRow
+      agent={agent}
+      serverId={serverId}
+      head={head}
+      data-turn-id={turn.turnId}
+      className={className}
+    >
+      {label && (
+        <Reasoning
+          label={label.label}
+          shimmer={running && !reasoning?.completedAt}
+          text={reasoning?.text ?? ''}
+        />
+      )}
+      {!running && work.length >= GROUP_AT ? (
+        <ToolGroup items={work} turn={turn} activity={activity} />
+      ) : (
+        <ToolRows items={work} turn={turn} activity={activity} />
+      )}
+      {thinking && (
+        <WorkLogRow
+          icon={<ThinkingIcon />}
+          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          active
+        />
+      )}
+      {ended && (
+        <div role="status">
           <WorkLogRow
-            icon={<ThinkingIcon />}
-            label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
-            active
+            icon={<FailedIcon />}
+            label={turnEndLabel(
+              turn.status === 'interrupted' ? 'Stopped' : 'The turn ended with an error',
+              endReason
+            )}
+            title={endReason ?? undefined}
+            tone="failed"
           />
-        )}
-        {ended && (
-          <div role="status">
-            <WorkLogRow
-              icon={<FailedIcon />}
-              label={turnEndLabel(
-                turn.status === 'interrupted' ? 'Stopped' : 'The turn ended with an error',
-                endReason
-              )}
-              title={endReason ?? undefined}
-              tone="failed"
-            />
-          </div>
-        )}
-        {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
-      </div>
-    </div>
+        </div>
+      )}
+      {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
+    </AgentRow>
   );
 });
 

@@ -13,11 +13,14 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     connectable: false,
     status: 'coming_soon',
     unavailable_reason: null,
+    unavailable_code: null,
     pass_through: false,
     token_lifetime: null,
     loopback_ports: null,
     key: null,
     external_identity: null,
+    consent: null,
+    workspace_enabled: null,
   };
 }
 

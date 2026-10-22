@@ -1,31 +1,35 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { focusMainWindow } from '@main/app/window';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
   completeServiceConnection,
-  confirmServiceConnection,
   getConnectionCatalog,
+  getServiceFlow,
   startServiceConnection,
 } from './gateway-client';
 import {
   cancelServiceBrowserFlow,
-  confirmServiceBrowserFlow,
   getServiceBrowserFlow,
   startServiceBrowserFlow,
 } from './service-browser-flow';
 
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
+vi.mock('@main/app/window', () => ({ focusMainWindow: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   cancelServiceConnection: vi.fn(),
   completeServiceConnection: vi.fn(),
-  confirmServiceConnection: vi.fn(),
   getConnectionCatalog: vi.fn(),
   getServiceFlow: vi.fn(),
   startServiceConnection: vi.fn(),
 }));
-const server = { id: 'server', gatewayUrl: 'https://switch.example.test' } as SwitchServer;
+const server = {
+  id: 'server',
+  url: 'https://switch.example.test',
+  dashboardUrl: null,
+} as SwitchServer;
 const flows: [string, string][] = [];
 /** The service as the server lists it: on any port, or only on `ports`. */
 function listed(ports: number[] | null): ConnectionCatalogEntry[] {
@@ -40,11 +44,14 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       connectable: true,
       status: 'not_connected',
       unavailable_reason: null,
+      unavailable_code: null,
       pass_through: true,
       token_lifetime: 28_800,
       loopback_ports: ports,
       key: null,
       external_identity: null,
+      consent: null,
+      workspace_enabled: null,
     },
   ];
 }
@@ -57,7 +64,12 @@ afterEach(async () => {
   vi.resetAllMocks();
 });
 async function start(service = 'example') {
-  vi.mocked(completeServiceConnection).mockResolvedValue(undefined);
+  vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
+  vi.mocked(completeServiceConnection).mockResolvedValue({
+    warning: null,
+    consent: 'write',
+    account: 'ada@example.test',
+  });
   vi.mocked(startServiceConnection).mockImplementation(async (_server, _service, input) => ({
     id: input.state,
     url: 'https://auth.example.test/authorize',
@@ -80,10 +92,12 @@ it('takes back only this Console’s state, and hands the code to Core with its 
       .status
   ).toBe(400);
   expect(completeServiceConnection).not.toHaveBeenCalled();
+  expect(focusMainWindow).not.toHaveBeenCalled();
   const response = await fetch(url + `?state=${id}&code=SYNTHETIC`);
   expect(response.status).toBe(200);
   expect(response.headers.get('referrer-policy')).toBe('no-referrer');
-  expect(await response.text()).toContain('Return to Switch Console');
+  expect(await response.text()).toContain('Signed in to Example, and connected to Switch.');
+  expect(focusMainWindow).toHaveBeenCalledOnce();
   expect(completeServiceConnection).toHaveBeenCalledExactlyOnceWith(
     server,
     'example',
@@ -91,13 +105,44 @@ it('takes back only this Console’s state, and hands the code to Core with its 
     'SYNTHETIC',
     input.completion_secret
   );
-  await confirmServiceBrowserFlow(server, 'example', id);
-  expect(confirmServiceConnection).toHaveBeenCalledExactlyOnceWith(
-    server,
-    'example',
-    id,
-    input.completion_secret
+});
+
+it('ends the flow once it reads connected, and tells the server to drop it', async () => {
+  const { id } = await start();
+  vi.mocked(getServiceFlow).mockResolvedValue({
+    status: 'pending',
+    account: null,
+    error: null,
+    warning: null,
+  });
+  expect((await getServiceBrowserFlow(server, 'example', id)).status).toBe('pending');
+  expect(cancelServiceConnection).not.toHaveBeenCalled();
+  vi.mocked(getServiceFlow).mockResolvedValue({
+    status: 'connected',
+    account: 'ada@example.test',
+    error: null,
+    warning: 'Access stays a while.',
+  });
+  expect((await getServiceBrowserFlow(server, 'example', id)).warning).toBe(
+    'Access stays a while.'
   );
+  expect(cancelServiceConnection).toHaveBeenCalledWith(server, 'example', id);
+  await expect(getServiceBrowserFlow(server, 'example', id)).rejects.toThrow(
+    'Sign-in was interrupted'
+  );
+});
+
+it('keeps a failed flow readable until the person cancels it', async () => {
+  const { id } = await start();
+  vi.mocked(getServiceFlow).mockResolvedValue({
+    status: 'failed',
+    account: null,
+    error: 'This Example account is already linked to another Switch user in this workspace.',
+    warning: null,
+  });
+  expect((await getServiceBrowserFlow(server, 'example', id)).status).toBe('failed');
+  expect((await getServiceBrowserFlow(server, 'example', id)).status).toBe('failed');
+  expect(cancelServiceConnection).not.toHaveBeenCalled();
 });
 
 it('takes back a code as long as a vendor issues, and nothing absurdly long', async () => {
@@ -117,18 +162,20 @@ it('takes back a code as long as a vendor issues, and nothing absurdly long', as
 
 it('keys each flow by its service', async () => {
   const { id } = await start('example');
-  await expect(confirmServiceBrowserFlow(server, 'other', id)).rejects.toThrow(
+  await expect(getServiceBrowserFlow(server, 'other', id)).rejects.toThrow(
     'Sign-in was interrupted'
   );
-  expect(confirmServiceConnection).not.toHaveBeenCalled();
+  expect(getServiceFlow).not.toHaveBeenCalled();
 });
 
-it('does not show Core’s failure in the browser, and ends the flow', async () => {
+it('does not show Core’s refusal in the browser, and sends the person to Console', async () => {
   const { id, url } = await start();
   vi.mocked(completeServiceConnection).mockRejectedValue(new Error('Private server detail'));
   const response = await fetch(url + `?state=${id}&code=SYNTHETIC`);
   expect(response.status).toBe(400);
-  expect(await response.text()).not.toContain('Private server detail');
+  const text = await response.text();
+  expect(text).not.toContain('Private server detail');
+  expect(text).toContain('Switch Console says what happened');
 });
 
 it('closes the listener when the person cancels', async () => {
@@ -161,10 +208,10 @@ it('expires the local secret after ten minutes', async () => {
   const { id, url } = await start();
   expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(200);
   await vi.advanceTimersByTimeAsync(600_000);
-  await expect(confirmServiceBrowserFlow(server, 'example', id)).rejects.toThrow(
+  await expect(getServiceBrowserFlow(server, 'example', id)).rejects.toThrow(
     'Sign-in was interrupted'
   );
-  expect(confirmServiceConnection).not.toHaveBeenCalled();
+  expect(getServiceFlow).not.toHaveBeenCalled();
 });
 
 /** Something else holding `port` on loopback, as another app might. */

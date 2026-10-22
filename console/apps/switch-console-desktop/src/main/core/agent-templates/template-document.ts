@@ -50,8 +50,8 @@ export type ParsedAgentEntry = {
   addressing: AgentTemplateAddressing | null;
   /**
    * Which coding agent runs it. Either a provider id (`claude`, `codex`,
-   * `opencode`) or a `{param}` whose value is one. Null when the template
-   * has no `provider` field.
+   * `opencode`, `antigravity`, `cursor`) or a `{param}` whose value is one.
+   * Null when the template has no `provider` field.
    */
   provider: string | null;
   /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */
@@ -67,6 +67,8 @@ export type ParsedAgentEntry = {
   advancedConfig: Record<string, unknown>;
   /** `shared` or `isolated`, or a `{param}`; null for shared. */
   isolation: string | null;
+  /** The provider's own automatic review: `true`, `false`, or a `{param}`; null for true. */
+  autoMode: boolean | string | null;
   /** Run tools without asking: `true`, `false`, or a `{param}`; null for false. */
   autoApprove: boolean | string | null;
   /** The deployer's connections it is granted, as written. */
@@ -258,6 +260,8 @@ export function parseTemplateAgents(
       model: optionalString(agent.model),
       advancedConfig: asRecord(agent.advanced_config) ?? {},
       isolation: optionalString(agent.isolation),
+      autoMode:
+        typeof agent.auto_mode === 'boolean' ? agent.auto_mode : optionalString(agent.auto_mode),
       autoApprove:
         typeof agent.auto_approve === 'boolean'
           ? agent.auto_approve

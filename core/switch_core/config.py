@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
@@ -99,6 +99,44 @@ class ControllerRelease:
     version: str
     url: str
     sha256: str
+
+
+# Authorization parameters a login option may not set: the gateway's OIDC
+# client owns them, and letting configuration replace one would break the
+# flow or its protections.
+_RESERVED_OIDC_PARAMS = frozenset(
+    {
+        "client_id",
+        "redirect_uri",
+        "response_type",
+        "response_mode",
+        "scope",
+        "state",
+        "nonce",
+        "code_challenge",
+        "code_challenge_method",
+    }
+)
+
+
+class OidcLoginOption(BaseModel):
+    """One sign-in button for the gateway's OIDC provider: what it is called,
+    and the extra authorization parameters that send the person straight to
+    one way of signing in there (WorkOS: `{"provider": "GoogleOAuth"}`)."""
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    label: str = Field(min_length=1, max_length=40)
+    params: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _no_reserved_params(self) -> "OidcLoginOption":
+        reserved = sorted(set(self.params) & _RESERVED_OIDC_PARAMS)
+        if reserved:
+            raise ValueError(
+                f"login option {self.id!r} may not set {', '.join(reserved)}: "
+                "the gateway's OIDC client sets those"
+            )
+        return self
 
 
 class SwitchConfig(BaseSettings):
@@ -192,6 +230,9 @@ class SwitchConfig(BaseSettings):
     # the life of the process; an unknown key is a startup error rather than a
     # silently ignored typo.
     feature_flags_enabled: str = ""
+    # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
+    # so an agent can tell them apart from Switch Cloud and a self-hosted server.
+    managed_by_console: bool = False
 
     # Follow the conversation (feature flag `follow_the_conversation`).
     # How long after an agent's answer a person's next channel message still
@@ -224,6 +265,13 @@ class SwitchConfig(BaseSettings):
     # answer.
     gateway_oidc_scopes: str | None = None
     gateway_oidc_provider_label: str | None = None
+    # The sign-in buttons offered for that provider, as JSON
+    # (`GATEWAY_OIDC_LOGIN_OPTIONS='[{"id": "google", "label": "Google",
+    # "params": {"provider": "GoogleOAuth"}}]'`). Each sends its `params` with
+    # the authorization request, so a provider that understands them (WorkOS's
+    # `provider`) goes straight to that way of signing in. Empty: one button,
+    # labelled by `gateway_oidc_provider_label`.
+    gateway_oidc_login_options: list[OidcLoginOption] = []
     # Absolute callback URL registered with the IdP. Must exactly match the
     # provider registration, e.g.
     # https://switch-gateway.<tailnet>.ts.net/gateway/auth/oidc/callback
@@ -444,7 +492,7 @@ class SwitchConfig(BaseSettings):
     # convention `otlp_endpoint` above follows. Defaults to the company relay,
     # which is where Switch Console already reports, so one pipeline carries
     # both. Override to point a development run at a local sink.
-    telemetry_endpoint: str = "https://telemetry.flintai.dev"
+    telemetry_endpoint: str = "https://telemetry.switchagents.ai"
 
     # How long to wait on the relay before giving up on a single event.
     # Telemetry is never worth delaying real work for, and a send that is
@@ -513,6 +561,24 @@ class SwitchConfig(BaseSettings):
     # `--server` an agents controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
+
+    # The operator dashboard's build output (the `dist/` that `npm run build`
+    # writes in gateway/). Set, and switch-core serves the dashboard on its own
+    # port beside the API, so the server has one address; the image sets it.
+    # Unset or empty, it serves no dashboard: a development run uses the Vite
+    # dev server instead. Set to a directory with no build in it is a startup
+    # error. With it set, links to the dashboard default to GATEWAY_PUBLIC_URL
+    # when FRONTEND_BASE_URL is unset (`dashboard_base_url`).
+    gateway_ui_dir: Path | None = None
+
+    @field_validator("gateway_ui_dir", mode="before")
+    @classmethod
+    def _blank_gateway_ui_dir_is_unset(cls, value: object) -> object:
+        # `GATEWAY_UI_DIR=` is how an env file or a chart turns it off, and
+        # `Path("")` would otherwise be the working directory.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     # Credentials of the distributed Slack app *we* registered — the one a
     # customer installs by clicking a button, as opposed to the app an operator
@@ -1073,6 +1139,29 @@ class SwitchConfig(BaseSettings):
     def invite_email_enabled(self) -> bool:
         return bool(self.gateway_smtp_host)
 
+    @property
+    def dashboard_base_url(self) -> str | None:
+        """The origin links to the dashboard are built on.
+
+        FRONTEND_BASE_URL when set. Otherwise, when switch-core serves the
+        dashboard: the host browser sign-in returns to, where one is
+        configured, because a sign-in begun anywhere is sent there and leaves
+        its session there; and the server's own origin failing that. On a
+        server with one address the two are the same host. Not where a sign-in
+        lands, which stays on the host that set the session cookie unless
+        FRONTEND_BASE_URL names another.
+        """
+        if self.frontend_base_url:
+            return self.frontend_base_url
+        if self.gateway_ui_dir is None:
+            return None
+        if self.gateway_oidc_enabled and self.gateway_oidc_redirect_url:
+            callback = urlsplit(self.gateway_oidc_redirect_url)
+            return f"{callback.scheme}://{callback.netloc}"
+        if self.gateway_public_url:
+            return self.gateway_public_url.rstrip("/")
+        return None
+
     @model_validator(mode="after")
     def _validate_smtp(self) -> "SwitchConfig":
         if self.gateway_invite_emails_per_day < 1:
@@ -1092,7 +1181,7 @@ class SwitchConfig(BaseSettings):
                 "GATEWAY_SMTP_FROM is required when GATEWAY_SMTP_HOST is set: "
                 "it is the address invitation e-mails are sent from."
             )
-        if not self.frontend_base_url:
+        if not self.dashboard_base_url:
             raise ValueError(
                 "FRONTEND_BASE_URL is required when GATEWAY_SMTP_HOST is set: "
                 "invitation e-mails link to the dashboard at that origin."

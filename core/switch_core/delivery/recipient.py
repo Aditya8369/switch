@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
+from sqlalchemy import select
+
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
@@ -46,11 +48,6 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
-    TaskAcceptPayload,
-    TaskCancelPayload,
-    TaskDelegatePayload,
-    TaskFinalisePayload,
-    TaskUpdatePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -69,7 +66,7 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent, CloudMachine
+from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.delivery.addressing import (
@@ -81,12 +78,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
-    SwitchEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
 )
 from switch_core.gateway.cloud_controllers import wake_controller_machine
 from switch_core.gateway.known_agents import known_agent_for
@@ -217,11 +208,6 @@ _UNAVAILABLE_MESSAGES = {
         "I'm not in an active session right now. "
         "I'll see this when I next connect to the room."
     ),
-    "session_passive": (
-        "I read room messages asynchronously, not in real time — my operator "
-        "has to trigger me to pull the latest messages, either from a session I "
-        "already have open or by starting a new one."
-    ),
     # auto_session with no watcher reporting in: same honest "offline" story as
     # always_on — nothing is going to spin a session up right now.
     "auto_session": (
@@ -236,18 +222,15 @@ _UNAVAILABLE_MESSAGES = {
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
 
-# Fallback (no known-agent connect command) for a session_addressable agent
-# that has a session bound to this room but is not reporting as live — the
-# usual cause is a session started without the dev-channels flag.
+# Fallback, for an agent with no known-agent spec, when it has a session bound
+# to this room that is not reporting as live.
 _CONNECTED_NOT_LIVE_MESSAGE = (
     "I have a session connected to this room, but it isn't reporting as live, "
-    "so I'm not receiving messages — my operator may need to restart it."
+    "so I'm not receiving messages — my owner may need to restart it."
 )
 
 
-def _offline_owner_message(
-    owner_handle: str | None, asker_handle: str, cmd: str | None
-) -> str:
+def _offline_owner_message(owner_handle: str | None, asker_handle: str) -> str:
     """The reply for an auto_session agent addressed with nothing to start it.
 
     An auto_session agent is brought online by Switch Console watching on its
@@ -264,22 +247,97 @@ def _offline_owner_message(
     # the reason they should act reads as a stutter ("@me … and @me needs me").
     needs_me = "" if owner_handle == asker_handle else f", and @{asker_handle} needs me"
     if owner_handle:
-        opening = (
+        return (
             f"@{owner_handle} — I'm not online in this room{needs_me}. "
             "Open Switch Console to bring me online here."
         )
-        terminal = "If you'd rather do it from a terminal:"
-    else:
-        # No owner account on this platform to mention. Still name who has to
-        # act, so the message is not read as something the room can fix.
-        opening = (
-            f"I'm not online in this room{needs_me}. **My owner needs to open "
-            "Switch Console** to bring me online here."
+    # No owner account on this platform to mention. Still name who has to act,
+    # so the message is not read as something the room can fix.
+    return (
+        f"I'm not online in this room{needs_me}. **My owner needs to open "
+        "Switch Console** to bring me online here."
+    )
+
+
+def _join_room_names(names: list[str]) -> str:
+    bold = [f"**{name}**" for name in names]
+    if len(bold) == 1:
+        return bold[0]
+    return f"{', '.join(bold[:-1])} and {bold[-1]}"
+
+
+def _owner_actor(owner_handle: str | None, asker_handle: str) -> str:
+    """Who to name as the person who has to act: the owner's @-mention, so the
+    owner is notified; "you" when the owner is the one asking; "my owner" when
+    the owner has no account on this platform to mention."""
+    if owner_handle is None:
+        return "my owner"
+    if owner_handle == asker_handle:
+        return "you"
+    return f"@{owner_handle}"
+
+
+def _passive_message(owner_handle: str | None, asker_handle: str) -> str:
+    """The reply for a session_passive agent addressed in a room.
+
+    Such an agent never receives room messages in real time, so it is not
+    told it has no session; the owner has to trigger it to read the room, and
+    is mentioned so they are notified.
+    """
+    actor = _owner_actor(owner_handle, asker_handle)
+    verb = "have" if actor == "you" else "has"
+    return (
+        f"I read room messages asynchronously, not in real time — {actor} {verb} "
+        "to trigger me to pull the latest messages, either from a session I "
+        "already have open or by starting a new one."
+    )
+
+
+def _start_from_console_message(
+    agent_name: str,
+    room_name: str,
+    sign_in_command: str,
+    owner_handle: str | None,
+    asker_handle: str,
+    other_room_names: list[str] | None,
+    connected_not_live: bool,
+) -> str:
+    """The reply for an agent Switch Console runs, addressed where it has no
+    live session, when the plain "I'm not online" reply does not fit: it has
+    sessions in other rooms, or a session here that is not live.
+
+    The fix is always to start or restart it from Switch Console, so that is
+    what the reply says, naming the room to connect the session to. A CLI
+    started by hand in a terminal gets none of the Switch tools, which is why
+    no terminal command is offered; the provider's sign-in command is, since a
+    signed-out CLI is the usual reason Console cannot start one. The owner is
+    named where the action is, and called "you" when they are the one asking.
+    """
+    actor = _owner_actor(owner_handle, asker_handle)
+    sentence_actor = actor if actor.startswith("@") else actor.capitalize()
+    console = f"opening **{agent_name}** in Switch Console"
+    sign_in = (
+        "If Switch Console says I'm signed out, sign me in first with "
+        f"`{sign_in_command}` on the machine I run on."
+    )
+    if connected_not_live:
+        return (
+            "I have a session connected to this room, but it isn't reporting as "
+            "live, so I'm not receiving messages. "
+            f"{sentence_actor} can restart it by {console}. {sign_in}"
         )
-        terminal = "Or, from a terminal:"
-    if cmd is None:
-        return opening
-    return f"{opening} {terminal}\n\n```\n{cmd}\n```"
+    if other_room_names:
+        return (
+            "I don't have a session in this room right now, but I'm working in "
+            f"{_join_room_names(other_room_names)}, so you can ask me there. "
+            f"Or {actor} can start one connected to **{room_name}** by {console}. "
+            f"{sign_in}"
+        )
+    return (
+        "I don't have a session connected to this room. "
+        f"{sentence_actor} can start one connected to **{room_name}** by "
+        f"{console}. {sign_in}"
+    )
 
 
 def _stopped_owner_message(owner_handle: str | None, asker_handle: str) -> str:
@@ -526,7 +584,14 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        own_event = _message_own_event(meta, event, thread_id)
+        sender_role = (
+            await self._sender_role(session, event.sender, event.content)
+            if addressed
+            else None
+        )
+        own_event = _message_own_event(
+            meta, event, thread_id, self.agent.id, sender_role
+        )
 
         async def after(row: InboundEvent) -> None:
             assert isinstance(row, InboundMessage)
@@ -593,8 +658,11 @@ class AgentRecipient:
             assert isinstance(row, InboundMessage)
             await self._after_follow_up(row)
 
+        sender_role = await self._sender_role(session, event.sender, event.content)
         return Delivery(
-            own_event=_message_own_event(meta, event, event.thread_root_id),
+            own_event=_message_own_event(
+                meta, event, event.thread_root_id, self.agent.id, sender_role
+            ),
             after=after,
         )
 
@@ -676,8 +744,8 @@ class AgentRecipient:
                 #
                 # Everything else here is the whole reply and nothing follows
                 # it, so it threads off the triggering message: an owner mention
-                # and a paste-ready command are a wall of text to drop into a
-                # channel for something only one person can act on (CHOO-2344).
+                # is noise in a channel for something only one person can act
+                # on (CHOO-2344).
                 thread_id
                 if unavailable == _STARTING_SESSION_MESSAGE
                 else reply_thread_root,
@@ -747,6 +815,14 @@ class AgentRecipient:
                 for part in files
             ]
 
+        # Read now: the event is built after the row commits, from the rows alone.
+        opening = opening_message_for(meta, self.agent.id)
+        sender_role = (
+            await self._sender_role(session, anchor.sender, anchor.content)
+            if gate.addressed
+            else None
+        )
+
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
             first = _first_file(parts)
@@ -770,6 +846,8 @@ class AgentRecipient:
                 attachments=[
                     attachment_ref(part) for part in sorted(parts, key=file_index)
                 ],
+                opening_message=opening,
+                sender_role=sender_role,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -884,7 +962,9 @@ class AgentRecipient:
         return fallback
 
     async def greet(self) -> None:
-        """Say hello in a room the agent has just arrived in.
+        """Say hello in a room the agent has just arrived in: in the words the
+        room was given for it when there are some (a Switch Console chat's
+        opening message), else its usual line.
 
         The per-agent greeting can be switched off per bridge: on Mattermost,
         for one, whose native "X joined the channel" notice makes it
@@ -900,7 +980,10 @@ class AgentRecipient:
                 self._room.room_id,
             )
             return
-        if meta.channel_type == "direct":
+        opening = opening_message_for(meta, self.agent.id)
+        if opening is not None:
+            greeting = opening
+        elif meta.channel_type == "direct":
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
@@ -975,7 +1058,7 @@ class AgentRecipient:
 
         # Targeting is a per-command policy: each Command decides whether its
         # args address this agent (Command.addressed). The default matches our
-        # @name or a role we hold; some commands (e.g. run-cmd) override it.
+        # @name or a role we hold; some commands (e.g. reset) override it.
         addressed = cmd.addressed if cmd is not None else _addressed_by_name_or_role
         if not await addressed(self, event.args, meta.room_id):
             return
@@ -1091,7 +1174,7 @@ class AgentRecipient:
         thread_root_id: str | None = None,
     ) -> None:
         """Post a command result as this agent (an agent-owned command like
-        `!run-cmd` answers in the agent's own voice, not as a system message)."""
+        `!reset` answers in the agent's own voice, not as a system message)."""
         await self.actor.send_message(
             room_id,
             body,
@@ -1113,97 +1196,6 @@ class AgentRecipient:
             return None
         return self._meta
 
-    # ── Tasks ─────────────────────────────────────────────────────────────────
-
-    def decide_task(self, event: SwitchEvent) -> Delivery:
-        """Whether a task event is one of the agent's own events: it is for
-        the agent doing the task when it is delegated or cancelled, and for
-        the agent that asked when it is accepted, updated or finalised."""
-        meta = self._meta
-        me = self.agent.id
-        payload: (
-            TaskDelegatePayload
-            | TaskAcceptPayload
-            | TaskUpdatePayload
-            | TaskFinalisePayload
-            | TaskCancelPayload
-        )
-        if isinstance(event, TaskDelegate):
-            if event.performer_agent_id != me:
-                return NOTHING
-            kind = "task_delegate"
-            payload = TaskDelegatePayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                summary=event.summary,
-                description=event.description,
-            )
-        elif isinstance(event, TaskAccept):
-            if event.requester_agent_id != me:
-                return NOTHING
-            kind = "task_accept"
-            payload = TaskAcceptPayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-            )
-        elif isinstance(event, TaskUpdate):
-            if event.requester_agent_id != me:
-                return NOTHING
-            kind = "task_update"
-            payload = TaskUpdatePayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                update=event.update,
-            )
-        elif isinstance(event, TaskFinalise):
-            if event.requester_agent_id != me:
-                return NOTHING
-            kind = "task_finalise"
-            payload = TaskFinalisePayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                outcome=event.outcome,
-            )
-        elif isinstance(event, TaskCancel):
-            if event.performer_agent_id != me:
-                return NOTHING
-            kind = "task_cancel"
-            payload = TaskCancelPayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                reason=event.reason,
-            )
-        else:
-            return NOTHING
-
-        def own_event(row: InboundEvent) -> OwnEvent:
-            return OwnEvent(
-                AgentEvent(
-                    type=kind,
-                    room_id=meta.room_id,
-                    bridge_id=meta.bridge_id,
-                    channel_type=meta.channel_type,
-                    payload=payload,
-                ),
-                room_seq=row.seq,
-                message_key=row.event_id,
-            )
-
-        async def working_on_it(_row: InboundEvent) -> None:
-            await self.actor.send_message(
-                self._room.room_id, "Working on it.", format="markdown", metered=False
-            )
-
-        return Delivery(
-            own_event=own_event,
-            after=working_on_it if isinstance(event, TaskDelegate) else None,
-        )
-
     # ── Offline and refusal notices ───────────────────────────────────────────
 
     async def _reply_when_unavailable_here(
@@ -1224,11 +1216,10 @@ class AgentRecipient:
         useless).
 
         session_passive agents have no heartbeat, so the elsewhere/role logic
-        never applies: they fall through to the generic reply, whose wording
-        already covers pulling from an existing session or starting a new one.
-        For a session_addressable agent with a session bound to THIS room but
-        not live here (and no live session in a distinct room), the reply says
-        so and tells the operator to relaunch with live channels.
+        never applies: they get the passive reply, which says they read when
+        their owner triggers them. For a session_addressable agent with a
+        session bound to THIS room but not live here (and no live session in a
+        distinct room), the reply says so and asks the owner to restart it.
 
         A controller-backed agent is answered from its controller alone, before
         anything here could promise a session: Switch does not know where its
@@ -1305,17 +1296,15 @@ class AgentRecipient:
         if names:
             if holds_role_here:
                 return _elsewhere_message(names, holds_role_here=True)
-            # No role lease here, just sessions elsewhere: prefer the
-            # known-agent reply so the operator gets the paste-ready
-            # connect command alongside the "ask me there" alternative.
+            # No role lease here, just sessions elsewhere: the reply offers
+            # "ask me there" alongside starting a session here.
             return await self._unavailable_reply(
                 session, meta, agent, asker_handle, other_room_names=names
             )
 
         # No live session in a distinct room. A session_addressable agent bound
-        # to THIS room but not live here was most likely launched without live
-        # channels: say a session is connected-but-not-live rather than imply
-        # there is none.
+        # to THIS room but not live here: say a session is connected but not
+        # live rather than imply there is none.
         if connection_model == "session_addressable" and bound_here:
             return await self._unavailable_reply(
                 session, meta, agent, asker_handle, connected_not_live=True
@@ -1327,7 +1316,7 @@ class AgentRecipient:
     ) -> str | None:
         """Why an agent run by an agents controller cannot answer here.
 
-        Never the terminal command or "open Switch Console": a managed agent
+        Never "open Switch Console": a managed agent
         is started by its controller, so the reply names what stands in the
         way: the owner stopped it, or its machine was removed or is offline.
         None while it is connected: the message is delivered, and any notice
@@ -1416,12 +1405,16 @@ class AgentRecipient:
 
         An auto_session agent with nowhere else to point the asker gets the
         owner-facing "I'm not online" reply: only its owner can act, so the
-        message asks them and nobody else. Every other case prefers the
-        per-known-agent `start_session_instructions` (e.g. the paste-ready
-        terminal command for Claude Code), falling back to the static
-        `_UNAVAILABLE_MESSAGES` text keyed by connection_model when the agent
-        has no known-agent spec or the spec returns None; `connected_not_live`
-        selects the "bound here but not live" fallback.
+        message asks them and nobody else. A session_passive agent is never live
+        in real time, so it gets `_passive_message`, which names its owner,
+        rather than being told it has no session. A known agent that Switch
+        Console starts or keeps live (auto_session, session_addressable)
+        otherwise gets `_start_from_console_message`. Anything else falls back
+        to the static `_UNAVAILABLE_MESSAGES` text keyed by connection_model:
+        an always_on agent is down because its connector is, whatever spec it
+        registered through, and starting a session would not fix that.
+        `connected_not_live` selects the "bound here but not live" fallback, and
+        a connection_model with no text of its own is treated as passive.
 
         `agent` is the row read for this routing, so option edits made through
         the gateway (e.g. `PATCH /agents/{id}/options`, `connection_model`)
@@ -1430,7 +1423,11 @@ class AgentRecipient:
         connection_model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
         )
-        spec_options = known_agent_for(agent)
+        if connection_model == "session_passive":
+            return _passive_message(
+                await self.owner_handle_in(session, agent, meta.bridge_id),
+                asker_handle,
+            )
         # `other_room_names` outranks this: a live session in another room is
         # somewhere the asker can go right now, which beats asking the owner to
         # start something.
@@ -1439,32 +1436,32 @@ class AgentRecipient:
             and not other_room_names
             and not connected_not_live
         ):
-            cmd = (
-                spec_options[0].connect_command(spec_options[1], agent, meta.name, None)
-                if spec_options is not None
-                else None
-            )
             return _offline_owner_message(
                 await self.owner_handle_in(session, agent, meta.bridge_id),
                 asker_handle,
-                cmd,
             )
-        if spec_options is not None:
-            spec, options = spec_options
-            msg = spec.start_session_instructions(
-                options,
-                agent,
+        spec_options = known_agent_for(agent)
+        if spec_options is not None and connection_model in (
+            "auto_session",
+            "session_addressable",
+        ):
+            return _start_from_console_message(
+                agent.name,
                 meta.name,
+                spec_options[0].provider.sign_in_command,
                 await self.owner_handle_in(session, agent, meta.bridge_id),
-                other_room_names=other_room_names,
-                connected_not_live=connected_not_live,
+                asker_handle,
+                other_room_names,
+                connected_not_live,
             )
-            if msg is not None:
-                return msg
         if connected_not_live:
             return _CONNECTED_NOT_LIVE_MESSAGE
-        return _UNAVAILABLE_MESSAGES.get(
-            connection_model, _UNAVAILABLE_MESSAGES["session_passive"]
+        static = _UNAVAILABLE_MESSAGES.get(connection_model)
+        if static is not None:
+            return static
+        return _passive_message(
+            await self.owner_handle_in(session, agent, meta.bridge_id),
+            asker_handle,
         )
 
     async def _is_available(
@@ -1709,6 +1706,31 @@ class AgentRecipient:
             message=IncomingMessage(sender="", body=text),
         )
 
+    async def _sender_role(
+        self, session: AsyncSession, sender: str, content: Mapping[str, object]
+    ) -> str | None:
+        """The sending person's role in this workspace, read as the message
+        arrives: "owner", "admin" or "member". None for an agent, the
+        platform, or a person no Switch user has claimed.
+
+        Read fresh for every message, so an agent can rely on it over what it
+        was told earlier: a role can change between two messages.
+        """
+        principal = await self._addressing.resolve_sender(session, sender, content)
+        if principal is None or principal.kind != "user" or not principal.user_ids:
+            return None
+        roles = set(
+            await session.scalars(
+                select(TenantMember.role).where(
+                    TenantMember.user_id.in_(principal.user_ids)
+                )
+            )
+        )
+        for role in ("owner", "admin", "member"):
+            if role in roles:
+                return role
+        return None
+
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
 
@@ -1742,8 +1764,21 @@ class AgentRecipient:
         return pattern.sub("", text).strip()
 
 
+def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
+    """The words the room opened with in this agent's name (its chat's
+    welcome), for the agent to be told what it said; None when there are none."""
+    written = meta.agent_greeting
+    if written is None or written.get("agent_id") != agent_id:
+        return None
+    return written.get("body")
+
+
 def _message_own_event(
-    meta: RoomMeta, event: InboundMessage, thread_id: str | None
+    meta: RoomMeta,
+    event: InboundMessage,
+    thread_id: str | None,
+    agent_id: str,
+    sender_role: str | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written."""
@@ -1766,6 +1801,8 @@ def _message_own_event(
             sender_name=sender_name,
             body=row.body,
             thread_id=thread_id,
+            opening_message=opening_message_for(meta, agent_id),
+            sender_role=sender_role,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

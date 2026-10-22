@@ -1,12 +1,15 @@
 import { realpathSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { hostname } from 'node:os';
+import { mkdir, rm } from 'node:fs/promises';
+import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   cliToolsBase,
   generateSealingKeyPair,
+  isProviderRecheckRequest,
   isStopMessage,
+  PROVIDER_RECHECKED_KIND,
+  type ProviderRecheckReply,
 } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
@@ -41,14 +44,16 @@ import {
   defaultSharedHostBundle,
   resolveSharedHostBundle,
 } from './handover';
-import { createLogger, errorMessage } from './log';
-import { loginShellPath } from './login-path';
+import { createLogger, errorMessage, type Logger } from './log';
+import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
+import { ProviderRechecks } from './provider-rechecks';
+import { readProviderSeed, writeProviderSeed } from './provider-seed';
 import { definitionProblem } from './reconcile';
 import { isManagedRelease, readCurrent, throughCurrent } from './releases';
 import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
 import { AgentRuntimes } from './runtimes';
-import { type ControllerInfoChange, PROTOCOL_VERSION, type UpdatedBy } from './schemas';
+import { type ControllerInfoChange, PROTOCOL_VERSION, PROVIDERS, type UpdatedBy } from './schemas';
 import {
   CONTROLLER_CREDENTIAL,
   defaultSecretStoreKind,
@@ -92,7 +97,14 @@ import {
   serviceState,
   uninstallService,
 } from './service';
-import { contractPlatform, mapAgentProcess, PathProviderLocator, toolStatuses } from './status';
+import {
+  contractPlatform,
+  mapAgentProcess,
+  PathProviderLocator,
+  providerLoginTest,
+  ProviderStatuses,
+  toolStatuses,
+} from './status';
 import { ControllerStore } from './store';
 import { SystemdRuntime, systemctl } from './systemd-runtime';
 import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';
@@ -127,7 +139,11 @@ Commands:
       the releases Switch names, beside the ones before.
       --updated-by-console, which Switch Console passes to a controller it
       runs on an SSH host, says Console updates it: it follows no release
-      Switch names, and tells Switch so.
+      Switch names, and tells Switch so. --provider-seed <file> takes the
+      provider checks precheck wrote, so the first report carries them.
+  precheck --out <file> --probe-dir <dir> [--shared-host-bundle <path>]
+      Check every provider's installation and sign-in as run would, with no
+      enrollment, writing the results to <file> as each comes back.
   set-info [--name <name>] [--description <text>] [--data-dir <dir>]
       Rename this machine and/or change its description on the server, with
       this controller's own credential. Either or both; --description ""
@@ -364,6 +380,78 @@ async function setInfoCommand(args: string[]): Promise<number> {
   }
 }
 
+/**
+ * Puts the login shell's PATH, and the user's own bin folders, on this
+ * process's: a controller started by a service or an app has neither, and
+ * would not find the provider CLIs a person installed.
+ */
+function pathRefresher(log: Logger): () => Promise<void> {
+  return async () => {
+    if (process.platform === 'win32') return;
+    const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
+    const path = await loginShellPath(shell, process.env.PATH ?? '');
+    if (path === null)
+      log.warn(
+        "Could not read the login shell's PATH; provider CLIs, git and gh are looked for on this process's own",
+        { shell, path: process.env.PATH }
+      );
+    process.env.PATH = withUserBinDirs(path ?? process.env.PATH ?? '', homedir());
+  };
+}
+
+/**
+ * Checks every provider as `run` would, before there is any enrollment, and
+ * writes what it finds to `--out` as each check comes back, for a `run`
+ * started later to take (`--provider-seed`).
+ */
+async function precheckCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      out: { type: 'string' },
+      'probe-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+    },
+    strict: true,
+  });
+  if (!values.out || !values['probe-dir'])
+    throw new UsageError('precheck needs --out <file> and --probe-dir <dir>.');
+  const out = resolve(values.out);
+  const probeDir = resolve(values['probe-dir']);
+  await mkdir(probeDir, { recursive: true, mode: 0o700 });
+  const log = createLogger({
+    level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
+    write: (line) => process.stderr.write(line),
+  });
+  await pathRefresher(log)();
+  const sharedHostBundle = bundlePath(values['shared-host-bundle']);
+  const providers = new ProviderStatuses({
+    locator: new PathProviderLocator(() => process.env.PATH, join(probeDir, 'version-probe')),
+    runtime: {
+      probe: (provider, binaryPath, cwd) =>
+        probeProvider(sharedHostBundle, provider, binaryPath, cwd, process.env),
+    },
+    sealed: null,
+    probeCwd: probeDir,
+    verify: providerLoginTest(probeDir),
+    now: Date.now,
+    log,
+    onChange: () => {},
+  });
+  // One write at a time, each with every result so far.
+  let writing = Promise.resolve();
+  const write = () => {
+    writing = writing.then(() => writeProviderSeed(out, providers.results()));
+    return writing;
+  };
+  // Setting up is when a login that is there but does not work must show.
+  await Promise.all(
+    PROVIDERS.map((provider) => providers.check(provider, { verify: true }).then(write))
+  );
+  await writing;
+  return EXIT_OK;
+}
+
 async function runCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -379,6 +467,7 @@ async function runCommand(args: string[]): Promise<number> {
       'agent-runtime': { type: 'string' },
       'releases-dir': { type: 'string' },
       'updated-by-console': { type: 'boolean' },
+      'provider-seed': { type: 'string' },
     },
     strict: true,
   });
@@ -406,16 +495,12 @@ async function runCommand(args: string[]): Promise<number> {
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
-  if (process.platform !== 'win32') {
-    const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
-    const path = await loginShellPath(shell, process.env.PATH ?? '');
-    if (path) process.env.PATH = path;
-    else
-      log.warn(
-        "Could not read the login shell's PATH; provider CLIs, git and gh are looked for on this process's own",
-        { shell, path: process.env.PATH }
-      );
-  }
+  // Read again on every provider recheck, so a CLI installed since start is found.
+  const refreshPath = pathRefresher(log);
+  await refreshPath();
+  const providerSeed = values['provider-seed']
+    ? await readProviderSeed(resolve(values['provider-seed']), log)
+    : [];
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;
@@ -443,8 +528,28 @@ async function runCommand(args: string[]): Promise<number> {
   for (const signal of SIGNALS) process.once(signal, onSignal);
   // Windows has no signal a parent can send that is caught here, so Console
   // asks over the IPC channel it starts this controller with.
+  const rechecks = new ProviderRechecks();
   const onMessage = (message: unknown) => {
     if (isStopMessage(message)) onSignal('a stop request');
+    if (isProviderRecheckRequest(message)) {
+      const reply = (error: string | null) => {
+        const answer: ProviderRecheckReply = {
+          kind: PROVIDER_RECHECKED_KIND,
+          id: message.id,
+          error,
+        };
+        process.send?.(answer);
+      };
+      rechecks.run().then(
+        () => reply(null),
+        (error: unknown) => {
+          log.warn('Could not check the providers again on request', {
+            error: errorMessage(error),
+          });
+          reply(errorMessage(error));
+        }
+      );
+    }
   };
   process.on('message', onMessage);
   process.channel?.unref();
@@ -532,7 +637,13 @@ async function runCommand(args: string[]): Promise<number> {
                 }),
                 new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
               ),
-        locator: new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe')),
+        locator: new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe')),
+        // Agents running as users of their own sign in as those users, which
+        // a test prompt from the controller's user would not show.
+        verifyLogin: agentRuntime === 'default' ? providerLoginTest(dataDir) : undefined,
+        rechecks,
+        refreshPath,
+        providerSeed,
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,
@@ -927,7 +1038,7 @@ async function doctorCommand(args: string[]): Promise<number> {
   if (values['env-file'])
     Object.assign(process.env, await readEnvFile(resolve(values['env-file'])));
   const { dataDir, store, secrets } = await openState(values['data-dir']);
-  const locator = new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe'));
+  const locator = new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe'));
   try {
     const separateUsers = await separateUsersConfigHere(dataDir);
     const separateRuntime = separateUsers
@@ -1056,6 +1167,8 @@ export async function main(argv: string[]): Promise<number> {
         return await uninstallServiceCommand(rest);
       case 'doctor':
         return await doctorCommand(rest);
+      case 'precheck':
+        return await precheckCommand(rest);
       case 'update':
         return await updateCommand(rest);
       case undefined:

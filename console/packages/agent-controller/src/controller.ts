@@ -1,4 +1,4 @@
-import type { OpenAgentStream } from '@switch-console/agent-providers';
+import type { OpenAgentStream, ProviderReadiness } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -14,6 +14,7 @@ import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
+import type { ProviderRechecks } from './provider-rechecks';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { LocalRelay, RELAY_TOKEN_PREFIX } from './relay';
 import { UpstreamForwarder } from './relay-forward';
@@ -22,6 +23,7 @@ import {
   type AgentCursor,
   type Assignment,
   isProvider,
+  type Provider,
   type StatusReport,
   statusReportSchema,
   type ToolStatus,
@@ -33,6 +35,7 @@ import type { SelfUpdater } from './self-update';
 import {
   noSessionMidTurn,
   type ProviderLocator,
+  type ProviderSeed,
   ProviderStatuses,
   StatusCollector,
   statusFingerprint,
@@ -87,7 +90,17 @@ export type ControllerDeps = {
    * its events on and the folder agents with no directory of their own work in.
    */
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
+  /** Tries a provider's own login with a test prompt; absent where agents run as other users. */
+  verifyLogin?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
   locator: ProviderLocator;
+  /**
+   * Requests to check every provider again now, served while the controller
+   * runs. `refreshPath` runs first, so a CLI installed since is found.
+   */
+  rechecks: ProviderRechecks;
+  refreshPath: () => Promise<void>;
+  /** Provider checks made before this controller started, taken as its own (`ProviderStatuses.seed`). */
+  providerSeed: ProviderSeed;
   /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
   tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
@@ -401,10 +414,12 @@ export async function runController(
     runtime,
     sealed,
     probeCwd: deps.dataDir,
+    verify: deps.verifyLogin,
     now: deps.now,
     log,
     onChange: () => reporter?.request(),
   });
+  providers.seed(deps.providerSeed);
   const collector = new StatusCollector({
     store,
     runtime,
@@ -489,14 +504,16 @@ export async function runController(
             );
           },
           recheckProvider: async (provider) => {
-            const status = await providers.check(provider);
+            // Asked for by someone fixing a login, like the Console recheck,
+            // so the login is tried for real.
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
             // Agents move onto a login given since, or off one withdrawn.
             void reconcileLocally();
             return status;
           },
           takeUpLogin: async (provider) => {
-            const status = await providers.check(provider);
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
             void reconcileLocally();
             return { status, problem: providers.loginProblem(provider) };
@@ -538,6 +555,16 @@ export async function runController(
     minGapMs: timing.statusMinGapMs,
     failed: (error) => failed('Status report', error),
     onLocalChange: () => void reconcileLocally(),
+  });
+
+  const stopServingRechecks = deps.rechecks.serve(async () => {
+    await deps.refreshPath();
+    // A recheck is asked for by someone setting up or fixing a login, so
+    // each login is tried for real, not only reported as there.
+    await providers.checkAll({ verify: true });
+    await reporter?.sendFresh();
+    // Agents waiting on a provider can start now.
+    void reconcileLocally();
   });
 
   let localQueued = false;
@@ -615,7 +642,7 @@ export async function runController(
     });
   };
 
-  /** A hint from someone typing to the agent: a failure costs only the head start. */
+  /** A hint that a chat with the agent was created or reopened: a failure costs only the head start. */
   const warmAgent = async (agentId: string, roomId: string): Promise<void> => {
     try {
       await runtime.warm(agentId, roomId);
@@ -749,6 +776,7 @@ export async function runController(
     if (restarting && !refused && !revocation)
       log.info('Exiting for the service to start this controller on its new release.');
   } finally {
+    stopServingRechecks();
     clearInterval(resync);
     clearInterval(poll);
     signal.removeEventListener('abort', forward);
@@ -843,6 +871,36 @@ class StatusReporter {
       }
     });
     return this.inFlight;
+  }
+
+  /**
+   * Sends a report collected after this call, once any already on its way has
+   * gone, and fails when it could not be sent: for a caller that must know
+   * Switch holds what is true now.
+   */
+  async sendFresh(): Promise<void> {
+    while (this.inFlight) await this.inFlight;
+    if (this.closed) throw new Error('The controller is stopping.');
+    let failure: unknown = null;
+    this.inFlight = (async () => {
+      try {
+        const collected = await this.deps.collect();
+        const report = statusReportSchema.parse({ ...collected, seq: this.deps.seq() });
+        this.lastSentAt = Date.now();
+        await this.deps.send(report);
+        this.lastSentFingerprint = statusFingerprint(collected);
+      } catch (error) {
+        failure = error;
+      }
+    })().finally(() => {
+      this.inFlight = null;
+      if (this.again) {
+        this.again = false;
+        this.request();
+      }
+    });
+    await this.inFlight;
+    if (failure !== null) throw failure;
   }
 
   /** Stops sending, and waits for a report already on its way. */

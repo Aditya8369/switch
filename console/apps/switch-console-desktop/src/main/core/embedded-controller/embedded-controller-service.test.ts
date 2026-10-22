@@ -90,6 +90,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     revokeGraceMs: 200,
     stopTimeoutMs: 200,
     movedAgents: async () => moved,
+    providerSeed: () => null,
     ...overrides,
   });
   services.push(created);
@@ -170,6 +171,14 @@ afterEach(async () => {
 });
 
 describe('EmbeddedControllerService', () => {
+  it('hands the controller the provider checks made ahead of it', async () => {
+    await enabled({ providerSeed: () => '/data/provider-precheck.json' });
+    const args = calls[0]!.args;
+    expect(
+      args.slice(args.indexOf('--provider-seed'), args.indexOf('--provider-seed') + 2)
+    ).toEqual(['--provider-seed', '/data/provider-precheck.json']);
+  });
+
   it('enrolls, keeps the credential in the secrets store only, and hands it to the child on stdin', async () => {
     await enabled();
     expect(management.enroll).toHaveBeenCalledWith(WORKSPACE, {
@@ -480,6 +489,13 @@ describe('EmbeddedControllerService', () => {
         'The credential for this computer is missing. Turn it off and on again to enroll afresh.',
     });
     expect(calls).toHaveLength(0);
+  });
+
+  it('names a server among those it runs for only once its controller is started', async () => {
+    const running = await enabled();
+    expect(await running.runningServerIds()).toEqual([SERVER]);
+    // Enrolled on disk, but nothing started in this session: no fresh report to go by.
+    expect(await service().runningServerIds()).toEqual([]);
   });
 
   it('stops its controllers at quit with SIGTERM and does not start them again', async () => {

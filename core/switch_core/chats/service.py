@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.authz import administers_tenant
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
@@ -100,6 +100,7 @@ from switch_core.transport.content import media_content, message_content
 from switch_core.transport.types import MessageFormat
 
 if TYPE_CHECKING:
+    from switch_core.chats.signals import ChatSignals
     from switch_core.delivery.router import MessageRouter, Routed
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,9 @@ class StagedUpload:
 
 
 RemovalReason = Literal["access", "unlisted"]
+
+# Long enough for a welcome with tips; a greeting is not a document.
+GREETING_MAX_CHARS = 4000
 RoomControl = Literal["interrupt", "reset", "compact"]
 
 
@@ -162,10 +166,10 @@ class ChatService:
         id_server_name: str,
         media_max_bytes: int,
         agent_chats_enabled: bool,
-        controllers: ControllerPresence,
+        connections: AgentConnectionRegistry,
     ) -> None:
         self.session_factory = session_factory
-        self._controllers = controllers
+        self._connections = connections
         self.agent_chats_enabled = agent_chats_enabled
         self.listener = listener
         self.activity_listener = activity_listener
@@ -186,6 +190,9 @@ class ChatService:
             weakref.WeakValueDictionary()
         )
         self._membership_watchers: dict[tuple[str, str], set[Callable[[], None]]] = {}
+        # Where a change to people's chats made here is announced to the
+        # other processes, once wired (`use_signals`).
+        self._signals: ChatSignals | None = None
         self._addressing = AddressingResolver(
             room_store=room_store,
             room_role_store=RoomRoleStore(),
@@ -198,10 +205,16 @@ class ChatService:
 
     # ── Membership signals ───────────────────────────────────────────────────
 
+    def use_signals(self, signals: ChatSignals) -> None:
+        """Where a change to people's chats made here is announced, so every
+        other process wakes the streams it holds for them (`signals.py`)."""
+        self._signals = signals
+
     def watch_memberships(
         self, tenant_id: str, user_id: str, callback: Callable[[], None]
     ) -> None:
-        """Call `callback` whenever this process changes the user's chats."""
+        """Call `callback` whenever the user's chats change: at once when this
+        process changed them, and once told when another process did."""
         self._membership_watchers.setdefault((tenant_id, user_id), set()).add(callback)
 
     def unwatch_memberships(
@@ -214,12 +227,27 @@ class ChatService:
         if not watchers:
             del self._membership_watchers[(tenant_id, user_id)]
 
-    def _memberships_changed(self, tenant_id: str, user_ids: list[str]) -> None:
+    def wake_membership_watchers(self, tenant_id: str, user_ids: list[str]) -> None:
+        """Call every callback watching these users' chats in this process."""
         for user_id in user_ids:
             for callback in list(
                 self._membership_watchers.get((tenant_id, user_id), ())
             ):
                 callback()
+
+    def wake_all_membership_watchers(self) -> None:
+        """Call every callback watching anyone's chats in this process, once."""
+        for watchers in list(self._membership_watchers.values()):
+            for callback in list(watchers):
+                callback()
+
+    def _memberships_changed(self, tenant_id: str, user_ids: list[str]) -> None:
+        """The users' chats changed through this process, and the change has
+        committed: the streams here are woken at once, and the other
+        processes are told to wake theirs."""
+        self.wake_membership_watchers(tenant_id, user_ids)
+        if self._signals is not None:
+            self._signals.memberships_changed(tenant_id, user_ids)
 
     def _lock(self, *key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -500,6 +528,28 @@ class ChatService:
         self._memberships_changed(
             tenant_id, sorted(user_id for user_id in members if user_id is not None)
         )
+
+    async def agent_changed(self, tenant_id: str, agent_id: str) -> None:
+        """Wake the streams of everyone in a chat with this agent, so they
+        re-send its summaries. Does nothing with `agent_chats` off."""
+        if not self.agent_chats_enabled:
+            return
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            members = (
+                await session.execute(
+                    select(Client.user_id)
+                    .distinct()
+                    .join(ClientRoom, ClientRoom.client_id == Client.id)
+                    .join(room_agents, room_agents.c.room_id == ClientRoom.room_id)
+                    .where(
+                        room_agents.c.agent_id == agent_id,
+                        Client.type == MEMBER_CLIENT_TYPE,
+                        Client.user_id.is_not(None),
+                    )
+                )
+            ).scalars()
+            user_ids = sorted(user_id for user_id in members if user_id is not None)
+        self._memberships_changed(tenant_id, user_ids)
 
     async def _make_lasting(self, tenant_id: str, user_id: str, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -869,6 +919,7 @@ class ChatService:
         agent_ids: list[str],
         name: str | None,
         request_id: str,
+        greeting: str | None,
     ) -> Room:
         """A private room with the agents, owned by and joined by the user.
 
@@ -879,11 +930,32 @@ class ChatService:
         Retrying with the same request id finishes whatever an earlier attempt
         left undone: the room is found by the operation id stamped on it, and
         the agents' and the user's memberships are re-applied.
+
+        `greeting` is what the agent says as it joins, in place of its usual
+        one-liner: its first words, written for it (switch-buddy's welcome).
+        Only for a direct chat with one of the user's own agents.
         """
         if not agent_ids:
             raise ChatError(422, "AGENTS_REQUIRED", "A chat needs at least one agent.")
+        if greeting is not None:
+            if len(agent_ids) != 1:
+                raise ChatError(
+                    422,
+                    "GREETING_NEEDS_ONE_AGENT",
+                    "Only a chat with one agent opens with its greeting.",
+                )
+            if not greeting.strip():
+                raise ChatError(422, "EMPTY_MESSAGE", "The greeting is empty.")
+            if len(greeting) > GREETING_MAX_CHARS:
+                raise ChatError(
+                    422,
+                    "GREETING_TOO_LONG",
+                    f"A greeting is at most {GREETING_MAX_CHARS} characters.",
+                )
         payload_hash = _hash(
             {"agentId": agent_ids[0], "name": name}
+            if len(agent_ids) == 1 and greeting is None
+            else {"agentId": agent_ids[0], "name": name, "greeting": greeting}
             if len(agent_ids) == 1
             else {"agentIds": agent_ids, "name": name}
         )
@@ -903,6 +975,12 @@ class ChatService:
                     )
                     for agent_id in agent_ids
                 ]
+                if greeting is not None and agents[0].owner_id != user.id:
+                    raise ChatError(
+                        403,
+                        "NOT_AGENT_OWNER",
+                        "Only the agent's owner can give it a greeting.",
+                    )
                 if operation is None:
                     await self._claim(
                         session,
@@ -927,11 +1005,7 @@ class ChatService:
                 try:
                     created = await self._room_service.create_room(
                         RoomCreateConfig(
-                            name=name
-                            or "Chat with "
-                            + ", ".join(
-                                agent.display_name or agent.name for agent in agents
-                            ),
+                            name=name or "New Chat",
                             description="Switch Console chat with "
                             + ", ".join(agent.name for agent in agents),
                             agent_ids=[agent.id for agent in agents],
@@ -946,6 +1020,11 @@ class ChatService:
                             acting_user_id=user.id,
                             created_by_kind="user",
                             chat_operation_id=operation_id,
+                            agent_greeting=(
+                                {"agent_id": agents[0].id, "body": greeting}
+                                if greeting is not None
+                                else None
+                            ),
                         )
                     )
                 except ValueError as exc:
@@ -969,6 +1048,8 @@ class ChatService:
                 )
                 await session.commit()
         self._memberships_changed(tenant_id, [user.id])
+        if len(agents) == 1:
+            self._start_session(agents[0].id, room.id)
         return room
 
     async def stage_upload(
@@ -1269,7 +1350,9 @@ class ChatService:
     ) -> None:
         """Ask the controller of the user's own agent to start its session for
         this chat before the first message. A hint: nothing waits for it, and
-        an agent no controller hosts is not warmed."""
+        an agent no controller hosts is not warmed. The controller is asked
+        through whichever process holds its socket
+        (`AgentConnectionRegistry.relay_warm`)."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
@@ -1278,22 +1361,23 @@ class ChatService:
                 )
             agent = await self._agent_store.get(session, agent_id)
             assert agent is not None
-            if agent.owner_id != user.id:
-                raise ChatError(
-                    403, "NOT_AGENT_OWNER", "Only the agent's owner can warm it."
-                )
             decision = await self._addressing.permitted(
                 session, agent=agent, room_id=room.id, sender=client.transport_user_id
             )
             if not decision.allowed:
                 raise ChatError(403, "AGENT_NOT_ALLOWED", decision.refusal)
-        if not self._controllers.is_bound(agent_id):
+        self._start_session(agent_id, room.id)
+
+    def _start_session(self, agent_id: str, room_id: str) -> None:
+        """A hint to a controller-hosted agent: nothing waits for it. An agent
+        no controller hosts is started by the Console that runs it."""
+        if not self._connections.controllers.is_bound(agent_id):
             return
-        if not self._controllers.relay_warm(agent_id, room.id):
+        if not self._connections.relay_warm(agent_id, room_id):
             logger.warning(
-                "Could not warm agent %s for room %s: its controller is not connected or it is stopped",
+                "Could not start agent %s's session for room %s: its controller is not connected or it is stopped",
                 agent_id,
-                room.id,
+                room_id,
             )
 
     async def _posted(

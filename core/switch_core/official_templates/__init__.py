@@ -5,6 +5,10 @@ serves them by an ``official:`` id, so every workspace sees the version this
 release ships and nobody can change or delete one. A template a deployment
 can only use where agents are managed comes in two documents, and the
 server's ``agent_management`` feature flag picks which it serves.
+switch-buddy only makes sense as a managed agent, and is served only with both
+``agent_management`` and ``switch_buddy`` on. The Switch expert is served only
+where switch-buddy is not: buddy covers what it does, and offering both would
+give a new user two built-in assistants to choose between.
 
 Each lives in a directory here: ``template.yaml`` (for agent management),
 optionally ``template.console.yaml`` (for a server without it, whose agents
@@ -19,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -52,6 +56,11 @@ class _Shipped:
     name: str
     description: str
     kind: str
+    # Where the server serves it, relative to switch-buddy: "buddy" only with
+    # agent management and the switch_buddy flag on (it has no Console-run
+    # document, and Console asks for it only where offered); "without_buddy"
+    # only where switch-buddy is not served.
+    served: Literal["buddy", "without_buddy"]
 
 
 _SHIPPED = (
@@ -63,6 +72,17 @@ _SHIPPED = (
             "up or why something is off."
         ),
         kind="agent",
+        served="without_buddy",
+    ),
+    _Shipped(
+        slug="switch-buddy",
+        name="switch-buddy",
+        description=(
+            "Your own assistant in Switch. It creates agents and rooms for you, "
+            "answers anything about Switch and helps with any task."
+        ),
+        kind="agent",
+        served="buddy",
     ),
 )
 
@@ -115,7 +135,9 @@ def _document(slug: str, agent_management: bool) -> str:
     )
 
 
-def official_templates(agent_management: bool) -> list[OfficialTemplate]:
+def official_templates(
+    agent_management: bool, switch_buddy: bool
+) -> list[OfficialTemplate]:
     """Every template that comes with Switch, as this server serves them."""
     return [
         OfficialTemplate(
@@ -126,6 +148,7 @@ def official_templates(agent_management: bool) -> list[OfficialTemplate]:
             content=_document(shipped.slug, agent_management),
         )
         for shipped in _SHIPPED
+        if (shipped.served == "buddy") == (agent_management and switch_buddy)
     ]
 
 
@@ -134,10 +157,14 @@ def is_official(template_id: str) -> bool:
 
 
 def official_template(
-    template_id: str, agent_management: bool
+    template_id: str, agent_management: bool, switch_buddy: bool
 ) -> OfficialTemplate | None:
     return next(
-        (t for t in official_templates(agent_management) if t.id == template_id),
+        (
+            t
+            for t in official_templates(agent_management, switch_buddy)
+            if t.id == template_id
+        ),
         None,
     )
 

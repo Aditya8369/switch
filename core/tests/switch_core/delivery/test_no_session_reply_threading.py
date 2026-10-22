@@ -72,6 +72,11 @@ def _fake_self(
     ) -> str:
         return unavailable_reply
 
+    async def _sender_role(
+        _session: object, _sender: str, _content: object
+    ) -> str | None:
+        return None
+
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="cc-bug-fixing"),
         tenant_id=TENANT_ZERO_ID,
@@ -82,6 +87,7 @@ def _fake_self(
         _compute_addressed=_compute_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
+        _sender_role=_sender_role,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
         _triggered_by_auto_reply=AgentRecipient._triggered_by_auto_reply,
@@ -171,7 +177,8 @@ async def test_no_session_reply_does_not_double_tag_the_asker() -> None:
     send_message = _Recorder()
     await _deliver(
         _fake_self(
-            send_message, unavailable_reply="@louisa\n\nmy operator should run …"
+            send_message,
+            unavailable_reply="@louisa — I'm not online in this room. Open Switch Console …",
         ),
         _event(thread_id=None),
     )
@@ -189,7 +196,8 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
     send_message = _Recorder()
     await _deliver(
         _fake_self(
-            send_message, unavailable_reply="@operator\n\nmy operator should run …"
+            send_message,
+            unavailable_reply="@operator — I'm not online in this room. Open Switch Console …",
         ),
         _event(thread_id=None),
     )
@@ -243,9 +251,9 @@ class TestTerminalReplyThreadsOffTheTrigger:
     """Where an "I can't help right now" reply lands (CHOO-2344).
 
     Unlike the starting-session notice, nothing follows it — it IS the answer.
-    And it is bulky: an owner mention plus a paste-ready connect command, for
-    something only one person can act on. At the conversation root that is a
-    wall of text dropped into the channel, so it threads off the message that
+    And it is addressed to one person: an owner mention and an instruction
+    only they can act on. At the conversation root that is noise dropped into
+    the channel for everyone else, so it threads off the message that
     triggered it instead.
     """
 
