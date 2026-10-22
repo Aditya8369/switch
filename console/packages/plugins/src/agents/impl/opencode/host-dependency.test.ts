@@ -20,9 +20,9 @@ describe('opencode host dependency', () => {
     expect(option.recommended).toBe(true);
   });
 
-  it('installs the opencode-ai package on every platform', () => {
+  it('installs the @opencode/cli package on every platform', () => {
     for (const platform of ['macos', 'linux', 'windows'] as const) {
-      expect(firstOption(platform).command).toContain('opencode-ai');
+      expect(firstOption(platform).command).toContain('@opencode/cli');
     }
   });
 

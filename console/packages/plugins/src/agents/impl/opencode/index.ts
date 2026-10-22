@@ -27,7 +27,7 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  * user-writable, and changing them would strand anyone who already has it.
  */
 const OPENCODE_HOST_DEPENDENCY = (() => {
-  const base = npmDependency({ id: 'opencode', package: 'opencode-ai' });
+  const base = npmDependency({ id: 'opencode', package: '@opencode/cli' });
   return {
     ...base,
     installCommands: {
@@ -35,8 +35,8 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
       linux: [
         {
           method: 'npm' as const,
-          command: 'npm install -g --prefix "$HOME/.local" opencode-ai',
-          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+          command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
+          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli',
           recommended: true,
         },
       ],
